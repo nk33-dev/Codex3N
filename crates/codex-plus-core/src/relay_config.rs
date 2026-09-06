@@ -290,6 +290,9 @@ pub fn ensure_active_protocol_proxy_config_in_home(
     home: &Path,
     settings: &BackendSettings,
 ) -> anyhow::Result<bool> {
+    if !settings.relay_profiles_enabled {
+        return Ok(false);
+    }
     let profile = settings.active_relay_profile();
     let transport_uses_proxy = settings.active_relay_transport_uses_protocol_proxy();
     let openai_identity_uses_proxy = settings.active_relay_session_provider()

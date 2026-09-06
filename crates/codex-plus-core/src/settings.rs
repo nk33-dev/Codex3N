@@ -386,7 +386,7 @@ pub struct BackendSettings {
     pub provider_sync_last_selected_provider: String,
     #[serde(rename = "ccsDbPath", default)]
     pub ccs_db_path: String,
-    #[serde(rename = "relayProfilesEnabled", default = "default_true")]
+    #[serde(rename = "relayProfilesEnabled", default = "default_false")]
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
@@ -572,7 +572,7 @@ impl Default for BackendSettings {
             provider_sync_manual_providers: Vec::new(),
             provider_sync_last_selected_provider: String::new(),
             ccs_db_path: String::new(),
-            relay_profiles_enabled: true,
+            relay_profiles_enabled: false,
             enhancements_enabled: true,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
@@ -987,6 +987,10 @@ pub fn clamp_stepwise_timeout_ms(value: u64) -> u64 {
 
 pub fn default_true() -> bool {
     true
+}
+
+pub fn default_false() -> bool {
+    false
 }
 
 pub fn default_relay_base_url() -> String {
@@ -1844,7 +1848,7 @@ mod tests {
     fn settings_default_matches_expected_behavior() {
         let settings = BackendSettings::default();
         assert!(!settings.provider_sync_enabled);
-        assert!(settings.relay_profiles_enabled);
+        assert!(!settings.relay_profiles_enabled);
         assert!(settings.enhancements_enabled);
         assert!(settings.codex_app_plugin_marketplace_unlock);
         assert!(!settings.codex_app_thread_id_badge);

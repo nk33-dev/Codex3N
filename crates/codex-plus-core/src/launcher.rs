@@ -514,10 +514,13 @@ where
 }
 
 fn relay_protocol_proxy_enabled(settings: &BackendSettings) -> bool {
-    settings.active_relay_uses_protocol_proxy()
+    settings.relay_profiles_enabled && settings.active_relay_uses_protocol_proxy()
 }
 
 fn remote_control_provider_proxy_enabled(settings: &BackendSettings) -> bool {
+    if !settings.relay_profiles_enabled {
+        return false;
+    }
     let profile = settings.active_relay_profile();
     profile.relay_mode == crate::settings::RelayMode::Official && profile.official_mix_api_key
 }
@@ -3137,6 +3140,18 @@ mod tests {
             HELPER_BIND_RETRY_TIMEOUT_MS
         );
         assert_eq!(helper_bind_retry_timeout_ms(false, false), 0);
+    }
+
+    #[test]
+    fn relay_profiles_disabled_turns_off_protocol_proxy_detection() {
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles_enabled = false;
+        settings.relay_profiles[0].protocol = crate::settings::RelayProtocol::ChatCompletions;
+        settings.relay_profiles[0].relay_mode = crate::settings::RelayMode::Official;
+        settings.relay_profiles[0].official_mix_api_key = true;
+
+        assert!(!relay_protocol_proxy_enabled(&settings));
+        assert!(!remote_control_provider_proxy_enabled(&settings));
     }
 
     #[tokio::test]
