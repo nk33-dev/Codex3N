@@ -2569,22 +2569,6 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
         session_id: session_id.to_string(),
         title: request.title,
     };
-    let blocking_process_ids =
-        codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
-    if let Some(result) = codex_plus_core::models::local_delete_process_guard(
-        session_id,
-        &blocking_process_ids,
-    ) {
-        log_manager_event(
-            "manager.delete_local_session.blocked",
-            json!({
-                "session_id": session_id,
-                "blocking_process_ids": blocking_process_ids,
-            }),
-        );
-        let message = result.message.clone();
-        return failed(&message, result);
-    }
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
     if let Some(path) = request.db_path.as_deref() {

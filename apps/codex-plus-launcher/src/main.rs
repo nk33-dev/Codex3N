@@ -625,14 +625,6 @@ impl Default for LauncherDataService {
 #[async_trait::async_trait]
 impl BridgeDataService for LauncherDataService {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
-        let blocking_process_ids =
-            codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
-        if let Some(result) = codex_plus_core::models::local_delete_process_guard(
-            &session.session_id,
-            &blocking_process_ids,
-        ) {
-            return Ok(result);
-        }
         let db_paths = self.candidate_db_paths();
         let backup_store = codex_plus_data::BackupStore::new(self.backup_dir.clone());
         tokio::task::spawn_blocking(move || {

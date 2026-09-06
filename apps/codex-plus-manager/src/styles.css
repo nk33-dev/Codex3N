@@ -2994,6 +2994,16 @@ body {
   padding: 24px;
 }
 
+.confirm-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  padding: 24px;
+}
+
 .modal-card {
   width: min(560px, calc(100vw - 32px));
   border: 1px solid hsl(var(--border));
@@ -3030,6 +3040,7 @@ body {
 }
 
 .confirm-modal {
+  width: min(480px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
@@ -4346,9 +4357,8 @@ input[type="range"]:disabled {
 
 .toast-wrap {
   position: fixed;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
+  right: 16px;
+  bottom: 16px;
   z-index: 50;
   width: min(420px, calc(100vw - 32px));
 }

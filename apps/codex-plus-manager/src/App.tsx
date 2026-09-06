@@ -923,7 +923,7 @@ const defaultSettings: BackendSettings = {
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
-  relayProfilesEnabled: true,
+  relayProfilesEnabled: false,
   enhancementsEnabled: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
@@ -9011,7 +9011,7 @@ function ConfirmDialog({
   onCancel: () => void;
 }) {
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
+    <div className="confirm-layer" role="dialog" aria-modal="true">
       <div className="modal-card confirm-modal">
         <div className="modal-head">
           <div>
@@ -10140,7 +10140,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
-    relayProfilesEnabled: settings.relayProfilesEnabled !== false,
+    relayProfilesEnabled: settings.relayProfilesEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
