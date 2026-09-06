@@ -245,7 +245,7 @@ fn find_codex_processes_combines_store_and_local_installs() {
 
 #[cfg(windows)]
 #[test]
-fn session_index_cleanup_process_guard_blocks_desktop_apps_but_not_cli() {
+fn session_index_cleanup_process_guard_blocks_all_codex_state_writers() {
     let processes = [
         WindowsProcessInfo {
             process_id: 11,
@@ -279,7 +279,7 @@ fn session_index_cleanup_process_guard_blocks_desktop_apps_but_not_cli() {
 
     assert_eq!(
         find_session_index_cleanup_blocking_processes_from_snapshot(&processes),
-        vec![11, 12, 13]
+        vec![11, 12, 13, 14]
     );
     assert_eq!(find_codex_processes_from_snapshot(&processes), vec![11, 13]);
 }

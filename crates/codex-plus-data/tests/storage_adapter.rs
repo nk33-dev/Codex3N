@@ -83,6 +83,60 @@ fn create_codex_thread_db(path: &Path, rollout_path: &Path) {
     .unwrap();
 }
 
+fn create_thread_catalog_db(path: &Path) {
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_hosts (host_id TEXT PRIMARY KEY, host_kind TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_hosts VALUES ('local', 'local')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, display_title TEXT, PRIMARY KEY (host_id, thread_id))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog VALUES ('local', 't1', 'Codex Thread')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_scan_entries (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, removed INTEGER NOT NULL, PRIMARY KEY (host_id, thread_id))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_scan_entries VALUES ('local', 't1', 0)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE thread_timeline_ledger (host_id TEXT NOT NULL, thread_id TEXT NOT NULL, sequence INTEGER NOT NULL, record_id TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY (host_id, thread_id, sequence))",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO thread_timeline_ledger VALUES ('local', 't1', 1, 'record-1', '{}')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "CREATE TABLE local_thread_catalog_metadata (id INTEGER PRIMARY KEY, catalog_revision INTEGER NOT NULL)",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO local_thread_catalog_metadata VALUES (1, 0)",
+        [],
+    )
+    .unwrap();
+}
+
 fn thread_count(path: &Path, id: &str) -> i64 {
     let db = Connection::open(path).unwrap();
     db.query_row("SELECT COUNT(*) FROM threads WHERE id = ?1", [id], |row| {
@@ -490,6 +544,130 @@ fn delete_codex_thread_sqlite_dir_layout_removes_session_index_entry_and_undo_re
     assert_eq!(index_text.matches("\"id\":\"t1\"").count(), 1);
     assert_eq!(index_text.matches("\"id\":\"other\"").count(), 1);
     assert_eq!(thread_count(&db_path, "t1"), 1);
+}
+
+#[test]
+fn delete_local_from_paths_removes_catalog_residue_and_undo_restores_it() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    let rollout_path = home.join("rollout.jsonl");
+    fs::write(&rollout_path, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&state_db, &rollout_path);
+    create_thread_catalog_db(&catalog_db);
+    let backups = BackupStore::new(tmp.path().join("backups"));
+
+    let deleted = delete_local_from_paths(
+        vec![state_db.clone()],
+        backups.clone(),
+        &session("t1", "Codex Thread"),
+        Some(&home),
+    );
+
+    assert_eq!(deleted.status, DeleteStatus::LocalDeleted, "{}", deleted.message);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    for table in [
+        "local_thread_catalog",
+        "local_thread_catalog_scan_entries",
+        "thread_timeline_ledger",
+    ] {
+        assert_eq!(
+            catalog
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "{table} 中不应残留被删除的会话"
+        );
+    }
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+    drop(catalog);
+
+    let adapter = SQLiteStorageAdapter::new(&state_db, backups).with_codex_home(&home);
+    let restored = adapter.undo(deleted.undo_token.as_deref().unwrap());
+
+    assert_eq!(restored.status, DeleteStatus::Undone, "{}", restored.message);
+    let catalog = Connection::open(&catalog_db).unwrap();
+    for table in [
+        "local_thread_catalog",
+        "local_thread_catalog_scan_entries",
+        "thread_timeline_ledger",
+    ] {
+        assert_eq!(
+            catalog
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE thread_id = 't1'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1,
+            "撤销后应恢复 {table}"
+        );
+    }
+    assert_eq!(
+        catalog
+            .query_row(
+                "SELECT catalog_revision FROM local_thread_catalog_metadata WHERE id = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn delete_local_from_paths_succeeds_when_only_catalog_residue_exists() {
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("codex-home");
+    let sqlite_dir = home.join("sqlite");
+    fs::create_dir_all(&sqlite_dir).unwrap();
+    let state_db = home.join("state_5.sqlite");
+    let catalog_db = sqlite_dir.join("codex-dev.db");
+    let unrelated_rollout = home.join("unrelated.jsonl");
+    fs::write(&unrelated_rollout, "{\"type\":\"message\"}\n").unwrap();
+    create_codex_thread_db(&state_db, &unrelated_rollout);
+    Connection::open(&state_db)
+        .unwrap()
+        .execute("DELETE FROM threads WHERE id = 't1'", [])
+        .unwrap();
+    create_thread_catalog_db(&catalog_db);
+
+    let deleted = delete_local_from_paths(
+        vec![state_db],
+        BackupStore::new(tmp.path().join("backups")),
+        &session("t1", "Codex Thread"),
+        Some(&home),
+    );
+
+    assert_eq!(deleted.status, DeleteStatus::LocalDeleted, "{}", deleted.message);
+    assert_eq!(
+        Connection::open(catalog_db)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM local_thread_catalog WHERE thread_id = 't1'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
+    );
 }
 
 /// 删除成功后必须一并清 session_index.jsonl，否则重启后 UI 从索引读，

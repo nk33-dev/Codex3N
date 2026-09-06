@@ -2645,6 +2645,36 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert_eq!(cases["temporaryHref"], "");
 }
 
+#[test]
+fn injection_script_prefers_native_thread_delete_before_local_fallback() {
+    let script = assets::injection_script(57321);
+    let native_delete = script
+        .split_once("async function deleteViaNativeAppServer(ref)")
+        .expect("native delete helper should exist")
+        .1
+        .split_once("function openDeleteConfirmForRow")
+        .expect("native delete helper should precede delete confirmation")
+        .0;
+    let delete_confirmation = script
+        .split_once("function openDeleteConfirmForRow")
+        .expect("delete confirmation should exist")
+        .1
+        .split_once("async function exportMarkdown")
+        .expect("delete confirmation should end before export helper")
+        .0;
+
+    assert!(native_delete.contains("client.sendRequest(\"thread/delete\", { threadId })"));
+    assert!(native_delete.contains("status: \"server_deleted\""));
+    assert!(delete_confirmation.contains("await deleteViaNativeAppServer(ref)"));
+    assert!(delete_confirmation.contains("await postJson(\"/delete\", ref)"));
+    assert!(
+        delete_confirmation
+            .find("await deleteViaNativeAppServer(ref)")
+            .unwrap()
+            < delete_confirmation.find("await postJson(\"/delete\", ref)").unwrap()
+    );
+}
+
 fn run_session_ref_contract_harness() -> serde_json::Value {
     let temp = tempfile::tempdir().expect("temp dir should be created");
     let script_path = temp.path().join("renderer-inject.js");
