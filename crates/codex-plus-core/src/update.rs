@@ -4,9 +4,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-pub const DEFAULT_REPOSITORY: &str = "BigPizzaV3/CodexPlusPlus";
+pub const DEFAULT_REPOSITORY: &str = "nk33-dev/Codex3N";
 pub const DEFAULT_LATEST_JSON_URL: &str =
-    "https://github.com/BigPizzaV3/CodexPlusPlus/releases/latest/download/latest.json";
+    "https://github.com/nk33-dev/Codex3N/releases/latest/download/latest.json";
 const UPDATE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -44,8 +44,11 @@ pub struct UpdateInstall {
 
 pub fn parse_version_tag(value: &str) -> anyhow::Result<Vec<u64>> {
     let normalized = value.trim().trim_start_matches(['v', 'V']);
+    let (core, suffix) = normalized
+        .split_once('-')
+        .map_or((normalized, None), |(core, suffix)| (core, Some(suffix)));
     let mut digits = String::new();
-    for ch in normalized.chars() {
+    for ch in core.chars() {
         if ch.is_ascii_digit() || ch == '.' {
             digits.push(ch);
         } else {
@@ -55,10 +58,21 @@ pub fn parse_version_tag(value: &str) -> anyhow::Result<Vec<u64>> {
     if digits.is_empty() {
         anyhow::bail!("Invalid version tag: {value}");
     }
-    digits
+    let mut segments = digits
         .split('.')
         .map(|part| part.parse::<u64>().map_err(Into::into))
-        .collect()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    if let Some(suffix) = suffix {
+        let suffix = suffix.to_ascii_lowercase();
+        if let Some(revision) = suffix.strip_prefix("3n.") {
+            let revision = revision
+                .split('.')
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("Invalid Codex3N version tag: {value}"))?;
+            segments.push(revision.parse::<u64>()?);
+        }
+    }
+    Ok(segments)
 }
 
 pub fn is_newer_version(candidate: &str, current: &str) -> anyhow::Result<bool> {
@@ -304,7 +318,7 @@ pub async fn perform_update(
 
 fn update_http_client() -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
-        .user_agent(format!("Codex++/{}", crate::version::VERSION))
+        .user_agent(format!("Codex3N/{}", crate::version::VERSION))
         .connect_timeout(UPDATE_CONNECT_TIMEOUT)
         .timeout(UPDATE_DOWNLOAD_TIMEOUT)
         .build()?)
@@ -392,8 +406,7 @@ fn is_macos_native_arch_asset(name: &str) -> bool {
 }
 
 fn is_windows_installer_asset(name: &str) -> bool {
-    name.contains("codex")
-        && name.contains("plus")
+    is_supported_product_asset(name)
         && (name.ends_with(".msi")
             || name.ends_with("-setup.exe")
             || name.ends_with("_setup.exe")
@@ -404,7 +417,11 @@ fn is_windows_installer_asset(name: &str) -> bool {
 fn is_macos_installer_asset(name: &str) -> bool {
     // Loose shape check; arch preference is handled by platform_asset_rank
     // via is_macos_native_arch_asset.
-    name.contains("codex") && name.contains("plus") && name.ends_with(".dmg")
+    is_supported_product_asset(name) && name.ends_with(".dmg")
+}
+
+fn is_supported_product_asset(name: &str) -> bool {
+    name.contains("codex3n") || (name.contains("codex") && name.contains("plus"))
 }
 
 pub fn launch_installer(path: &Path) -> anyhow::Result<()> {

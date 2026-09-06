@@ -7,7 +7,7 @@
 !define ROOT "..\..\.."
 
 Name "Codex++"
-OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+OutFile "${ROOT}\dist\windows\Codex3N-${VERSION}-windows-x64-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Codex++"
 InstallDirRegKey HKCU "Software\Codex++" "InstallDir"
 RequestExecutionLevel user

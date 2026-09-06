@@ -168,7 +168,7 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
     assert!(script.contains("<key>LSUIElement</key>"));
     assert!(script.contains("ARCH=\"${2:-$(uname -m)}\""));
     assert!(script.contains("BINARY_DIR=\"${BINARY_DIR:-$ROOT/target/release}\""));
-    assert!(script.contains("CodexPlusPlus-${VERSION}-macos-${ARCH}.dmg"));
+    assert!(script.contains("Codex3N-${VERSION}-macos-${ARCH}.dmg"));
     assert!(script.contains(
         "create_app \"Codex++\" \"CodexPlusPlus\" \"$BINARY_DIR/codex-plus-plus\" \"com.bigpizzav3.codexplusplus\" \"true\""
     ));
@@ -210,6 +210,27 @@ fn github_release_workflow_uploads_static_latest_json() {
     assert!(workflow.contains("latest-json:"));
     assert!(workflow.contains("latest.json"));
     assert!(workflow.contains("gh release upload \"$TAG\" latest.json --clobber"));
+    assert!(workflow.contains("Codex3N-$version-windows-x64.zip"));
+    assert!(workflow.contains("Codex3N-${VERSION}-macos-${{ matrix.arch }}.zip"));
+    assert!(workflow.contains("verify-release:"));
+    assert!(workflow.contains("git merge-base --is-ancestor \"$TAG_COMMIT\" origin/personal"));
+}
+
+#[test]
+fn github_ci_builds_personal_branch_with_codex3n_artifact_names() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflow = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join(".github/workflows/pr-build.yml");
+    let workflow = std::fs::read_to_string(&workflow).expect("read PR build workflow");
+
+    assert!(workflow.contains("branches: [main, personal]"));
+    assert!(workflow.contains("codex3n-windows-binaries"));
+    assert!(workflow.contains("codex3n-windows-installer"));
+    assert!(workflow.contains("codex3n-macos-${{ matrix.arch }}-dmg"));
 }
 
 #[test]

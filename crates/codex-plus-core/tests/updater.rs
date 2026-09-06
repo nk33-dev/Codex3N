@@ -1,6 +1,7 @@
 use codex_plus_core::update::{
-    Release, download_asset_to, is_newer_version, parse_version_tag, release_from_github_payload,
-    release_from_latest_json_payload, safe_asset_name, select_update_asset,
+    DEFAULT_LATEST_JSON_URL, DEFAULT_REPOSITORY, Release, download_asset_to, is_newer_version,
+    parse_version_tag, release_from_github_payload, release_from_latest_json_payload,
+    safe_asset_name, select_update_asset,
 };
 use serde_json::json;
 
@@ -9,13 +10,25 @@ fn parse_version_tag_accepts_prefix_and_suffix() {
     assert_eq!(parse_version_tag("v1.2.3").unwrap(), vec![1, 2, 3]);
     assert_eq!(parse_version_tag("1.2.3").unwrap(), vec![1, 2, 3]);
     assert_eq!(parse_version_tag("v1.2.3-beta.1").unwrap(), vec![1, 2, 3]);
+    assert_eq!(parse_version_tag("v1.2.3-3n.4").unwrap(), vec![1, 2, 3, 4]);
 }
 
 #[test]
 fn version_comparison_uses_numeric_segments() {
     assert!(is_newer_version("v1.0.10", "1.0.4").unwrap());
+    assert!(is_newer_version("v1.2.56-3n.2", "1.2.56-3n.1").unwrap());
+    assert!(is_newer_version("v1.2.56-3n.1", "1.2.56").unwrap());
     assert!(!is_newer_version("v1.0.4", "1.0.4").unwrap());
     assert!(!is_newer_version("v1.0.3", "1.0.4").unwrap());
+}
+
+#[test]
+fn codex3n_uses_personal_release_repository() {
+    assert_eq!(DEFAULT_REPOSITORY, "nk33-dev/Codex3N");
+    assert_eq!(
+        DEFAULT_LATEST_JSON_URL,
+        "https://github.com/nk33-dev/Codex3N/releases/latest/download/latest.json"
+    );
 }
 
 #[test]
@@ -107,6 +120,30 @@ fn asset_selection_prefers_current_platform_artifacts() {
     } else if cfg!(target_os = "macos") {
         let selected = select_update_asset(&assets).unwrap();
         assert_eq!(selected.name, "CodexPlusPlus_1.0.9_x64.dmg");
+    } else {
+        assert!(select_update_asset(&assets).is_none());
+    }
+}
+
+#[test]
+fn asset_selection_accepts_codex3n_installers() {
+    let assets = vec![
+        (
+            "Codex3N-1.2.56-3n.1-windows-x64-setup.exe".to_string(),
+            "https://example.test/setup.exe".to_string(),
+        ),
+        (
+            "Codex3N-1.2.56-3n.1-macos-x64.dmg".to_string(),
+            "https://example.test/app.dmg".to_string(),
+        ),
+    ];
+
+    if cfg!(windows) {
+        let selected = select_update_asset(&assets).unwrap();
+        assert_eq!(selected.name, "Codex3N-1.2.56-3n.1-windows-x64-setup.exe");
+    } else if cfg!(target_os = "macos") {
+        let selected = select_update_asset(&assets).unwrap();
+        assert_eq!(selected.name, "Codex3N-1.2.56-3n.1-macos-x64.dmg");
     } else {
         assert!(select_update_asset(&assets).is_none());
     }
