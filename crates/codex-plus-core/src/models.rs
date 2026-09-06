@@ -40,6 +40,29 @@ pub struct DeleteResult {
     pub backup_path: Option<String>,
 }
 
+pub fn local_delete_process_guard(
+    session_id: &str,
+    blocking_process_ids: &[u32],
+) -> Option<DeleteResult> {
+    if blocking_process_ids.is_empty() {
+        return None;
+    }
+    Some(DeleteResult {
+        status: DeleteStatus::Failed,
+        session_id: session_id.to_string(),
+        message: format!(
+            "Codex App、ChatGPT 或 VS Code Codex 仍在运行，无法安全执行本地回退删除；请完全退出后在管理工具重试。阻塞进程：{}",
+            blocking_process_ids
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        undo_token: None,
+        backup_path: None,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExportStatus {
@@ -91,6 +114,16 @@ mod tests {
             serde_json::from_value::<DeleteStatus>(json!("server_deleted")).unwrap(),
             DeleteStatus::ServerDeleted
         );
+    }
+
+    #[test]
+    fn local_delete_process_guard_reports_blocking_processes() {
+        assert!(local_delete_process_guard("t1", &[]).is_none());
+        let result = local_delete_process_guard("t1", &[12, 34]).unwrap();
+        assert_eq!(result.status, DeleteStatus::Failed);
+        assert_eq!(result.session_id, "t1");
+        assert!(result.message.contains("12, 34"));
+        assert!(result.message.contains("完全退出"));
     }
 
     #[test]

@@ -22,6 +22,8 @@ pub fn delete_local_from_paths(
     );
     let mut deleted_count = 0usize;
     let mut backup_tokens = Vec::new();
+    let mut cleanup_messages = Vec::new();
+    let mut cleanup_errors = Vec::new();
     for db_path in db_paths {
         let adapter = match codex_home {
             Some(home) => SQLiteStorageAdapter::new(db_path, backup_store.clone())
@@ -41,33 +43,68 @@ pub fn delete_local_from_paths(
     }
     if deleted_count > 1 {
         result.message = format!("已从 {deleted_count} 个本地存储删除");
-        result.undo_token = Some(json!(backup_tokens).to_string());
         result.backup_path = None;
     }
-    // 纯 API 模式（model_provider = "custom"）下 threads 表是空的，上面每个库都查不到
-    // 记录，于是直接返回「Thread not found in local storage」而会话行仍留在列表里
-    // ——因为 UI 读的是 session_index.jsonl，那条记录没人清（#1998）。
-    //
-    // 数据库里没有不代表索引里没有，这里退一步清索引：真清掉了就算删除成功，
-    // 索引里也没有才是真的找不到。
-    if deleted_count == 0
-        && matches!(result.status, DeleteStatus::Failed)
-        && let Some(home) = codex_home
-    {
+    if let Some(home) = codex_home {
         let thread_id = normalize_codex_thread_id(&session.session_id);
         match crate::provider_sync::remove_session_index_entry(home, &thread_id) {
             Ok(removed) if removed > 0 => {
-                result.status = DeleteStatus::LocalDeleted;
-                result.message = format!("已从 session_index.jsonl 清理 {removed} 条记录");
+                cleanup_messages.push(format!("已清理 {removed} 条会话索引"));
             }
             Ok(_) => {}
             Err(error) => {
-                result.message =
-                    format!("{}；session_index.jsonl 清理失败：{error}", result.message);
+                cleanup_errors.push(format!("session_index.jsonl 清理失败：{error}"));
+            }
+        }
+        match delete_local_catalog_residue(home, &backup_store, &thread_id) {
+            Ok(cleanup) => {
+                if cleanup.removed_rows > 0 {
+                    cleanup_messages.push(format!(
+                        "已清理 {} 条新版会话目录记录",
+                        cleanup.removed_rows
+                    ));
+                }
+                backup_tokens.extend(cleanup.backup_tokens);
+            }
+            Err(error) => {
+                cleanup_errors.push(format!("新版会话目录清理失败：{error}"));
             }
         }
     }
+
+    if deleted_count == 0
+        && matches!(result.status, DeleteStatus::Failed)
+        && !cleanup_messages.is_empty()
+    {
+        result.status = DeleteStatus::LocalDeleted;
+        result.message = "已清理残留的本地会话记录".to_string();
+    }
+    if matches!(result.status, DeleteStatus::LocalDeleted) && !cleanup_messages.is_empty() {
+        result.message = format!("{}；{}", result.message, cleanup_messages.join("；"));
+    }
+    if !cleanup_errors.is_empty() {
+        if matches!(result.status, DeleteStatus::LocalDeleted) {
+            result.status = DeleteStatus::Partial;
+        }
+        result.message = format!("{}；{}", result.message, cleanup_errors.join("；"));
+    }
+    if !backup_tokens.is_empty() {
+        result.undo_token = Some(if backup_tokens.len() == 1 {
+            backup_tokens[0].clone()
+        } else {
+            json!(backup_tokens).to_string()
+        });
+        if backup_tokens.len() > 1 {
+            result.backup_path = None;
+        }
+    }
     result
+}
+
+#[derive(Debug, Default)]
+struct CatalogCleanup {
+    removed_rows: usize,
+    backup_tokens: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,7 +196,15 @@ impl SQLiteStorageAdapter {
     }
 
     pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
-        self.codex_home = Some(codex_home.into());
+        let codex_home = codex_home.into();
+        for db_path in
+            codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(&codex_home)
+        {
+            if !self.allowed_db_paths.contains(&db_path) {
+                self.allowed_db_paths.push(db_path);
+            }
+        }
+        self.codex_home = Some(codex_home);
         self
     }
 
@@ -690,6 +735,180 @@ impl SQLiteStorageAdapter {
     }
 }
 
+fn delete_local_catalog_residue(
+    codex_home: &Path,
+    backup_store: &BackupStore,
+    thread_id: &str,
+) -> anyhow::Result<CatalogCleanup> {
+    let mut cleanup = CatalogCleanup::default();
+    for db_path in
+        codex_plus_core::codex_sqlite::codex_thread_reference_db_paths_from_home(codex_home)
+    {
+        if !db_path.is_file() {
+            continue;
+        }
+        let mut db = Connection::open(&db_path)?;
+        if !has_table(&db, "local_thread_catalog")?
+            || !has_columns(&db, "local_thread_catalog", &["thread_id"])?
+        {
+            continue;
+        }
+        let host_ids = local_catalog_host_ids(&db)?;
+        let host_filters = if has_columns(&db, "local_thread_catalog", &["host_id"])? {
+            host_ids.into_iter().map(Some).collect::<Vec<_>>()
+        } else {
+            vec![None]
+        };
+        let mut tables = Map::new();
+        for table in [
+            "local_thread_catalog",
+            "local_thread_catalog_scan_entries",
+            "thread_timeline_ledger",
+        ] {
+            let mut rows = Vec::new();
+            for host_id in &host_filters {
+                rows.extend(select_catalog_thread_rows(
+                    &db,
+                    table,
+                    thread_id,
+                    host_id.as_deref(),
+                )?);
+            }
+            if !rows.is_empty() {
+                tables.insert(table.to_string(), Value::Array(rows));
+            }
+        }
+        if tables.is_empty() {
+            continue;
+        }
+        tables.insert(
+            "__catalog_revision".to_string(),
+            json!([{"increment": 1}]),
+        );
+        let token = backup_store.write_backup(
+            thread_id,
+            &db_path,
+            Value::Object(tables.clone()),
+        )?;
+        let tx = db.transaction()?;
+        let mut removed = 0usize;
+        for table in [
+            "local_thread_catalog_scan_entries",
+            "thread_timeline_ledger",
+            "local_thread_catalog",
+        ] {
+            for host_id in &host_filters {
+                removed += delete_catalog_thread_rows(
+                    &tx,
+                    table,
+                    thread_id,
+                    host_id.as_deref(),
+                )?;
+            }
+        }
+        bump_local_catalog_revision(&tx, 1)?;
+        tx.commit()?;
+        cleanup.removed_rows += removed;
+        cleanup.backup_tokens.push(token);
+    }
+    Ok(cleanup)
+}
+
+fn local_catalog_host_ids(db: &Connection) -> anyhow::Result<Vec<String>> {
+    let mut host_ids = Vec::new();
+    if has_table(db, "local_thread_catalog_hosts")?
+        && has_columns(db, "local_thread_catalog_hosts", &["host_id", "host_kind"])?
+    {
+        let mut stmt = db.prepare(
+            "SELECT host_id FROM local_thread_catalog_hosts
+             WHERE LOWER(COALESCE(host_kind, '')) = 'local'
+             ORDER BY host_id",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        host_ids.extend(rows.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    if host_ids.is_empty() {
+        host_ids.push("local".to_string());
+    }
+    Ok(host_ids)
+}
+
+fn select_catalog_thread_rows(
+    db: &Connection,
+    table: &str,
+    thread_id: &str,
+    host_id: Option<&str>,
+) -> anyhow::Result<Vec<Value>> {
+    if !has_table(db, table)? || !has_columns(db, table, &["thread_id"])? {
+        return Ok(Vec::new());
+    }
+    let has_host_id = has_columns(db, table, &["host_id"])?;
+    if let Some(host_id) = host_id.filter(|_| has_host_id) {
+        let params: [&dyn ToSql; 2] = [&thread_id, &host_id];
+        select_dicts(
+            db,
+            &format!("SELECT * FROM {table} WHERE thread_id = ?1 AND host_id = ?2"),
+            &params,
+        )
+    } else {
+        let params: [&dyn ToSql; 1] = [&thread_id];
+        select_dicts(
+            db,
+            &format!("SELECT * FROM {table} WHERE thread_id = ?1"),
+            &params,
+        )
+    }
+}
+
+fn delete_catalog_thread_rows(
+    db: &Connection,
+    table: &str,
+    thread_id: &str,
+    host_id: Option<&str>,
+) -> anyhow::Result<usize> {
+    if !has_table(db, table)? || !has_columns(db, table, &["thread_id"])? {
+        return Ok(0);
+    }
+    let has_host_id = has_columns(db, table, &["host_id"])?;
+    if let Some(host_id) = host_id.filter(|_| has_host_id) {
+        Ok(db.execute(
+            &format!("DELETE FROM {table} WHERE thread_id = ?1 AND host_id = ?2"),
+            (thread_id, host_id),
+        )?)
+    } else {
+        Ok(db.execute(
+            &format!("DELETE FROM {table} WHERE thread_id = ?1"),
+            [thread_id],
+        )?)
+    }
+}
+
+fn bump_local_catalog_revision(db: &Connection, increment: i64) -> anyhow::Result<()> {
+    if !has_table(db, "local_thread_catalog_metadata")?
+        || !has_columns(
+            db,
+            "local_thread_catalog_metadata",
+            &["catalog_revision"],
+        )?
+    {
+        return Ok(());
+    }
+    let affected = db.execute(
+        "UPDATE local_thread_catalog_metadata
+         SET catalog_revision = catalog_revision + ?1",
+        [increment],
+    )?;
+    if affected == 0
+        && has_columns(db, "local_thread_catalog_metadata", &["id"])?
+    {
+        db.execute(
+            "INSERT INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, ?1)",
+            [increment],
+        )?;
+    }
+    Ok(())
+}
+
 fn optional_column_expression<'a>(
     columns: &HashSet<String>,
     column: &'a str,
@@ -883,6 +1102,9 @@ fn restore_backups(
         let mut db = Connection::open_with_flags(&source_db, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         let tx = db.transaction()?;
         restore_rows(&tx, tables)?;
+        if tables.contains_key("__catalog_revision") {
+            bump_local_catalog_revision(&tx, 1)?;
+        }
         tx.commit()?;
         if let Some(files) = tables.get("__files").and_then(Value::as_array) {
             for file in files {
@@ -1043,8 +1265,12 @@ fn validate_restore_tables(tables: &Map<String, Value>) -> anyhow::Result<()> {
         "agent_job_items",
         "automation_runs",
         "inbox_items",
+        "local_thread_catalog",
+        "local_thread_catalog_scan_entries",
+        "thread_timeline_ledger",
         "__files",
         "__session_index",
+        "__catalog_revision",
     ];
     for table in tables.keys() {
         if !allowed.contains(&table.as_str()) {
@@ -1115,6 +1341,10 @@ fn restore_conflict_key_columns<'a>(table: &str, row: &'a Map<String, Value>) ->
         "thread_goals" => &["thread_id", "goal"],
         "thread_spawn_edges" => &["parent_thread_id", "child_thread_id"],
         "stage1_outputs" => &["thread_id"],
+        "local_thread_catalog" | "local_thread_catalog_scan_entries" => {
+            &["host_id", "thread_id"]
+        }
+        "thread_timeline_ledger" => &["host_id", "thread_id", "sequence"],
         _ => &[],
     };
     let keys = wanted

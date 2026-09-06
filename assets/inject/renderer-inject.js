@@ -8478,6 +8478,58 @@
     });
   }
 
+  async function deleteViaNativeAppServer(ref) {
+    const threadId = normalizedCodexThreadUuid(ref?.session_id || "");
+    if (!threadId) {
+      return { status: "unavailable", message: "无法识别有效的 Codex thread ID" };
+    }
+    try {
+      const { candidates, sources, discovery } = await loadAppServerRequestCandidates();
+      const clients = candidates.filter((candidate) => typeof candidate?.sendRequest === "function");
+      const errors = [];
+      for (const client of clients) {
+        try {
+          await client.sendRequest("thread/delete", { threadId });
+          sendCodexPlusDiagnostic("session_native_delete_completed", {
+            threadId,
+            candidateCount: clients.length,
+            sources,
+            discovery,
+          });
+          return {
+            status: "server_deleted",
+            session_id: threadId,
+            message: "已通过 Codex 官方接口永久删除会话",
+            undo_token: null,
+          };
+        } catch (error) {
+          errors.push(error?.message || String(error));
+        }
+      }
+      sendCodexPlusDiagnostic("session_native_delete_unavailable", {
+        threadId,
+        candidateCount: clients.length,
+        sources,
+        discovery,
+        errors,
+      });
+      return {
+        status: "unavailable",
+        message: errors[0] || "当前 Codex 版本未暴露 thread/delete 接口",
+      };
+    } catch (error) {
+      sendCodexPlusDiagnostic("session_native_delete_failed", {
+        threadId,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      return {
+        status: "unavailable",
+        message: error?.message || String(error),
+      };
+    }
+  }
+
   function openDeleteConfirmForRow(row, button, ref, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -8486,7 +8538,10 @@
     confirmDelete(ref.title).then(async (confirmed) => {
       if (!confirmed) return;
       releaseDeleteFocus(row, button);
-      const result = await postJson("/delete", ref);
+      let result = await deleteViaNativeAppServer(ref);
+      if (result.status === "unavailable") {
+        result = await postJson("/delete", ref);
+      }
       if (result.status === "server_deleted" || result.status === "local_deleted") {
         removeDeletedRow(row, button, ref);
         showToast(result.message || "删除成功", result.undo_token);

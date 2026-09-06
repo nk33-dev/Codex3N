@@ -450,7 +450,10 @@ pub fn find_session_index_cleanup_blocking_processes_from_snapshot(
 ) -> Vec<u32> {
     let mut ids = processes
         .iter()
-        .filter(|process| process.exe_file == "Codex.exe" || process.exe_file == "ChatGPT.exe")
+        .filter(|process| {
+            process.exe_file.eq_ignore_ascii_case("Codex.exe")
+                || process.exe_file.eq_ignore_ascii_case("ChatGPT.exe")
+        })
         .map(|process| process.process_id)
         .collect::<Vec<_>>();
     ids.sort_unstable();
@@ -484,7 +487,26 @@ pub fn find_codex_processes() -> Vec<u32> {
 
 #[cfg(target_os = "macos")]
 pub fn find_session_index_cleanup_blocking_processes() -> Vec<u32> {
-    find_codex_processes()
+    let mut ids = ["Codex", "codex", "ChatGPT"]
+        .into_iter()
+        .flat_map(|name| {
+            std::process::Command::new("pgrep")
+                .args(["-x", name])
+                .output()
+                .ok()
+                .into_iter()
+                .flat_map(|output| {
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+        })
+        .filter_map(|value| value.trim().parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
