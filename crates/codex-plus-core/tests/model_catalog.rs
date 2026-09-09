@@ -5,12 +5,36 @@ use std::path::Path;
 use std::thread;
 
 use codex_plus_core::model_catalog::{
-    read_codex_model_catalog, read_codex_model_catalog_from_home,
+    read_codex_model_catalog, read_codex_model_catalog_from_home, test_codex_model,
 };
 use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
 };
 use serde_json::json;
+
+#[tokio::test]
+async fn model_catalog_reuses_cached_source_and_invalidates_it_after_key_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = spawn_models_server(json!({"data": [{"id": "cached-model"}]}));
+    let config = format!(
+        "model_provider = \"vendor\"\n[model_providers.vendor]\nbase_url = \"{}\"\nexperimental_bearer_token = \"first-key\"\n",
+        server.base_url
+    );
+    write_config(temp.path(), &config);
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let first =
+        read_codex_model_catalog_from_home(temp.path(), &HashMap::new(), client.clone()).await;
+    assert_eq!(server.finish().len(), 1);
+    // 服务已停止，第二次仍可从缓存读到目录；换 Key 后不能复用旧结果。
+    let cached =
+        read_codex_model_catalog_from_home(temp.path(), &HashMap::new(), client.clone()).await;
+    assert_eq!(first["models"], json!(["cached-model"]));
+    assert_eq!(cached["models"], first["models"]);
+    write_config(temp.path(), &config.replace("first-key", "second-key"));
+    let changed = read_codex_model_catalog_from_home(temp.path(), &HashMap::new(), client).await;
+    assert_eq!(changed["status"], "failed");
+    assert_eq!(changed["models"], json!([]));
+}
 
 #[tokio::test]
 async fn model_catalog_fetches_models_from_codex_config_provider() {
@@ -198,13 +222,14 @@ async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider(
         std::env::set_var("CODEX_HOME", &codex_home);
     }
 
-    let (result, live_fallback_result) = async {
+    let (result, live_fallback_result, disabled_result) = async {
         write_config(
             &codex_home,
             "model = \"qwen3-coder\"\nmodel_provider = \"live_vendor\"\n",
         );
         let store = SettingsStore::new(settings_path);
         let mut settings = BackendSettings {
+            relay_profiles_enabled: true,
             active_relay_id: "relay-a".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "relay-a".to_string(),
@@ -229,7 +254,18 @@ async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider(
         settings.relay_profiles[0].config_contents = "model = \"qwen3-coder\"\n".to_string();
         store.save(&settings).unwrap();
         let live_fallback_result = read_codex_model_catalog().await;
-        (result, live_fallback_result)
+        settings.relay_profiles_enabled = false;
+        store.save(&settings).unwrap();
+        let disabled_result = read_codex_model_catalog().await;
+        let server = spawn_models_server(json!({"output": []}));
+        write_config(&codex_home, &format!("model_provider = \"live_vendor\"\n[model_providers.live_vendor]\nbase_url = \"{}/v1\"\nexperimental_bearer_token = \"test-key\"\n", server.base_url));
+        assert!(test_codex_model("probe-model", "stale-provider").await.is_err());
+        let tested = test_codex_model("probe-model", "live_vendor").await.unwrap();
+        assert_eq!(tested["status"], "ok");
+        let requests = server.finish();
+        assert_eq!(requests[0].path, "/v1/responses");
+        assert_eq!(requests[0].authorization, "Bearer test-key");
+        (result, live_fallback_result, disabled_result)
     }
     .await;
 
@@ -244,6 +280,20 @@ async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider(
     codex_plus_core::paths::set_settings_path_for_tests(previous_settings_path);
 
     assert_eq!(result["status"], "ok");
+    assert_eq!(disabled_result["model_provider"], "live_vendor");
+    assert!(
+        !disabled_result["models"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("claude-compatible"))
+    );
+    assert!(
+        !disabled_result["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["type"] == "relay_profile_model_list")
+    );
     assert_eq!(result["model_provider"], "relay-a");
     assert_eq!(result["codex_model_provider"], "vendor_alpha");
     assert_eq!(live_fallback_result["codex_model_provider"], "live_vendor");

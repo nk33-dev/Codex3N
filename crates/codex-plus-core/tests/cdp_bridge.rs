@@ -2879,6 +2879,8 @@ const codexModelCatalog = {{
   model_provider: "custom",
 }};
 const codexPlusModelMetadata = () => null;
+const codexModelDisplayNames = new Map();
+const codexModelAvailability = () => "未测试";
 const modelReasoningEfforts = () => [];
 const applyCodexPlusModelMetadata = () => false;
 const codexPlusModelNames = () => ["supplier-default", "extra-model"];

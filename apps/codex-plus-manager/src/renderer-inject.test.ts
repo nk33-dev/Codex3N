@@ -2,6 +2,73 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
 
+describe("模型目录加载与响应拦截", () => {
+  const path = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+
+  it("无关响应立即返回，只有模型端点的模型数据会加载目录", async () => {
+    const renderer = await readFile(path, "utf8");
+    const start = renderer.indexOf("  async function patchModelJsonResponse(");
+    const end = renderer.indexOf("  function patchStatsigModelDynamicConfig(", start);
+    let loads = 0;
+    let patches = 0;
+    class ResponseStub {
+      url: string;
+      payload: unknown;
+      constructor(url: string, payload: unknown) { this.url = url; this.payload = payload; }
+      async json() { return this.payload; }
+    }
+    const install = new Function("Response", "window", "codexPlusModelUnlockEnabled", "codexPlusModelNames", "modelJsonResponseLooksPatchable", "loadCodexModelCatalog", "patchModelContainer",
+      `${renderer.slice(start, end)}; return installModelJsonResponsePatch;`)(
+      ResponseStub, {}, () => true, () => [], (value: { models?: unknown[] }) => Array.isArray(value.models),
+      async () => { loads += 1; }, () => { patches += 1; },
+    );
+    install();
+    const unrelated = { models: ["business-data"] };
+    assert.equal(await new ResponseStub("https://example.test/settings", unrelated).json(), unrelated);
+    assert.equal(loads, 0);
+    await new ResponseStub("https://example.test/v1/models", { error: "denied" }).json();
+    assert.equal(loads, 0);
+    await new ResponseStub("https://example.test/v1/models", { models: ["custom"] }).json();
+    assert.equal(loads, 1);
+    assert.equal(patches, 1);
+  });
+
+  it("强制刷新也复用在途请求，失败后逐步延长重试间隔", async () => {
+    const renderer = await readFile(path, "utf8");
+    const start = renderer.indexOf("  async function loadCodexModelCatalog(");
+    const end = renderer.indexOf("  function codexPlusModelMetadata(", start);
+    let now = 1000;
+    let calls = 0;
+    let finish!: (value: unknown) => void;
+    const load = new Function("postJson", "Date", `
+      let codexModelCatalog = {}, codexModelCatalogLoadedAt = 0, codexModelCatalogPromise = null;
+      let codexModelCatalogRetryAt = 0, codexModelCatalogFailures = 0;
+      const renderCodexPlusMenu = () => {}, scheduleCodexModelWhitelistRefresh = () => {};
+      ${renderer.slice(start, end)}; return loadCodexModelCatalog;
+    `)(() => { calls += 1; return new Promise((resolve) => { finish = resolve; }); }, { now: () => now });
+    const first = load();
+    const second = load(true);
+    assert.equal(calls, 1);
+    finish({ status: "failed", models: [] });
+    await Promise.all([first, second]);
+    await load();
+    assert.equal(calls, 1);
+    now += 11000;
+    const retry = load();
+    assert.equal(calls, 2);
+    finish({ status: "failed", models: [] });
+    await retry;
+    now += 6000;
+    await load();
+    assert.equal(calls, 2);
+    now += 5000;
+    const recovered = load();
+    assert.equal(calls, 3);
+    finish({ status: "ok", models: ["custom"] });
+    await recovered;
+  });
+});
+
 const STEPWISE_FRAGMENT_PATHS = [
   "floating-panel/runtime/state.js",
   "floating-panel/core/appearance-runtime.js",

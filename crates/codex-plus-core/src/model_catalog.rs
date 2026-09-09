@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use crate::settings::{RelayProfile, SettingsStore};
+use crate::settings::{RelayMode, RelayProfile, SettingsStore};
+use futures_util::{StreamExt, stream};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 const BASE_URL_ENV_KEYS: &[&str] = &[
     "CODEX_PLUS_OPENAI_BASE_URL",
@@ -27,6 +31,115 @@ struct ModelSource {
     api_key: String,
 }
 
+struct CachedModels {
+    expires_at: Instant,
+    result: (Vec<String>, Value),
+}
+
+async fn cached_models_from_source(
+    client: &reqwest::Client,
+    source: &ModelSource,
+) -> (Vec<String>, Value) {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedModels>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    // 密钥参与缓存身份，换 Key 后立即重新获取；缓存索引不保存明文密钥。
+    let key = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&[
+                &source.source_id,
+                &source.name,
+                &source.base_url,
+                &source.api_key,
+            ])
+            .unwrap_or_default()
+        )
+    );
+    if let Ok(entries) = cache.lock() {
+        if let Some(entry) = entries
+            .get(&key)
+            .filter(|entry| entry.expires_at > Instant::now())
+        {
+            return entry.result.clone();
+        }
+    }
+    let result = fetch_models_from_source(client, source).await;
+    let ttl = if result.1["status"] == "failed" {
+        10
+    } else {
+        30
+    };
+    if let Ok(mut entries) = cache.lock() {
+        entries.retain(|_, entry| entry.expires_at > Instant::now());
+        if entries.len() >= 32 {
+            entries.clear();
+        }
+        entries.insert(
+            key,
+            CachedModels {
+                expires_at: Instant::now() + Duration::from_secs(ttl),
+                result: result.clone(),
+            },
+        );
+    }
+    result
+}
+
+pub async fn test_codex_model(model: &str, expected_provider: &str) -> anyhow::Result<Value> {
+    let home = codex_home_dir();
+    let settings = SettingsStore::default().load()?;
+    let selected = settings.active_relay_profile();
+    let profile = if settings.relay_profiles_enabled
+        && !relay_profile_model_ids(&selected).is_empty()
+    {
+        let profile = selected;
+        anyhow::ensure!(
+            profile.id == expected_provider,
+            "供应商已切换，请重新打开模型菜单。"
+        );
+        profile
+    } else {
+        let (config, effective, error) = load_codex_config(&home.join("config.toml"));
+        anyhow::ensure!(error.is_none(), "无法读取默认 config.toml。");
+        let configured_provider = string_value(effective.get("model_provider"));
+        let (resolved_provider, _) =
+            provider_config_for_model_provider(&config, &configured_provider);
+        anyhow::ensure!(
+            if configured_provider.is_empty() {
+                resolved_provider
+            } else {
+                configured_provider
+            } == expected_provider,
+            "供应商已切换，请重新打开模型菜单。"
+        );
+        let env = std::env::vars().collect::<HashMap<_, _>>();
+        let key = read_codex_auth_api_key(&home.join("auth.json"));
+        let source = model_source_from_config(&config, &effective, &env, &key)
+            .or_else(|| {
+                model_sources_from_environment(&env, &key)
+                    .into_iter()
+                    .next()
+            })
+            .ok_or_else(|| anyhow::anyhow!("当前使用官方默认模型，无需通过 API 供应商测试。"))?;
+        RelayProfile {
+            base_url: source.base_url,
+            api_key: source.api_key,
+            relay_mode: RelayMode::PureApi,
+            ..RelayProfile::default()
+        }
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        crate::relay_config::test_relay_profile(&profile, model),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("模型测试超时。"))?
+    .map_err(|_| anyhow::anyhow!("模型测试失败，请检查供应商连接与认证。"))?;
+    Ok(
+        json!({ "status": if result.http_status < 400 { "ok" } else { "failed" }, "httpStatus": result.http_status }),
+    )
+}
+
 #[derive(Debug, Default)]
 struct CodexConfig {
     root: HashMap<String, String>,
@@ -41,10 +154,11 @@ pub async fn read_codex_model_catalog() -> Value {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
             let profile = settings.active_relay_profile();
             let catalog = relay_profile_model_catalog_value(&home, &profile);
-            if catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .map_or(false, |m| !m.is_empty())
+            if settings.relay_profiles_enabled
+                && catalog
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .map_or(false, |m| !m.is_empty())
             {
                 return catalog;
             }
@@ -201,8 +315,15 @@ pub async fn read_codex_model_catalog_from_home(
 
     let mut source_statuses = Vec::new();
     let mut models = Vec::new();
-    for source in sources.iter() {
-        let (source_models, mut source_status) = fetch_models_from_source(&client, source).await;
+    let fetched = stream::iter(sources)
+        .map(|source| {
+            let client = client.clone();
+            async move { cached_models_from_source(&client, &source).await }
+        })
+        .buffered(3)
+        .collect::<Vec<_>>()
+        .await;
+    for (source_models, mut source_status) in fetched {
         source_status["responses_api"] = responses_api_status("unknown", "", "");
         models.extend(source_models);
         source_statuses.push(source_status);
@@ -525,6 +646,7 @@ async fn fetch_models_from_source(
 
     let mut request = client
         .get(&endpoint)
+        .timeout(Duration::from_secs(8))
         .header(reqwest::header::ACCEPT, "application/json");
     if !source.api_key.is_empty() {
         request = request.bearer_auth(&source.api_key);

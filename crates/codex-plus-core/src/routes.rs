@@ -189,6 +189,19 @@ pub async fn handle_bridge_request(
             ctx.settings.get_settings().await,
         ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
+        "/codex-model-test" => {
+            crate::model_catalog::test_codex_model(
+                payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                payload
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+            .await
+        }
         "/diagnostics/log" => diagnostic_log_value(payload.clone()),
         "/llm-proxy" => llm_proxy_value(payload.clone()).await,
         "/ads" => ctx.runtime.ads().await,
