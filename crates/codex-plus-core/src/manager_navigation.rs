@@ -120,6 +120,7 @@ fn remove_pending_manager_navigation_if_matches_at(
 fn validate_navigation(navigation: &ManagerNavigationIntent) -> anyhow::Result<()> {
     match (navigation.page.as_str(), navigation.section.as_deref()) {
         ("settings", None | Some("stepwise")) => Ok(()),
+        ("relay", None) => Ok(()),
         _ => anyhow::bail!(
             "不支持的管理工具导航：{}/{}",
             navigation.page,
@@ -176,6 +177,21 @@ mod tests {
         assert_eq!(
             consume_pending_manager_navigation_at(&path).unwrap(),
             Some(replacement_navigation)
+        );
+    }
+
+    #[test]
+    fn opens_provider_management_from_model_menu() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("navigation.json");
+        let navigation = ManagerNavigationIntent {
+            page: "relay".into(),
+            section: None,
+        };
+        save_pending_manager_navigation_at(&path, &navigation).unwrap();
+        assert_eq!(
+            consume_pending_manager_navigation_at(&path).unwrap(),
+            Some(navigation)
         );
     }
 
