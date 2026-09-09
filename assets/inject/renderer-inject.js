@@ -407,7 +407,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "17";
+  const codexDeleteStyleVersion = "18";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -596,6 +596,7 @@
     style.id = styleId;
     style.dataset.codexDeleteStyleVersion = codexDeleteStyleVersion;
     style.textContent = `
+      [data-codex-plus-model][hidden] { display: none !important; }
       .${actionGroupClass} {
         position: absolute;
         right: var(--codex-session-actions-right, 28px);
@@ -6417,6 +6418,26 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogRetryAt = 0;
+  let codexModelCatalogFailures = 0;
+  const codexModelTests = new Map();
+  const codexModelDisplayNames = new Map();
+
+  function codexModelSourceKey() {
+    return JSON.stringify([codexModelCatalog.model_provider, codexModelCatalog.sources?.map((source) => source.base_url)]);
+  }
+
+  function codexHiddenModels() {
+    try {
+      const value = JSON.parse(localStorage.getItem(`codex-plus-hidden-models:${codexModelSourceKey()}`) || "[]");
+      return new Set(Array.isArray(value) ? value.filter((name) => typeof name === "string") : []);
+    } catch { return new Set(); }
+  }
+
+  function codexModelAvailability(modelName) {
+    const result = codexModelTests.get(`${codexModelSourceKey()}:${modelName}`);
+    return result && Date.now() - result.at < 300000 ? result.label : "未测试";
+  }
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
   const codexPlusModelListRequestIds = new Set();
@@ -6502,32 +6523,12 @@
   }
 
   async function loadCodexModelCatalog(force = false) {
-    if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
+    if (codexModelCatalogPromise) return codexModelCatalogPromise;
+    if (!force && Date.now() < codexModelCatalogRetryAt) return codexModelCatalog;
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
-      .then(async (result) => {
+      .then((result) => {
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
-        if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
-          try {
-            const settingsPromise = postJson("/settings/get", {});
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("fallback timeout")), 3000));
-            const settingsResp = await Promise.race([settingsPromise, timeoutPromise]);
-            if (settingsResp && settingsResp.relayProfiles && Array.isArray(settingsResp.relayProfiles)) {
-              const activeId = settingsResp.activeRelayId || "";
-              const profile = settingsResp.relayProfiles.find(p => p.id === activeId);
-              if (profile && profile.modelList) {
-                const extraModels = profile.modelList.split(/[\r\n,]+/).map(s => s.trim()).filter(Boolean);
-                if (extraModels.length > 0) {
-                  codexModelCatalog.models = extraModels;
-                  codexModelCatalog.default_model = codexModelCatalog.default_model || extraModels[0];
-                  sendCodexPlusDiagnostic("model_catalog_fallback_applied", { count: extraModels.length });
-                }
-              }
-            }
-          } catch (fallbackError) {
-            sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
-          }
-        }
         codexModelCatalogLoadedAt = Date.now();
         renderCodexPlusMenu();
         scheduleCodexModelWhitelistRefresh();
@@ -6539,6 +6540,9 @@
         return codexModelCatalog;
       })
       .finally(() => {
+        codexModelCatalogFailures = codexModelCatalog.status === "failed" ? codexModelCatalogFailures + 1 : 0;
+        codexModelCatalogRetryAt = codexModelCatalogFailures
+          ? Date.now() + Math.min(60000, 5000 * 2 ** Math.min(codexModelCatalogFailures - 1, 4)) : 0;
         codexModelCatalogPromise = null;
       });
     return codexModelCatalogPromise;
@@ -6599,7 +6603,8 @@
       slug: modelName,
       name: modelName,
       displayName: metadata?.displayName || modelName,
-      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
+      description: `${codexModelCatalog.provider_name || codexModelCatalog.model_provider || "系统默认"} · ${codexModelAvailability(modelName)}`,
+      __codexPlusInjected: true,
       hidden: false,
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
@@ -6634,8 +6639,15 @@
   function patchModelArray(models, allowEmpty = false) {
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
     const customModels = codexPlusModelNames();
-    if (!customModels.length) return false;
     let changed = false;
+    // 只移除本工具上次注入的旧条目，保留 Codex 原生模型。
+    for (let index = models.length - 1; index >= 0; index -= 1) {
+      if (models[index].__codexPlusInjected && !customModels.includes(models[index].model)) {
+        models.splice(index, 1);
+        changed = true;
+      }
+    }
+    models.forEach((item) => codexModelDisplayNames.set(item.model, item.displayName || item.model));
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
       if (customModels.includes(item.model)) {
@@ -6740,8 +6752,8 @@
 
   async function patchModelJsonResponse(payload) {
     if (!codexPlusModelUnlockEnabled()) return payload;
-    if (!codexPlusModelNames().length) await loadCodexModelCatalog();
     if (!modelJsonResponseLooksPatchable(payload)) return payload;
+    if (!codexPlusModelNames().length) await loadCodexModelCatalog();
     try {
       patchModelContainer(payload);
     } catch (error) {
@@ -6760,6 +6772,8 @@
     if (typeof originals.responseJson !== "function") return;
     Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
       const payload = await originals.responseJson.apply(this, args);
+      // 仅对模型端点保留兼容拦截，其他响应不进入模型目录加载流程。
+      if (!/\/(?:v\d+\/)?models(?:[/?#]|$)|\/model\/list(?:[/?#]|$)/i.test(this.url || "")) return payload;
       return await patchModelJsonResponse(payload);
     };
   }
@@ -6974,7 +6988,7 @@
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
       }
-      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelUnlockEnabled() || requestMethod !== "list-models-for-host") return result;
       if (!codexPlusModelNames().length) await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
@@ -7114,11 +7128,103 @@
 
   function refreshCodexModelWhitelistFromScan(mutations) {
     ensureCodexModelWhitelistInstalls();
+    if (!codexPlusModelUnlockEnabled()) return;
+    void loadCodexModelCatalog();
     if (!codexPlusModelNames().length) {
       loadCodexModelCatalog();
       return;
     }
     runCodexModelWhitelistRefreshPass();
+  }
+
+  function refreshCodexModelMenus() {
+    const names = codexPlusModelNames();
+    const hidden = codexHiddenModels();
+    document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-menu-content]').forEach((menu) => {
+      if (!/Select model|选择模型/i.test(`${menu.getAttribute("aria-label") || ""} ${menu.textContent || ""}`)) return;
+      const rows = [...menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]')];
+      for (const row of rows) {
+        const label = (row.textContent || "").trim();
+        const model = row.dataset.codexPlusModel || names.find((name) => {
+          const displayName = codexModelDisplayNames.get(name) || codexPlusModelMetadata(name)?.displayName || name;
+          return row.getAttribute("data-value") === name || label === displayName || label.startsWith(`${displayName}\n`);
+        });
+        if (!model) continue;
+        if (row.dataset.codexPlusModel !== model) row.dataset.codexPlusModel = model;
+        if (row.hidden !== hidden.has(model)) row.hidden = hidden.has(model);
+        let detail = row.querySelector("[data-codex-model-source]");
+        if (!detail) {
+          detail = document.createElement("small");
+          detail.dataset.codexModelSource = "true";
+          detail.style.cssText = "display:block;opacity:.65;font-size:11px";
+          row.appendChild(detail);
+        }
+        const text = `${codexModelCatalog.provider_name || codexModelCatalog.model_provider || "系统默认"} · ${codexModelAvailability(model)}`;
+        if (detail.textContent !== text) detail.textContent = text;
+      }
+      const signature = JSON.stringify([codexModelSourceKey(), names, [...hidden], names.map(codexModelAvailability)]);
+      let controls = menu.querySelector("[data-codex-model-controls]");
+      if (controls?.dataset.signature === signature) return;
+      controls?.remove();
+      controls = document.createElement("div");
+      controls.dataset.codexModelControls = "true";
+      controls.dataset.signature = signature;
+      controls.style.cssText = "border-top:1px solid #8884;margin-top:6px;padding:8px;font-size:12px";
+      controls.addEventListener("pointerdown", (event) => event.stopPropagation());
+      controls.addEventListener("click", (event) => event.stopPropagation());
+      controls.addEventListener("keydown", (event) => { if (event.key !== "Escape") event.stopPropagation(); });
+      const manage = document.createElement("button");
+      manage.type = "button";
+      manage.textContent = "管理自定义模型…";
+      manage.style.cssText = "display:block;width:100%;text-align:left;padding:4px 0";
+      manage.onclick = () => postJson("/manager/open", { page: "relay" }).catch((error) => showToast(String(error.message || error), null));
+      controls.appendChild(manage);
+      if (names.length) {
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", "管理的模型");
+        select.style.cssText = "max-width:100%;display:block;margin:6px 0;background:var(--color-token-bg-primary,#222);color:inherit";
+        for (const name of names) {
+          const option = document.createElement("option");
+          option.value = name;
+          option.textContent = `${name}${hidden.has(name) ? "（已隐藏）" : ""} · ${codexModelAvailability(name)}`;
+          select.appendChild(option);
+        }
+        const test = document.createElement("button");
+        test.type = "button";
+        test.textContent = "测试可用性";
+        test.title = "向当前供应商发送一次简短测试请求";
+        test.onclick = async () => {
+          const model = select.value;
+          const key = `${codexModelSourceKey()}:${model}`;
+          test.disabled = true;
+          test.textContent = "测试中…";
+          try {
+            const result = await postJson("/codex-model-test", { model, provider: codexModelCatalog.model_provider });
+            codexModelTests.set(key, { at: Date.now(), label: result.status === "ok" ? "测试通过" : "测试失败" });
+          } catch {
+            codexModelTests.set(key, { at: Date.now(), label: "测试失败" });
+          } finally {
+            test.disabled = false;
+            test.textContent = "测试可用性";
+            refreshCodexModelMenus();
+          }
+        };
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.style.marginLeft = "12px";
+        const updateToggle = () => { toggle.textContent = hidden.has(select.value) ? "显示模型" : "隐藏模型"; };
+        select.onchange = updateToggle;
+        updateToggle();
+        toggle.onclick = () => {
+          if (hidden.has(select.value)) hidden.delete(select.value); else hidden.add(select.value);
+          try { localStorage.setItem(`codex-plus-hidden-models:${codexModelSourceKey()}`, JSON.stringify([...hidden])); }
+          catch { showToast("无法保存模型显示设置", null); return; }
+          refreshCodexModelMenus();
+        };
+        controls.append(select, test, toggle);
+      }
+      menu.appendChild(controls);
+    });
   }
 
   function threadIdVariants(sessionId) {
@@ -9064,23 +9170,13 @@
     settleFramesLeft: 0,
     mo: null,
     ro: null,
-    pollId: 0,
     moObserved: false,
     observed: new WeakSet(),
     elements: new Set(),
   };
 
-  function conversationViewTokenSet(el) {
-    return new Set(String(el?.className || "").split(/\s+/).filter(Boolean));
-  }
-
-  function conversationViewHasAllClasses(el, classes) {
-    const set = conversationViewTokenSet(el);
-    return classes.every((cls) => set.has(cls));
-  }
-
   function conversationViewFindByClasses(classes) {
-    return Array.from(document.querySelectorAll("div")).find((el) => conversationViewHasAllClasses(el, classes)) || null;
+    return document.querySelector(`div${classes.map((name) => `.${CSS.escape(name)}`).join("")}`);
   }
 
   function conversationViewFindContentEl() {
@@ -9437,9 +9533,7 @@
 
   function cleanupConversationView() {
     if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
-    if (conversationViewState.pollId) clearInterval(conversationViewState.pollId);
     conversationViewState.rafId = 0;
-    conversationViewState.pollId = 0;
     conversationViewState.mo?.disconnect();
     conversationViewState.ro?.disconnect();
     conversationViewState.mo = null;
@@ -9455,7 +9549,7 @@
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
 
   function ensureConversationViewRuntime() {
-    if (conversationViewState.ro && conversationViewState.mo && conversationViewState.pollId) return;
+    if (conversationViewState.ro && conversationViewState.mo) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
     conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
     if (document.body && !conversationViewState.moObserved) {
@@ -9467,7 +9561,7 @@
       });
       conversationViewState.moObserved = true;
     }
-    conversationViewState.pollId = conversationViewState.pollId || window.setInterval(() => scheduleConversationViewAlign(2), 350);
+    // ResizeObserver 和 DOM 变化负责布局校正，不再常驻轮询。
   }
 
   function refreshConversationView() {
@@ -10447,6 +10541,7 @@
     installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+    refreshCodexModelMenus();
   }
 
   function runScanStep(step) {
@@ -10465,6 +10560,7 @@
   }
 
   function isExtensionUiNode(node) {
+    if (node?.closest?.("[data-codex-model-controls], [data-codex-model-source]")) return true;
     return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
@@ -10481,6 +10577,7 @@
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       ".composer-footer",
+      '[role="menu"], [role="listbox"], [data-radix-menu-content]',
       selectors.appHeader,
       selectors.archiveNav,
       selectors.pluginNavButton,

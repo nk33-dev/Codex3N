@@ -9,6 +9,7 @@ fn switch_rolls_back_active_settings_when_live_write_fails() {
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "a".to_string(),
         relay_profiles: vec![pure_profile("a", "https://a.example/v1", "sk-a")],
         ..BackendSettings::default()
@@ -33,6 +34,7 @@ base_url = "https://a.example/v1"
     )
     .unwrap();
     let next = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "b".to_string(),
         relay_profiles: vec![
             pure_profile("a", "https://a.example/v1", "sk-a"),
@@ -88,6 +90,7 @@ base_url = "https://a.example/v1"
     std::fs::write(home.join("config.toml"), original_config).unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "a".to_string(),
         relay_profiles: vec![pure_profile("a", "https://a.example/v1", "sk-a")],
         ..BackendSettings::default()
@@ -96,6 +99,7 @@ base_url = "https://a.example/v1"
     let persisted_original = store.load().unwrap();
     let original_settings_bytes = std::fs::read(temp.path().join("settings.json")).unwrap();
     let next = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "b".to_string(),
         relay_profiles: vec![
             pure_profile("a", "https://a.example/v1", "sk-a"),
@@ -175,6 +179,7 @@ base_url = "https://edited-a.example/v1"
     .unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "a".to_string(),
         relay_profiles: vec![
             pure_profile("a", "https://a.example/v1", "sk-a"),
@@ -184,6 +189,7 @@ base_url = "https://edited-a.example/v1"
     };
     store.save(&original).unwrap();
     let next = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "b".to_string(),
         relay_profiles: original.relay_profiles.clone(),
         ..BackendSettings::default()
@@ -237,12 +243,14 @@ fn switch_to_aggregate_relay_allows_empty_config_snapshot() {
         ..RelayProfile::default()
     };
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "api".to_string(),
         relay_profiles: vec![api.clone(), aggregate.clone()],
         ..BackendSettings::default()
     };
     store.save(&original).unwrap();
     let next = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "agg".to_string(),
         relay_profiles: vec![api, aggregate],
         aggregate_relay_profiles: vec![AggregateRelayProfile {
@@ -307,12 +315,14 @@ goals = true
     };
     let pure = pure_profile("api", "https://third-party.example/v1", "sk-third-party");
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "official".to_string(),
         relay_profiles: vec![official.clone(), pure.clone()],
         ..BackendSettings::default()
     };
     store.save(&original).unwrap();
     let next = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "api".to_string(),
         relay_profiles: vec![official, pure],
         ..BackendSettings::default()
@@ -352,6 +362,7 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
     .unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "a".to_string(),
         relay_profiles: vec![
             pure_profile("a", "https://a.example/v1", "sk-a"),
@@ -361,6 +372,7 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
     };
     store.save(&original).unwrap();
     let next = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "b".to_string(),
         relay_profiles: original.relay_profiles.clone(),
         ..BackendSettings::default()
