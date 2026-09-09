@@ -873,7 +873,7 @@ type StartupResult = CommandResult<{
 }>;
 
 type ManagerNavigationIntent = {
-  page: "settings";
+  page: "settings" | "relay";
   section?: "stepwise";
 };
 
@@ -1991,6 +1991,10 @@ export function App() {
     try {
       const navigation = await invoke<ManagerNavigationIntent | null>("consume_pending_manager_navigation");
       if (!navigation) return false;
+      if (navigation.page === "relay") {
+        await navigate("relay");
+        return true;
+      }
       if (navigation.page === "settings") {
         setPendingSettingsSection(navigation.section ?? null);
         setRoute("settings");
@@ -4296,6 +4300,37 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
+  const [importingCurrentConfig, setImportingCurrentConfig] = useState(false);
+  const importCurrentConfig = async () => {
+    if (importingCurrentConfig) return;
+    setImportingCurrentConfig(true);
+    try {
+      const files = await actions.refreshRelayFiles();
+      if (!files || !isSuccessStatus(files.status)) return;
+      if (!files.configContents.trim()) {
+        await actions.showMessage(t("导入默认 config.toml"), t("默认配置为空，继续使用系统默认设置即可。"));
+        return;
+      }
+      const baseUrl = codexBaseUrlFromConfig(files.configContents);
+      const pureApi = authJsonHasOpenAiApiKey(files.authContents);
+      const profile = deriveRelayProfileFromFiles({
+        ...createRelayProfile(normalized),
+        name: t("系统默认配置"),
+        relayMode: pureApi ? "pureApi" : "official",
+        officialMixApiKey: !pureApi && !!baseUrl,
+        baseUrl,
+        upstreamBaseUrl: baseUrl,
+        configContents: files.configContents,
+        authContents: files.authContents,
+        modelList: codexModelFromConfig(files.configContents),
+        useCommonConfig: false,
+      });
+      setDetailProfileId(null);
+      setNewProfileDraft(profile);
+    } finally {
+      setImportingCurrentConfig(false);
+    }
+  };
   const detailProfile = newProfileDraft || (detailProfileId
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
@@ -4374,7 +4409,7 @@ function RelayScreen({
             />
             <span>
               <strong>{t("启用供应商配置切换")}</strong>
-              <small>{t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}</small>
+              <small>{t("关闭时使用系统默认 config.toml；添加供应商后，开启此项即可切换。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -4387,7 +4422,16 @@ function RelayScreen({
               }}
             >
               <Plus className="h-4 w-4" />
-              {t("添加供应商")}
+              {t("添加自定义供应商")}
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={importingCurrentConfig || actions.relaySwitching}
+              onClick={() => void importCurrentConfig()}
+              title={t("从 Codex 默认目录读取 config.toml 和 auth.json，检查后保存为独立供应商。")}
+            >
+              <Download className="h-4 w-4" />
+              {t(importingCurrentConfig ? "正在读取配置…" : "导入默认 config.toml")}
             </Button>
             <Button
               variant="secondary"
@@ -11042,7 +11086,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     upstreamBaseUrl: defaultSettings.relayBaseUrl,
     apiKey: "",
     protocol: "responses" as RelayProtocol,
-    relayMode: "official" as RelayMode,
+    relayMode: "pureApi" as RelayMode,
     sessionProvider: "custom" as RelaySessionProvider,
     officialMixApiKey: false,
     hideOfficialUsageAlert: false,
