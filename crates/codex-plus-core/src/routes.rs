@@ -108,6 +108,9 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
+    async fn scan_session_health(&self, _observed_ids: Vec<String>) -> anyhow::Result<Value> {
+        anyhow::bail!("当前后端不支持检查失效会话，请重启新版 Codex3N")
+    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
@@ -239,6 +242,19 @@ pub async fn handle_bridge_request(
         }
         "/stepwise/test" => {
             stepwise_test_value(ctx.settings.get_settings().await, payload.clone()).await
+        }
+        "/session/health" => {
+            let ids = payload
+                .get("threadIds")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            ctx.data.scan_session_health(ids).await
         }
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {

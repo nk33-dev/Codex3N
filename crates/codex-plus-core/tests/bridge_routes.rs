@@ -79,6 +79,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ),
         ("/stepwise/test", json!({})),
         ("/delete", json!({"session_id": "s1", "title": "First"})),
+        ("/session/health", json!({"threadIds": ["s1"]})),
         ("/undo", json!({"undo_token": "undo-1"})),
         (
             "/export-markdown",
@@ -126,6 +127,18 @@ async fn llm_proxy_rejects_local_addresses() {
 
     assert_eq!(result["status"], json!("failed"));
     assert_eq!(result["message"], json!("Base URL 不得指向本机或私有网络"));
+}
+
+#[tokio::test]
+async fn session_health_route_passes_observed_ids_to_data_service() {
+    let result = handle_bridge_request(
+        test_context(),
+        "/session/health",
+        json!({"threadIds": ["local:one", 7, "two"]}),
+    )
+    .await;
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["missingIds"], json!(["local:one", "two"]));
 }
 
 #[tokio::test]
@@ -1428,6 +1441,9 @@ impl Default for FakeData {
 
 #[async_trait]
 impl BridgeDataService for FakeData {
+    async fn scan_session_health(&self, observed_ids: Vec<String>) -> anyhow::Result<Value> {
+        Ok(json!({"status": "ok", "missingIds": observed_ids}))
+    }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         Ok(DeleteResult {
             status: DeleteStatus::LocalDeleted,
