@@ -6570,26 +6570,9 @@
   let codexModelCatalogPromise = null;
   let codexModelCatalogRetryAt = 0;
   let codexModelCatalogFailures = 0;
-  const codexModelTests = new Map();
-  const codexModelDisplayNames = new Map();
-
-  function codexModelSourceKey() {
-    return JSON.stringify([codexModelCatalog.model_provider, codexModelCatalog.sources?.map((source) => source.base_url)]);
-  }
-
-  function codexHiddenModels() {
-    try {
-      const value = JSON.parse(localStorage.getItem(`codex-plus-hidden-models:${codexModelSourceKey()}`) || "[]");
-      return new Set(Array.isArray(value) ? value.filter((name) => typeof name === "string") : []);
-    } catch { return new Set(); }
-  }
-
-  function codexModelAvailability(modelName) {
-    const result = codexModelTests.get(`${codexModelSourceKey()}:${modelName}`);
-    return result && Date.now() - result.at < 300000 ? result.label : "未测试";
-  }
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
+  let codexModelWhitelistLastScanAt = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -6678,10 +6661,13 @@
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then((result) => {
+        const changed = JSON.stringify(result) !== JSON.stringify(codexModelCatalog);
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         codexModelCatalogLoadedAt = Date.now();
-        renderCodexPlusMenu();
-        scheduleCodexModelWhitelistRefresh();
+        if (changed) {
+          renderCodexPlusMenu();
+          scheduleCodexModelWhitelistRefresh();
+        }
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -6753,7 +6739,7 @@
       slug: modelName,
       name: modelName,
       displayName: metadata?.displayName || modelName,
-      description: `${codexModelCatalog.provider_name || codexModelCatalog.model_provider || "系统默认"} · ${codexModelAvailability(modelName)}`,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "",
       __codexPlusInjected: true,
       hidden: false,
       isDefault: false,
@@ -6797,7 +6783,6 @@
         changed = true;
       }
     }
-    models.forEach((item) => codexModelDisplayNames.set(item.model, item.displayName || item.model));
     const existing = new Map(models.map((item) => [item.model, item]));
     models.forEach((item) => {
       if (customModels.includes(item.model)) {
@@ -6959,6 +6944,7 @@
   }
 
   function patchStatsigModelWhitelist() {
+    let ready = false;
     statsigClients().forEach((client) => {
       if (typeof client.getDynamicConfig !== "function") return;
       if (!client.__codexPlusModelWhitelistPatched) {
@@ -6971,9 +6957,11 @@
       }
       try {
         patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
+        ready = true;
       } catch {
       }
     });
+    return ready;
   }
 
   function patchAppServerModelMessages() {
@@ -7158,20 +7146,13 @@
     appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
       appServerModelRequestPatchRetryTimer = 0;
       installAppServerModelRequestPatch();
-    }, 250);
+    }, Math.min(30000, 250 * 2 ** Math.min(Math.max(0, appServerModelRequestPatchMissCount - 1), 7)));
   }
 
   function noteAppServerModelRequestPatchMiss(event, detail) {
     appServerModelRequestPatchMissCount += 1;
-    // installAppServerModelRequestPatch() runs on every model-whitelist
-    // refresh tick (~120ms). On Codex builds where the app-server module was
-    // renamed/removed (e.g. 26.623+, issue #1324) this layer never succeeds
-    // and would otherwise emit the same diagnostic on every tick forever.
-    // Report the first miss so telemetry still captures the cause, then stay
-    // quiet, and finally disable this layer once it is clearly unavailable.
-    // This is a graceful fallback: the remaining whitelist layers (Statsig
-    // config / React state / response JSON patch) keep injecting the custom
-    // models on their own.
+    // 模块改名或尚未加载时只记录首次失败，远程供应商兼容层逐步退避重试。
+    // 其他情况在多次失败后停用本层，保留 Statsig 和模型响应补充。
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
@@ -7192,6 +7173,7 @@
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
     if (appServerModelRequestPatchDisabled) return;
     if (appServerModelRequestPatchPromise) return;
+    if (appServerModelRequestPatchRetryTimer) return;
     const patch = async () => {
       try {
         const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
@@ -7252,8 +7234,8 @@
   function runCodexModelWhitelistRefreshPass() {
     if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
     try {
-      patchStatsigModelWhitelist();
       installAppServerModelRequestPatch();
+      return patchStatsigModelWhitelist();
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
@@ -7266,115 +7248,27 @@
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    let delay = 120;
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
-      runCodexModelWhitelistRefreshPass();
+      if (runCodexModelWhitelistRefreshPass()) return;
       if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, delay);
+        delay = Math.min(delay * 2, 1000);
       }
     };
     tick();
   }
 
-  function refreshCodexModelWhitelistFromScan(mutations) {
+  function refreshCodexModelWhitelistFromScan() {
+    // 连续页面变更共用刷新预算；目录变化仍会立即触发独立的补充流程。
+    const now = Date.now();
+    if (codexModelWhitelistLastScanAt && now - codexModelWhitelistLastScanAt < 1000) return;
+    codexModelWhitelistLastScanAt = now;
     ensureCodexModelWhitelistInstalls();
     if (!codexPlusModelUnlockEnabled()) return;
     void loadCodexModelCatalog();
-    if (!codexPlusModelNames().length) {
-      loadCodexModelCatalog();
-      return;
-    }
     runCodexModelWhitelistRefreshPass();
-  }
-
-  function refreshCodexModelMenus() {
-    const names = codexPlusModelNames();
-    const hidden = codexHiddenModels();
-    document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-menu-content]').forEach((menu) => {
-      if (!/Select model|选择模型/i.test(`${menu.getAttribute("aria-label") || ""} ${menu.textContent || ""}`)) return;
-      const rows = [...menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"]')];
-      for (const row of rows) {
-        const label = (row.textContent || "").trim();
-        const model = row.dataset.codexPlusModel || names.find((name) => {
-          const displayName = codexModelDisplayNames.get(name) || codexPlusModelMetadata(name)?.displayName || name;
-          return row.getAttribute("data-value") === name || label === displayName || label.startsWith(`${displayName}\n`);
-        });
-        if (!model) continue;
-        if (row.dataset.codexPlusModel !== model) row.dataset.codexPlusModel = model;
-        if (row.hidden !== hidden.has(model)) row.hidden = hidden.has(model);
-        let detail = row.querySelector("[data-codex-model-source]");
-        if (!detail) {
-          detail = document.createElement("small");
-          detail.dataset.codexModelSource = "true";
-          detail.style.cssText = "display:block;opacity:.65;font-size:11px";
-          row.appendChild(detail);
-        }
-        const text = `${codexModelCatalog.provider_name || codexModelCatalog.model_provider || "系统默认"} · ${codexModelAvailability(model)}`;
-        if (detail.textContent !== text) detail.textContent = text;
-      }
-      const signature = JSON.stringify([codexModelSourceKey(), names, [...hidden], names.map(codexModelAvailability)]);
-      let controls = menu.querySelector("[data-codex-model-controls]");
-      if (controls?.dataset.signature === signature) return;
-      controls?.remove();
-      controls = document.createElement("div");
-      controls.dataset.codexModelControls = "true";
-      controls.dataset.signature = signature;
-      controls.style.cssText = "border-top:1px solid #8884;margin-top:6px;padding:8px;font-size:12px";
-      controls.addEventListener("pointerdown", (event) => event.stopPropagation());
-      controls.addEventListener("click", (event) => event.stopPropagation());
-      controls.addEventListener("keydown", (event) => { if (event.key !== "Escape") event.stopPropagation(); });
-      const manage = document.createElement("button");
-      manage.type = "button";
-      manage.textContent = "管理自定义模型…";
-      manage.style.cssText = "display:block;width:100%;text-align:left;padding:4px 0";
-      manage.onclick = () => postJson("/manager/open", { page: "relay" }).catch((error) => showToast(String(error.message || error), null));
-      controls.appendChild(manage);
-      if (names.length) {
-        const select = document.createElement("select");
-        select.setAttribute("aria-label", "管理的模型");
-        select.style.cssText = "max-width:100%;display:block;margin:6px 0;background:var(--color-token-bg-primary,#222);color:inherit";
-        for (const name of names) {
-          const option = document.createElement("option");
-          option.value = name;
-          option.textContent = `${name}${hidden.has(name) ? "（已隐藏）" : ""} · ${codexModelAvailability(name)}`;
-          select.appendChild(option);
-        }
-        const test = document.createElement("button");
-        test.type = "button";
-        test.textContent = "测试可用性";
-        test.title = "向当前供应商发送一次简短测试请求";
-        test.onclick = async () => {
-          const model = select.value;
-          const key = `${codexModelSourceKey()}:${model}`;
-          test.disabled = true;
-          test.textContent = "测试中…";
-          try {
-            const result = await postJson("/codex-model-test", { model, provider: codexModelCatalog.model_provider });
-            codexModelTests.set(key, { at: Date.now(), label: result.status === "ok" ? "测试通过" : "测试失败" });
-          } catch {
-            codexModelTests.set(key, { at: Date.now(), label: "测试失败" });
-          } finally {
-            test.disabled = false;
-            test.textContent = "测试可用性";
-            refreshCodexModelMenus();
-          }
-        };
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.style.marginLeft = "12px";
-        const updateToggle = () => { toggle.textContent = hidden.has(select.value) ? "显示模型" : "隐藏模型"; };
-        select.onchange = updateToggle;
-        updateToggle();
-        toggle.onclick = () => {
-          if (hidden.has(select.value)) hidden.delete(select.value); else hidden.add(select.value);
-          try { localStorage.setItem(`codex-plus-hidden-models:${codexModelSourceKey()}`, JSON.stringify([...hidden])); }
-          catch { showToast("无法保存模型显示设置", null); return; }
-          refreshCodexModelMenus();
-        };
-        controls.append(select, test, toggle);
-      }
-      menu.appendChild(controls);
-    });
   }
 
   function threadIdVariants(sessionId) {
@@ -10691,8 +10585,7 @@
     installCodexServiceTierBadge();
     installSessionShareButton();
     scheduleThreadScrollSync();
-    refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
-    refreshCodexModelMenus();
+    refreshCodexModelWhitelistFromScan();
   }
 
   function runScanStep(step) {
@@ -10711,7 +10604,6 @@
   }
 
   function isExtensionUiNode(node) {
-    if (node?.closest?.("[data-codex-model-controls], [data-codex-model-source]")) return true;
     return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
@@ -10786,7 +10678,6 @@
   }
 
   function scheduleScan(mutations) {
-    window.__codexSessionDeleteLastMutations = mutations;
     scheduleZedRemoteMenuRefresh(mutations);
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;

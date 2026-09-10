@@ -135,9 +135,7 @@ fn apply_selected_relay_profile(
     let relay = settings.active_relay_profile();
     let common_config = relay_combined_common_config(settings);
     let result = if relay.relay_mode == RelayMode::Official && !relay.official_mix_api_key {
-        let auth_contents =
-            (!relay.auth_contents.trim().is_empty()).then_some(relay.auth_contents.as_str());
-        crate::relay_config::clear_relay_config_to_home_with_auth(home, auth_contents)?
+        crate::relay_config::apply_official_relay_profile_to_home(home, &relay, &common_config)?
     } else {
         validate_switch_profile_files(&relay)?;
         crate::relay_config::apply_relay_profile_to_home_with_switch_rules(

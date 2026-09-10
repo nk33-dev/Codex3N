@@ -809,6 +809,32 @@ pub fn clear_relay_config_to_home(home: &Path) -> anyhow::Result<RelayApplyResul
     clear_relay_config_to_home_with_auth(home, None)
 }
 
+/// 官方供应商有独立配置时加载该配置，避免继续沿用上一家 API 供应商的模型。
+pub fn apply_official_relay_profile_to_home(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+) -> anyhow::Result<RelayApplyResult> {
+    if profile.config_contents.trim().is_empty() {
+        let auth =
+            (!profile.auth_contents.trim().is_empty()).then_some(profile.auth_contents.as_str());
+        return clear_relay_config_to_home_with_auth(home, auth);
+    }
+    let auth = official_profile_auth_for_switch(home, &profile.auth_contents)?;
+    apply_relay_files_to_home_with_context(
+        home,
+        &profile.config_contents,
+        &auth,
+        if profile.use_common_config {
+            common_config_contents
+        } else {
+            ""
+        },
+        &profile.context_window,
+        &profile.auto_compact_limit,
+    )
+}
+
 pub fn clear_relay_config_to_home_with_auth(
     home: &Path,
     auth_contents: Option<&str>,
