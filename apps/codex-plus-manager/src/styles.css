@@ -1021,9 +1021,6 @@ body {
   display: flex;
   gap: 6px;
   align-items: center;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.16s ease;
 }
 
 .relay-use-button {
@@ -1039,12 +1036,6 @@ body {
 .relay-profile-card.active .relay-card-extra button:focus-visible {
   background: hsl(var(--primary) / 0.18);
   color: hsl(var(--primary));
-}
-
-.relay-profile-card:hover .relay-card-actions,
-.relay-profile-card:focus-within .relay-card-actions {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 /* 标题栏固定 / 中段滚动 / 底部操作栏固定，参考 cc-switch 的编辑页布局 */

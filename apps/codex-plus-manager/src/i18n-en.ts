@@ -725,6 +725,8 @@ export const EN_PLAIN: Record<string, string> = {
   "添加供应商": "Add provider",
   "添加自定义供应商": "Add custom provider",
   "系统默认配置": "System default configuration",
+  "系统默认": "System default",
+  "开启后可选择供应商；关闭时不修改 Codex 配置。": "Enable to switch providers; when disabled, Codex configuration is left unchanged.",
   "默认配置为空，继续使用系统默认设置即可。": "The configuration is empty. Continue using the system defaults.",
   "关闭时使用系统默认 config.toml；添加供应商后，开启此项即可切换。": "When disabled, use the default config.toml. Enable after adding providers to switch between them.",
   "导入默认 config.toml": "Import default config.toml",

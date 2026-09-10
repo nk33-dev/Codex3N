@@ -230,6 +230,7 @@ type BackendSettings = {
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
   relayProfilesEnabled: boolean;
+  localConfigProviderImported: boolean;
   enhancementsEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
@@ -924,6 +925,7 @@ const defaultSettings: BackendSettings = {
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
   relayProfilesEnabled: false,
+  localConfigProviderImported: false,
   enhancementsEnabled: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
@@ -4301,6 +4303,8 @@ function RelayScreen({
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const [importingCurrentConfig, setImportingCurrentConfig] = useState(false);
+  const [savingRelaySettings, setSavingRelaySettings] = useState(false);
+  const relaySettingsSavePending = useRef(false);
   const importCurrentConfig = async () => {
     if (importingCurrentConfig) return;
     setImportingCurrentConfig(true);
@@ -4336,7 +4340,15 @@ function RelayScreen({
     : null);
   const isNewProfile = !!newProfileDraft;
   const saveRelaySettings = async (next: BackendSettings) => {
-    return actions.saveSettingsValue(next, true);
+    if (relaySettingsSavePending.current || actions.relaySwitching) return null;
+    relaySettingsSavePending.current = true;
+    setSavingRelaySettings(true);
+    try {
+      return await actions.saveSettingsValue(next, true);
+    } finally {
+      relaySettingsSavePending.current = false;
+      setSavingRelaySettings(false);
+    }
   };
   const createNewAggregateProfile = () => {
     const draft = createAggregateRelayProfile(normalized);
@@ -4362,10 +4374,10 @@ function RelayScreen({
     }
   }, [detailProfileId, newProfileDraft, normalized.relayProfiles]);
   useEffect(() => {
-    if (!newProfileDraft && detailProfileId === normalized.activeRelayId) {
+    if (!newProfileDraft && normalized.relayProfilesEnabled && detailProfileId === normalized.activeRelayId) {
       void actions.refreshRelayFiles();
     }
-  }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
+  }, [detailProfileId, newProfileDraft, normalized.activeRelayId, normalized.relayProfilesEnabled]);
   const openThirdPartyImport = () => {
     setThirdPartyImportOpen((open) => !open);
     if (!ccsProviders) void actions.refreshCcsProviders(true);
@@ -4375,7 +4387,7 @@ function RelayScreen({
     return (
       <RelayProfileDetail
         profile={detailProfile}
-        relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+        relayFiles={!isNewProfile && normalized.relayProfilesEnabled && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
         form={normalized}
         isNew={isNewProfile}
         onBack={() => {
@@ -4401,6 +4413,7 @@ function RelayScreen({
           <label className="switch-row relay-master-switch">
             <input
               checked={normalized.relayProfilesEnabled}
+              disabled={savingRelaySettings || actions.relaySwitching}
               onChange={(event) => {
                 const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
                 void saveRelaySettings(next);
@@ -4409,7 +4422,7 @@ function RelayScreen({
             />
             <span>
               <strong>{t("启用供应商配置切换")}</strong>
-              <small>{t("关闭时使用系统默认 config.toml；添加供应商后，开启此项即可切换。")}</small>
+              <small>{t("开启后可选择供应商；关闭时不修改 Codex 配置。")}</small>
             </span>
             <ToggleVisual />
           </label>
@@ -4476,7 +4489,7 @@ function RelayScreen({
             form={normalized}
             onEdit={(profileId) => void editRelayProfile(profileId)}
             onFormChange={saveRelaySettings}
-            disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
+            disabled={!normalized.relayProfilesEnabled || savingRelaySettings || actions.relaySwitching}
             actions={actions}
           />
         </CardContent>
@@ -6786,7 +6799,7 @@ function SortableRelayProfileCard({
   actions: Actions;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
-  const active = profile.id === form.activeRelayId;
+  const active = form.relayProfilesEnabled && profile.id === form.activeRelayId;
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -6975,7 +6988,7 @@ function RelayProfileDetail({
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
-  const isActive = !isNew && profile.id === form.activeRelayId;
+  const isActive = !isNew && form.relayProfilesEnabled && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
     const useLiveFiles = isActive && profileUsesLiveFiles && relayFiles;
@@ -6992,6 +7005,7 @@ function RelayProfileDetail({
         );
     const storedApiKey = useLiveFiles ? profile.apiKey.trim() : "";
     const nextDraft = useLiveFiles && !isAggregateRelayProfile(liveDraft)
+      && (liveDraft.relayMode !== "official" || liveDraft.officialMixApiKey)
       ? applyRelayProfilePatchToFiles(liveDraft, { apiKey: storedApiKey })
       : liveDraft;
     setDraft(nextDraft);
@@ -7127,9 +7141,9 @@ function RelayProfileDetail({
               disabled={!form.relayProfilesEnabled || actions.relaySwitching}
               onClick={switchDraft}
               title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
-              variant={draft.id === form.activeRelayId ? "secondary" : "default"}
+              variant={form.relayProfilesEnabled && draft.id === form.activeRelayId ? "secondary" : "default"}
             >
-              {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+              {actions.relaySwitching ? t("切换中") : form.relayProfilesEnabled && draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
             </Button>
           )}
           <Button
@@ -10293,7 +10307,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     officialMixApiKey,
     hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
-    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
+    configContents: profile.configContents || "",
     authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized
@@ -10422,7 +10436,9 @@ function relayProfileConfigBrief(profile: RelayProfile): string {
     const aggregate = normalizeAggregateConfig(profile.aggregate, []);
     return tf("{0} · {1} 个成员", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
   }
-  if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
+  if (profile.relayMode === "official") {
+    return profile.officialMixApiKey ? t("混入 API Key") : codexModelFromConfig(profile.configContents) || t("官方登录");
+  }
   return profile.baseUrl || t("未填写 URL");
 }
 
@@ -11005,7 +11021,7 @@ function relaySettingsWithDraft(
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
-  return profile.relayMode !== "official" || profile.officialMixApiKey;
+  return profile.relayMode !== "official" || profile.officialMixApiKey || !!profile.configContents.trim();
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {
