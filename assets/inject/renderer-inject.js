@@ -473,7 +473,7 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "7";
+  const codexAppServerModelRequestPatchVersion = "8";
   const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;
@@ -2552,6 +2552,94 @@
     return candidates;
   }
 
+  const codexAppServerRpcRoots = new WeakSet();
+  const codexModelQueryClients = new Set();
+
+  function refreshCodexModelQueries() {
+    if (!codexPlusModelUnlockEnabled()) return;
+    for (const client of codexModelQueryClients) {
+      Promise.resolve(client.invalidateQueries({ queryKey: ["models", "list", "local"] })).catch(() => {});
+    }
+  }
+
+  function codexAppScopeNodes() {
+    const root = window.__codexRoot?._internalRoot?.current;
+    if (!root) return [];
+    const pending = [{ fiber: root, depth: 0 }];
+    const seen = new Set();
+    // 只检查根部 Context Provider，不扫描会话消息或改写 React 状态。
+    while (pending.length && seen.size < 512) {
+      const { fiber, depth } = pending.shift();
+      if (!fiber || seen.has(fiber)) continue;
+      seen.add(fiber);
+      const value = fiber.memoizedProps?.value;
+      if (value instanceof Map) {
+        const nodes = [...value.values()].filter((node) => node?.token?.__scopeBrand === "AppScope"
+          && node.signalBindings instanceof WeakMap && typeof node.store?.get === "function");
+        if (nodes.length) return nodes;
+      }
+      if (fiber.sibling) pending.push({ fiber: fiber.sibling, depth });
+      if (depth < 32 && fiber.child) pending.push({ fiber: fiber.child, depth: depth + 1 });
+    }
+    return [];
+  }
+
+  function adaptCodexAppServerRpcRoot(root, queryClient) {
+    // 新版客户端是只读 Cap'n Web 代理，直接给它赋值会抛异常。
+    // 在普通 forHost 入口返回本地适配对象，其余 RPC 方法保持原来的接收者。
+    const forHost = Object.getOwnPropertyDescriptor(root, "forHost")?.value;
+    if (typeof forHost !== "function") return null;
+    if (!codexAppServerRpcRoots.has(root)) {
+      const clients = new WeakMap();
+      root.forHost = function codexPlusForHost(hostId, ...args) {
+        const remote = forHost.call(this, hostId, ...args);
+        if (!remote || !["object", "function"].includes(typeof remote)) return remote;
+        if (!clients.has(remote)) {
+          const local = {
+            __codexPlusHostId: hostId,
+            sendRequest: (...request) => remote.sendRequest(...request),
+          };
+          patchAppServerModelRequestClient(local);
+          clients.set(remote, new Proxy(local, {
+            get(target, key, receiver) {
+              if (Reflect.has(target, key)) return Reflect.get(target, key, receiver);
+              const value = Reflect.get(remote, key);
+              return typeof value === "function" ? value.bind(remote) : value;
+            },
+          }));
+        }
+        return clients.get(remote);
+      };
+      codexAppServerRpcRoots.add(root);
+    }
+    if (typeof queryClient?.invalidateQueries === "function" && !codexModelQueryClients.has(queryClient)) {
+      codexModelQueryClients.add(queryClient);
+      refreshCodexModelQueries();
+    }
+    return root.forHost("local");
+  }
+
+  function collectScopedAppServerRequestCandidates(modules) {
+    const clients = [];
+    for (const scope of codexAppScopeNodes()) {
+      for (const module of modules) {
+        for (const signal of Object.values(module || {})) {
+          if (!signal || typeof signal !== "object" || signal.scope !== scope.token) continue;
+          // 只读取已初始化的信号，不调用未知 getter 或初始化无关业务。
+          const atom = scope.signalBindings.get(signal);
+          if (!atom) continue;
+          try {
+            const value = scope.store.get(atom);
+            if (!value || typeof value !== "object") continue;
+            const client = adaptCodexAppServerRpcRoot(value, scope.queryClient);
+            if (client) clients.push(client);
+          } catch {}
+        }
+      }
+    }
+    return clients;
+  }
+
   async function loadAppServerRequestModules() {
     const modules = [];
     const sources = [];
@@ -2563,7 +2651,9 @@
       modules.push(module);
       sources.push(source);
     };
-    for (const assetPrefix of ["use-host-config-", "app-server-manager-signals-"]) {
+    // 新版作用域已挂载时直接读取合并后的 bundle，避免再遍历资源寻找旧模块名。
+    const namedPrefixes = codexAppScopeNodes().length ? [] : ["use-host-config-", "app-server-manager-signals-"];
+    for (const assetPrefix of namedPrefixes) {
       try {
         const module = await loadOptionalCodexAppModule(assetPrefix);
         if (module) pushModule(module, assetPrefix);
@@ -2592,8 +2682,15 @@
         candidates.push(candidate);
       }
     }
+    const scopedCandidates = collectScopedAppServerRequestCandidates(modules);
+    for (const candidate of scopedCandidates) {
+      if (!seen.has(candidate)) {
+        seen.add(candidate);
+        candidates.push(candidate);
+      }
+    }
     const usedFallback = sources.some((source) => !source.endsWith("-"));
-    return { modules, candidates, sources, discovery: usedFallback ? "fallback" : "named-assets" };
+    return { modules, candidates, sources, discovery: scopedCandidates.length ? "scoped-rpc" : usedFallback ? "fallback" : "named-assets" };
   }
 
   function codexSettingStorageFromModule(module, assetPrefix = "") {
@@ -6667,6 +6764,7 @@
         if (changed) {
           renderCodexPlusMenu();
           scheduleCodexModelWhitelistRefresh();
+          refreshCodexModelQueries();
         }
         return codexModelCatalog;
       })
@@ -6776,9 +6874,14 @@
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
     const customModels = codexPlusModelNames();
     let changed = false;
-    // 只移除本工具上次注入的旧条目，保留 Codex 原生模型。
+    const sourceModels = new Set(customModels);
+    const authoritative = codexModelCatalog.status === "ok"
+      && codexModelCatalog.model_provider && codexModelCatalog.model_provider !== "openai"
+      && codexModelCatalog.sources?.some((source) => source.status === "ok" && source.models > 0
+        && ["config", "relay_profile_model_list"].includes(source.type));
+    // 第三方目录成功加载后按供应商清单展示；官方或获取失败时保留原生列表。
     for (let index = models.length - 1; index >= 0; index -= 1) {
-      if (models[index].__codexPlusInjected && !customModels.includes(models[index].model)) {
+      if ((authoritative || models[index].__codexPlusInjected) && !sourceModels.has(models[index].model)) {
         models.splice(index, 1);
         changed = true;
       }
@@ -7023,7 +7126,7 @@
   }
 
   function patchAppServerModelResult(method, result) {
-    if (method !== "list-models-for-host") return result;
+    if (method !== "list-models-for-host" && method !== "model/list") return result;
     try {
       if (Array.isArray(result)) patchModelArray(result, true);
       if (Array.isArray(result?.data)) patchModelArray(result.data, true);
@@ -7126,8 +7229,10 @@
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
         client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
       }
-      if (!codexPlusModelUnlockEnabled() || requestMethod !== "list-models-for-host") return result;
-      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+      if (!codexPlusModelUnlockEnabled()
+          || !["list-models-for-host", "model/list"].includes(requestMethod)
+          || (client.__codexPlusHostId && client.__codexPlusHostId !== "local")) return result;
+      await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
@@ -7185,7 +7290,11 @@
         }
         let patchedCount = 0;
         for (const candidate of candidates) {
-          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
+          try {
+            if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
+          } catch {
+            // 不可写的候选对象不应阻断后面的 RPC 适配客户端。
+          }
         }
         if (patchedCount > 0) {
           clearTimeout(appServerModelRequestPatchRetryTimer);

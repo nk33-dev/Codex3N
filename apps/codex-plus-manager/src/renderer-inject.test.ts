@@ -44,6 +44,7 @@ describe("模型目录加载与响应拦截", () => {
       let codexModelCatalog = {}, codexModelCatalogLoadedAt = 0, codexModelCatalogPromise = null;
       let codexModelCatalogRetryAt = 0, codexModelCatalogFailures = 0;
       const renderCodexPlusMenu = () => {}, scheduleCodexModelWhitelistRefresh = () => {};
+      const refreshCodexModelQueries = () => {};
       ${renderer.slice(start, end)}; return loadCodexModelCatalog;
     `)(() => { calls += 1; return new Promise((resolve) => { finish = resolve; }); }, { now: () => now });
     const first = load();

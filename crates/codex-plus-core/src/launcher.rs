@@ -807,7 +807,14 @@ impl LaunchHooks for DefaultLaunchHooks {
         settings: &BackendSettings,
         extra_args: &[String],
     ) -> anyhow::Result<CodexLaunch> {
-        let native_menu_localization_enabled = settings.codex_app_native_menu_localization;
+        let native_menu_localization_enabled = settings.codex_app_native_menu_localization
+            && crate::native_menu::supports_native_menu_inspector(app_dir);
+        if settings.codex_app_native_menu_localization && !native_menu_localization_enabled {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "native_menu.localization_skipped",
+                serde_json::json!({ "reason": "chromium_runtime_has_no_electron_inspector" }),
+            );
+        }
         let native_menu_inspector_port =
             native_menu_localization_enabled.then(|| select_native_menu_inspector_port(debug_port));
         let launch_extra_args = codex_extra_args_for_launch(settings, extra_args);

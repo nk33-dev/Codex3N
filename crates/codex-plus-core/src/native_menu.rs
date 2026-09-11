@@ -6,6 +6,11 @@ use serde_json::json;
 const MENU_LOCALIZATION_RETRIES: usize = 20;
 const MENU_LOCALIZATION_RETRY_DELAY: Duration = Duration::from_millis(500);
 
+pub fn supports_native_menu_inspector(app_dir: &std::path::Path) -> bool {
+    // 新版 Windows Chromium 宿主不提供 Electron 的 Node inspector，--inspect 不会开启端口。
+    !(app_dir.join("chrome.dll").is_file() && app_dir.join("chrome_proxy.exe").is_file())
+}
+
 const MENU_LABEL_TRANSLATIONS: &[(&str, &str)] = &[
     ("File", "文件"),
     ("Edit", "编辑"),
@@ -97,15 +102,19 @@ pub async fn install_native_menu_localizer(inspector_port: u16) -> anyhow::Resul
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
-                let _ = crate::diagnostic_log::append_diagnostic_log(
-                    "native_menu.localization_retry_failed",
-                    json!({
-                        "inspector_port": inspector_port,
-                        "attempt": attempt,
-                        "message": last_error.as_ref().map(ToString::to_string).unwrap_or_default()
-                    }),
-                );
-                tokio::time::sleep(MENU_LOCALIZATION_RETRY_DELAY).await;
+                if attempt == 1 {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "native_menu.localization_retry_failed",
+                        json!({
+                            "inspector_port": inspector_port,
+                            "attempt": attempt,
+                            "message": last_error.as_ref().map(ToString::to_string).unwrap_or_default()
+                        }),
+                    );
+                }
+                if attempt < MENU_LOCALIZATION_RETRIES {
+                    tokio::time::sleep(MENU_LOCALIZATION_RETRY_DELAY).await;
+                }
             }
         }
     }
@@ -173,14 +182,6 @@ async fn try_install_native_menu_localizer(inspector_port: u16) -> anyhow::Resul
                 .is_some_and(|url| !url.is_empty())
                 && target.target_type == "node"
         })
-        .or_else(|| {
-            targets.iter().find(|target| {
-                target
-                    .web_socket_debugger_url
-                    .as_deref()
-                    .is_some_and(|url| !url.is_empty())
-            })
-        })
         .context("No Electron main-process inspector target found")?;
     let websocket_url = target
         .web_socket_debugger_url
@@ -211,6 +212,16 @@ async fn try_install_native_menu_localizer(inspector_port: u16) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chromium_runtime_does_not_start_an_electron_inspector() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(supports_native_menu_inspector(temp.path()));
+        std::fs::write(temp.path().join("chrome.dll"), []).unwrap();
+        assert!(supports_native_menu_inspector(temp.path()));
+        std::fs::write(temp.path().join("chrome_proxy.exe"), []).unwrap();
+        assert!(!supports_native_menu_inspector(temp.path()));
+    }
 
     #[test]
     fn native_menu_localizer_script_uses_runtime_menu_patch() {

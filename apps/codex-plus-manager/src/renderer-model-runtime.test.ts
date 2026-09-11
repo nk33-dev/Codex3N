@@ -32,6 +32,7 @@ test("相同目录刷新不重绘菜单，也不重启白名单补扫", async ()
   const load = new Function("postJson", "Date", "renderCodexPlusMenu", "scheduleCodexModelWhitelistRefresh", `
     let codexModelCatalog = {}, codexModelCatalogLoadedAt = 0, codexModelCatalogPromise = null;
     let codexModelCatalogRetryAt = 0, codexModelCatalogFailures = 0;
+    const refreshCodexModelQueries = () => {};
     ${section("  async function loadCodexModelCatalog(", "  function codexPlusModelMetadata(")}
     return loadCodexModelCatalog;
   `)(async () => { requests += 1; return { status: "ok", models }; },
