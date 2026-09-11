@@ -4407,7 +4407,9 @@ function RelayScreen({
   return (
     <>
       <Panel>
-        <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
+        <CardHead title={t("供应商列表")} detail={normalized.relayProfilesEnabled
+          ? tf("{0} 个供应商配置；当前使用已选供应商", [normalized.relayProfiles.length])
+          : t("当前使用本机 config.toml；开启切换后可选择其他供应商")} />
         <CardContent>
           <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
           <label className="switch-row relay-master-switch">
@@ -6799,7 +6801,9 @@ function SortableRelayProfileCard({
   actions: Actions;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
-  const active = form.relayProfilesEnabled && profile.id === form.activeRelayId;
+  const active = form.relayProfilesEnabled
+    ? profile.id === form.activeRelayId
+    : isSystemDefaultRelayProfile(profile);
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -6840,10 +6844,10 @@ function SortableRelayProfileCard({
       <span className="relay-card-actions">
         <Button
           className={`relay-use-button ${active ? "active" : ""}`}
-          disabled={disabled}
+          disabled={disabled || (!form.relayProfilesEnabled && isSystemDefaultRelayProfile(profile))}
           onClick={(event) => {
             event.stopPropagation();
-            if (disabled) return;
+            if (disabled || (!form.relayProfilesEnabled && isSystemDefaultRelayProfile(profile))) return;
             const previousActiveRelayId = form.activeRelayId;
             const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
             void actions.switchRelayProfile(next, previousActiveRelayId);
@@ -10440,6 +10444,10 @@ function relayProfileConfigBrief(profile: RelayProfile): string {
     return profile.officialMixApiKey ? t("混入 API Key") : codexModelFromConfig(profile.configContents) || t("官方登录");
   }
   return profile.baseUrl || t("未填写 URL");
+}
+
+function isSystemDefaultRelayProfile(profile: RelayProfile): boolean {
+  return profile.name === "系统默认" || profile.name === "系统默认配置";
 }
 
 function relaySub2ApiMultiplierLabel(profile: RelayProfile): string {
