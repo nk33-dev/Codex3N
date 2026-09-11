@@ -189,13 +189,16 @@ pub fn run() {
         ])
         .build(tauri::generate_context!());
     match app_result {
-        Ok(app) => app.run(|app_handle, event| {
+        Ok(app) => app.run(|_app_handle, event| {
+            if matches!(&event, tauri::RunEvent::Exit) {
+                APP_EXITING.store(true, Ordering::SeqCst);
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = event {
                 for url in urls {
                     if handle_session_share_url(url.as_str()) || handle_dream_skin_url(url.as_str())
                     {
-                        show_main_window(app_handle);
+                        show_main_window(_app_handle);
                     }
                 }
             }
@@ -280,8 +283,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
                 });
             }
             TRAY_MENU_QUIT => {
-                APP_EXITING.store(true, Ordering::SeqCst);
-                app.exit(0);
+                request_manager_exit(app);
             }
             _ => {}
         })
@@ -319,26 +321,26 @@ fn register_main_window_events<R: tauri::Runtime>(
     let focus_event_window = event_window.clone();
 
     event_window.on_window_event(move |event| match event {
-        WindowEvent::Resized(_) => {
+        WindowEvent::Resized(_) if !APP_EXITING.load(Ordering::SeqCst) => {
             if matches!(minimized_window.is_minimized(), Ok(true)) {
                 let _ = minimized_window.hide();
             }
         }
-        WindowEvent::Focused(true) => {
+        WindowEvent::Focused(true) if !APP_EXITING.load(Ordering::SeqCst) => {
             let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
         }
         WindowEvent::CloseRequested { api, .. } => {
+            // 统一由 app.exit 驱动退出，避免默认关窗与显式退出同时销毁事件循环。
+            api.prevent_close();
             if APP_EXITING.load(Ordering::SeqCst) {
                 return;
             }
 
             if transient {
-                APP_EXITING.store(true, Ordering::SeqCst);
-                close_event_app.exit(0);
+                request_manager_exit(&close_event_app);
                 return;
             }
 
-            api.prevent_close();
             let _ = close_event_window.hide();
         }
         _ => {}
@@ -351,12 +353,25 @@ fn startup_is_transient() -> bool {
 
 #[tauri::command]
 fn manager_exit_app<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
-    APP_EXITING.store(true, Ordering::SeqCst);
+    request_manager_exit(&app);
+}
+
+fn request_manager_exit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if APP_EXITING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.exit_requested",
+        serde_json::json!({}),
+    );
     app.exit(0);
 }
 
 #[tauri::command]
 fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
+    if APP_EXITING.load(Ordering::SeqCst) {
+        return;
+    }
     let _ = window.hide();
 }
 
@@ -427,6 +442,9 @@ fn record_tray_dream_skin_result(action: &str, result: anyhow::Result<()>) {
 }
 
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    if APP_EXITING.load(Ordering::SeqCst) {
+        return;
+    }
     if let Some(window) = app_handle.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
