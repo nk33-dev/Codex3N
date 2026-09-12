@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item};
 
+use crate::tools::{ToolConfig, ToolId};
 use crate::zed_remote::ZedOpenStrategy;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -144,6 +145,20 @@ pub struct AggregateRelayMember {
     pub weight: u32,
 }
 
+/// 聚合供应商按模型名路由规则：model 匹配 pattern 时转发到指定成员
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregateRelayRoute {
+    /// 模型匹配模式，如 "deepseek-*" / "gpt-*" / "*"；仅支持 * 通配符
+    pub pattern: String,
+    /// 目标聚合成员 relayId（必须是本聚合 members 之一）
+    #[serde(rename = "relayId")]
+    pub relay_id: String,
+    /// 数字越大越优先，缺省 0；同 priority 按数组顺序（稳定优先）
+    #[serde(default)]
+    pub priority: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RelaySessionProvider {
@@ -172,6 +187,8 @@ pub struct AggregateRelayProfile {
     pub strategy: AggregateRelayStrategy,
     #[serde(default)]
     pub members: Vec<AggregateRelayMember>,
+    #[serde(default)]
+    pub routes: Vec<AggregateRelayRoute>,
 }
 
 impl Default for RelayProfile {
@@ -563,6 +580,13 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
+    /// 按工具分区的配置。`tools.codex` 是上面那批扁平字段的镜像（写盘时同步），
+    /// 其它工具（Grok / 后续工具）只存在这里。见 `crate::tools`。
+    #[serde(rename = "tools", default)]
+    pub tools: BTreeMap<ToolId, ToolConfig>,
+    /// UI 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。
+    #[serde(rename = "activeTool", default)]
+    pub active_tool: ToolId,
 }
 
 impl Default for BackendSettings {
@@ -640,6 +664,8 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
+            tools: BTreeMap::new(),
+            active_tool: ToolId::Codex,
         }
     }
 }
@@ -1151,7 +1177,9 @@ impl SettingsStore {
         let contents = match fs::read_to_string(&self.path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(BackendSettings::default());
+                let mut settings = BackendSettings::default();
+                settings.sync_tool_shards();
+                return Ok(settings);
             }
             Err(error) => {
                 return Err(error)
@@ -1188,6 +1216,12 @@ impl SettingsStore {
         raw.insert(
             "relayContextConfigContents".to_string(),
             Value::String(settings.relay_context_config_contents.clone()),
+        );
+        // 归一化把扁平字段镜像进了 tools.codex，这里写回原始对象，
+        // 否则 update 路径保存的分片会停留在迁移前的旧值。
+        raw.insert(
+            "tools".to_string(),
+            serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
         );
         let bytes = serde_json::to_vec_pretty(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
@@ -1510,6 +1544,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             }),
         );
     }
+    if let Some(value) = source.get("activeTool").and_then(Value::as_str) {
+        target.insert(
+            "activeTool".to_string(),
+            Value::String(ToolId::parse(value).as_str().to_string()),
+        );
+    }
 }
 
 fn merge_bool_setting(target: &mut Map<String, Value>, source: &Map<String, Value>, key: &str) {
@@ -1700,6 +1740,10 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
+    // 扁平字段始终是 Codex 的唯一事实来源，这里把它镜像进 tools.codex；
+    // 其它工具的分片原样保留。放在函数末尾，所有 load / save / update 路径
+    // 都会经过，两边不会漂移。
+    settings.sync_tool_shards();
     settings
 }
 
@@ -2595,6 +2639,7 @@ experimental_bearer_token = "sk-existing""#
                         weight: 3,
                     },
                 ],
+                routes: Vec::new(),
             }],
             active_aggregate_relay_id: "agg".to_string(),
             ..BackendSettings::default()
