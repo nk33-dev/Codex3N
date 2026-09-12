@@ -2720,6 +2720,7 @@ fn restore_thread_to_catalog_dbs(
     };
     let allowed_paths = sidebar_catalog_db_paths(codex_home)?;
     let mut restored_total = 0usize;
+    let mut revision_bumped = false;
     for entry in entries {
         let path = PathBuf::from(entry["db_path"].as_str().unwrap_or_default());
         let canonical = fs::canonicalize(&path)?;
@@ -2745,9 +2746,12 @@ fn restore_thread_to_catalog_dbs(
                 restored += insert_row_ignore(&tx, table, row)?;
             }
         }
-        if restored > 0 {
+        // 一次撤销只算一次目录变更：快照里每张表各占一条 entry，
+        // 逐条按恢复行数递增会让版本号一次跳好几格（实测撤销一次涨 3）。
+        if restored > 0 && !revision_bumped {
             let metadata_columns = table_columns(&tx, "local_thread_catalog_metadata")?;
-            update_local_catalog_metadata(&tx, &metadata_columns, restored)?;
+            update_local_catalog_metadata(&tx, &metadata_columns, 1)?;
+            revision_bumped = true;
         }
         tx.commit()?;
         restored_total += restored;
@@ -2932,9 +2936,12 @@ fn remove_thread_from_catalog_dbs(codex_home: &Path, thread_id: &str) -> anyhow:
         if removed > 0 {
             let metadata_columns = table_columns(&tx, "local_thread_catalog_metadata")?;
             if metadata_columns.contains("catalog_revision") {
+                // 一次删除算一次目录变更，revision 固定 +1。
+                // 早先传的是删除行数，会让 revision 随删掉的表/行数漂移，
+                // 与 bump_local_catalog_revision 的 +1 语义互相打架。
                 tx.execute(
-                    "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + ?1",
-                    [removed as i64],
+                    "UPDATE local_thread_catalog_metadata SET catalog_revision = catalog_revision + 1",
+                    [],
                 )?;
             }
         }
