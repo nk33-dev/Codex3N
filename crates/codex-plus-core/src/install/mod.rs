@@ -100,7 +100,15 @@ pub fn install_entrypoints(options: &InstallOptions) -> InstallActionResult {
 pub fn uninstall_entrypoints(options: &InstallOptions) -> InstallActionResult {
     let result = platform_uninstall(options);
     if result.is_ok() && options.remove_owned_data {
-        let _ = remove_owned_data();
+        if let Err(error) = remove_owned_data() {
+            // 入口确实卸掉了，但用户数据没清干净（或被 #2146 的递归删除守卫拦下）。
+            // 这里以前是 `let _ = remove_owned_data();`：界面照样显示"入口已卸载。"，
+            // 用户以为数据已经清完，守卫拦下这件事也没有任何痕迹。
+            return action_result(
+                Err(anyhow::anyhow!("入口已卸载，但用户数据未清理：{error}")),
+                "入口已卸载。",
+            );
+        }
     }
     action_result(result, "入口已卸载。")
 }

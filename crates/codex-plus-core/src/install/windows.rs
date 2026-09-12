@@ -90,8 +90,19 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
 #[cfg(windows)]
 pub fn uninstall_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     let plan = build_windows_entrypoint_plan(options);
-    let _ = std::fs::remove_file(&plan.silent_shortcut);
-    let _ = std::fs::remove_file(&plan.manager_shortcut);
+    // 快捷方式本来就可能不存在（用户手动删过、装的时候跳过过），NotFound 属于
+    // 正常情况；但"文件还在、就是删不掉"（被资源管理器占用、权限不足）必须报出来，
+    // 否则界面显示卸载成功、快捷方式还留在桌面上。
+    let mut failures = Vec::new();
+    for shortcut in [&plan.silent_shortcut, &plan.manager_shortcut] {
+        if let Err(error) = std::fs::remove_file(shortcut) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                failures.push(format!("{shortcut}（{error}）"));
+            }
+        }
+    }
+    // 注册表键保持"尽力而为"：delete_current_user_key 自身把键不存在等错误吞掉，
+    // 这里不额外制造失败信号。
     let _ = crate::windows_integration::delete_current_user_key(&format!(
         r"{URL_PROTOCOL_SUBKEY}\shell\open\command"
     ));
@@ -114,6 +125,9 @@ pub fn uninstall_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     let _ = crate::windows_integration::delete_current_user_key(DREAM_SKIN_URL_PROTOCOL_SUBKEY);
     let _ = crate::windows_integration::delete_current_user_key(LEGACY_UNINSTALL_SUBKEY);
     let _ = crate::windows_integration::delete_current_user_key(UNINSTALL_SUBKEY);
+    if !failures.is_empty() {
+        anyhow::bail!("快捷方式删除失败：{}", failures.join("；"));
+    }
     Ok(())
 }
 
