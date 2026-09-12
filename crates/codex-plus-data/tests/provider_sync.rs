@@ -3177,7 +3177,7 @@ fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
     let original = format!("{}\n", session_index_line(stale_id, "stale"));
     fs::write(home.join("session_index.jsonl"), &original).unwrap();
     let preview = preview_session_index_cleanup(Some(&home)).unwrap();
-    fs::create_dir(home.join("session_index.jsonl.tmp")).unwrap();
+    force_session_index_write_failure(&home);
 
     let error = apply_session_index_cleanup(
         Some(&home),
@@ -3196,4 +3196,24 @@ fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
         fs::read_to_string(home.join("session_index.jsonl")).unwrap(),
         original
     );
+}
+
+/// 制造一次真实的写入失败。
+///
+/// 早先这个测试是在 `<名字>.tmp` 上预先建一个**目录**来和原子写的固定临时名
+/// 撞车，但固定临时名本身就是要修的缺陷（两个写入方会互相覆盖），改成唯一名字
+/// 之后这条路就撞不上了。这里改成从文件系统层面挡住替换：Windows 上目标是只读
+/// 文件、Unix 上目录不可写 —— 都能让原子写在"读得到原文件"的前提下失败。
+#[cfg(windows)]
+fn force_session_index_write_failure(home: &Path) {
+    let path = home.join("session_index.jsonl");
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn force_session_index_write_failure(home: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(home, fs::Permissions::from_mode(0o555)).unwrap();
 }

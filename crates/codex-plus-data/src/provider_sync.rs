@@ -4696,9 +4696,16 @@ fn apply_global_state_update(path: &Path) -> anyhow::Result<usize> {
             state.insert(key, value);
         }
         let text = serde_json::to_string_pretty(&Value::Object(state))?;
-        fs::write(path, &text)?;
+        // 复用统一原子写：这里以前是裸 fs::write，写到一半断电/磁盘满会让
+        // `.codex-global-state.json` 变成半截 JSON，而紧跟着的 `.bak` 用同样方式
+        // 写，可能一起坏掉——"主文件和备份同时损坏"。同文件其它几处早就用的是
+        // codex_plus_core::settings::atomic_write。
+        codex_plus_core::settings::atomic_write(path, text.as_bytes())?;
         if let Some(parent) = path.parent() {
-            fs::write(parent.join(".codex-global-state.json.bak"), text)?;
+            codex_plus_core::settings::atomic_write(
+                &parent.join(".codex-global-state.json.bak"),
+                text.as_bytes(),
+            )?;
         }
     }
     Ok(count)
