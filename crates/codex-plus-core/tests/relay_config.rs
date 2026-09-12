@@ -773,6 +773,7 @@ enabled = true
     )
     .unwrap();
     let settings = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "source".to_string(),
         relay_profiles: vec![
             RelayProfile {
@@ -818,6 +819,7 @@ base_url = "https://responses.example.test/v1"
 "#;
     std::fs::write(&config_path, original).unwrap();
     let settings = BackendSettings {
+        relay_profiles_enabled: true,
         relay_profiles: vec![RelayProfile {
             base_url: "https://responses.example.test/v1".to_string(),
             protocol: RelayProtocol::Responses,
@@ -846,6 +848,7 @@ custom_setting = "preserve-me"
     )
     .unwrap();
     let settings = BackendSettings {
+        relay_profiles_enabled: true,
         relay_profiles: vec![RelayProfile {
             relay_mode: RelayMode::PureApi,
             no_auth: true,
@@ -879,6 +882,7 @@ experimental_bearer_token = "sk-preserve"
     )
     .unwrap();
     let settings = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "source".to_string(),
         relay_profiles: vec![
             RelayProfile {
@@ -921,6 +925,7 @@ base_url = "https://responses.example.test/v1"
     )
     .unwrap();
     let settings = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "official-mix".to_string(),
         relay_profiles: vec![RelayProfile {
             id: "official-mix".to_string(),
