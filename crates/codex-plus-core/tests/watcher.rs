@@ -117,14 +117,57 @@ fn codex_process_filter_keeps_chatgpt_desktop_package_processes() {
 #[test]
 fn launcher_process_filter_protects_current_process_ancestry() {
     let processes = [
-        (10, 0, "codex-plus-plus.exe"),
-        (20, 10, "codex-plus-plus.exe"),
-        (30, 20, "codex-plus-plus.exe"),
-        (40, 10, "codex-plus-plus.exe"),
-        (50, 10, "codex-plus-plus-manager.exe"),
+        (10, 0, "codex-plus-plus.exe", None),
+        (20, 10, "codex-plus-plus.exe", None),
+        (30, 20, "codex-plus-plus.exe", None),
+        (40, 10, "codex-plus-plus.exe", None),
+        (50, 10, "codex-plus-plus-manager.exe", None),
     ];
 
-    assert_eq!(filter_killable_launcher_processes(processes, 30), vec![40]);
+    assert_eq!(
+        filter_killable_launcher_processes(processes, 30, None),
+        vec![40]
+    );
+}
+
+#[test]
+fn launcher_process_filter_skips_instances_from_another_installation() {
+    // 开发机构建（target\debug）与正式安装版同名，只按文件名匹配会把另一份
+    // Codex3N 一起杀掉；同目录 = 同一次安装，跨目录的实例必须放过。
+    let installation = std::path::Path::new(r"C:\Users\me\AppData\Local\Programs\Codex++");
+    let processes = [
+        (
+            10,
+            0,
+            "codex-plus-plus.exe",
+            Some(std::path::Path::new(
+                r"C:\Users\me\AppData\Local\Programs\Codex++\codex-plus-plus.exe",
+            )),
+        ),
+        (
+            20,
+            0,
+            "codex-plus-plus.exe",
+            Some(std::path::Path::new(
+                r"D:\Project\rust\Codex3N\target\debug\codex-plus-plus.exe",
+            )),
+        ),
+        (
+            30,
+            0,
+            "codex-plus-plus.exe",
+            Some(std::path::Path::new(
+                r"\\?\C:\Users\me\AppData\Local\Programs\Codex++\codex-plus-plus.exe",
+            )),
+        ),
+        // 查不到映像路径时保持旧行为，避免因权限问题杀不掉真正需要重启的实例。
+        (40, 0, "codex-plus-plus.exe", None),
+    ];
+
+    assert_eq!(
+        filter_killable_launcher_processes(processes, 99, Some(installation)),
+        vec![10, 30, 40]
+    );
 }
 
 #[test]

@@ -57,7 +57,10 @@ pub fn ensure_safe_recursive_removal(target: &Path, codex_home: &Path) -> anyhow
 ///
 /// 所以先 canonicalize **最深的已存在祖先**，再把剩下还不存在的部分按词法拼回去。
 /// 这样无论路径存在与否，结果都稳定在同一形态；`..` 也在词法阶段消掉。
-fn normalize_for_comparison(path: &Path) -> PathBuf {
+///
+/// 递归删除守卫与「进程映像是否属于同一次安装」的判断共用这一份实现：
+/// 两边都取操作系统给出的路径（`current_exe` / 进程映像查询），形态一致。
+pub(crate) fn normalize_for_comparison(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
