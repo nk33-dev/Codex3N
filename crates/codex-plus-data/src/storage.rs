@@ -3,7 +3,7 @@ use codex_plus_core::models::{DeleteResult, DeleteStatus, SessionRef};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
@@ -26,8 +26,9 @@ pub fn delete_local_from_paths(
     let mut cleanup_errors = Vec::new();
     for db_path in db_paths {
         let adapter = match codex_home {
-            Some(home) => SQLiteStorageAdapter::new(db_path, backup_store.clone())
-                .with_codex_home(home),
+            Some(home) => {
+                SQLiteStorageAdapter::new(db_path, backup_store.clone()).with_codex_home(home)
+            }
             None => SQLiteStorageAdapter::new(db_path, backup_store.clone()),
         };
         let candidate_result = adapter.delete_local(session);
@@ -71,8 +72,8 @@ pub fn delete_local_from_paths(
             }
         }
         match crate::provider_sync::remove_thread_sidebar_references(home, &thread_id) {
-            Ok(cleanup) if cleanup.global_state_entries_removed > 0
-                || cleanup.catalog_rows_removed > 0 =>
+            Ok(cleanup)
+                if cleanup.global_state_entries_removed > 0 || cleanup.catalog_rows_removed > 0 =>
             {
                 if matches!(result.status, DeleteStatus::Failed) {
                     result.status = DeleteStatus::LocalDeleted;
@@ -416,7 +417,10 @@ impl SQLiteStorageAdapter {
                 message: if warnings.is_empty() {
                     "Local session restored from backup".to_string()
                 } else {
-                    format!("Local session restored from backup；{}", warnings.join("；"))
+                    format!(
+                        "Local session restored from backup；{}",
+                        warnings.join("；")
+                    )
                 },
                 undo_token: Some(token.to_string()),
                 backup_path: None,
@@ -668,16 +672,16 @@ impl SQLiteStorageAdapter {
                 }
             }
         }
-        let session_index_note = self
-            .codex_home
-            .as_deref()
-            .and_then(|home| {
-                crate::provider_sync::remove_session_index_entry(home, &thread_id)
-                    .err()
-                    .map(|error| format!("session_index.jsonl 清理失败：{error}"))
-            });
+        let session_index_note = self.codex_home.as_deref().and_then(|home| {
+            crate::provider_sync::remove_session_index_entry(home, &thread_id)
+                .err()
+                .map(|error| format!("session_index.jsonl 清理失败：{error}"))
+        });
         if !file_errors.is_empty() {
-            let mut message = format!("本地数据库已删除，但文件删除失败：{}", file_errors.join("; "));
+            let mut message = format!(
+                "本地数据库已删除，但文件删除失败：{}",
+                file_errors.join("; ")
+            );
             if let Some(note) = session_index_note.as_deref() {
                 message = format!("{message}；{note}");
             }
@@ -820,15 +824,9 @@ fn delete_local_catalog_residue(
         if tables.is_empty() {
             continue;
         }
-        tables.insert(
-            "__catalog_revision".to_string(),
-            json!([{"increment": 1}]),
-        );
-        let token = backup_store.write_backup(
-            thread_id,
-            &db_path,
-            Value::Object(tables.clone()),
-        )?;
+        tables.insert("__catalog_revision".to_string(), json!([{"increment": 1}]));
+        let token =
+            backup_store.write_backup(thread_id, &db_path, Value::Object(tables.clone()))?;
         let tx = db.transaction()?;
         let mut removed = 0usize;
         for table in [
@@ -837,12 +835,7 @@ fn delete_local_catalog_residue(
             "local_thread_catalog",
         ] {
             for host_id in &host_filters {
-                removed += delete_catalog_thread_rows(
-                    &tx,
-                    table,
-                    thread_id,
-                    host_id.as_deref(),
-                )?;
+                removed += delete_catalog_thread_rows(&tx, table, thread_id, host_id.as_deref())?;
             }
         }
         bump_local_catalog_revision(&tx, 1)?;
@@ -924,11 +917,7 @@ fn delete_catalog_thread_rows(
 
 fn bump_local_catalog_revision(db: &Connection, increment: i64) -> anyhow::Result<()> {
     if !has_table(db, "local_thread_catalog_metadata")?
-        || !has_columns(
-            db,
-            "local_thread_catalog_metadata",
-            &["catalog_revision"],
-        )?
+        || !has_columns(db, "local_thread_catalog_metadata", &["catalog_revision"])?
     {
         return Ok(());
     }
@@ -937,9 +926,7 @@ fn bump_local_catalog_revision(db: &Connection, increment: i64) -> anyhow::Resul
          SET catalog_revision = catalog_revision + ?1",
         [increment],
     )?;
-    if affected == 0
-        && has_columns(db, "local_thread_catalog_metadata", &["id"])?
-    {
+    if affected == 0 && has_columns(db, "local_thread_catalog_metadata", &["id"])? {
         db.execute(
             "INSERT INTO local_thread_catalog_metadata (id, catalog_revision) VALUES (1, ?1)",
             [increment],
@@ -1405,9 +1392,7 @@ fn restore_conflict_key_columns<'a>(table: &str, row: &'a Map<String, Value>) ->
         "thread_goals" => &["thread_id", "goal"],
         "thread_spawn_edges" => &["parent_thread_id", "child_thread_id"],
         "stage1_outputs" => &["thread_id"],
-        "local_thread_catalog" | "local_thread_catalog_scan_entries" => {
-            &["host_id", "thread_id"]
-        }
+        "local_thread_catalog" | "local_thread_catalog_scan_entries" => &["host_id", "thread_id"],
         "thread_timeline_ledger" => &["host_id", "thread_id", "sequence"],
         _ => &[],
     };

@@ -567,7 +567,12 @@ fn delete_local_from_paths_removes_catalog_residue_and_undo_restores_it() {
         Some(&home),
     );
 
-    assert_eq!(deleted.status, DeleteStatus::LocalDeleted, "{}", deleted.message);
+    assert_eq!(
+        deleted.status,
+        DeleteStatus::LocalDeleted,
+        "{}",
+        deleted.message
+    );
     let catalog = Connection::open(&catalog_db).unwrap();
     for table in [
         "local_thread_catalog",
@@ -601,7 +606,12 @@ fn delete_local_from_paths_removes_catalog_residue_and_undo_restores_it() {
     let adapter = SQLiteStorageAdapter::new(&state_db, backups).with_codex_home(&home);
     let restored = adapter.undo(deleted.undo_token.as_deref().unwrap());
 
-    assert_eq!(restored.status, DeleteStatus::Undone, "{}", restored.message);
+    assert_eq!(
+        restored.status,
+        DeleteStatus::Undone,
+        "{}",
+        restored.message
+    );
     let catalog = Connection::open(&catalog_db).unwrap();
     for table in [
         "local_thread_catalog",
@@ -656,7 +666,12 @@ fn delete_local_from_paths_succeeds_when_only_catalog_residue_exists() {
         Some(&home),
     );
 
-    assert_eq!(deleted.status, DeleteStatus::LocalDeleted, "{}", deleted.message);
+    assert_eq!(
+        deleted.status,
+        DeleteStatus::LocalDeleted,
+        "{}",
+        deleted.message
+    );
     assert_eq!(
         Connection::open(catalog_db)
             .unwrap()
@@ -711,45 +726,70 @@ fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
     .unwrap();
     let catalog_db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
     catalog_db
-        .execute("CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)", [])
+        .execute(
+            "CREATE TABLE local_thread_catalog (thread_id TEXT PRIMARY KEY)",
+            [],
+        )
         .unwrap();
     catalog_db
         .execute("CREATE TABLE thread_timeline_ledger (thread_id TEXT)", [])
         .unwrap();
     catalog_db
-        .execute("CREATE TABLE local_thread_catalog_scan_entries (thread_id TEXT)", [])
+        .execute(
+            "CREATE TABLE local_thread_catalog_scan_entries (thread_id TEXT)",
+            [],
+        )
         .unwrap();
     catalog_db
-        .execute("INSERT INTO local_thread_catalog VALUES ('t1'), ('keep')", [])
+        .execute(
+            "INSERT INTO local_thread_catalog VALUES ('t1'), ('keep')",
+            [],
+        )
         .unwrap();
     catalog_db
-        .execute("INSERT INTO thread_timeline_ledger VALUES ('t1'), ('keep')", [])
+        .execute(
+            "INSERT INTO thread_timeline_ledger VALUES ('t1'), ('keep')",
+            [],
+        )
         .unwrap();
     catalog_db
-        .execute("INSERT INTO local_thread_catalog_scan_entries VALUES ('t1'), ('keep')", [])
+        .execute(
+            "INSERT INTO local_thread_catalog_scan_entries VALUES ('t1'), ('keep')",
+            [],
+        )
         .unwrap();
     drop(catalog_db);
 
-    let deleted = SQLiteStorageAdapter::new(
-        &state_db,
-        BackupStore::new(tmp.path().join("backups")),
-    )
-    .with_codex_home(&home)
-    .delete_local(&session("local:t1", "Codex Thread"));
+    let deleted =
+        SQLiteStorageAdapter::new(&state_db, BackupStore::new(tmp.path().join("backups")))
+            .with_codex_home(&home)
+            .delete_local(&session("local:t1", "Codex Thread"));
     assert_eq!(deleted.status, DeleteStatus::LocalDeleted);
     let state: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())
             .unwrap();
     assert_eq!(state["projectless-thread-ids"], json!([keep_id]));
-    assert!(state["thread-projectless-output-directories"].get("t1").is_none());
-    assert!(state["thread-workspace-root-hints"].get("local:t1").is_none());
+    assert!(
+        state["thread-projectless-output-directories"]
+            .get("t1")
+            .is_none()
+    );
+    assert!(
+        state["thread-workspace-root-hints"]
+            .get("local:t1")
+            .is_none()
+    );
     assert!(state["thread-writable-roots"].get("t1").is_none());
-    assert!(state["electron-persisted-atom-state"]
-        .get("thread-client-id-v1:t1")
-        .is_none());
-    assert!(state["electron-persisted-atom-state"]
-        .get("thread-client-id-v1:keep")
-        .is_some());
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get("thread-client-id-v1:t1")
+            .is_none()
+    );
+    assert!(
+        state["electron-persisted-atom-state"]
+            .get("thread-client-id-v1:keep")
+            .is_some()
+    );
     let catalog_db = Connection::open(sqlite_dir.join("codex-dev.db")).unwrap();
     for table in [
         "local_thread_catalog",
@@ -766,12 +806,10 @@ fn delete_codex_thread_clears_sidebar_global_state_and_catalog_cache() {
         assert_eq!(count, 0, "{table}");
     }
 
-    let restored = SQLiteStorageAdapter::new(
-        &state_db,
-        BackupStore::new(tmp.path().join("backups")),
-    )
-    .with_codex_home(&home)
-    .undo(deleted.undo_token.as_deref().unwrap());
+    let restored =
+        SQLiteStorageAdapter::new(&state_db, BackupStore::new(tmp.path().join("backups")))
+            .with_codex_home(&home)
+            .undo(deleted.undo_token.as_deref().unwrap());
     assert_eq!(restored.status, DeleteStatus::Undone);
     let state: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(home.join(".codex-global-state.json")).unwrap())

@@ -1355,9 +1355,8 @@ impl SettingsWriteLock {
                 Ok(()) => return Ok(Some(Self { file })),
                 Err(error) => {
                     if attempt + 1 == Self::RETRY_ATTEMPTS {
-                        return Err(error).context(
-                            "配置正被另一个 Codex3N 进程写入，请稍后重试".to_string(),
-                        );
+                        return Err(error)
+                            .context("配置正被另一个 Codex3N 进程写入，请稍后重试".to_string());
                     }
                     std::thread::sleep(Self::RETRY_INTERVAL);
                 }
