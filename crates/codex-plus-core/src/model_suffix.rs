@@ -172,6 +172,39 @@ pub fn collect_catalog_entries(
     entries
 }
 
+/// 并入 codex 自带的 bundled 模型目录。
+///
+/// `model_catalog_json` 一旦落盘，codex 就只认这份文件、不再显示自带模型。
+/// 如果这里只放 profile 自己配的模型，自带的那批会被整批挤掉，
+/// 用户侧表现为"模型只剩一个"（#1064 的另一种形态）。
+pub(crate) fn extend_with_bundled_entries(entries: &mut Vec<ModelCatalogEntry>) {
+    let Ok(catalog) = serde_json::from_str::<Value>(BUNDLED_TEMPLATE_JSON) else {
+        return;
+    };
+    let Some(models) = catalog.get("models").and_then(Value::as_array) else {
+        return;
+    };
+    let mut seen: HashSet<String> = entries.iter().map(|entry| entry.slug.clone()).collect();
+    for model in models {
+        let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if slug.trim().is_empty() || !seen.insert(slug.to_string()) {
+            continue;
+        }
+        entries.push(ModelCatalogEntry {
+            display_name: model
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or(slug)
+                .to_string(),
+            slug: slug.to_string(),
+            suffix_window: None,
+            auto_compact_percent: None,
+        });
+    }
+}
+
 /// 内置 codex bundled catalog 模板（assets/codex-models.json），用于 clone entry
 /// 保证字段齐全，避免 codex 因缺字段忽略条目。
 const BUNDLED_TEMPLATE_JSON: &str = include_str!(concat!(
@@ -277,7 +310,11 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
     use_responses_lite_override: Option<bool>,
     deepseek_metadata: bool,
 ) -> String {
-    let models: Vec<Value> = entries
+    // 生成的 catalog 一旦落盘就会顶掉 codex 自带的模型目录，
+    // 所以始终把自带条目并进来，避免用户侧"模型只剩一个"。
+    let mut merged = entries.to_vec();
+    extend_with_bundled_entries(&mut merged);
+    let models: Vec<Value> = merged
         .iter()
         .enumerate()
         .map(|(index, entry)| {
