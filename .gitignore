@@ -27,6 +27,7 @@ pnpm-workspace.yaml
 
 # project-specific
 .trae/
+.codegraph/
 plan.md
 plan_v2.md
 

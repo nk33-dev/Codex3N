@@ -411,6 +411,9 @@ pub struct BackendSettings {
     pub codex_app_plugin_marketplace_unlock: bool,
     #[serde(rename = "codexAppModelWhitelistUnlock", default = "default_true")]
     pub codex_app_model_whitelist_unlock: bool,
+    /// 供应商模型清单中同时保留 Codex 原生模型，默认开启。
+    #[serde(rename = "codexAppIncludeNativeModels", default = "default_true")]
+    pub codex_app_include_native_models: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
     pub codex_app_session_delete: bool,
     #[serde(rename = "codexAppMarkdownExport", default = "default_true")]
@@ -603,6 +606,7 @@ impl Default for BackendSettings {
             enhancements_enabled: true,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
+            codex_app_include_native_models: true,
             codex_app_session_delete: true,
             codex_app_markdown_export: true,
             codex_app_paste_fix: false,
@@ -1286,6 +1290,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     merge_bool_setting(target, source, "codexAppPluginMarketplaceUnlock");
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
+    merge_bool_setting(target, source, "codexAppIncludeNativeModels");
     merge_bool_setting(target, source, "codexAppSessionDelete");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppPasteFix");
@@ -1868,6 +1873,29 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn include_native_models_defaults_on_and_persists_explicit_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(store.load().unwrap().codex_app_include_native_models);
+        std::fs::write(&path, "{}").unwrap();
+        assert!(store.load().unwrap().codex_app_include_native_models);
+        let disabled = store
+            .update(json!({ "codexAppIncludeNativeModels": false }))
+            .unwrap();
+        assert!(!disabled.codex_app_include_native_models);
+        assert!(!store.load().unwrap().codex_app_include_native_models);
+        store
+            .update(json!({ "relayProfilesEnabled": true }))
+            .unwrap();
+        assert!(!store.load().unwrap().codex_app_include_native_models);
+        store
+            .update(json!({ "codexAppIncludeNativeModels": true }))
+            .unwrap();
+        assert!(store.load().unwrap().codex_app_include_native_models);
+    }
 
     fn temp_dir() -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
