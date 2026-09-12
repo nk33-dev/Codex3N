@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
           fetch-depth: 0
@@ -26,18 +26,74 @@ jobs:
           TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
           git merge-base --is-ancestor "$TAG_COMMIT" origin/personal
 
-  windows-installer:
+      - name: Verify tag matches Cargo.toml version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          MANIFEST_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          TAG_VERSION="${TAG#v}"
+          TAG_VERSION="${TAG_VERSION#V}"
+          if [ -z "$MANIFEST_VERSION" ]; then
+            echo "无法从 Cargo.toml 读出 [workspace.package].version" >&2
+            exit 1
+          fi
+          if [ "$MANIFEST_VERSION" != "$TAG_VERSION" ]; then
+            echo "标签 $TAG 与 Cargo.toml 版本 $MANIFEST_VERSION 不一致；安装包版本来自标签、自更新基准来自 Cargo.toml，请先对齐再发布" >&2
+            exit 1
+          fi
+
+  verify-tests:
     if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    name: Release test gate
     needs: verify-release
     runs-on: windows-latest
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm install --package-lock=false
+
+      - name: Frontend tests
+        working-directory: apps/codex-plus-manager
+        run: npm test
+
+      - name: TypeScript check
+        working-directory: apps/codex-plus-manager
+        run: npm run check
+
+      - name: Rust formatting
+        run: cargo fmt --all --check
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+  windows-installer:
+    if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    needs: [verify-release, verify-tests]
+    runs-on: windows-latest
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -94,7 +150,7 @@ jobs:
 
   macos-dmg:
     if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
-    needs: verify-release
+    needs: [verify-release, verify-tests]
     name: macOS DMG (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -109,12 +165,12 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
 
