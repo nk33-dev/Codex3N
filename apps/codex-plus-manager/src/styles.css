@@ -1100,6 +1100,23 @@ body {
   background: hsl(var(--shell-bg));
 }
 
+.relay-editor-heading {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.relay-editor-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .relay-detail-body {
   flex: 1;
   min-height: 0;
@@ -6295,6 +6312,18 @@ select {
   .relay-detail-header,
   .relay-detail-footer {
     padding-inline: 16px;
+  }
+
+  .relay-detail-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding-block: 10px;
+  }
+
+  .relay-editor-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    padding-left: 42px;
   }
 
   .relay-config-section-head,

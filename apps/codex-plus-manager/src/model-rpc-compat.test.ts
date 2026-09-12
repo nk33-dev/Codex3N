@@ -30,6 +30,7 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
               } : { unchanged: true };
             };
             if (key === "getConversation") return (id: string) => ({ id, hostId });
+            if (key === "getTurnCoordinator") return () => ({ hostId, coordinator: true });
             return undefined;
           },
           set() { writes += 1; throw Error("Can't define properties on RPC stubs."); },
@@ -90,6 +91,7 @@ test("RPC 适配去重并保留其他方法与原始参数", async () => {
   assert.equal(app.root.forHost("local"), client);
   assert.equal(app.invalidations.length, 1);
   assert.deepEqual(client.getConversation("test"), { id: "test", hostId: "local" });
+  assert.deepEqual(client.getTurnCoordinator(), { hostId: "local", coordinator: true });
   const params = { cwd: "/project" };
   assert.deepEqual(await client.sendRequest("config/read", params), { unchanged: true });
   assert.equal(app.requests[0].params, params);
