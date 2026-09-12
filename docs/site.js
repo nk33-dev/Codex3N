@@ -107,7 +107,7 @@ const translations = {
   "不修改 Codex 的": "Does not modify Codex's",
   "，不向官方应用安装目录写入补丁文件。": " or write patch files into the official app directory.",
   "密钥留在本机": "Keys stay on your device",
-  "供应商密钥保存在本地配置边界中，不上传到 Codex++ 项目或广告服务。": "Provider keys stay within local configuration and are never uploaded to the Codex++ project or advertising services.",
+  "供应商密钥保存在本地配置边界中，不上传到 Codex++ 项目。": "Provider keys stay within local configuration and are never uploaded to the Codex++ project.",
   "功能可以关闭": "Features can be disabled",
   "界面增强既有单项开关，也有总开关；关闭后仍可只使用供应商与启动管理。": "Interface enhancements have both individual controls and a master switch. With them off, provider and launch management remain available.",
   "公开构建过程": "Public build process",
