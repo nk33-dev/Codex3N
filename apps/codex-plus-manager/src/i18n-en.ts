@@ -786,6 +786,8 @@ export const EN_PLAIN: Record<string, string> = {
   "添加自定义供应商": "Add custom provider",
   "系统默认配置": "System default configuration",
   "系统默认": "System default",
+  "混入 Codex 原生模型": "Include built-in Codex models",
+  "对所有供应商生效；取消勾选后仅显示供应商模型。": "Applies to all providers. Uncheck to show only provider models.",
   "当前使用本机 config.toml；开启切换后可选择其他供应商": "Using the local config.toml; enable switching to choose another provider",
   "{0} 个供应商配置；当前使用已选供应商": "{0} provider configurations; using the selected provider",
   "开启后可选择供应商；关闭时不修改 Codex 配置。": "Enable to switch providers; when disabled, Codex configuration is left unchanged.",

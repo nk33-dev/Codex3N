@@ -2945,6 +2945,7 @@ const codexModelCatalog = {{
   model_provider: "custom",
 }};
 const codexPlusModelMetadata = () => null;
+const codexPlusSettings = () => ({{ includeNativeModels: true }});
 const codexModelDisplayNames = new Map();
 const codexModelAvailability = () => "未测试";
 const modelReasoningEfforts = () => [];

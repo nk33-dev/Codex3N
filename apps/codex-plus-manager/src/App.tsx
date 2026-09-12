@@ -238,6 +238,7 @@ type BackendSettings = {
   enhancementsEnabled: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
+  codexAppIncludeNativeModels: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
   codexAppPasteFix: boolean;
@@ -997,6 +998,7 @@ const defaultSettings: BackendSettings = {
   enhancementsEnabled: true,
   codexAppPluginMarketplaceUnlock: true,
   codexAppModelWhitelistUnlock: true,
+  codexAppIncludeNativeModels: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
@@ -4634,6 +4636,18 @@ function RelayScreen({
               <small>{t("开启后可选择供应商；关闭时不修改 Codex 配置。")}</small>
             </span>
             <ToggleVisual />
+          </label>
+          <label className="check-row" title={t("对所有供应商生效；取消勾选后仅显示供应商模型。")}>
+            <input
+              type="checkbox"
+              checked={normalized.codexAppIncludeNativeModels !== false}
+              disabled={savingRelaySettings || actions.relaySwitching}
+              onChange={(event) => void saveRelaySettings({
+                ...normalized,
+                codexAppIncludeNativeModels: event.currentTarget.checked,
+              })}
+            />
+            <span>{t("混入 Codex 原生模型")}</span>
           </label>
           <div className="relay-add-row">
             <Button

@@ -1399,12 +1399,13 @@
   }
 
   function defaultCodexPlusSettings() {
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, includeNativeModels: true, sessionDelete: true, markdownExport: true, pasteFix: false, threadIdBadge: false, conversationView: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, zedRemoteOpen: true, upstreamWorktreeCreate: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, stepwise: false, answerOutline: false, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
     pluginMarketplaceUnlock: "codexAppPluginMarketplaceUnlock",
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
+    includeNativeModels: "codexAppIncludeNativeModels",
     sessionDelete: "codexAppSessionDelete",
     markdownExport: "codexAppMarkdownExport",
     threadIdBadge: "codexAppThreadIdBadge",
@@ -3919,8 +3920,12 @@
       if (seq !== codexPlusBackendSettingsSeq) {
         return false;
       }
+      const includedNativeModels = codexPlusBackendSettings.codexAppIncludeNativeModels !== false;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      if (includedNativeModels !== (codexPlusBackendSettings.codexAppIncludeNativeModels !== false)) {
+        refreshCodexModelQueries();
+      }
       return true;
     } catch (_) {
       return false;
@@ -6909,11 +6914,12 @@
     const customModels = codexPlusModelNames();
     let changed = false;
     const sourceModels = new Set(customModels);
-    const authoritative = codexModelCatalog.status === "ok"
+    const authoritative = codexPlusSettings().includeNativeModels === false
+      && codexModelCatalog.status === "ok"
       && codexModelCatalog.model_provider && codexModelCatalog.model_provider !== "openai"
       && codexModelCatalog.sources?.some((source) => source.status === "ok" && source.models > 0
         && ["config", "relay_profile_model_list"].includes(source.type));
-    // 第三方目录成功加载后按供应商清单展示；官方或获取失败时保留原生列表。
+    // 用户取消混入原生模型且第三方目录成功加载后，才按供应商清单筛选。
     for (let index = models.length - 1; index >= 0; index -= 1) {
       if ((authoritative || models[index].__codexPlusInjected) && !sourceModels.has(models[index].model)) {
         models.splice(index, 1);

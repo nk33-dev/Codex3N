@@ -11,7 +11,7 @@ function section(start: string, end: string) {
 }
 
 const apiModels = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-1.5", "gpt-image-2"];
-function runtime({ provider = "crs", status = "ok", hasRoot = true } = {}) {
+function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativeModels = true } = {}) {
   const requests: Array<{ hostId: string; method: string; params: unknown }> = [];
   const invalidations: unknown[] = [];
   let writes = 0;
@@ -46,7 +46,8 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true } = {}) {
     queryClient: { invalidateQueries: (filter: unknown) => { invalidations.push(filter); return Promise.resolve(); } } };
   const fiber = { child: { memoizedProps: { value: new Map([[token, node]]) } } };
   const windowValue = hasRoot ? { __codexRoot: { _internalRoot: { current: fiber } } } : {};
-  const create = new Function("window", "models", "provider", "status", `
+  const create = new Function("window", "models", "provider", "status", "includeNativeModels", `
+    const codexPlusSettings = () => ({ includeNativeModels });
     const codexModelCatalog = { status, model_provider: provider, sources: [{ type: 'config', status, models: models.length }] };
     const codexPlusModelNames = () => models;
     const codexPlusModelUnlockEnabled = () => true;
@@ -62,13 +63,14 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true } = {}) {
     ${section("  function codexPlusModelDescriptor(", "  function patchModelContainer(")}
     ${section("  function appServerModelRequestMethod(", "  function codexPerModelContextEnabled(")}
     ${section("  function patchAppServerModelRequestClient(", "  const appServerModelRequestPatchMaxMisses")}
-    return { collectScopedAppServerRequestCandidates, refreshCodexModelQueries, codexAppScopeNodes };
+    return { collectScopedAppServerRequestCandidates, refreshCodexModelQueries, codexAppScopeNodes,
+      setIncludeNativeModels: value => { includeNativeModels = value; } };
   `);
-  return { ...create(windowValue, apiModels, provider, status), root, signal, requests, invalidations, writes: () => writes };
+  return { ...create(windowValue, apiModels, provider, status, includeNativeModels), root, signal, requests, invalidations, writes: () => writes };
 }
 
 test("从已挂载作用域发现 RPC，8 个供应商模型进入原生 model/list", async () => {
-  const app = runtime();
+  const app = runtime({ includeNativeModels: false });
   const ignored = { scope: app.signal.scope, resolve() { throw Error("不应初始化其他信号"); } };
   const clients = app.collectScopedAppServerRequestCandidates([{ renamedRpcSignal: app.signal, ignored }]);
   assert.equal(clients.length, 1);
@@ -103,7 +105,7 @@ test("本机供应商模型不会注入远程主机", async () => {
 
 test("官方目录与上游失败时保留原生模型，根节点未挂载时不操作", async () => {
   for (const options of [{ provider: "openai" }, { status: "failed" }]) {
-    const app = runtime(options);
+    const app = runtime({ ...options, includeNativeModels: false });
     app.collectScopedAppServerRequestCandidates([{ signal: app.signal }]);
     const result = await app.root.forHost("local").sendRequest("model/list", {});
     assert.ok(result.data.some((item: { model: string }) => item.model === "gpt-5.2"));
@@ -111,4 +113,39 @@ test("官方目录与上游失败时保留原生模型，根节点未挂载时�
   const app = runtime({ hasRoot: false });
   assert.deepEqual(app.collectScopedAppServerRequestCandidates([{ signal: app.signal }]), []);
   assert.equal(app.invalidations.length, 0);
+});
+
+test("默认混入原生模型，取消及重新勾选后可切换列表且不重复模型", async () => {
+  const app = runtime();
+  app.collectScopedAppServerRequestCandidates([{ signal: app.signal }]);
+  const client = app.root.forHost("local");
+  const names = async () => (await client.sendRequest("model/list", {})).data.map((item: { model: string }) => item.model);
+  const initial = await names();
+  assert.equal(initial.length, 9);
+  assert.equal(new Set(initial).size, 9);
+  assert.ok(initial.includes("gpt-5.2"));
+  app.setIncludeNativeModels(false);
+  assert.deepEqual(await names(), apiModels);
+  app.setIncludeNativeModels(true);
+  assert.deepEqual(await names(), initial);
+});
+
+test("后端设置变化时刷新模型查询，相同设置不重复刷新", async () => {
+  let includeNativeModels = true;
+  let refreshes = 0;
+  const load = new Function("postJson", "refreshCodexModelQueries", `
+    const codexPlusBackendSettingsSeq = 0;
+    let codexPlusBackendSettings = { enhancementsEnabled: true }, codexPlusBackendSettingsLoaded = false;
+    ${section("  async function loadBackendSettingsState(", "  async function loadBackendSettings(")}
+    return loadBackendSettingsState;
+  `)(async () => ({ enhancementsEnabled: true, codexAppIncludeNativeModels: includeNativeModels }), () => { refreshes += 1; });
+  await load();
+  assert.equal(refreshes, 0);
+  includeNativeModels = false;
+  await load();
+  await load();
+  assert.equal(refreshes, 1);
+  includeNativeModels = true;
+  await load();
+  assert.equal(refreshes, 2);
 });
