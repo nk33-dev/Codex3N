@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 
 use crate::settings::BackendSettings;
 
-const MAX_PROMPT_LENGTH: usize = 420;
+// 注意：这里**故意**没有 prompt 长度上限。系统提示里明确要求
+// "prompt may be detailed and must not omit necessary context"，prompt 是要被
+// 用户直接发出去的完整消息，截断它会发出半句话。条数上限由 max_items 控制。
 const MAX_LABEL_LENGTH: usize = 36;
 const MAX_SUMMARY_LENGTH: usize = 72;
 const ANTHROPIC_VERSION: &str = "2023-06-01";

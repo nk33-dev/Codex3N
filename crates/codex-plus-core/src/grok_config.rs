@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+// 只有 Unix 的 secure_atomic_write 用得到（Windows 走 settings::atomic_write）。
+#[cfg(unix)]
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
