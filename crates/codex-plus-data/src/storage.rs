@@ -86,8 +86,13 @@ pub fn delete_local_from_paths(
         }
     }
 
+    // 只有"本次删除实际上没有从任何本地库删掉行、也没有留下可撤销的快照"时，
+    // 才能把失败改写成"已清理残留的本地会话记录"。`undo_token` 存在说明数据库里
+    // 确实删过行、只是文件没删掉，那时必须保留原始失败信息（否则界面显示成功、
+    // rollout 文件还留在磁盘上，正是"幽灵会话"的成因）。
     if deleted_count == 0
         && matches!(result.status, DeleteStatus::Failed)
+        && result.undo_token.is_none()
         && !cleanup_messages.is_empty()
     {
         result.status = DeleteStatus::LocalDeleted;
@@ -399,7 +404,7 @@ impl SQLiteStorageAdapter {
         let result = (|| -> anyhow::Result<DeleteResult> {
             let backups = undo_backups(&self.backup_store, token)?;
             let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
-            restore_backups(
+            let warnings = restore_backups(
                 &backups,
                 &self.db_path,
                 &self.allowed_db_paths,
@@ -408,7 +413,11 @@ impl SQLiteStorageAdapter {
             Ok(DeleteResult {
                 status: DeleteStatus::Undone,
                 session_id,
-                message: "Local session restored from backup".to_string(),
+                message: if warnings.is_empty() {
+                    "Local session restored from backup".to_string()
+                } else {
+                    format!("Local session restored from backup；{}", warnings.join("；"))
+                },
                 undo_token: Some(token.to_string()),
                 backup_path: None,
             })
@@ -1111,7 +1120,10 @@ fn restore_backups(
     fallback_db_path: &Path,
     allowed_db_paths: &[PathBuf],
     codex_home: Option<&Path>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<String>> {
+    // 非致命问题的收集：撤销本身继续完成，但调用方要把这些问题显示给用户，
+    // 不能让"会话行恢复了、索引却没恢复"表现得像完全成功。
+    let mut warnings = Vec::new();
     for backup in backups {
         let Some(tables) = backup["tables"].as_object() else {
             continue;
@@ -1165,17 +1177,24 @@ fn restore_backups(
                 .collect::<Vec<_>>();
             if !lines.is_empty() {
                 if let Some(home) = codex_home {
-                    let _ = crate::provider_sync::restore_session_index_entries(home, &lines);
+                    // 删除路径对索引清理失败是报出来的（见上面的 cleanup_errors），
+                    // 撤销路径以前是 `let _ =`：会话行恢复了、session_index 里却没有，
+                    // 界面从索引读取时仍然看不到这个会话，用户却以为撤销成功。
+                    if let Err(error) =
+                        crate::provider_sync::restore_session_index_entries(home, &lines)
+                    {
+                        warnings.push(format!("会话索引恢复失败：{error}"));
+                    }
                 }
             }
         }
         if let Some(sidebar) = tables.get("__sidebar") {
             if let Some(home) = codex_home {
-                let _ = crate::provider_sync::restore_thread_sidebar_references(home, sidebar)?;
+                crate::provider_sync::restore_thread_sidebar_references(home, sidebar)?;
             }
         }
     }
-    Ok(())
+    Ok(warnings)
 }
 
 fn preflight_restore_rows(db: &Connection, tables: &Map<String, Value>) -> anyhow::Result<()> {
