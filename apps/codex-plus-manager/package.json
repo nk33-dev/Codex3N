@@ -8,7 +8,8 @@
     "dev": "tauri dev",
     "build": "cargo build -p codex-plus-launcher --release && tauri build",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test \"src/*.test.ts\"",
+    "i18n": "node ../../tools/i18n-verify.mjs",
+    "test": "node --test \"src/*.test.ts\" && node ../../tools/i18n-verify.mjs",
     "vite:dev": "vite --host 127.0.0.1 --port 1420",
     "vite:build": "vite build"
   },
