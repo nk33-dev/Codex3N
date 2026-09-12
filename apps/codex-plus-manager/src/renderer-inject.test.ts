@@ -68,6 +68,26 @@ describe("模型目录加载与响应拦截", () => {
     finish({ status: "ok", models: ["custom"] });
     await recovered;
   });
+
+  it("模型 RPC 补丁返回新对象，不原地改写官方查询缓存", async () => {
+    const renderer = await readFile(path, "utf8");
+    const start = renderer.indexOf("  function cloneModelResult(");
+    const end = renderer.indexOf("  function codexPerModelContextEnabled(", start);
+    assert.ok(start >= 0 && end > start);
+    const patchResult = new Function(
+      "patchModelArray",
+      "sendCodexPlusDiagnostic",
+      `${renderer.slice(start, end)}; return patchAppServerModelResult;`,
+    )((models: Array<Record<string, unknown>>) => {
+      models.push({ model: "injected" });
+    }, () => {});
+    const original = { data: [{ model: "native" }] };
+    const patched = patchResult("model/list", original);
+    assert.notEqual(patched, original);
+    assert.notEqual(patched.data, original.data);
+    assert.deepEqual(original.data, [{ model: "native" }]);
+    assert.deepEqual(patched.data.map((item: { model: string }) => item.model), ["native", "injected"]);
+  });
 });
 
 const STEPWISE_FRAGMENT_PATHS = [
@@ -342,10 +362,10 @@ describe("renderer injection header compatibility", () => {
     assert.equal(wrapper.dataset.codexPlusUsageAlertHidden, "true");
     assert.equal(wrapper.style.display, "grid");
     assert.equal(otherStatus.dataset.codexPlusUsageAlertHidden, undefined);
-    assert.deepEqual(selectors, [
+    assert.deepEqual([...selectors].sort(), [
       '[data-codex-plus-usage-alert-hidden="true"]',
       'aside.app-shell-left-panel [role="status"][aria-live="polite"]',
-    ]);
+    ].sort());
 
     windowValue.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = false;
     runtime.refreshOfficialUsageAlertVisibility();

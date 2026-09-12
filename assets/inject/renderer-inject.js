@@ -2587,7 +2587,7 @@
 
   function adaptCodexAppServerRpcRoot(root, queryClient) {
     // 新版客户端是只读 Cap'n Web 代理，直接给它赋值会抛异常。
-    // 在普通 forHost 入口返回本地适配对象，其余 RPC 方法保持原来的接收者。
+    // 通过完整代理保留原客户端的所有方法，避免破坏 getTurnCoordinator 等非模型接口。
     const forHost = Object.getOwnPropertyDescriptor(root, "forHost")?.value;
     if (typeof forHost !== "function") return null;
     if (!codexAppServerRpcRoots.has(root)) {
@@ -2598,14 +2598,15 @@
         if (!clients.has(remote)) {
           const local = {
             __codexPlusHostId: hostId,
-            sendRequest: (...request) => remote.sendRequest(...request),
+            sendRequest: (...request) => Reflect.apply(remote.sendRequest, remote, request),
           };
           patchAppServerModelRequestClient(local);
           clients.set(remote, new Proxy(local, {
             get(target, key, receiver) {
               if (Reflect.has(target, key)) return Reflect.get(target, key, receiver);
-              const value = Reflect.get(remote, key);
-              return typeof value === "function" ? value.bind(remote) : value;
+              // Cap'n Web 方法自身负责远端调用上下文；再次 bind 会把某些方法
+              // 变成普通对象，导致官方调用 getTurnCoordinator.bind 时报错。
+              return Reflect.get(remote, key, remote);
             },
           }));
         }
@@ -4394,7 +4395,7 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="sessionDelete"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">失效会话</div><div class="codex-plus-row-description">检查本地会话，仅隐藏找不到会话文件且没有恢复来源的记录。归档、删除备份和远程会话会保留。</div><div class="codex-plus-row-description" data-codex-session-health-status="true" role="status" aria-live="polite"></div></div>
+              <div><div class="codex-plus-row-title">失效会话</div><div class="codex-plus-row-description">首次点击后检查并隐藏确认失效的本地会话，不会删除数据；之后只会自动复核已隐藏的会话。归档、备份和远程会话会保留。</div><div class="codex-plus-row-description" data-codex-session-health-status="true" role="status" aria-live="polite"></div></div>
               <div class="codex-plus-user-script-actions">
                 <button type="button" class="codex-plus-action-button" data-codex-session-health-scan="true">检查并隐藏失效会话</button>
                 <button type="button" class="codex-plus-action-button" data-codex-session-health-reset="true">显示已隐藏会话</button>
@@ -6880,6 +6881,14 @@
       __codexPlusInjected: true,
       hidden: false,
       isDefault: false,
+      visibility: "list",
+      supportedInApi: true,
+      supported_in_api: true,
+      priority: 1000,
+      additionalSpeedTiers: metadata?.additionalSpeedTiers || [],
+      serviceTiers: metadata?.serviceTiers || [],
+      availabilityNux: null,
+      upgrade: null,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
     };
@@ -7165,21 +7174,39 @@
     return String(method || "");
   }
 
+  function cloneModelResult(result) {
+    if (result == null || typeof result !== "object") return result;
+    try {
+      if (typeof structuredClone === "function") return structuredClone(result);
+    } catch {
+    }
+    const cloneArray = (value) => Array.isArray(value)
+      ? value.map((item) => item && typeof item === "object" ? { ...item } : item)
+      : value;
+    if (Array.isArray(result)) return cloneArray(result);
+    const patched = { ...result };
+    for (const key of ["data", "models", "result"]) {
+      if (Array.isArray(patched[key])) patched[key] = cloneArray(patched[key]);
+    }
+    return patched;
+  }
+
   function patchAppServerModelResult(method, result) {
     if (method !== "list-models-for-host" && method !== "model/list") return result;
+    const patched = cloneModelResult(result);
     try {
-      if (Array.isArray(result)) patchModelArray(result, true);
-      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
-      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
+      if (Array.isArray(patched)) patchModelArray(patched, true);
+      if (Array.isArray(patched?.data)) patchModelArray(patched.data, true);
+      if (Array.isArray(patched?.models)) patchModelArray(patched.models, true);
       sendCodexPlusDiagnostic("model_app_server_result_patched", {
         method,
-        modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
+        modelCount: Array.isArray(patched?.data) ? patched.data.length : Array.isArray(patched?.models) ? patched.models.length : Array.isArray(patched) ? patched.length : null,
       });
     } catch (error) {
       window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
       window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
     }
-    return result;
+    return patched;
   }
 
   function codexPerModelContextEnabled() {
@@ -9816,13 +9843,16 @@
 
   function refreshOfficialUsageAlertVisibility() {
     const hidden = officialUsageAlertHidden();
+    const expected = new Set(
+      hidden ? officialUsageAlertCards().map((card) => officialUsageAlertContainer(card)) : [],
+    );
     document.querySelectorAll('[data-codex-plus-usage-alert-hidden="true"]').forEach((container) => {
-      delete container.dataset.codexPlusUsageAlertHidden;
+      if (!expected.has(container)) delete container.dataset.codexPlusUsageAlertHidden;
     });
-    if (!hidden) return;
-    officialUsageAlertCards().forEach((card) => {
-      const container = officialUsageAlertContainer(card);
-      container.dataset.codexPlusUsageAlertHidden = "true";
+    expected.forEach((container) => {
+      if (container.dataset.codexPlusUsageAlertHidden !== "true") {
+        container.dataset.codexPlusUsageAlertHidden = "true";
+      }
     });
   }
 

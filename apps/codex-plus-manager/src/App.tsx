@@ -6765,7 +6765,7 @@ function SettingsScreen({
                       placeholder="https://api.example.com/v1"
                     />
                   </Field>
-                  <Field label="Model">
+                  <Field label={t("悬浮球模型")}>
                     <Input
                       value={form.codexAppStepwiseModel}
                       onChange={(event) => onFormChange({ ...form, codexAppStepwiseModel: event.currentTarget.value })}
@@ -7447,7 +7447,7 @@ function RelayProfileDetail({
               title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
               variant={form.relayProfilesEnabled && draft.id === form.activeRelayId ? "secondary" : "default"}
             >
-              {actions.relaySwitching ? t("切换中") : form.relayProfilesEnabled && draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+              {actions.relaySwitching ? t("切换中") : form.relayProfilesEnabled && draft.id === form.activeRelayId ? t("当前使用中") : t("启用供应商")}
             </Button>
           )}
           <Button
@@ -7457,7 +7457,7 @@ function RelayProfileDetail({
             type="button"
           >
             <Save className="h-4 w-4" />
-            {savingDraft ? t("保存中") : t("保存此模型")}
+            {savingDraft ? t("保存中") : t("保存供应商配置")}
           </Button>
         </div>
       </div>
