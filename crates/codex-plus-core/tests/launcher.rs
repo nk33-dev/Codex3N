@@ -1392,7 +1392,7 @@ async fn official_mix_responses_profile_keeps_proxy_when_profile_switching_is_di
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let hooks = FakeHooks::new(events.clone()).with_settings(BackendSettings {
         enhancements_enabled: false,
-        relay_profiles_enabled: false,
+        relay_profiles_enabled: true,
         active_relay_id: "official-mix".to_string(),
         relay_profiles: vec![RelayProfile {
             id: "official-mix".to_string(),
@@ -1625,6 +1625,7 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let settings = BackendSettings {
         enhancements_enabled: false,
+        relay_profiles_enabled: true,
         relay_profiles: vec![RelayProfile {
             id: "relay-chat".to_string(),
             name: "Chat".to_string(),
@@ -1695,6 +1696,7 @@ async fn launch_starts_helper_when_model_routing_is_enabled() {
     let events = Arc::new(Mutex::new(Vec::<String>::new()));
     let settings = BackendSettings {
         enhancements_enabled: false,
+        relay_profiles_enabled: true,
         active_relay_id: "source".to_string(),
         relay_profiles: vec![
             RelayProfile {
