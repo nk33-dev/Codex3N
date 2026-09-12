@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -1191,12 +1193,18 @@ impl SettingsStore {
             }
         };
 
-        Ok(normalize_settings_config_sections(
-            serde_json::from_str(&contents).unwrap_or_default(),
-        ))
+        let settings = match serde_json::from_str::<BackendSettings>(&contents) {
+            Ok(settings) => settings,
+            Err(error) => {
+                quarantine_corrupt_settings(&self.path, &error.to_string());
+                BackendSettings::default()
+            }
+        };
+        Ok(normalize_settings_config_sections(settings))
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
+        let _lock = SettingsWriteLock::acquire(&self.path)?;
         let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
         let bytes = serde_json::to_vec_pretty(&settings)?;
@@ -1208,6 +1216,9 @@ impl SettingsStore {
             return self.load();
         };
 
+        // 读-改-写必须整体持锁，否则两个写入方各自基于旧内容合并，后写者会把
+        // 先写者的字段整片盖掉（用户表现为"改了但没生效"）。
+        let _lock = SettingsWriteLock::acquire(&self.path)?;
         let mut raw = self.load_raw_object()?;
         merge_known_setting_fields(&mut raw, &payload);
         let settings = normalize_settings_config_sections(
@@ -1246,9 +1257,130 @@ impl SettingsStore {
 
         match serde_json::from_str::<Value>(&contents) {
             Ok(Value::Object(map)) => Ok(map),
-            Ok(_) | Err(_) => Ok(settings_to_object(&BackendSettings::default())),
+            Ok(_) => {
+                quarantine_corrupt_settings(&self.path, "settings root is not a JSON object");
+                Ok(settings_to_object(&BackendSettings::default()))
+            }
+            Err(error) => {
+                quarantine_corrupt_settings(&self.path, &error.to_string());
+                Ok(settings_to_object(&BackendSettings::default()))
+            }
         }
     }
+}
+
+/// 解析失败的 settings.json 不能"悄悄当默认值用掉"。
+///
+/// 回落到默认值是为了不让应用直接打不开，但损坏这件事必须留痕：先把原始文件
+/// 挪到 `<名字>.corrupt-<时间戳>` 保底，再写一条诊断日志，用户与排障都能看到
+/// "配置曾经坏过、原件在哪"，而不是发现所有设置凭空回到出厂状态。
+fn quarantine_corrupt_settings(path: &Path, reason: &str) -> Option<PathBuf> {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or_default();
+    let quarantined = match path.extension().and_then(|value| value.to_str()) {
+        Some(extension) => path.with_extension(format!("{extension}.corrupt-{timestamp}")),
+        None => path.with_extension(format!("corrupt-{timestamp}")),
+    };
+    let quarantined = match fs::rename(path, &quarantined) {
+        Ok(()) => Some(quarantined),
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "settings_corrupt_quarantine_failed",
+                serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "reason": reason,
+                    "error": error.to_string(),
+                }),
+            );
+            None
+        }
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "settings_corrupt",
+        serde_json::json!({
+            "path": path.to_string_lossy(),
+            "reason": reason,
+            "quarantined": quarantined
+                .as_ref()
+                .map(|value| value.to_string_lossy().to_string()),
+        }),
+    );
+    quarantined
+}
+
+/// settings.json 的跨进程写锁。
+///
+/// 管理器进程与 launcher 的 bridge 会写同一份配置，且 `SettingsStore` 每次都是
+/// 现场构造、没有可共享的内存锁，所以只能用文件锁。锁文件与配置同级，进程退出
+/// （含崩溃）时由操作系统释放，不会留下永久锁。
+struct SettingsWriteLock {
+    file: fs::File,
+}
+
+impl SettingsWriteLock {
+    const RETRY_ATTEMPTS: usize = 50;
+    const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+    /// 拿不到锁文件（目录只读、权限不足等）时返回 None，按旧行为继续写：
+    /// 写不了配置比并发风险更致命，但这种情况要留诊断日志。
+    fn acquire(path: &Path) -> anyhow::Result<Option<Self>> {
+        let lock_path = settings_lock_path(path);
+        if let Some(parent) = lock_path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create directory {}", parent.display()))?;
+        }
+        let file = match fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "settings_lock_unavailable",
+                    serde_json::json!({
+                        "path": lock_path.to_string_lossy(),
+                        "error": error.to_string(),
+                    }),
+                );
+                return Ok(None);
+            }
+        };
+        for attempt in 0..Self::RETRY_ATTEMPTS {
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => return Ok(Some(Self { file })),
+                Err(error) => {
+                    if attempt + 1 == Self::RETRY_ATTEMPTS {
+                        return Err(error).context(
+                            "配置正被另一个 Codex3N 进程写入，请稍后重试".to_string(),
+                        );
+                    }
+                    std::thread::sleep(Self::RETRY_INTERVAL);
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl Drop for SettingsWriteLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+fn settings_lock_path(path: &Path) -> PathBuf {
+    let mut lock_path = path.to_path_buf();
+    let extension = path.extension().and_then(|value| value.to_str());
+    lock_path.set_extension(match extension {
+        Some(extension) => format!("{extension}.lock"),
+        None => "lock".to_string(),
+    });
+    lock_path
 }
 
 fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<String, Value>) {
@@ -1807,8 +1939,23 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     }
 
     let temp_path = temp_path_for(path);
-    fs::write(&temp_path, bytes)
-        .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+    // 与 grok_config::secure_atomic_write 一致的 create_new 语义：临时文件必须由
+    // 本次写入创建，绝不覆盖别人（或上次崩溃残留）的同名文件。
+    let write_result = (|| -> anyhow::Result<()> {
+        let mut temp_file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .with_context(|| format!("failed to create temp file {}", temp_path.display()))?;
+        temp_file
+            .write_all(bytes)
+            .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(error);
+    }
     if let Err(error) = replace_file(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(error).with_context(|| {
@@ -1856,12 +2003,27 @@ fn replace_file(source: &Path, target: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 临时文件名必须唯一。
+///
+/// 以前固定用 `<名字>.tmp`：管理器进程与 launcher 的 bridge 会同时写同一份
+/// settings.json，先写完的一方执行 rename 时，可能把另一方**只写了一半**的
+/// 临时文件顶到正式位置，而 load 解析失败会静默回落到默认值 —— 用户看到的是
+/// "配置全没了"且没有任何报错。临时名带上进程号、进程内序号与随机串后，
+/// 每个写入方只可能 rename 自己写完的那份。
 fn temp_path_for(path: &Path) -> PathBuf {
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let mut temp_path = path.to_path_buf();
     let extension = path.extension().and_then(|value| value.to_str());
+    let unique = format!(
+        "{}-{}-{}",
+        std::process::id(),
+        sequence,
+        uuid::Uuid::new_v4().simple()
+    );
     temp_path.set_extension(match extension {
-        Some(extension) => format!("{extension}.tmp"),
-        None => "tmp".to_string(),
+        Some(extension) => format!("{extension}.{unique}.tmp"),
+        None => format!("{unique}.tmp"),
     });
     temp_path
 }
@@ -1916,8 +2078,138 @@ mod tests {
         atomic_write(&path, b"new").unwrap();
 
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
-        assert!(!dir.join("settings.json.tmp").exists());
+        // 临时名现在是唯一的（进程号+序号+随机串），不能再断言某个固定名字；
+        // 改为断言目录里没留下任何临时文件。
+        assert!(
+            temp_file_leftovers(&dir).is_empty(),
+            "残留临时文件：{:?}",
+            temp_file_leftovers(&dir)
+        );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_atomic_writes_never_interleave_content() {
+        // 两个写入方曾经共用同一个确定性临时名（`<名字>.tmp`），先写完的一方
+        // rename 时可能把另一方**只写了一半**的文件顶到正式位置。这里让两个线程
+        // 反复写同一目标，断言最终内容始终是两份完整内容之一，且没有临时文件残留。
+        //
+        // 注意：不加锁地并发调用 atomic_write 本身是允许失败的——Windows 的
+        // MoveFileExW 在目标正被替换时会报共享冲突。需要"一定写成功"的调用方
+        // （SettingsStore::save/update）必须自己持锁，这里只保证**不会写坏**。
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let first = vec![b'a'; 64 * 1024];
+        let second = vec![b'b'; 64 * 1024];
+
+        std::thread::scope(|scope| {
+            for payload in [&first, &second] {
+                let path = path.clone();
+                scope.spawn(move || {
+                    for _ in 0..20 {
+                        if let Err(error) = atomic_write(&path, payload) {
+                            // 竞争导致的失败是允许的，但必须留下可读的原因，
+                            // 且不能把目标文件写坏。
+                            assert!(
+                                error.to_string().contains("failed to replace")
+                                    || error.to_string().contains("failed to create temp file"),
+                                "并发写入失败原因不符合预期：{error}"
+                            );
+                        }
+                    }
+                });
+            }
+        });
+
+        let content = std::fs::read(&path).unwrap();
+        assert!(
+            content == first || content == second,
+            "并发写入产生了交错内容（长度 {}）",
+            content.len()
+        );
+        assert!(
+            temp_file_leftovers(&dir).is_empty(),
+            "残留临时文件：{:?}",
+            temp_file_leftovers(&dir)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_write_lock_serializes_other_writers() {
+        // 读-改-写必须整体持锁：这里直接验证第二个写入方会被挡住，直到第一个释放。
+        // 没有这个锁时两端各自基于旧内容合并，后写者会把先写者的字段整片盖掉。
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let guard = SettingsWriteLock::acquire(&path)
+            .unwrap()
+            .expect("测试目录可写，应当拿到锁");
+
+        let started = std::time::Instant::now();
+        let blocked_path = path.clone();
+        let waiter = std::thread::spawn(move || {
+            let _lock = SettingsWriteLock::acquire(&blocked_path)
+                .unwrap()
+                .expect("第二个写入方最终也应拿到锁");
+            started.elapsed()
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        drop(guard);
+        let waited = waiter.join().unwrap();
+
+        assert!(
+            waited >= std::time::Duration::from_millis(100),
+            "第二个写入方没有被锁挡住（只等了 {waited:?}）"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_settings_file_is_quarantined_instead_of_silently_defaulted() {
+        // 解析失败时回落默认值是为了不让应用打不开，但必须留证：
+        // 以前是 `unwrap_or_default()`，用户看到的是"配置全没了"且没有任何痕迹。
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, b"{ not json").unwrap();
+        let log_path = dir.join("diagnostics.log");
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+        let store = SettingsStore::new(path.clone());
+
+        let loaded = store.load().unwrap();
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+
+        let mut expected = BackendSettings::default();
+        expected.sync_tool_shards();
+        assert_eq!(loaded, expected);
+        assert!(!path.exists(), "损坏的配置文件应当被移走留证");
+
+        let quarantined = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .find(|name| name.contains(".corrupt-"))
+            .expect("应当留下 .corrupt- 备份");
+        assert_eq!(
+            std::fs::read_to_string(dir.join(&quarantined)).unwrap(),
+            "{ not json"
+        );
+        assert!(
+            std::fs::read_to_string(&log_path)
+                .unwrap_or_default()
+                .contains("settings_corrupt"),
+            "应当写一条诊断日志"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn temp_file_leftovers(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect()
     }
 
     #[test]
