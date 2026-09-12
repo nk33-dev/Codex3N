@@ -116,26 +116,51 @@ fn is_windowsapps_codex_app_process(executable: &str) -> bool {
 }
 
 pub fn filter_killable_launcher_processes<'a>(
-    processes: impl IntoIterator<Item = (u32, u32, &'a str)>,
+    processes: impl IntoIterator<Item = (u32, u32, &'a str, Option<&'a Path>)>,
     current_process_id: u32,
+    installation_directory: Option<&Path>,
 ) -> Vec<u32> {
     let processes = processes.into_iter().collect::<Vec<_>>();
     let parents = processes
         .iter()
-        .map(|(process_id, parent_process_id, _)| (*process_id, *parent_process_id))
+        .map(|(process_id, parent_process_id, _, _)| (*process_id, *parent_process_id))
         .collect::<HashMap<_, _>>();
     let mut protected = HashSet::new();
     let mut cursor = current_process_id;
     while cursor != 0 && protected.insert(cursor) {
         cursor = parents.get(&cursor).copied().unwrap_or(0);
     }
+    let installation = installation_directory.map(crate::codex_home::normalize_for_comparison);
     processes
         .into_iter()
-        .filter(|(process_id, _, exe_file)| {
-            !protected.contains(process_id) && exe_file.eq_ignore_ascii_case("codex-plus-plus.exe")
+        .filter(|(process_id, _, exe_file, executable_path)| {
+            if protected.contains(process_id) || !exe_file.eq_ignore_ascii_case("codex-plus-plus.exe")
+            {
+                return false;
+            }
+            // 只按文件名匹配会误杀机器上**另一份** Codex3N：开发构建的
+            // `target\debug\codex-plus-plus.exe` 与正式安装版同名。映像路径查得到时
+            // 要求它与当前进程同目录（管理器启动 launcher 时用的就是自身同目录的
+            // 兄弟二进制，所以"同目录"就等于"同一次安装"）。
+            match (
+                installation.as_deref(),
+                executable_path.map(|value| crate::codex_home::normalize_for_comparison(value)),
+            ) {
+                (Some(installation), Some(executable)) => executable.parent() == Some(installation),
+                // 查不到映像路径（受保护进程或权限不足）时保持旧行为：宁可多杀一个，
+                // 也不要因为查不到路径而留下旧实例占着 CDP/helper 端口让重启失败。
+                _ => true,
+            }
         })
-        .map(|(process_id, _, _)| process_id)
+        .map(|(process_id, _, _, _)| process_id)
         .collect()
+}
+
+#[cfg(windows)]
+fn current_installation_directory() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
 pub fn should_recover_stale_launcher(has_codex_process: bool, cdp_listening: bool) -> bool {
@@ -530,9 +555,11 @@ pub fn stop_launcher_processes() {
                 process.process_id,
                 process.parent_process_id,
                 process.exe_file.as_str(),
+                process.executable_path.as_deref(),
             )
         }),
         std::process::id(),
+        current_installation_directory().as_deref(),
     );
     for process_id in killable {
         let _ = crate::windows_integration::terminate_process(process_id);
@@ -558,9 +585,11 @@ pub fn stop_launcher_processes_and_wait() {
                 process.process_id,
                 process.parent_process_id,
                 process.exe_file.as_str(),
+                process.executable_path.as_deref(),
             )
         }),
         std::process::id(),
+        current_installation_directory().as_deref(),
     );
     terminate_and_wait_for_exit(
         killable,
@@ -834,7 +863,19 @@ fn spawn_launcher(launcher_path: &Path, debug_port: u16) {
             .stderr(Stdio::null());
         use std::os::windows::process::CommandExt;
         command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
-        let _ = command.spawn();
+        // 这是 watcher 判定 launcher 已死后唯一的恢复动作。以前用 `let _ =`
+        // 丢掉结果：路径失效（更新后目录改名、被杀软隔离）、权限不足、exe 被占用
+        // 都会静默失败，用户只看到"Codex 起不来了、Codex++ 界面一切正常"。
+        if let Err(error) = command.spawn() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "watcher_spawn_launcher_failed",
+                serde_json::json!({
+                    "launcher": launcher_path.to_string_lossy(),
+                    "debug_port": debug_port,
+                    "error": error.to_string(),
+                }),
+            );
+        }
     }
 }
 
