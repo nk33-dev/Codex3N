@@ -6935,6 +6935,7 @@ base_url = "https://example.invalid/v1"
 
     fn routed_pure_api_settings() -> BackendSettings {
         BackendSettings {
+            relay_profiles_enabled: true,
             active_relay_id: "source".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "source".to_string(),
@@ -6993,6 +6994,7 @@ base_url = "https://example.invalid/v1"
         )
         .unwrap();
         let settings = BackendSettings {
+            relay_profiles_enabled: true,
             active_relay_id: "official".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "official".to_string(),
@@ -7021,6 +7023,7 @@ base_url = "https://example.invalid/v1"
     fn active_aggregate_sync_writes_local_proxy() {
         let temp = tempfile::tempdir().unwrap();
         let settings = BackendSettings {
+            relay_profiles_enabled: true,
             active_relay_id: "aggregate".to_string(),
             active_aggregate_relay_id: "aggregate".to_string(),
             relay_profiles: vec![RelayProfile {
@@ -7052,6 +7055,7 @@ base_url = "https://example.invalid/v1"
         std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
         std::fs::write(temp.path().join("auth.json"), "{\"old\":true}\n").unwrap();
         let settings = BackendSettings {
+            relay_profiles_enabled: true,
             active_relay_id: "broken".to_string(),
             relay_profiles: vec![RelayProfile {
                 id: "broken".to_string(),
