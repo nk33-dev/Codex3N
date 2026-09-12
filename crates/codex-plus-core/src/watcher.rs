@@ -134,7 +134,8 @@ pub fn filter_killable_launcher_processes<'a>(
     processes
         .into_iter()
         .filter(|(process_id, _, exe_file, executable_path)| {
-            if protected.contains(process_id) || !exe_file.eq_ignore_ascii_case("codex-plus-plus.exe")
+            if protected.contains(process_id)
+                || !exe_file.eq_ignore_ascii_case("codex-plus-plus.exe")
             {
                 return false;
             }

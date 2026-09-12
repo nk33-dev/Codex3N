@@ -81,7 +81,8 @@ impl BackupStore {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json") {
+            if !path.is_file() || path.extension().and_then(|value| value.to_str()) != Some("json")
+            {
                 continue;
             }
             if let Some(name) = path.file_name().and_then(|value| value.to_str()) {

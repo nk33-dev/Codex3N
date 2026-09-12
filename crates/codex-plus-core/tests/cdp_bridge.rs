@@ -2724,7 +2724,9 @@ fn injection_script_prefers_native_thread_delete_before_local_fallback() {
         delete_confirmation
             .find("await deleteViaNativeAppServer(ref)")
             .unwrap()
-            < delete_confirmation.find("await postJson(\"/delete\", ref)").unwrap()
+            < delete_confirmation
+                .find("await postJson(\"/delete\", ref)")
+                .unwrap()
     );
 }
 

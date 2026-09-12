@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml_edit::{DocumentMut, Item, Table, TableLike};
 
-use crate::settings::{
-    BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider,
-};
+use crate::settings::{BackendSettings, RelayProfile, RelayProtocol, RelaySessionProvider};
 
 const RELAY_PROVIDER: &str = "custom";
 const LEGACY_RELAY_PROVIDERS: &[&str] = &["CodexPlusPlus", "CodexPP"];
@@ -2125,7 +2123,10 @@ fn apply_model_metadata_overrides(
             continue;
         };
         for (key, value) in user_override {
-            if matches!(key.as_str(), "slug" | "context_window" | "auto_compact_token_limit") {
+            if matches!(
+                key.as_str(),
+                "slug" | "context_window" | "auto_compact_token_limit"
+            ) {
                 continue;
             }
             model_object.insert(key.clone(), value.clone());
@@ -3501,7 +3502,9 @@ CODEX_HOME = \"/home/user/.codex\"
 ";
 
         let normalized = normalize_duplicate_toml_text(contents);
-        let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
+        let doc = normalized
+            .parse::<DocumentMut>()
+            .expect("must stay valid TOML");
 
         assert_eq!(
             doc["mcp_servers"]["node_repl"]["command"].as_str(),
@@ -3526,10 +3529,18 @@ cwd = \"/tmp\"
 ";
 
         let normalized = normalize_duplicate_toml_text(contents);
-        let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
+        let doc = normalized
+            .parse::<DocumentMut>()
+            .expect("must stay valid TOML");
 
-        assert_eq!(doc["mcp_servers"]["node_repl"]["command"].as_str(), Some("node"));
-        assert_eq!(doc["mcp_servers"]["node_repl"]["cwd"].as_str(), Some("/tmp"));
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["command"].as_str(),
+            Some("node")
+        );
+        assert_eq!(
+            doc["mcp_servers"]["node_repl"]["cwd"].as_str(),
+            Some("/tmp")
+        );
     }
 
     /// 重复根键：后写覆盖前写，与 TOML 对同名键重复赋值时的直觉一致。
@@ -3537,7 +3548,9 @@ cwd = \"/tmp\"
     fn normalize_duplicate_toml_text_later_root_key_wins() {
         let contents = "model = \"a\"\nmodel = \"b\"\n";
         let normalized = normalize_duplicate_toml_text(contents);
-        let doc = normalized.parse::<DocumentMut>().expect("must stay valid TOML");
+        let doc = normalized
+            .parse::<DocumentMut>()
+            .expect("must stay valid TOML");
         assert_eq!(doc["model"].as_str(), Some("b"));
     }
 
