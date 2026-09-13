@@ -252,6 +252,20 @@ fn relay_profile_model_ids(profile: &RelayProfile) -> Vec<String> {
     )
 }
 
+fn model_display_order(model: &str) -> (u8, String) {
+    let normalized = model.trim().to_ascii_lowercase();
+    let rank = match normalized.as_str() {
+        "gpt-6-astra" => 0,
+        "gpt-5.6-terra" => 1,
+        "gpt-5.6-sol" => 2,
+        "gpt-5.6-luna" => 3,
+        "gpt-5.5" => 4,
+        "gpt-5.3-codex-spark" => 5,
+        value if value.starts_with("gpt-image-") => 6,
+        _ => 10,
+    };
+    (rank, normalized)
+}
 fn model_ui_metadata_map(models: &[String]) -> Value {
     let mut metadata = Map::new();
     for model in models {
@@ -335,6 +349,7 @@ pub async fn read_codex_model_catalog_from_home(
     }
 
     models = unique_strings(models);
+    models.sort_by_key(|model| model_display_order(model));
     if model.is_empty() {
         model = string_value(effective.get("default_model"));
     }
