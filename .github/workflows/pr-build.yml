@@ -148,6 +148,11 @@ jobs:
             codesign -dv "$app" >/dev/null 2>&1
             echo "verified: $app"
           done
+          # 打包脚本曾经在 convert 连续失败后仍然退出 0，这里显式确认 DMG 真的存在
+          for dmg in dist/macos/*.dmg; do
+            test -f "$dmg"
+            echo "verified: $dmg"
+          done
 
       - name: Upload macOS DMG
         uses: actions/upload-artifact@v7
