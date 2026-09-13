@@ -9272,9 +9272,9 @@ function NoticeDialog({
   onClose: () => void;
 }) {
   useEffect(() => {
-    const timer = window.setTimeout(onClose, 4200);
+    const timer = window.setTimeout(onClose, 6500);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [onClose]);
 
   return (
     <div className="toast-wrap" role="status" aria-live="polite">

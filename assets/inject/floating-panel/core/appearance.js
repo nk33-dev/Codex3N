@@ -567,6 +567,13 @@
         z-index: 2;
       }
 
+      .csw-fab-eye-dot {
+        background: currentColor;
+        border-radius: 50%;
+        display: block;
+        height: 5px;
+        width: 5px;
+      }
       .csw-fab-eye {
         background: currentColor;
         border-radius: 999px;
