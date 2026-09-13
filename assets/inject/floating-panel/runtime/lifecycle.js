@@ -4,6 +4,10 @@
     if (!isCurrentRuntime(generation)) return;
     if (timerId && state.timer !== timerId) return;
     if (timerId) state.timer = 0;
+    if (state.drag || state.resizeDrag) {
+      scheduleScan();
+      return;
+    }
     state.scans += 1;
     installStyle();
     installFloat();
@@ -190,6 +194,8 @@
     state.completionBeamTimer = 0;
     state.snapTimer = 0;
     state.eyeRaf = 0;
+    state.glassPointerFrame?.cancel();
+    state.glassPointerFrame = null;
     state.surpriseUntil = 0;
     state.bridgeActiveKey = "";
     state.bridgePendingHash = "";

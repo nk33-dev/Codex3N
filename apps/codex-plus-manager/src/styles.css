@@ -3916,6 +3916,11 @@ input[type="range"]:disabled {
   grid-template-columns: minmax(120px, 1.4fr) 110px 80px minmax(90px, 1fr) auto;
 }
 
+.table-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .script-row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3925,7 +3930,7 @@ input[type="range"]:disabled {
 
 .script-market-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -4006,6 +4011,7 @@ input[type="range"]:disabled {
 
 .script-market-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -4015,7 +4021,7 @@ input[type="range"]:disabled {
 .script-market-search {
   position: relative;
   flex: 1 1 320px;
-  min-width: 220px;
+  min-width: min(220px, 100%);
 }
 
 .script-market-search svg {
@@ -4166,6 +4172,8 @@ input[type="range"]:disabled {
 
 .script-market-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 10px;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
@@ -4179,19 +4187,15 @@ input[type="range"]:disabled {
 }
 
 .script-market-card[data-view="list"] {
-  grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1.3fr) minmax(180px, 0.8fr) auto;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr) minmax(0, 0.8fr) auto;
   align-items: center;
   gap: 12px;
   padding: 12px;
 }
 
-/* 卡片被同行最高的那张拉伸时，多余高度默认会分摊进每一行；描述框跟着变高，
- * 但 line-clamp 只渲染 3 行，overflow:hidden 下面就露出第 4 行的一小截。
- * 实测触发条件是行内出现空容器（标签为空时溢出 2.8px），当前 .script-market-tags
- * 总会渲染 v{version} 所以碰不到，这里是防御性收口。
- * 顺带把多余空间集中到行间，操作按钮在同一行的卡片间底部对齐。 */
+/* 多余高度由描述所在行承接，标题与描述保持固定间距，标签和操作区靠底。 */
 .script-market-card[data-view="grid"] {
-  align-content: space-between;
+  grid-template-rows: auto 1fr auto auto;
 }
 
 .script-market-card:hover {
@@ -4202,6 +4206,8 @@ input[type="range"]:disabled {
 
 .script-market-title {
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   justify-content: space-between;
   gap: 10px;
   align-items: flex-start;
@@ -4211,10 +4217,19 @@ input[type="range"]:disabled {
   align-items: center;
 }
 
-.script-market-title > div {
+.script-market-title-copy {
   display: grid;
+  flex: 1 1 140px;
   gap: 3px;
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.script-market-title > .badge {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .script-market-title strong {
@@ -4236,12 +4251,16 @@ input[type="range"]:disabled {
 }
 
 .script-market-description {
+  min-width: 0;
   margin: 0;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .script-market-card[data-view="grid"] .script-market-description {
   display: -webkit-box;
+  /* 描述自身不随行高拉伸，避免三行截断后露出下一行文字。 */
+  align-self: start;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -4270,6 +4289,9 @@ input[type="range"]:disabled {
 }
 
 .script-market-tag {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   border: 1px solid hsl(var(--border));
   border-radius: 999px;
   color: hsl(var(--muted-foreground));
@@ -6019,7 +6041,30 @@ select {
   box-shadow: var(--shadow-lg);
 }
 
+@media (max-width: 1200px) {
+  .script-market-card[data-view="list"] {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .script-market-card[data-view="list"] > :not(.script-market-actions) {
+    grid-column: 1;
+  }
+
+  .script-market-card[data-view="list"] .script-market-actions {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+}
+
 @media (max-width: 1080px) {
+  .table-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .script-row-actions {
+    justify-content: flex-start;
+  }
+
   .shell {
     grid-template-columns: 68px minmax(0, 1fr);
   }
@@ -6174,11 +6219,13 @@ select {
   }
 
   .script-market-card[data-view="list"] {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     align-items: stretch;
   }
 
   .script-market-card[data-view="list"] .script-market-actions {
+    grid-column: 1;
+    grid-row: auto;
     justify-content: flex-start;
   }
 }
@@ -6518,6 +6565,7 @@ select {
 }
 
 .dream-skin-community-preview .badge {
+  display: block;
   position: absolute;
   top: 8px;
   right: 8px;
@@ -6545,6 +6593,7 @@ select {
 
 .dream-skin-community-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   border-top: 1px solid hsl(var(--border));
   padding: 9px 12px 11px;
@@ -6601,6 +6650,7 @@ select {
 }
 
 .dream-skin-market-preview .badge {
+  display: block;
   position: absolute;
   top: 8px;
   right: 8px;
@@ -6627,6 +6677,7 @@ select {
 }
 
 .dream-skin-market-title strong {
+  min-width: 0;
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
@@ -6640,6 +6691,14 @@ select {
   white-space: nowrap;
 }
 
+.dream-skin-market-title > span {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .dream-skin-market-copy small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6650,6 +6709,7 @@ select {
   min-height: 35px;
   margin: 0;
   overflow: hidden;
+  overflow-wrap: anywhere;
   color: hsl(var(--foreground) / 0.78);
   font-size: 12px;
   line-height: 1.45;
@@ -6665,6 +6725,9 @@ select {
 }
 
 .dream-skin-market-tags span {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   border-radius: 4px;
   background: hsl(var(--accent));
   padding: 3px 6px;
@@ -6675,6 +6738,7 @@ select {
 
 .dream-skin-market-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 7px;
   border-top: 1px solid hsl(var(--border));
   padding: 9px 12px 11px;

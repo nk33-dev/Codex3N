@@ -5555,12 +5555,12 @@ function DreamSkinMarketCard({
           }}
           src={theme.previewUrl}
         />
-        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
+        <UiBadge title={status} variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
       </div>
       <div className="dream-skin-market-copy">
         <div className="dream-skin-market-title">
           <strong title={theme.name}>{theme.name}</strong>
-          <span>v{theme.version}</span>
+          <span title={`v${theme.version}`}>v{theme.version}</span>
         </div>
         <small>{tf("作者：{0} · {1}", [theme.author, theme.license])}</small>
         <p>{theme.description || t("暂无主题说明。")}</p>
@@ -5717,12 +5717,12 @@ function DreamSkinCommunityCard({
           }}
           src={theme.previewUrl}
         />
-        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
+        <UiBadge title={status} variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
       </div>
       <div className="dream-skin-community-copy">
         <div className="dream-skin-market-title">
           <strong title={theme.name}>{theme.name}</strong>
-          <span>v{theme.version}</span>
+          <span title={`v${theme.version}`}>v{theme.version}</span>
         </div>
         <small>{tf("作者：{0} · {1} · {2} 次下载", [theme.authorDisplayName, theme.license, String(theme.downloadCount)])}</small>
         <small>{tf("主题包：{0}", [packageSize])}</small>
@@ -7101,11 +7101,11 @@ function MarketScriptCard({ script, actions, view = "grid" }: { script: ScriptMa
   return (
     <div className="script-market-card" data-view={view}>
       <div className="script-market-title">
-        <div>
-          <strong>{script.name}</strong>
-          <span>{script.author || t("未知作者")}</span>
+        <div className="script-market-title-copy">
+          <strong title={script.name}>{script.name}</strong>
+          <span title={script.author || t("未知作者")}>{script.author || t("未知作者")}</span>
         </div>
-        <UiBadge variant={script.updateAvailable ? "default" : script.installed ? "secondary" : "outline"}>{status}</UiBadge>
+        <UiBadge title={status} variant={script.updateAvailable ? "default" : script.installed ? "secondary" : "outline"}>{status}</UiBadge>
       </div>
       <p className="script-market-description">{script.description || t("暂无描述。")}</p>
       <div className="script-market-tags">

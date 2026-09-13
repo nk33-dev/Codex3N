@@ -156,7 +156,7 @@
 
   function flushDeferredRender() {
     if (!state.pendingRender || !isCurrentRuntime()) return false;
-    if (state.viewTransitioning || state.morphAnimation) return false;
+    if (state.viewTransitioning || state.morphAnimation || state.drag || state.resizeDrag) return false;
     state.pendingRender = false;
     renderFloat({ preserveMorph: true, allowDuringTransition: true });
     return true;

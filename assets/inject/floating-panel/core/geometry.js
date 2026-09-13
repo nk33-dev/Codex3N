@@ -15,12 +15,11 @@
     return clamp(progress, 0, 1);
   }
 
-  function defaultPosition() {
-    const bounds = contentSafeBounds();
+  function defaultPosition(bounds = contentSafeBounds()) {
     return clampPosition({
       x: bounds.right - CHIP_WIDTH,
       y: Math.min(bounds.bottom - CHIP_HEIGHT, bounds.top + 44),
-    }, false);
+    }, bounds);
   }
 
   function savedPosition() {
@@ -107,8 +106,7 @@
     };
   }
 
-  function clampPosition(position) {
-    const bounds = contentSafeBounds();
+  function clampPosition(position, bounds = contentSafeBounds()) {
     const visibleWidth = Math.min(CHIP_WIDTH, bounds.width);
     const visibleHeight = Math.min(CHIP_HEIGHT, bounds.height);
     const sourceX = Number(position?.x);
@@ -124,22 +122,22 @@
     try { localStorage.setItem(POSITION_KEY, JSON.stringify(state.position)); } catch {}
   }
 
-  function setPosition(position, persist = false) {
-    state.position = clampPosition(position);
+  function setPosition(position, persist = false, bounds = contentSafeBounds()) {
+    state.position = clampPosition(position, bounds);
     if (persist) persistPosition();
-    applyPosition();
+    applyPosition(bounds);
   }
 
-  function dockRightKeepHeight(persist = true) {
-    const layout = shellLayout();
+  function dockRightKeepHeight(persist = true, bounds = contentSafeBounds()) {
+    const layout = shellLayout(bounds);
     setPosition({
       x: layout.bounds.right - layout.chip.width,
       y: layout.anchor.y,
-    }, persist);
+    }, persist, bounds);
   }
 
-  function snapRightIfNear(persist = false, animate = false) {
-    const layout = shellLayout();
+  function snapRightIfNear(persist = false, animate = false, bounds = contentSafeBounds()) {
+    const layout = shellLayout(bounds);
     const visibleRight = state.open
       ? layout.left + layout.width
       : layout.anchor.x + layout.chip.width;
@@ -154,14 +152,13 @@
       }, 220);
       state.snapTimer = timer;
     }
-    dockRightKeepHeight(persist);
+    dockRightKeepHeight(persist, bounds);
     return true;
   }
 
-  function shellLayout() {
-    const bounds = contentSafeBounds();
+  function shellLayout(bounds = contentSafeBounds()) {
     const width = Math.max(CHIP_WIDTH, Math.min(state.width, bounds.width));
-    const anchor = clampPosition(state.position || defaultPosition());
+    const anchor = clampPosition(state.position || defaultPosition(bounds), bounds);
     const chipWidth = Math.min(CHIP_WIDTH, width);
     const chipHeight = Math.min(CHIP_HEIGHT, bounds.height);
     const minimumPanelHeight = Math.min(PANEL_MIN_HEIGHT, bounds.height);
@@ -568,9 +565,8 @@
     startMorph(target, focusTarget);
   }
 
-  function panelDragPosition(drag, dx, dy) {
+  function panelDragPosition(drag, dx, dy, bounds = contentSafeBounds()) {
     const geometry = drag.originLayout;
-    const bounds = contentSafeBounds();
     const maxLeft = Math.max(bounds.left, bounds.right - geometry.width);
     const maxTop = Math.max(bounds.top, bounds.bottom - geometry.height);
     const left = clamp(drag.originPanelLeft + dx, bounds.left, maxLeft);
@@ -583,12 +579,19 @@
     };
   }
 
-  function applyPosition() {
+  function applyPosition(bounds = contentSafeBounds()) {
     if (!state.popover || !state.fab || !state.position) return;
-    state.position = clampPosition(state.position);
-    state.layout = shellLayout();
-    state.popover.style.left = `${state.layout.left}px`;
-    state.popover.style.top = `${state.layout.top}px`;
+    const previousLayout = state.layout;
+    state.position = clampPosition(state.position, bounds);
+    state.layout = shellLayout(bounds);
+    state.popover.style.transform = `translate(${state.layout.left}px, ${state.layout.top}px)`;
+    // 平移不改变内部几何，避免重写材质层尺寸并读取滚动布局。
+    if (previousLayout
+      && previousLayout.width === state.layout.width
+      && previousLayout.height === state.layout.height
+      && previousLayout.chip.left === state.layout.chip.left
+      && previousLayout.chip.top === state.layout.chip.top
+      && previousLayout.compressionProgress === state.layout.compressionProgress) return;
     state.popover.style.width = `${state.layout.width}px`;
     state.popover.style.height = `${state.layout.height}px`;
     state.root.style.setProperty("--csw-panel-width", `${state.layout.width}px`);
@@ -601,10 +604,10 @@
       "--csw-content-fade-size",
       `${compressed ? Math.min(48, 14 + compressionProgress * 34) : 0}px`,
     );
-    syncContentFade();
     state.fab.style.left = `${state.layout.chip.left}px`;
     state.fab.style.top = `${state.layout.chip.top}px`;
     if (!state.morphAnimation) applyMorphProgress(state.open ? 1 : 0);
+    syncContentFade();
   }
 
   // SVG filters provide material-specific backdrop treatment without adding third-party runtime code.

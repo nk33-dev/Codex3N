@@ -85,6 +85,8 @@
 
       .csw-popover {
         height: var(--csw-panel-height);
+        left: 0;
+        top: 0;
         isolation: isolate;
         pointer-events: none;
         position: fixed;
@@ -159,7 +161,7 @@
       }
 
       .csw-popover[data-snap-right="true"] {
-        transition: left 180ms cubic-bezier(.22, .72, 0, 1), top 180ms cubic-bezier(.22, .72, 0, 1);
+        transition: transform 180ms cubic-bezier(.22, .72, 0, 1);
       }
 
       .csw-popover[data-snap-right="true"] .csw-fab,
