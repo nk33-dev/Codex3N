@@ -10,8 +10,8 @@ function section(start: string, end: string) {
   return source.slice(offset, limit);
 }
 
-const apiModels = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
-function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativeModels = true } = {}) {
+const apiModels = ["gpt-6-astra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
+function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativeModels = true, models = apiModels } = {}) {
   const requests: Array<{ hostId: string; method: string; params: unknown }> = [];
   const invalidations: unknown[] = [];
   let writes = 0;
@@ -67,7 +67,7 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     return { collectScopedAppServerRequestCandidates, refreshCodexModelQueries, codexAppScopeNodes,
       setIncludeNativeModels: value => { includeNativeModels = value; } };
   `);
-  return { ...create(windowValue, apiModels, provider, status, includeNativeModels), root, signal, requests, invalidations, writes: () => writes };
+  return { ...create(windowValue, models, provider, status, includeNativeModels), root, signal, requests, invalidations, writes: () => writes };
 }
 
 test("从已挂载作用域发现 RPC，8 个供应商模型进入原生 model/list", async () => {
@@ -81,6 +81,20 @@ test("从已挂载作用域发现 RPC，8 个供应商模型进入原生 model/l
   assert.equal(result.data.find((item: { model: string }) => item.model === "gpt-5.5").isDefault, true);
   assert.equal(app.writes(), 0);
   assert.deepEqual(app.invalidations, [{ queryKey: ["models", "list", "local"] }]);
+});
+
+test("不同供应商清单经过原生 RPC 后都按通用规则排序", async () => {
+  for (const [provider, models, expected] of [
+    ["supplier-a", ["claude-sonnet-4.5", "gemini-2.5-pro", "claude-sonnet-4.6"], ["claude-sonnet-4.6", "claude-sonnet-4.5", "gemini-2.5-pro"]],
+    ["supplier-b", ["qwen3.5", "deepseek-v3", "qwen3.10"], ["deepseek-v3", "qwen3.10", "qwen3.5"]],
+    ["new-supplier", ["private/chat-2", "private/auto", "private/chat-10"], ["private/auto", "private/chat-10", "private/chat-2"]],
+  ] as const) {
+    const app = runtime({ provider, models: [...models], includeNativeModels: false });
+    app.collectScopedAppServerRequestCandidates([{ signal: app.signal }]);
+    const result = await app.root.forHost("local").sendRequest("model/list", {});
+    assert.deepEqual(result.data.map((item: { model: string }) => item.model), [...expected]);
+    assert.deepEqual(result.data.map((item: { priority: number }) => item.priority), expected.map((_model, index) => index));
+  }
 });
 
 test("RPC 适配去重并保留其他方法与原始参数", async () => {
