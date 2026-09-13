@@ -567,13 +567,6 @@
         z-index: 2;
       }
 
-      .csw-fab-eye-dot {
-        background: currentColor;
-        border-radius: 50%;
-        display: block;
-        height: 5px;
-        width: 5px;
-      }
       .csw-fab-eye {
         background: currentColor;
         border-radius: 999px;
@@ -654,31 +647,11 @@
       }
 
       :is(.csw-fab, .csw-head-face)[data-expression="error"] .csw-fab-eye {
-        animation: csw-face-error-breathe 3.8s ease-in-out infinite;
-        background: transparent;
-        color: var(--csw-text);
-        height: 14px;
-        width: 14px;
-      }
-
-      :is(.csw-fab, .csw-head-face)[data-expression="error"] .csw-fab-eye::before,
-      :is(.csw-fab, .csw-head-face)[data-expression="error"] .csw-fab-eye::after {
+        animation: none;
         background: currentColor;
         border-radius: 999px;
-        content: "";
-        height: 2.5px;
-        left: 0;
-        position: absolute;
-        top: 5.75px;
-        width: 14px;
-      }
-
-      :is(.csw-fab, .csw-head-face)[data-expression="error"] .csw-fab-eye::before {
-        transform: rotate(45deg);
-      }
-
-      :is(.csw-fab, .csw-head-face)[data-expression="error"] .csw-fab-eye::after {
-        transform: rotate(-45deg);
+        height: 6px;
+        width: 10px;
       }
 
       :is(.csw-fab, .csw-head-face)[data-expression="curious"] .csw-fab-eye {
