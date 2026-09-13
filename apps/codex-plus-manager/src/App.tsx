@@ -15,7 +15,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
@@ -140,6 +139,8 @@ import {
 } from "./dream-skin";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
+import { initializeManager, loadManagerPage, type ManagerPageLoaders, type ManagerRoute as Route } from "./manager-loading";
+import { useManagerLifecycle } from "./use-manager-lifecycle";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
@@ -920,10 +921,8 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   grok: Blocks,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
-const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const SETTINGS_STEPWISE_SECTION_ID = "settings-stepwise";
 
 /**
@@ -1080,6 +1079,8 @@ const defaultSettings: BackendSettings = {
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [startupReady, setStartupReady] = useState(false);
+  const navigationRevision = useRef(0);
   const [pendingSettingsSection, setPendingSettingsSection] = useState<ManagerNavigationIntent["section"] | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -1136,6 +1137,8 @@ export function App() {
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
+  const settingsFormRef = useRef(settingsForm);
+  settingsFormRef.current = settingsForm;
   // 顶栏工具切换条的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
   const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
@@ -1210,13 +1213,14 @@ export function App() {
     setSettingsForm(next);
     // 供应商页是跟着工具走的，切工具后如果当前页不属于新工具就跳到它自己的页。
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tool && currentRoute.tool !== toolId) {
-      setRoute(toolId === "grok" ? "grok" : "relay");
-    }
+    const nextRoute = currentRoute?.tool && currentRoute.tool !== toolId
+      ? toolId === "grok" ? "grok" : "relay"
+      : null;
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
+      if (nextRoute) await navigate(nextRoute);
     } else {
       // 写盘失败就回滚 UI，别让顶栏显示一个没保存的状态。
       setActiveTool(activeTool);
@@ -1239,11 +1243,13 @@ export function App() {
     }
   };
 
-  const refreshSettings = async (silent = false) => {
+  const refreshSettings = async (silent = false, shouldApply = () => true) => {
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (result) {
-      setSettings(result);
       const normalized = normalizeSettings(result.settings);
+      if (!shouldApply()) return normalized;
+      setSettings(result);
+      settingsFormRef.current = normalized;
       setSettingsForm(normalized);
       // 顶栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
       setActiveTool(normalized.activeTool || "codex");
@@ -1257,9 +1263,9 @@ export function App() {
     return null;
   };
 
-  const refreshWeixinStatus = async (silent = false) => {
+  const refreshWeixinStatus = async (silent = false, isCurrent = () => true) => {
     const result = await run(() => call<WeixinConnectStatusResult>("weixin_connect_status"));
-    if (result) {
+    if (result && isCurrent()) {
       setWeixinStatus(result);
       if (!silent) showResultNotice(t("微信连接"), result, { silentSuccess: true });
     }
@@ -1627,6 +1633,7 @@ export function App() {
     showResultNotice(t("DreamSkin 社区"), result);
     if (!isSuccessStatus(result.status)) return;
     setPendingDreamSkinCommunity("");
+    const revision = ++navigationRevision.current;
     setRoute("dreamSkin");
     await refreshDreamSkinLibrary(true);
     if (result.installedThemeId) {
@@ -1635,6 +1642,10 @@ export function App() {
         setDreamSkinDraftSelection(`stored:${result.installedThemeId}`, draft);
         await activateDreamSkinDraft(draft);
       }
+    }
+    // 确认链接已加载主题库与社区结果，进入页面时只补齐其余数据。
+    if (navigationRevision.current === revision) {
+      void loadPage("dreamSkin", new Set(["settings", "dreamSkinLibrary", "dreamSkinCommunity"]));
     }
   };
 
@@ -2046,81 +2057,56 @@ export function App() {
     }
   };
 
-  const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
+  const loadPage = (next: Route, alreadyLoaded?: ReadonlySet<keyof ManagerPageLoaders>) => {
+    const revision = navigationRevision.current;
+    const formAtLoad = settingsFormRef.current;
+    return loadManagerPage(next, {
+      settings: () => refreshSettings(true, () => navigationRevision.current === revision && settingsFormRef.current === formAtLoad),
+      overview: () => refreshOverview(true),
+      weixin: () => refreshWeixinStatus(true),
+      relay: () => refreshRelay(true),
+      relayFiles: () => refreshRelayFiles(true),
+      envConflicts: () => refreshEnvConflicts(true),
+      ccsProviders: () => refreshCcsProviders(true),
+      relayEnvironment: () => refreshRelayEnvironment(true),
+      sessions: () => refreshLocalSessions(true),
+      providerSyncTargets: () => refreshProviderSyncTargets(true),
+      zedRemoteProjects: () => refreshZedRemoteProjects(true),
+      liveContextEntries: () => refreshLiveContextEntries(true),
+      dreamSkinStatus: () => refreshDreamSkinStatus(true),
+      dreamSkinLibrary: () => refreshDreamSkinLibrary(true),
+      dreamSkinMarket: () => refreshDreamSkinMarket(true),
+      dreamSkinCommunity: () => refreshDreamSkinCommunity(true),
+      scriptMarket: () => refreshScriptMarket(true),
+      userScriptInventory: refreshUserScriptInventory,
+      logs: () => refreshLogs(true),
+      diagnostics: () => refreshDiagnostics(true),
+      watcher: () => refreshWatcher(true),
+      remotePluginMarketplace: () => refreshRemotePluginMarketplace(true),
+    }, alreadyLoaded,
+    () => navigationRevision.current === revision);
+  };
+
+  const navigate = async (next: Route, skipDreamSkinDraftGuard = false, initialLoad = false) => {
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
       return;
     }
+    navigationRevision.current += 1;
     setRoute(next);
-    if (next === "overview") await refreshOverview(true);
-    if (next === "relay") {
-      await refreshSettings(true);
-      await refreshWeixinStatus(true);
-      await refreshRelay(true);
-      await refreshRelayFiles(true);
-      await refreshEnvConflicts(true);
-      await refreshCcsProviders(true);
-    }
-    if (next === "relayEnvironment") await refreshRelayEnvironment(true);
-    if (next === "grok") await refreshSettings(true);
-    if (next === "sessions") {
-      await refreshSettings(true);
-      await refreshLocalSessions(true);
-      await refreshProviderSyncTargets(true);
-    }
-    if (next === "zedRemote") {
-      await refreshSettings(true);
-      await refreshZedRemoteProjects(true);
-    }
-    if (next === "context") {
-      await refreshSettings(true);
-      await refreshRelayFiles(true);
-      await refreshLiveContextEntries(true);
-    }
-    if (next === "weixin") {
-      await refreshSettings(true);
-      await refreshWeixinStatus(true);
-      await refreshLocalSessions(true);
-    }
-    if (next === "dreamSkin") {
-      await refreshSettings(true);
-      await refreshOverview(true);
-      await refreshDreamSkinStatus(true);
-      await refreshDreamSkinLibrary(true);
-      await refreshDreamSkinMarket(true);
-      await refreshDreamSkinCommunity(true);
-    }
-    if (next === "settings") await refreshSettings(true);
-    if (next === "userScripts") {
-      await refreshSettings(true);
-      await refreshScriptMarket(true);
-      await refreshUserScriptInventory();
-    }
-    if (next === "about") {
-      await refreshOverview(true);
-      await refreshLogs(true);
-      await refreshDiagnostics(true);
-    }
-    if (next === "maintenance") {
-      await refreshOverview(true);
-      await refreshWatcher(true);
-    }
+    await loadPage(next, initialLoad ? new Set(["settings", "overview"]) : undefined);
   };
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
 
-  const consumePendingManagerNavigation = async (): Promise<boolean> => {
+  const consumePendingManagerNavigation = async (initialLoad = false): Promise<boolean> => {
     try {
+      const revision = navigationRevision.current;
       const navigation = await invoke<ManagerNavigationIntent | null>("consume_pending_manager_navigation");
-      if (!navigation) return false;
-      if (navigation.page === "relay") {
-        await navigate("relay");
-        return true;
-      }
-      if (navigation.page === "settings") {
-        setPendingSettingsSection(navigation.section ?? null);
-        setRoute("settings");
-        await refreshSettings(true);
-        return true;
-      }
+      if (!navigation || navigationRevision.current !== revision) return false;
+      if (navigation.page === "settings") setPendingSettingsSection(navigation.section ?? null);
+      await navigateRef.current(navigation.page, false, initialLoad);
+      return true;
     } catch (error) {
       logDiagnostic("manager.navigation_failed", { error: stringifyError(error) });
     }
@@ -2518,7 +2504,7 @@ export function App() {
     if (result) {
       setProviderSyncTargets(result);
       const targets = result.targets ?? [];
-      const saved = settingsForm.providerSyncLastSelectedProvider;
+      const saved = settingsFormRef.current.providerSyncLastSelectedProvider;
       const preferred = preferredProviderSyncTarget(targets, result.currentProvider, saved);
       setSelectedProviderSyncTarget(preferred);
       if (!silent && !isSuccessStatus(result.status)) showNotice(t("Provider 同步目标"), result.message, result.status);
@@ -2965,45 +2951,45 @@ export function App() {
   };
 
   useEffect(() => {
+    let disposed = false;
+    const initialForm = settingsFormRef.current;
     void (async () => {
-      const startup = await run(() => call<StartupResult>("startup_options"));
-      const handledNavigation = await consumePendingManagerNavigation();
-      if (!handledNavigation && startup?.showUpdate) {
-        setRoute("about");
-        void checkUpdate(false);
-      } else {
-        void checkUpdate(true);
+      const startup = await initializeManager({
+        startup: () => run(() => call<StartupResult>("startup_options")),
+        settings: () => refreshSettings(true, () => !disposed && settingsFormRef.current === initialForm),
+        overview: () => refreshOverview(true),
+        tools: () => refreshTools(true),
+      });
+      if (disposed) return;
+      // 用户已经切页时，不让较慢的启动检查把页面切回去。
+      const untouched = navigationRevision.current === 0;
+      const handledNavigation = untouched && await consumePendingManagerNavigation(true);
+      if (disposed) return;
+      if (!handledNavigation && navigationRevision.current === 0) {
+        const initialRoute = startup?.showUpdate ? "about" : route;
+        setRoute(initialRoute);
+        void loadPage(initialRoute, new Set(["settings", "overview"]));
       }
-      await refreshOverview(true);
-      await refreshTools(true);
-      if (!handledNavigation) await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshEnvConflicts(true);
-      await refreshProviderSyncTargets(true);
-      await refreshPendingProviderImport(true);
-      await refreshPendingSessionShare(true);
-      await refreshPendingDreamSkinCommunity();
-      await refreshRemotePluginMarketplace(true);
+      void checkUpdate(handledNavigation || !startup?.showUpdate);
+      setStartupReady(true);
     })();
+    return () => { disposed = true; };
   }, []);
 
-  useEffect(() => {
-    let disposed = false;
-    let stopListening: (() => void) | undefined;
-    void listen(MANAGER_NAVIGATION_EVENT, () => {
-      if (!disposed) void consumePendingManagerNavigation();
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        stopListening = unlisten;
-      }
-    });
-    return () => {
-      disposed = true;
-      stopListening?.();
-    };
-  }, []);
+  useManagerLifecycle({
+    ready: startupReady,
+    weixinActive: route === "weixin",
+    refreshPending: async () => {
+      await Promise.all([
+        consumePendingManagerNavigation(),
+        refreshPendingProviderImport(true),
+        refreshPendingSessionShare(true),
+        refreshPendingDreamSkinCommunity(),
+      ]);
+    },
+    refreshWeixin: (isCurrent) => refreshWeixinStatus(true, isCurrent),
+    onError: (error) => logDiagnostic("manager.background_refresh_failed", { error: stringifyError(error) }),
+  });
 
   useEffect(() => {
     if (route !== "settings" || pendingSettingsSection !== "stepwise") return;
@@ -3035,15 +3021,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      void refreshPendingProviderImport(true);
-      void refreshPendingSessionShare(true);
-      void refreshPendingDreamSkinCommunity();
-    }, 1200);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
+    // 扫码确认会在后端保存凭据并消费二维码，进行中的登录须继续接收最终结果。
     if (!weixinQr || !["", "wait", "scaned"].includes(weixinQr.qrStatus)) return;
     let cancelled = false;
     let timer: number | undefined;
@@ -3073,12 +3051,6 @@ export function App() {
       if (timer) window.clearTimeout(timer);
     };
   }, [weixinQr?.qrStatus, weixinQr?.qrContent]);
-
-  useEffect(() => {
-    if (route !== "weixin") return;
-    const timer = window.setInterval(() => void refreshWeixinStatus(true), 2_000);
-    return () => window.clearInterval(timer);
-  }, [route]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -3379,7 +3351,7 @@ export function App() {
                 <button
                   className="update-dot"
                   onClick={() => {
-                    setRoute("about");
+                    void navigate("about");
                     void checkUpdate(false);
                   }}
                   title={tf("发现新版本 {0}", [update?.latestVersion ?? ""])}

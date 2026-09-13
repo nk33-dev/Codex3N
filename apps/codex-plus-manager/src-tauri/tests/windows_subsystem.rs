@@ -285,7 +285,15 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(app_tsx.contains("id: \"context\""));
     assert!(app_tsx.contains("function ContextScreen"));
     assert!(app_tsx.contains("route === \"context\""));
-    assert!(app_tsx.contains("if (next === \"context\")"));
+    let loading = std::fs::read_to_string(
+        manifest_dir
+            .parent()
+            .unwrap()
+            .join("src/manager-loading.ts"),
+    )
+    .expect("read manager page loaders");
+    assert!(app_tsx.contains("loadManagerPage(next,"));
+    assert!(loading.contains("context: [[\"settings\", \"relayFiles\", \"liveContextEntries\"]]"));
     assert!(app_tsx.contains("selectedContextConfigToml(entries)"));
     assert!(app_tsx.contains("toggleContextEntryEnabled"));
     assert!(app_tsx.contains("relayFiles={relayFiles}"));
