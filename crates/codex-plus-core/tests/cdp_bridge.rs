@@ -155,7 +155,7 @@ fn stepwise_script_uses_the_floating_panel_entrypoint() {
 fn stepwise_runtime_bumps_version_when_reinjection_contract_changes() {
     let script = assets::stepwise_script();
 
-    assert!(script.contains("const SCRIPT_VERSION = \"2.0.8\";"));
+    assert!(script.contains("const SCRIPT_VERSION = \"2.0.9\";"));
 }
 
 #[test]
@@ -1387,7 +1387,7 @@ fn stepwise_resize_keeps_the_status_face_as_the_geometry_anchor() {
         "lockedOpensDown: state.layout.opensDown,",
         "startWidth - dx * 2 : startWidth + dx * 2",
         "const nextHeight = clampPanelHeight(startHeight + dy);",
-        "state.position = clampPosition(resizePositionFromFace(nextHeight, resize));",
+        "state.position = clampPosition(resizePositionFromFace(nextHeight, resize), bounds);",
     ] {
         assert!(
             script.contains(contract),

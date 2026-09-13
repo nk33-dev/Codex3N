@@ -164,6 +164,11 @@
   // Rendering preserves scroll, active view, and in-flight morph state while replacing only view content.
   function renderFloat(options = {}) {
     if (!isCurrentRuntime()) return;
+    // 拖动时保留捕获指针的标题节点，结束后再显示最新内容。
+    if (state.drag || state.resizeDrag) {
+      deferRender();
+      return;
+    }
     if (!options.allowDuringTransition && (state.viewTransitioning || state.morphAnimation)) {
       deferRender();
       return;

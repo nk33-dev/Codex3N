@@ -1,5 +1,30 @@
 /* Floating-panel interaction: material surfaces, pointer input, drag, resize, and tracking. */
 
+  // 高频指针事件只保留本帧最后一个位置；松手时同步应用，避免漏掉最后一段移动。
+  function createPointerFrame(update) {
+    let frame = 0;
+    let pending = null;
+    const flush = () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0;
+      const value = pending;
+      pending = null;
+      if (value && isCurrentRuntime()) update(value);
+    };
+    return {
+      schedule(value) {
+        pending = value;
+        if (!frame) frame = window.requestAnimationFrame(flush);
+      },
+      flush,
+      cancel() {
+        if (frame) window.cancelAnimationFrame(frame);
+        frame = 0;
+        pending = null;
+      },
+    };
+  }
+
   function createDisplacementFilter(id, options) {
     document.getElementById(id)?.ownerSVGElement?.remove();
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -72,7 +97,9 @@
   function updateClearDisplacement(expanded, active) {
     if (!state.clearDisplacement) return;
     const scale = active ? (expanded ? 6 : 6) : (expanded ? 3 : 2);
-    state.clearDisplacement.setAttribute("scale", String(scale));
+    if (state.clearDisplacement.getAttribute("scale") !== String(scale)) {
+      state.clearDisplacement.setAttribute("scale", String(scale));
+    }
   }
 
   function updateMaterialDistortion(expanded, active) {
@@ -234,6 +261,17 @@
     state.suppressHeadFaceClick = false;
     resetEyePointer();
 
+    const movement = createPointerFrame(({ x, y }) => {
+      if (state.drag !== drag) return;
+      const bounds = contentSafeBounds();
+      const dx = x - drag.startX;
+      const dy = y - drag.startY;
+      const nextPosition = source === "panel"
+        ? panelDragPosition(drag, dx, dy, bounds)
+        : { x: drag.originX + dx, y: drag.originY + dy };
+      state.position = clampPosition(nextPosition, bounds);
+      if (!snapRightIfNear(false, false, bounds)) applyPosition(bounds);
+    });
     const onPointerMove = (moveEvent) => {
       if (state.drag !== drag || moveEvent.pointerId !== drag.pointerId) return;
       const dx = moveEvent.clientX - drag.startX;
@@ -241,35 +279,40 @@
       if (!drag.moved && Math.hypot(dx, dy) < 3) return;
       if (!drag.moved) {
         drag.moved = true;
+        if (state.snapTimer) window.clearTimeout(state.snapTimer);
+        state.snapTimer = 0;
+        state.popover?.removeAttribute("data-snap-right");
         handle?.setAttribute?.("data-dragging", "true");
         try { handle?.setPointerCapture?.(drag.pointerId); } catch {}
       }
       moveEvent.preventDefault();
-      const nextPosition = source === "panel"
-        ? panelDragPosition(drag, dx, dy)
-        : { x: drag.originX + dx, y: drag.originY + dy };
-      setPosition(nextPosition);
-      snapRightIfNear();
+      movement.schedule({ x: moveEvent.clientX, y: moveEvent.clientY });
     };
 
     const cleanup = () => {
+      movement.cancel();
       window.removeEventListener("pointermove", onPointerMove, true);
       window.removeEventListener("pointerup", onPointerEnd, true);
       window.removeEventListener("pointercancel", onPointerEnd, true);
+      window.removeEventListener("blur", finishDrag, true);
+      document.removeEventListener("visibilitychange", onVisibilityChange, true);
+      handle?.removeEventListener?.("lostpointercapture", onPointerEnd, true);
       handle?.removeAttribute?.("data-dragging");
       try { handle?.releasePointerCapture?.(drag.pointerId); } catch {}
+      if (state.drag === drag) state.drag = null;
       if (state.dragCleanup === cleanup) state.dragCleanup = null;
     };
 
-    const onPointerEnd = (endEvent) => {
-      if (state.drag !== drag || endEvent.pointerId !== drag.pointerId) return;
+    const finishDrag = () => {
+      if (state.drag !== drag) return;
+      movement.flush();
+      // 保留拖动时的展开方向，吸附完成后再释放几何约束。
+      const snapped = drag.moved && snapRightIfNear(true, true);
       cleanup();
       if (!drag.moved) {
-        state.drag = null;
+        flushDeferredRender();
         return;
       }
-      const snapped = snapRightIfNear(true, true);
-      state.drag = null;
       if (!snapped) persistPosition();
       if (source === "fab") {
         state.suppressFabClick = true;
@@ -281,13 +324,26 @@
           document.activeElement.blur();
         }
       }
-      syncEyeTracking();
+      if (!flushDeferredRender()) syncEyeTracking();
+    };
+    const onPointerEnd = (endEvent) => {
+      if (state.drag !== drag || endEvent.pointerId !== drag.pointerId) return;
+      if (drag.moved && endEvent.type === "pointerup") {
+        movement.schedule({ x: endEvent.clientX, y: endEvent.clientY });
+      }
+      finishDrag();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") finishDrag();
     };
 
     state.dragCleanup = cleanup;
     window.addEventListener("pointermove", onPointerMove, { capture: true, passive: false });
     window.addEventListener("pointerup", onPointerEnd, true);
     window.addEventListener("pointercancel", onPointerEnd, true);
+    window.addEventListener("blur", finishDrag, true);
+    document.addEventListener("visibilitychange", onVisibilityChange, true);
+    handle?.addEventListener?.("lostpointercapture", onPointerEnd, true);
     if (source === "panel" && !drag.startedOnHeadFace) event.preventDefault();
   }
 
@@ -431,20 +487,26 @@
         state.resizeDrag = resize;
         state.popover.dataset.resizing = "true";
 
-        const onMove = (moveEvent) => {
-          if (state.resizeDrag !== resize || moveEvent.pointerId !== resize.pointerId) return;
-          moveEvent.preventDefault();
-          const dx = moveEvent.clientX - startX;
-          const dy = moveEvent.clientY - startY;
+        const movement = createPointerFrame(({ x, y }) => {
+          if (state.resizeDrag !== resize) return;
+          const bounds = contentSafeBounds();
+          const dx = x - startX;
+          const dy = y - startY;
           const nextWidth = clampPanelWidth(corner === "bl" ? startWidth - dx * 2 : startWidth + dx * 2);
           const nextHeight = clampPanelHeight(startHeight + dy);
           state.width = nextWidth;
           state.height = nextHeight;
-          state.position = clampPosition(resizePositionFromFace(nextHeight, resize));
-          applyPosition();
+          state.position = clampPosition(resizePositionFromFace(nextHeight, resize), bounds);
+          applyPosition(bounds);
+        });
+        const onMove = (moveEvent) => {
+          if (state.resizeDrag !== resize || moveEvent.pointerId !== resize.pointerId) return;
+          moveEvent.preventDefault();
+          movement.schedule({ x: moveEvent.clientX, y: moveEvent.clientY });
         };
 
         const cleanup = () => {
+          movement.cancel();
           window.removeEventListener("pointermove", onMove, true);
           window.removeEventListener("pointerup", endResize, true);
           window.removeEventListener("pointercancel", endResize, true);
@@ -455,17 +517,24 @@
         };
 
         const finishResize = () => {
+          if (state.resizeDrag !== resize) return;
+          movement.flush();
           cleanup();
           if (state.resizeDrag === resize) state.resizeDrag = null;
           state.popover?.removeAttribute("data-resizing");
           storage.set(WIDTH_KEY, String(state.width));
           storage.set(HEIGHT_KEY, String(state.height));
+          persistPosition();
           applyPosition();
           try { handle.releasePointerCapture(resize.pointerId); } catch {}
+          flushDeferredRender();
         };
 
         const endResize = (endEvent) => {
           if (state.resizeDrag !== resize || endEvent.pointerId !== resize.pointerId) return;
+          if (endEvent.type === "pointerup") {
+            movement.schedule({ x: endEvent.clientX, y: endEvent.clientY });
+          }
           finishResize();
         };
 
@@ -674,6 +743,15 @@
   }
 
   function onShellPointerMove(event) {
+    if (!state.glassPointerFrame) state.glassPointerFrame = createPointerFrame(updateShellPointer);
+    state.glassPointerFrame.schedule({
+      currentTarget: event.currentTarget,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  }
+
+  function updateShellPointer(event) {
     if (!state.glass || !state.popover) return;
     const expanded = state.open || state.popover.dataset.open === "true";
     const surface = event.currentTarget;
@@ -712,6 +790,7 @@
   }
 
   function resetGlassPointer() {
+    state.glassPointerFrame?.cancel();
     const expanded = state.open || state.popover?.dataset.open === "true";
     state.popover?.removeAttribute("data-csw-hot-hover");
     updateMaterialDistortion(expanded, false);
