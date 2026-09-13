@@ -76,6 +76,13 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run check
 
+      # codex-plus-manager 里的 tauri::generate_context! 会在编译期检查
+      # tauri.conf.json 的 frontendDist（"../dist"）是否存在，缺目录会直接
+      # proc macro panic；所以 cargo test 之前必须先产出前端产物。
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
       - name: Rust formatting
         run: cargo fmt --all --check
 
@@ -218,6 +225,11 @@ jobs:
             plutil -lint "$app/Contents/Info.plist" >/dev/null
             codesign -dv "$app" >/dev/null 2>&1
             echo "verified: $app"
+          done
+          # 打包脚本曾经在 convert 连续失败后仍然退出 0，这里显式确认 DMG 真的存在
+          for dmg in dist/macos/*.dmg; do
+            test -f "$dmg"
+            echo "verified: $dmg"
           done
 
       - name: Upload macOS DMG
