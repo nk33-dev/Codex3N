@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    发布 Codex3N：校验 → 推送 personal → 打标签 → 创建 GitHub Release。
+    发布 Codex3N：校验 → 打标签 → 一次原子推送分支与标签 → 创建 GitHub Release。
 
 .DESCRIPTION
     这个脚本存在的原因是几个踩过的坑：
@@ -102,9 +102,8 @@ if (-not $SkipChecks) {
     Invoke-Step "cargo test --workspace" { cargo test --workspace }
 }
 
-Invoke-Step "推送 $Branch" { git push origin $Branch }
 Invoke-Step "创建标签 $tag" { git tag -a $tag -m "Codex3N $version" }
-Invoke-Step "推送标签 $tag" { git push origin $tag }
+Invoke-Step "原子推送 $Branch 与 $tag" { git push --atomic origin "refs/heads/$Branch" "refs/tags/$tag" }
 
 $releaseArgs = @(
     "release", "create", $tag,
