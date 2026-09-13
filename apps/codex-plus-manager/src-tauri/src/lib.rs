@@ -15,6 +15,7 @@ const TRAY_MENU_DREAM_SKIN_APPLY: &str = "tray_apply_dream_skin";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
 const DREAM_SKIN_DEBUG_PORT: u16 = 9229;
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
+const MANAGER_VISIBILITY_EVENT: &str = "manager-visibility-changed";
 
 pub fn run() {
     install_panic_logger();
@@ -323,15 +324,26 @@ fn register_main_window_events<R: tauri::Runtime>(
     let close_event_window = event_window.clone();
     let close_event_app = event_window.app_handle().clone();
     let focus_event_window = event_window.clone();
+    let was_minimized = AtomicBool::new(false);
 
     event_window.on_window_event(move |event| match event {
         WindowEvent::Resized(_) if !APP_EXITING.load(Ordering::SeqCst) => {
-            if matches!(minimized_window.is_minimized(), Ok(true)) {
-                let _ = minimized_window.hide();
+            if let Ok(minimized) = minimized_window.is_minimized() {
+                if minimized {
+                    let _ = minimized_window.hide();
+                }
+                // 普通拖动缩放不影响可见性，只在最小化或恢复时通知。
+                if was_minimized.swap(minimized, Ordering::Relaxed) != minimized {
+                    emit_manager_visibility(&minimized_window);
+                }
             }
         }
-        WindowEvent::Focused(true) if !APP_EXITING.load(Ordering::SeqCst) => {
-            let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
+        WindowEvent::Focused(focused) if !APP_EXITING.load(Ordering::SeqCst) => {
+            // 失焦可能只是切换应用，是否暂停刷新以窗口实际可见性为准。
+            emit_manager_visibility(&focus_event_window);
+            if *focused {
+                let _ = focus_event_window.emit(MANAGER_NAVIGATION_EVENT, ());
+            }
         }
         WindowEvent::CloseRequested { api, .. } => {
             // 统一由 app.exit 驱动退出，避免默认关窗与显式退出同时销毁事件循环。
@@ -346,6 +358,7 @@ fn register_main_window_events<R: tauri::Runtime>(
             }
 
             let _ = close_event_window.hide();
+            emit_manager_visibility(&close_event_window);
         }
         _ => {}
     });
@@ -377,6 +390,14 @@ fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
         return;
     }
     let _ = window.hide();
+    emit_manager_visibility(&window);
+}
+
+fn emit_manager_visibility<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    // 查询实际状态，避免隐藏失败时误停刷新；最小化也视为不可见。
+    if let (Ok(visible), Ok(minimized)) = (window.is_visible(), window.is_minimized()) {
+        let _ = window.emit(MANAGER_VISIBILITY_EVENT, visible && !minimized);
+    }
 }
 
 #[tauri::command]
@@ -453,12 +474,14 @@ fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        emit_manager_visibility(&window);
+        // 已聚焦时不会再次触发 Focused(true)，托盘或协议唤起仍需检查待处理请求。
+        let _ = window.emit(MANAGER_NAVIGATION_EVENT, ());
     }
 }
 
-/// Restores and focuses an existing manager window on Windows.
-///
-/// This is a no-op on other platforms.
+/// 在 Windows 上恢复并聚焦已有管理窗口，其他平台不执行操作。
+/// 已聚焦的窗口可能不再收到焦点事件，此时由前端可见期间的低频刷新补查待处理请求。
 pub fn focus_existing_manager_window() {
     #[cfg(windows)]
     {
