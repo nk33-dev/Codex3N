@@ -170,6 +170,7 @@ ln -s /Applications "$STAGE/Applications"
 DMG_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/codex-plus-plus-dmg.XXXXXX")"
 DMG_WORK_PATH="$DMG_WORK_DIR/$(basename "$DMG")"
 DMG_CREATED=false
+DMG_CONVERTED=false
 MOUNT_POINT=""
 MOUNT_DEVICE=""
 
@@ -212,7 +213,6 @@ cleanup_dmg_work_dir() {
 
 trap cleanup_dmg_work_dir EXIT
 
-DMG_CREATED=false
 for attempt in 1 2 3 4 5; do
   if hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDRW "$DMG_WORK_PATH"; then
     DMG_CREATED=true
@@ -274,48 +274,72 @@ then
   echo "warning: unable to persist Finder DMG window layout; the background is still included" >&2
 fi
 
-# GitHub macOS runner 上 Finder 刚完成窗口布局，卷可能仍被短暂占用
-# （Resource busy）；且优雅 detach 失败也可能已触发延迟弹出，后续重试会报
-# No such file or directory（卷已消失，应视为成功）。退避重试后仍失败才
-# -force；-force 后卷已消失同样视为成功。
+# 镜像是否还挂着。只认磁盘映像文件本身，不看挂载点：eject 失败时卷的挂载点
+# 往往已经消失，只看挂载点会误判成「卸载干净了」，紧接着 convert 必然报
+# Resource temporarily unavailable。
+#
+# 比较用文件名而不是完整路径：$TMPDIR 自带结尾斜杠，拼出来是 `.../T//xxx.dmg`，
+# 而 hdiutil info 打印的形态不一定一样；文件名在同一台 runner 上是唯一的。
+image_still_attached() {
+  [ -n "$DMG_WORK_PATH" ] || return 1
+  hdiutil info 2>/dev/null | grep -Fq -- "$(basename "$DMG_WORK_PATH")"
+}
+
+# GitHub macOS runner 上 Finder 刚完成窗口布局，镜像仍被 diskimages-help 持有，
+# 卷的 eject 会报 Resource busy：此时挂载点已经不存在，按挂载点 -force 只会
+# 报 No such file or directory，等于什么都没做。必须按设备路径（/dev/diskN）
+# 强制卸载，并以「镜像是否还在 hdiutil info 里」作为唯一判据。
 detach_volume() {
   local attempt
-  for attempt in 1 2 3; do
-    if hdiutil detach "$MOUNT_POINT" >/dev/null; then
+  for attempt in 1 2 3 4 5; do
+    if ! image_still_attached; then
       return 0
     fi
-    if [ ! -e "$MOUNT_POINT" ]; then
-      return 0
+
+    if [ -n "$MOUNT_DEVICE" ]; then
+      hdiutil detach "$MOUNT_DEVICE" -force >/dev/null 2>&1 || true
+    fi
+    if [ -n "$MOUNT_POINT" ]; then
+      hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
+    fi
+    # 持有镜像的后台进程不退，-force 也可能被它顶回来；退避一次后再踢掉它。
+    if [ "$attempt" -ge 2 ]; then
+      pkill -f diskimages-help >/dev/null 2>&1 || true
     fi
     sleep "$((attempt * 2))"
   done
-  hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1
-  [ ! -e "$MOUNT_POINT" ]
+
+  ! image_still_attached
 }
 
 if ! detach_volume; then
   echo "error: failed to detach DMG volume $MOUNT_POINT" >&2
   exit 1
 fi
-MOUNT_POINT=""
-MOUNT_DEVICE=""
 
 # 上一步 detach 可能触发延迟弹出：卷目录已消失但磁盘镜像仍在弹出中，
-# convert 会暂时报 Resource temporarily unavailable——退避重试等它完成。
+# convert 会暂时报 Resource temporarily unavailable——每次重试都再强制卸载一遍。
+# 重试期间还需要设备路径，所以 MOUNT_DEVICE/MOUNT_POINT 留到这里之后再清空。
 for attempt in 1 2 3 4 5; do
   if hdiutil convert "$DMG_WORK_PATH" -format UDZO -ov -o "$DMG"; then
-    DMG_CREATED=true
+    DMG_CONVERTED=true
     break
   fi
 
+  detach_volume || true
   if [ "$attempt" -lt 5 ]; then
     sleep "$((attempt * 3))"
   fi
 done
 
-if [ "$DMG_CREATED" != true ]; then
+# 这里必须用独立于 create 的标记：早期版本复用 DMG_CREATED，导致 convert 连续
+# 失败后仍然「成功」退出，CI 只会看到上传步骤缺文件，真正的失败原因被吞掉。
+if [ "$DMG_CONVERTED" != true ]; then
   echo "error: failed to create DMG after 5 attempts" >&2
   exit 1
 fi
+
+MOUNT_POINT=""
+MOUNT_DEVICE=""
 
 echo "$DMG"
