@@ -10,7 +10,7 @@ function section(start: string, end: string) {
   return source.slice(offset, limit);
 }
 
-const apiModels = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-1.5", "gpt-image-2"];
+const apiModels = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
 function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativeModels = true } = {}) {
   const requests: Array<{ hostId: string; method: string; params: unknown }> = [];
   const invalidations: unknown[] = [];

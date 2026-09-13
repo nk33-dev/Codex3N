@@ -7,7 +7,7 @@
   }
 
   function faceEyeHtml() {
-    return `<span class="csw-fab-eye" aria-hidden="true"><span class="csw-fab-eye-dot"></span></span>`;
+    return `<span class="csw-fab-eye"><svg class="csw-fab-happy-arc" viewBox="0 0 18 12" aria-hidden="true" focusable="false"><path d="M1.5 9 C4.6 3.2 13.4 3.2 16.5 9"></path></svg></span>`;
   }
 
   function faceHtml() {

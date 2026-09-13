@@ -119,6 +119,8 @@ pub fn run() {
             commands::open_zed_remote,
             commands::forget_zed_remote_project,
             commands::delete_local_session,
+            commands::preview_invalid_local_sessions,
+            commands::delete_invalid_local_sessions,
             commands::load_provider_sync_targets,
             commands::preview_session_index_cleanup,
             commands::apply_session_index_cleanup,

@@ -559,11 +559,13 @@ type ZedRemoteOpenResult = CommandResult<{
 }>;
 
 type DeleteLocalSessionResult = CommandResult<{
-  status: string;
-  session_id: string;
-  message: string;
-  undo_token: string | null;
-  backup_path: string | null;
+  deletion: {
+    status: "local_deleted" | "server_deleted" | "partial" | "failed";
+    session_id: string;
+    message: string;
+    undo_token: string | null;
+    backup_path: string | null;
+  };
 }>;
 
 type ContextEntriesResult = CommandResult<{
@@ -1933,6 +1935,27 @@ export function App() {
     }
   };
 
+  const deleteInvalidLocalSessions = async () => {
+    const preview = await run(() => call<CommandResult<{ sessions: LocalSession[] }>>("preview_invalid_local_sessions"));
+    if (!preview) return;
+    if (!isSuccessStatus(preview.status)) {
+      showResultNotice(t("删除无效会话"), preview);
+      return;
+    }
+    if (!preview.sessions.length) {
+      showNotice(t("删除无效会话"), t("未发现可安全删除的无效会话。远程、归档和有恢复来源的会话均保留。"), "ok");
+      return;
+    }
+    const names = preview.sessions.slice(0, 6).map(session => truncateSessionDeletePreview(session.title || session.id)).join("\n");
+    const confirmed = await confirmSessionDelete(t("删除无效会话"), tf("检查发现 {0} 个缺少恢复来源的本地会话。确认删除数据库记录和索引？删除会创建备份；确认后会再次检查，已恢复的会话将跳过。请保持 Codex 应用关闭。\n\n{1}", [preview.sessions.length, names]));
+    if (!confirmed) return;
+    const result = await run(() => call<CommandResult<Record<string, unknown>>>("delete_invalid_local_sessions", {
+      sessionIds: preview.sessions.map(session => session.id),
+    }));
+    if (result) showResultNotice(t("删除无效会话"), result);
+    await refreshLocalSessions(true, localSessions?.offset ?? 0);
+  };
+
   const deleteLocalSessions = async (sessions: LocalSession[]) => {
     const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
     if (!uniqueSessions.length) {
@@ -1957,15 +1980,15 @@ export function App() {
       if (result && isSuccessStatus(result.status)) {
         succeeded += 1;
       } else {
-        failed.push(session.title || session.id);
+        failed.push(`${truncateSessionDeletePreview(session.title || session.id)}：${(result?.message || t("调用失败")).slice(0, 240)}`);
       }
     }
 
     if (failed.length) {
       showNotice(
         t("批量删除会话"),
-        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map(truncateSessionDeletePreview).join(t("、"))]),
-        succeeded ? "ok" : "failed",
+        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).join(t("、"))]),
+        "failed",
       );
     } else {
       showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
@@ -3299,6 +3322,7 @@ export function App() {
       setSessionShareUrl,
       deleteLocalSession,
       deleteLocalSessions,
+      deleteInvalidLocalSessions,
       refreshZedRemoteProjects,
       openZedRemoteProject,
       forgetZedRemoteProject,
@@ -3717,6 +3741,7 @@ type Actions = {
   setSessionShareUrl: (url: string) => void;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
+  deleteInvalidLocalSessions: () => Promise<void>;
   refreshZedRemoteProjects: () => Promise<ZedRemoteProjectsResult | null>;
   openZedRemoteProject: (project: ZedRemoteProject, strategy?: ZedOpenStrategy) => Promise<void>;
   forgetZedRemoteProject: (project: ZedRemoteProject) => Promise<void>;
@@ -4688,11 +4713,7 @@ function EnhanceScreen({
   actions: Actions;
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
-  const setPersistedEnhanceFlag = (key: keyof BackendSettings, value: boolean) => {
-    const next = { ...form, [key]: value };
-    onFormChange(next);
-    void actions.saveSettingsValue(next, true);
-  };
+
   const masterEnabled = form.enhancementsEnabled;
   const patchMode = form.launchMode === "patch";
   const remoteMarketplaceStatus = remotePluginMarketplace?.marketplaceRoot
@@ -4782,11 +4803,11 @@ function EnhanceScreen({
               <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("悬浮球")} detail={t("控制下一步建议与回答大纲。")}>
-              <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppStepwiseEnabled", value)} />
-              <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
+              <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
+              <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
-              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
+              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
               <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
               <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
@@ -6205,11 +6226,18 @@ function SessionsScreen({
             </label>
 
             <div className="session-repair-actions">
-              <Button onClick={() => void actions.refreshLocalSessions()} variant="outline">
+              <Button disabled={bulkDeleting} onClick={() => void actions.refreshLocalSessions()} variant="outline">
                 <RefreshCw className="h-4 w-4" />
                 {t("刷新会话")}
               </Button>
-              <Button onClick={() => void actions.importLocalSession()} variant="outline">
+              <Button disabled={bulkDeleting} title={t("先退出 Codex 应用；检查所有本地会话，确认后备份并删除无效记录，不只是当前页。")} onClick={async () => {
+                setBulkDeleting(true);
+                try { await actions.deleteInvalidLocalSessions(); } finally { setBulkDeleting(false); }
+              }} variant="outline">
+                <Trash2 className="h-4 w-4" />
+                {bulkDeleting ? t("正在检查或删除…") : t("删除无效会话")}
+              </Button>
+              <Button disabled={bulkDeleting} onClick={() => void actions.importLocalSession()} variant="outline">
                 <PackageOpen className="h-4 w-4" />
                 {t("导入文件")}
               </Button>
@@ -6313,7 +6341,7 @@ function SessionsScreen({
                         <span>{session.modelProvider || t("provider 未记录")}</span>
                         <span>{formatTime(session.updatedAtMs ?? 0)}</span>
                       </div>
-                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
+                      <Button disabled={bulkDeleting} className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
                         <Trash2 className="h-4 w-4" />
                         {t("删除")}
                       </Button>
@@ -9272,9 +9300,9 @@ function NoticeDialog({
   onClose: () => void;
 }) {
   useEffect(() => {
-    const timer = window.setTimeout(onClose, 6500);
+    const timer = window.setTimeout(onClose, 4200);
     return () => window.clearTimeout(timer);
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="toast-wrap" role="status" aria-live="polite">

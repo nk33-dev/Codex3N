@@ -6758,6 +6758,31 @@
     };
   }
 
+  function sortModelChoices(models, nameOf) {
+    const family = (name) => /^gpt-\d/i.test(name) ? 0 : /^gpt-image-/i.test(name) ? 2 : 1;
+    const variants = ["sol", "terra", "luna"];
+    const sorted = [...models].sort((left, right) => {
+      const leftName = nameOf(left), rightName = nameOf(right);
+      const group = family(leftName) - family(rightName);
+      if (group) return group;
+      const leftVersion = leftName.match(/^gpt-(\d+(?:\.\d+)*)(?:-|$)/i);
+      const rightVersion = rightName.match(/^gpt-(\d+(?:\.\d+)*)(?:-|$)/i);
+      if (leftVersion && rightVersion) {
+        const version = rightVersion[1].localeCompare(leftVersion[1], "en", { numeric: true });
+        if (version) return version;
+        const leftVariant = variants.indexOf(leftName.slice(leftVersion[0].length));
+        const rightVariant = variants.indexOf(rightName.slice(rightVersion[0].length));
+        if (leftVariant >= 0 && rightVariant >= 0) return leftVariant - rightVariant;
+      }
+      return family(leftName) === 2
+        ? rightName.localeCompare(leftName, "en", { numeric: true })
+        : leftName.localeCompare(rightName, "en", { numeric: true });
+    });
+    const changed = sorted.some((item, index) => item !== models[index]);
+    if (changed) models.splice(0, models.length, ...sorted);
+    return changed;
+  }
+
   function modelArrayLooksPatchable(value, allowEmpty = false) {
     return Array.isArray(value)
       && (allowEmpty || value.length > 0)
@@ -6779,7 +6804,7 @@
         changed = true;
       }
     });
-    return changed;
+    return sortModelChoices(models, (name) => name) || changed;
   }
 
   function patchModelArray(models, allowEmpty = false) {
@@ -6815,6 +6840,12 @@
         changed = true;
       }
     });
+    if (customModels.length && codexModelCatalog.status === "ok") {
+      if (sortModelChoices(models, (item) => item.model)) changed = true;
+      models.forEach((item, index) => {
+        if (item.priority !== index) { item.priority = index; changed = true; }
+      });
+    }
     return changed;
   }
 

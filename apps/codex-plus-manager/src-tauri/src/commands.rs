@@ -256,6 +256,11 @@ pub struct DeleteLocalSessionRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DeleteLocalSessionPayload {
+    pub deletion: DeleteResult,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayPayload {
     pub authenticated: bool,
@@ -2736,18 +2741,175 @@ pub fn forget_zed_remote_project(id: String) -> CommandResult<ZedRemoteProjectsP
     list_zed_remote_projects()
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvalidLocalSessionsPayload {
+    pub sessions: Vec<codex_plus_data::LocalSession>,
+}
+
+fn invalid_local_sessions_from_home(
+    home: &Path,
+    backups: &Path,
+    blocking_processes: &[u32],
+) -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
+    if !blocking_processes.is_empty() {
+        anyhow::bail!(
+            "请先完全退出 Codex、ChatGPT 和 VS Code Codex，再检查无效会话；未落盘的会话不能安全判定。阻塞进程：{blocking_processes:?}"
+        );
+    }
+    let scan = codex_plus_data::session_health::scan_session_health(home, backups, &[])?;
+    let missing: std::collections::HashSet<_> = scan.missing_ids.into_iter().collect();
+    let mut candidates = BTreeMap::new();
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(home) {
+        let adapter = codex_plus_data::SQLiteStorageAdapter::new(
+            path,
+            codex_plus_data::BackupStore::new(backups),
+        )
+        .with_codex_home(home);
+        for session in adapter.list_local_sessions()? {
+            if !session.archived && missing.contains(&session.id) {
+                candidates.entry(session.id.clone()).or_insert(session);
+            }
+        }
+    }
+    Ok(candidates.into_values().collect())
+}
+
+fn current_invalid_local_sessions() -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
+    invalid_local_sessions_from_home(
+        &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+        &codex_plus_core::paths::default_app_state_dir().join("backups"),
+        &codex_plus_core::watcher::find_session_index_cleanup_blocking_processes(),
+    )
+}
+
 #[tauri::command]
-pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
+pub async fn preview_invalid_local_sessions() -> CommandResult<InvalidLocalSessionsPayload> {
+    match tauri::async_runtime::spawn_blocking(current_invalid_local_sessions).await {
+        Ok(Ok(sessions)) => ok(
+            "无效会话检查完成。",
+            InvalidLocalSessionsPayload { sessions },
+        ),
+        result => failed(
+            &format!(
+                "无效会话检查未完成：{}",
+                match result {
+                    Ok(Err(error)) => error.to_string(),
+                    Err(error) => error.to_string(),
+                    _ => unreachable!(),
+                }
+            ),
+            InvalidLocalSessionsPayload {
+                sessions: Vec::new(),
+            },
+        ),
+    }
+}
+
+fn invalid_session_delete_failure(
+    id: String,
+    message: String,
+) -> CommandResult<DeleteLocalSessionPayload> {
+    failed(
+        &message,
+        DeleteLocalSessionPayload {
+            deletion: DeleteResult {
+                status: codex_plus_core::models::DeleteStatus::Failed,
+                session_id: id,
+                message: message.clone(),
+                undo_token: None,
+                backup_path: None,
+            },
+        },
+    )
+}
+
+#[tauri::command]
+pub async fn delete_invalid_local_sessions(session_ids: Vec<String>) -> CommandResult<Value> {
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut results = Vec::new();
+        let mut stopped_reason = None;
+        let requested: std::collections::BTreeSet<_> = session_ids.into_iter().collect();
+        for id in requested {
+            if let Some(reason) = &stopped_reason {
+                results.push(invalid_session_delete_failure(
+                    id,
+                    format!("清理已停止：{reason}"),
+                ));
+                continue;
+            }
+            let candidates = match current_invalid_local_sessions() {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    stopped_reason = Some(error.to_string());
+                    results.push(invalid_session_delete_failure(
+                        id,
+                        format!("清理已停止：{error}"),
+                    ));
+                    continue;
+                }
+            };
+            if let Some(session) = candidates.into_iter().find(|session| session.id == id) {
+                results.push(delete_local_session(DeleteLocalSessionRequest {
+                    session_id: session.id,
+                    title: session.title,
+                    db_path: Some(session.db_path),
+                }));
+            } else {
+                results.push(invalid_session_delete_failure(
+                    id,
+                    "会话已恢复或不属于可安全清理的本地会话，已跳过。".into(),
+                ));
+            }
+        }
+        results
+    })
+    .await;
+    match outcome {
+        Ok(results) => {
+            let succeeded = results
+                .iter()
+                .filter(|result| result.status == "ok")
+                .count();
+            let failed_count = results.len() - succeeded;
+            let details = results
+                .iter()
+                .filter(|result| result.status != "ok")
+                .take(3)
+                .map(|result| format!("{}：{}", result.payload.deletion.session_id, result.message))
+                .collect::<Vec<_>>()
+                .join("；");
+            CommandResult {
+                status: if failed_count == 0 { "ok" } else { "failed" }.into(),
+                message: format!(
+                    "已删除 {succeeded} 个无效会话，失败或跳过 {failed_count} 个。{details}"
+                ),
+                payload: json!({ "results": results }),
+            }
+        }
+        Err(error) => failed(
+            &format!("清理已停止，请刷新列表确认；未处理的会话保持不变：{error}"),
+            json!({}),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_local_session(
+    request: DeleteLocalSessionRequest,
+) -> CommandResult<DeleteLocalSessionPayload> {
     let session_id = request.session_id.trim();
     if session_id.is_empty() {
         return failed(
             "会话 ID 不能为空。",
-            DeleteResult {
-                status: codex_plus_core::models::DeleteStatus::Failed,
-                session_id: String::new(),
-                message: "会话 ID 不能为空。".to_string(),
-                undo_token: None,
-                backup_path: None,
+            DeleteLocalSessionPayload {
+                deletion: DeleteResult {
+                    status: codex_plus_core::models::DeleteStatus::Failed,
+                    session_id: String::new(),
+                    message: "会话 ID 不能为空。".to_string(),
+                    undo_token: None,
+                    backup_path: None,
+                },
             },
         );
     }
@@ -2811,7 +2973,7 @@ pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult
     CommandResult {
         status: status.to_string(),
         message: result.message.clone(),
-        payload: result,
+        payload: DeleteLocalSessionPayload { deletion: result },
     }
 }
 
@@ -7176,6 +7338,86 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
+    fn delete_response_keeps_command_status_separate_from_deletion_status() {
+        for (command_status, deletion_status) in [
+            ("ok", codex_plus_core::models::DeleteStatus::LocalDeleted),
+            ("failed", codex_plus_core::models::DeleteStatus::Partial),
+            ("failed", codex_plus_core::models::DeleteStatus::Failed),
+        ] {
+            let response = CommandResult {
+                status: command_status.to_string(),
+                message: "结果".to_string(),
+                payload: DeleteLocalSessionPayload {
+                    deletion: DeleteResult {
+                        status: deletion_status.clone(),
+                        session_id: "test".into(),
+                        message: "详细结果".into(),
+                        undo_token: Some("backup".into()),
+                        backup_path: None,
+                    },
+                },
+            };
+            let encoded = serde_json::to_string(&response).unwrap();
+            let decoded: Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded["status"], command_status);
+            assert_eq!(decoded["message"], "结果");
+            assert_eq!(
+                decoded["deletion"]["status"],
+                serde_json::to_value(deletion_status).unwrap()
+            );
+            assert_eq!(decoded["deletion"]["undo_token"], "backup");
+        }
+    }
+
+    #[test]
+    fn invalid_session_preview_protects_running_archived_and_recovered_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let backups = home.join("backups");
+        let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+        db.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, archived INTEGER);").unwrap();
+        let lost = "01000000-0000-7000-8000-000000000001";
+        let archived = "01000000-0000-7000-8000-000000000002";
+        let rollout = home.join("sessions/missing.jsonl");
+        db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, '无效', 0)",
+            rusqlite::params![lost, rollout.to_string_lossy()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO threads VALUES (?1, ?2, '归档', 1)",
+            rusqlite::params![
+                archived,
+                home.join("archived_sessions/missing.jsonl")
+                    .to_string_lossy()
+            ],
+        )
+        .unwrap();
+        assert!(invalid_local_sessions_from_home(home, &backups, &[42]).is_err());
+        let candidates = invalid_local_sessions_from_home(home, &backups, &[]).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![lost]
+        );
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::write(&rollout, "restored").unwrap();
+        assert!(
+            invalid_local_sessions_from_home(home, &backups, &[])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM threads", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
     fn delete_local_session_falls_back_when_requested_db_no_longer_contains_thread() {
         let _codex_home_guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
@@ -7228,7 +7470,7 @@ base_url = "https://example.invalid/v1"
 
         assert_eq!(result.status, "ok");
         assert_eq!(
-            result.payload.status,
+            result.payload.deletion.status,
             codex_plus_core::models::DeleteStatus::LocalDeleted
         );
         let active = rusqlite::Connection::open(&active_db).unwrap();

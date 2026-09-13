@@ -5,6 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "删除无效会话": "Delete invalid sessions",
+  "未发现可安全删除的无效会话。远程、归档和有恢复来源的会话均保留。": "No invalid sessions can be safely deleted. Remote, archived and recoverable sessions are kept.",
+  "先退出 Codex 应用；检查所有本地会话，确认后备份并删除无效记录，不只是当前页。": "Quit Codex apps first. Scan all local sessions, not just this page, then confirm to back up and delete invalid records.",
+  "正在检查或删除…": "Checking or deleting…",
   "主导航": "Main navigation",
   "工作区": "Workspace",
   "扩展": "Extensions",
@@ -1090,6 +1094,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "检查发现 {0} 个缺少恢复来源的本地会话。确认删除数据库记录和索引？删除会创建备份；确认后会再次检查，已恢复的会话将跳过。请保持 Codex 应用关闭。\n\n{1}": "Found {0} local sessions without recovery sources. Delete their database records and indexes? Backups will be created and recovered sessions will be skipped after rechecking. Keep Codex apps closed.\n\n{1}",
   "路由规则「{0}」的优先级必须是大于等于 0 的整数。":
     "Route rule \"{0}\" priority must be an integer greater than or equal to 0.",
   "路由规则「{0}」的目标供应商必须是聚合成员，请先将其勾选为成员。":

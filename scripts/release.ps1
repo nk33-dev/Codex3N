@@ -48,7 +48,11 @@ function Invoke-Step {
         Write-Host "    (dry-run) $($Action.ToString().Trim())" -ForegroundColor DarkGray
         return
     }
+    $global:LASTEXITCODE = 0
     & $Action
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Description 执行失败，退出码：$LASTEXITCODE"
+    }
 }
 
 function Assert-True {
@@ -79,19 +83,6 @@ Assert-True ([string]::IsNullOrWhiteSpace($existingLocal)) "本地已存在标�
 $existingRemote = (git ls-remote --tags origin "refs/tags/$tag")
 Assert-True ([string]::IsNullOrWhiteSpace($existingRemote)) "远端已存在标签 $tag"
 
-Write-Host "将发布 $tag（分支 $Branch，仓库 $Repo）" -ForegroundColor Green
-
-if (-not $SkipChecks) {
-    Invoke-Step "cargo fmt --all --check" { cargo fmt --all --check }
-    Invoke-Step "cargo test --workspace" { cargo test --workspace }
-    Invoke-Step "npm test" { Push-Location $ManagerDir; try { npm test } finally { Pop-Location } }
-    Invoke-Step "npm run check" { Push-Location $ManagerDir; try { npm run check } finally { Pop-Location } }
-}
-
-Invoke-Step "推送 $Branch" { git push origin $Branch }
-Invoke-Step "创建标签 $tag" { git tag -a $tag -m "Codex3N $version" }
-Invoke-Step "推送标签 $tag" { git push origin $tag }
-
 $notesArgs = @()
 if ($NotesFile) {
     Assert-True (Test-Path -LiteralPath $NotesFile) "找不到说明文件 $NotesFile"
@@ -99,6 +90,21 @@ if ($NotesFile) {
 } else {
     $notesArgs = @("--notes", "Codex3N $version")
 }
+
+Write-Host "将发布 $tag（分支 $Branch，仓库 $Repo）" -ForegroundColor Green
+
+if (-not $SkipChecks) {
+    Invoke-Step "cargo fmt --all --check" { cargo fmt --all --check }
+    Invoke-Step "npm test" { Push-Location $ManagerDir; try { npm test } finally { Pop-Location } }
+    Invoke-Step "npm run check" { Push-Location $ManagerDir; try { npm run check } finally { Pop-Location } }
+    Invoke-Step "npm run vite:build" { Push-Location $ManagerDir; try { npm run vite:build } finally { Pop-Location } }
+    Invoke-Step "cargo check --workspace" { cargo check --workspace }
+    Invoke-Step "cargo test --workspace" { cargo test --workspace }
+}
+
+Invoke-Step "推送 $Branch" { git push origin $Branch }
+Invoke-Step "创建标签 $tag" { git tag -a $tag -m "Codex3N $version" }
+Invoke-Step "推送标签 $tag" { git push origin $tag }
 
 $releaseArgs = @(
     "release", "create", $tag,
