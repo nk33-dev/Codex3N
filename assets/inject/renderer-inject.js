@@ -6759,27 +6759,24 @@
   }
 
   function sortModelChoices(models, nameOf) {
-    const family = (name) => /^gpt-\d/i.test(name) ? 0 : /^gpt-image-/i.test(name) ? 2 : 1;
-    const variants = ["sol", "terra", "luna"];
-    const sorted = [...models].sort((left, right) => {
-      const leftName = nameOf(left), rightName = nameOf(right);
-      const group = family(leftName) - family(rightName);
-      if (group) return group;
-      const leftVersion = leftName.match(/^gpt-(\d+(?:\.\d+)*)(?:-|$)/i);
-      const rightVersion = rightName.match(/^gpt-(\d+(?:\.\d+)*)(?:-|$)/i);
-      if (leftVersion && rightVersion) {
-        const version = rightVersion[1].localeCompare(leftVersion[1], "en", { numeric: true });
-        if (version) return version;
-        const leftVariant = variants.indexOf(leftName.slice(leftVersion[0].length));
-        const rightVariant = variants.indexOf(rightName.slice(rightVersion[0].length));
-        if (leftVariant >= 0 && rightVariant >= 0) return leftVariant - rightVariant;
+    const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
+    const entries = models.map((model) => ({
+      model,
+      parts: nameOf(model).trim().replace(/[._\s]+/g, "-").match(/\d+|\D+/g) || [],
+    }));
+    entries.sort((left, right) => {
+      const length = Math.min(left.parts.length, right.parts.length);
+      for (let index = 0; index < length; index += 1) {
+        const leftPart = left.parts[index];
+        const rightPart = right.parts[index];
+        const numeric = /^\d+$/.test(leftPart) && /^\d+$/.test(rightPart);
+        const order = numeric ? compare(rightPart, leftPart) : compare(leftPart, rightPart);
+        if (order) return order;
       }
-      return family(leftName) === 2
-        ? rightName.localeCompare(leftName, "en", { numeric: true })
-        : leftName.localeCompare(rightName, "en", { numeric: true });
+      return right.parts.length - left.parts.length;
     });
-    const changed = sorted.some((item, index) => item !== models[index]);
-    if (changed) models.splice(0, models.length, ...sorted);
+    const changed = entries.some((entry, index) => entry.model !== models[index]);
+    if (changed) models.splice(0, models.length, ...entries.map((entry) => entry.model));
     return changed;
   }
 
