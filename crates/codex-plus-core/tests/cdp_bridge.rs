@@ -155,7 +155,7 @@ fn stepwise_script_uses_the_floating_panel_entrypoint() {
 fn stepwise_runtime_bumps_version_when_reinjection_contract_changes() {
     let script = assets::stepwise_script();
 
-    assert!(script.contains("const SCRIPT_VERSION = \"2.0.9\";"));
+    assert!(script.contains("const SCRIPT_VERSION = \"2.0.10\";"));
 }
 
 #[test]

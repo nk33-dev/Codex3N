@@ -2483,6 +2483,15 @@
       }
 
       @media (prefers-reduced-motion: reduce) {
+        .csw-progress-ring {
+          animation: none !important;
+          background: var(--csw-accent);
+          border: 0;
+          box-shadow: 0 0 0 4px color-mix(in srgb, var(--csw-accent) 18%, transparent);
+          height: clamp(8px, calc(var(--csw-item-font) - 2px), 14px);
+          width: clamp(8px, calc(var(--csw-item-font) - 2px), 14px);
+        }
+
         .csw-completion-beam,
         .csw-completion-beam::before {
           animation: none !important;

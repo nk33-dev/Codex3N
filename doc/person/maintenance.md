@@ -30,4 +30,6 @@
 
 从 `Cargo.toml` 与 Git 读取实际版本和分支状态，不在业务文档固定“当前版本”。依照根目录 AGENTS.md 的发布约定执行 `pwsh scripts/release.ps1 -NotesFile <UTF-8说明>`；检查通过后创建本地标签，通过一次 `git push --atomic` 同时推送 personal 和本次标签，再创建 Release，避免远端只更新其中一项。
 
+GitHub Actions 的前端依赖安装统一使用仓库内的 `package-lock.json` 和 `npm ci`，保证相同提交在 Windows、macOS 与发布门禁中解析到同一套依赖。
+
 检查失败不得继续发布；所有 GitHub 操作显式指定 `nk33-dev/Codex3N`。Release 创建成功后默认结束，不轮询安装包构建，除非用户明确要求。
