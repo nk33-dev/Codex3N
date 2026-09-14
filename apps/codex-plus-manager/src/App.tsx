@@ -3891,7 +3891,7 @@ function WeixinConnectScreen({
       {qr?.qrContent ? (
         <Panel>
           <CardHeader>
-            <CardTitle>{qr.qrStatus === "scaned" ? t("已扫码，请在手机上确认") : t("微信扫码登录")}</CardTitle>
+            <CardTitle>{qr.qrStatus === "expired" ? t("二维码已过期，请重新扫码") : qr.qrStatus === "scaned" ? t("已扫码，请在手机上确认") : t("微信扫码登录")}</CardTitle>
             <CardDescription>{t("在手机微信中打开登录链接，或复制到可生成二维码的设备完成确认。")}</CardDescription>
           </CardHeader>
           <CardContent>

@@ -12,6 +12,8 @@
 
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
+增强页与注入面板的功能标题、说明使用中文，例如“用 Zed 打开远程文件”“从上游创建工作树”；产品名、SSH 和 `git worktree add -b branch path upstream/base` 等命令、参数保持原文。注入面板入口为 `assets/inject/renderer/shell/page-menu.js`，管理器英文模式沿用 i18n 字典。
+
 ## 悬浮球
 
 错误态不再绘制双 X，使用温和平静的短眼形；保留微笑、拖拽、展开及建议/大纲能力。表情调整不等于忽略实际错误，状态说明仍须可见。
