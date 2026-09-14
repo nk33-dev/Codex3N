@@ -155,7 +155,7 @@ fn stepwise_script_uses_the_floating_panel_entrypoint() {
 fn stepwise_runtime_bumps_version_when_reinjection_contract_changes() {
     let script = assets::stepwise_script();
 
-    assert!(script.contains("const SCRIPT_VERSION = \"2.0.10\";"));
+    assert!(script.contains("const SCRIPT_VERSION = \"2.0.11\";"));
 }
 
 #[test]
@@ -1283,6 +1283,18 @@ fn stepwise_morph_animation_always_reaches_a_stable_state() {
             "missing morph lifecycle contract: {contract}"
         );
     }
+}
+
+#[test]
+fn stepwise_matte_panel_covers_the_full_bounds_during_opening() {
+    let script = assets::stepwise_script();
+
+    assert!(
+        script.contains(
+            ".csw-popover[data-open=\"true\"][data-material=\"matte\"] .csw-material-layer"
+        )
+    );
+    assert!(script.contains("background: var(--csw-surface-opaque);"));
 }
 
 #[test]

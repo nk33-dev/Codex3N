@@ -266,14 +266,7 @@ pub async fn generate(
                     ));
                 }
             };
-        let response = match client
-            .post(&upstream.endpoint)
-            .headers(upstream.headers)
-            .timeout(timeout)
-            .json(&upstream.body)
-            .send()
-            .await
-        {
+        let response = match send_upstream_request(&client, upstream, timeout).await {
             Ok(response) => response,
             Err(error) => {
                 return Ok(failed_result(
@@ -286,8 +279,7 @@ pub async fn generate(
             }
         };
 
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let (status, text) = response;
         if auto_protocol
             && matches!(
                 status,
@@ -315,7 +307,7 @@ pub async fn generate(
             ));
         }
 
-        let data: Value = match serde_json::from_str(&text) {
+        let mut data: Value = match serde_json::from_str(&text) {
             Ok(data) => data,
             Err(error) => {
                 if auto_protocol {
@@ -344,6 +336,58 @@ pub async fn generate(
             }
             break;
         }
+
+        if protocol == StepwiseProtocol::ChatCompletions
+            && chat_completion_reasoning_exhausted(&data)
+        {
+            let mut retry = match build_upstream_request(
+                protocol, base_url, &api_key, model, &request, settings,
+            ) {
+                Ok(upstream) => upstream,
+                Err(error) => {
+                    return Ok(failed_result(
+                        protocol.as_str(),
+                        format!(
+                            "failed to build Stepwise {} retry request: {error}",
+                            protocol.as_str()
+                        ),
+                    ));
+                }
+            };
+            disable_chat_completion_thinking(&mut retry.body);
+            let (retry_status, retry_text) =
+                match send_upstream_request(&client, retry, timeout).await {
+                    Ok(response) => response,
+                    Err(error) => {
+                        return Ok(failed_result(
+                            protocol.as_str(),
+                            format!(
+                                "failed to retry Stepwise {} API without thinking: {error}",
+                                protocol.as_str()
+                            ),
+                        ));
+                    }
+                };
+            if !retry_status.is_success() {
+                return Ok(failed_result(
+                    protocol.as_str(),
+                    format!(
+                        "Stepwise retry upstream {}: {}",
+                        retry_status.as_u16(),
+                        redact_secret(&retry_text, &api_key)
+                    ),
+                ));
+            }
+            data = match serde_json::from_str(&retry_text) {
+                Ok(data) => data,
+                Err(error) => {
+                    return Ok(failed_result(
+                        protocol.as_str(),
+                        format!("failed to parse Stepwise retry response: {error}"),
+                    ));
+                }
+            };
+        }
         return Ok(json!({
             "status": "ok",
             "protocol": protocol.as_str(),
@@ -360,6 +404,53 @@ pub async fn generate(
         &configured_protocol,
         format!("Stepwise could not find a supported upstream protocol{details}"),
     ))
+}
+
+async fn send_upstream_request(
+    client: &reqwest::Client,
+    upstream: StepwiseUpstreamRequest,
+    timeout: Duration,
+) -> Result<(StatusCode, String), reqwest::Error> {
+    let response = client
+        .post(&upstream.endpoint)
+        .headers(upstream.headers)
+        .timeout(timeout)
+        .json(&upstream.body)
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    Ok((status, text))
+}
+
+fn chat_completion_reasoning_exhausted(data: &Value) -> bool {
+    let Some(choice) = data
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+    else {
+        return false;
+    };
+    if choice.get("finish_reason").and_then(Value::as_str) != Some("length") {
+        return false;
+    }
+    let Some(message) = choice.get("message") else {
+        return false;
+    };
+    let content_empty = message
+        .get("content")
+        .is_none_or(|content| content.as_str().is_none_or(str::is_empty));
+    let reasoning_present = message
+        .get("reasoning_content")
+        .and_then(Value::as_str)
+        .is_some_and(|reasoning| !reasoning.trim().is_empty());
+    content_empty && reasoning_present
+}
+
+fn disable_chat_completion_thinking(body: &mut Value) {
+    if let Some(object) = body.as_object_mut() {
+        object.insert("thinking".to_string(), json!({ "type": "disabled" }));
+    }
 }
 
 fn stepwise_protocols(value: &str) -> Vec<StepwiseProtocol> {
@@ -495,7 +586,7 @@ pub async fn test_connection(settings: &BackendSettings) -> anyhow::Result<Value
     generate(
         StepwiseRequest {
             last_user_message: "测试 Stepwise 配置。".to_string(),
-            last_assistant_message: "Stepwise 应返回 0 到 6 条可直接发送的后续建议。".to_string(),
+            last_assistant_message: "Stepwise 应返回 1 到 6 条可直接发送的后续建议。".to_string(),
             thread_title: "Codex++ Stepwise test".to_string(),
             page_url: String::new(),
         },
@@ -975,6 +1066,57 @@ mod tests {
         assert_eq!(body["model"], "stepwise-test");
         assert_eq!(body["response_format"]["type"], "json_object");
         assert!(body["messages"].is_array());
+    }
+
+    #[tokio::test]
+    async fn generate_retries_without_thinking_when_reasoning_uses_the_token_budget() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = request.body_json().unwrap();
+                if body.get("thinking").is_some() {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "choices": [{
+                            "message": {
+                                "content": "{\"items\":[{\"label\":\"继续\",\"prompt\":\"继续检查\"}]}",
+                                "reasoning_content": ""
+                            },
+                            "finish_reason": "stop"
+                        }]
+                    }))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(json!({
+                        "choices": [{
+                            "message": {
+                                "content": "",
+                                "reasoning_content": "先进行较长的内部推理"
+                            },
+                            "finish_reason": "length"
+                        }]
+                    }))
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let result = generate(
+            test_request(),
+            &test_settings(server.uri(), "chat_completions"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["items"][0]["prompt"], "继续检查");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let first: Value = requests[0].body_json().unwrap();
+        let retry: Value = requests[1].body_json().unwrap();
+        assert!(first.get("thinking").is_none());
+        assert_eq!(retry["thinking"]["type"], "disabled");
     }
 
     #[tokio::test]

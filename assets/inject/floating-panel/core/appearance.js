@@ -106,6 +106,11 @@
         pointer-events: none;
       }
 
+      .csw-popover[data-open="true"][data-material="matte"] .csw-material-layer {
+        background: var(--csw-surface-opaque);
+        border-radius: ${PANEL_RADIUS}px;
+      }
+
       .csw-glass {
         -webkit-backdrop-filter: blur(18px) saturate(165%) contrast(1.04) brightness(1.04);
         backdrop-filter: blur(18px) saturate(165%) contrast(1.04) brightness(1.04);
