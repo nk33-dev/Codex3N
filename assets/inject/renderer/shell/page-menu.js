@@ -105,11 +105,11 @@
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Zed Remote open</div><div class="codex-plus-row-description">Open supported remote SSH file references in Zed without patching Codex.app.</div></div>
+              <div><div class="codex-plus-row-title">用 Zed 打开远程文件</div><div class="codex-plus-row-description">通过 Zed 打开支持的 SSH 远程文件引用，无需修改 Codex.app。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="zedRemoteOpen"><span></span></button>
             </div>
             <div class="codex-plus-row">
-              <div><div class="codex-plus-row-title">Upstream worktree</div><div class="codex-plus-row-description">Create a Git worktree from a fresh upstream branch, equivalent to git worktree add -b branch path upstream/base.</div></div>
+              <div><div class="codex-plus-row-title">从上游创建工作树</div><div class="codex-plus-row-description">基于最新上游分支创建 Git 工作树，等价于 git worktree add -b branch path upstream/base。</div></div>
               <div class="codex-plus-worktree-actions">
                 <button type="button" class="codex-plus-action-button" data-codex-upstream-worktree-open="true">创建</button>
                 <button type="button" class="codex-plus-toggle" data-codex-plus-setting="upstreamWorktreeCreate"><span></span></button>
@@ -268,7 +268,7 @@
       }
       if (target?.closest("[data-codex-upstream-worktree-open]")) {
         if (!codexPlusSettings().upstreamWorktreeCreate) {
-          showToast("Upstream worktree enhancement is disabled", null);
+          showToast("从上游创建工作树功能已关闭", null);
           return;
         }
         openUpstreamWorktreeDialog();
@@ -391,4 +391,3 @@
     const active = !!document.querySelector(`.${codexPlusPageClass}`);
     setCodexPlusSidebarNavActive(active);
   }
-
