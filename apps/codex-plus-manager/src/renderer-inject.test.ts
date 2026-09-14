@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
 
-describe("模型目录加载与响应拦截", () => {
-  const path = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
+import { readRendererInjectSource, readStepwiseSource } from "./inject-fragments.ts";
 
+describe("模型目录加载与响应拦截", () => {
   it("无关响应立即返回，只有模型端点的模型数据会加载目录", async () => {
-    const renderer = await readFile(path, "utf8");
+    const renderer = await readRendererInjectSource();
     const start = renderer.indexOf("  async function patchModelJsonResponse(");
     const end = renderer.indexOf("  function patchStatsigModelDynamicConfig(", start);
     let loads = 0;
@@ -34,7 +34,7 @@ describe("模型目录加载与响应拦截", () => {
   });
 
   it("强制刷新也复用在途请求，失败后逐步延长重试间隔", async () => {
-    const renderer = await readFile(path, "utf8");
+    const renderer = await readRendererInjectSource();
     const start = renderer.indexOf("  async function loadCodexModelCatalog(");
     const end = renderer.indexOf("  function codexPlusModelMetadata(", start);
     let now = 1000;
@@ -70,7 +70,7 @@ describe("模型目录加载与响应拦截", () => {
   });
 
   it("模型 RPC 补丁返回新对象，不原地改写官方查询缓存", async () => {
-    const renderer = await readFile(path, "utf8");
+    const renderer = await readRendererInjectSource();
     const start = renderer.indexOf("  function cloneModelResult(");
     const end = renderer.indexOf("  function codexPerModelContextEnabled(", start);
     assert.ok(start >= 0 && end > start);
@@ -89,34 +89,6 @@ describe("模型目录加载与响应拦截", () => {
     assert.deepEqual(patched.data.map((item: { model: string }) => item.model), ["native", "injected"]);
   });
 });
-
-const STEPWISE_FRAGMENT_PATHS = [
-  "floating-panel/runtime/state.js",
-  "floating-panel/core/appearance-runtime.js",
-  "floating-panel/runtime/dom.js",
-  "floating-panel/runtime/bridge-client.js",
-  "floating-panel/runtime/answer-context.js",
-  "floating-panel/stepwise/suggestions.js",
-  "floating-panel/stepwise/generation.js",
-  "floating-panel/runtime/lifecycle.js",
-  "floating-panel/runtime/settings.js",
-  "floating-panel/core/appearance.js",
-  "floating-panel/core/host.js",
-  "floating-panel/core/geometry.js",
-  "floating-panel/core/interaction.js",
-  "floating-panel/core/views.js",
-  "floating-panel/outline/parser.js",
-  "floating-panel/outline/navigation.js",
-  "floating-panel/outline/feature.js",
-  "floating-panel/outline/view.js",
-  "floating-panel/core/scroll-state.js",
-  "floating-panel-inject.js",
-].map((name) => new URL(`../../../assets/inject/${name}`, import.meta.url));
-
-async function readStepwiseSource() {
-  const fragments = await Promise.all(STEPWISE_FRAGMENT_PATHS.map((url) => readFile(url, "utf8")));
-  return `(() => {\n${fragments.join("\n")}\n})();\n`;
-}
 
 type FakeElementOptions = {
   className?: string;
@@ -232,7 +204,7 @@ function installRendererStyle(renderer: string) {
 
 describe("renderer injection header compatibility", () => {
   it("纯 API 会话使用当前真实 provider，不强行改成 custom", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.doesNotMatch(
       renderer,
@@ -243,7 +215,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("adds the session copy shortcut through the native fork action", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /原地复制会话 - Codex\+\+/);
     assert.match(renderer, /createSessionMoreMenuItem\("原地复制会话 - Codex\+\+"/);
@@ -255,7 +227,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("adds an encrypted session sharing button to the active Codex conversation", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /sessionShareButtonClass\s*=\s*"codex-session-share-button"/);
     assert.match(renderer, /function installSessionShareButton\(\)/);
@@ -278,7 +250,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("automatically renames a session through the native title suggestion", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /自动重命名当前会话/);
     assert.match(renderer, /activateSessionAutoRenameMenuItem/);
@@ -289,7 +261,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("removes the legacy Codex++ top-bar entry", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.doesNotMatch(renderer, /function installCodexPlusMenu\(\)/);
     assert.doesNotMatch(renderer, /function findNativeMenuInsertionPoint\(\)/);
@@ -297,7 +269,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("places Codex++ in the native sidebar and opens a main-content page", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /codexPlusSidebarNavId\s*=\s*"codex-plus-sidebar-nav"/);
     assert.match(renderer, /function installCodexPlusSidebarNavigation\(\)/);
@@ -320,7 +292,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("does not install Codex++ UI in embedded browser documents", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /window\.top\s*!==\s*window/);
     assert.match(renderer, /!window\.electronBridge/);
@@ -329,7 +301,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("initializes renderer styles without unresolved template identifiers", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     const appended = installRendererStyle(renderer);
 
@@ -338,7 +310,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("does not override the host document root typography or foreground", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const appended = installRendererStyle(renderer);
     const css = appended[0].textContent ?? "";
     const rootRule = css.match(/:root\s*\{([^}]*)\}/)?.[1] ?? "";
@@ -349,7 +321,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("hides only the official usage alert and restores it without changing upstream styles", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const wrapper = new FakeElement({ className: "w-full", styleDisplay: "grid" });
     const usageAlert = new FakeElement({ dismissLabel: "Dismiss usage alert", hasProgress: true });
     const otherStatus = new FakeElement({ dismissLabel: "Dismiss sync status", hasProgress: true });
@@ -377,7 +349,7 @@ describe("renderer injection header compatibility", () => {
   });
 
   it("refreshes active-profile usage alert settings through the existing backend heartbeat", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /typeof nextStatus\.hideOfficialUsageAlert === "boolean"/);
     assert.match(renderer, /window\.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus\.hideOfficialUsageAlert/);
@@ -434,12 +406,10 @@ function mutation(addedNodes: unknown[] = [], removedNodes: unknown[] = []) {
 }
 
 describe("renderer injection scan scheduling", () => {
-  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
-
   // issue #1960：我们把自己的节点挂进 Codex 的容器，容器是 scan-relevant，
   // 于是每次写入都会再排一次 scan，scan 又重新写入，空闲时 CPU 被吃满。
   it("ignores mutations that only move the extension's own nodes", async () => {
-    const shouldScheduleScan = shouldScheduleScanRuntime(await readFile(rendererPath, "utf8"));
+    const shouldScheduleScan = shouldScheduleScanRuntime(await readRendererInjectSource());
     const ownNode = { nodeType: 1, extension: true };
 
     assert.equal(shouldScheduleScan([mutation([ownNode])]), false);
@@ -448,7 +418,7 @@ describe("renderer injection scan scheduling", () => {
   });
 
   it("still scans when Codex itself changes the same container", async () => {
-    const shouldScheduleScan = shouldScheduleScanRuntime(await readFile(rendererPath, "utf8"));
+    const shouldScheduleScan = shouldScheduleScanRuntime(await readRendererInjectSource());
     const codexNode = { nodeType: 1, relevant: true };
     const ownNode = { nodeType: 1, extension: true };
 
@@ -565,12 +535,10 @@ function moduleLoaderRuntime(renderer: string) {
 }
 
 describe("renderer injection codex app module loader", () => {
-  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
-
   // issue #1960：失败以前只是把 promise 删掉，等于没有负缓存，
   // 调用方一重试就重新 fetch 全部 app asset（实测 301 次请求/秒）。
   it("does not re-sweep every asset while the failure is still in cooldown", async () => {
-    const loader = moduleLoaderRuntime(await readFile(rendererPath, "utf8"));
+    const loader = moduleLoaderRuntime(await readRendererInjectSource());
 
     for (let i = 0; i < 20; i += 1) await loader.attempt();
 
@@ -578,7 +546,7 @@ describe("renderer injection codex app module loader", () => {
   });
 
   it("retries once per cooldown window, then gives up for good", async () => {
-    const loader = moduleLoaderRuntime(await readFile(rendererPath, "utf8"));
+    const loader = moduleLoaderRuntime(await readRendererInjectSource());
 
     // 冷却期满就允许再试一次，避免 Codex 更新后 asset 回来了却永远发现不了。
     for (let i = 0; i < 30; i += 1) {
@@ -591,7 +559,7 @@ describe("renderer injection codex app module loader", () => {
   });
 
   it("keeps failures separate per asset prefix", async () => {
-    const loader = moduleLoaderRuntime(await readFile(rendererPath, "utf8"));
+    const loader = moduleLoaderRuntime(await readRendererInjectSource());
 
     await loader.attempt("vscode-api-");
     await loader.attempt("app-initial-");
@@ -661,11 +629,9 @@ function dispatcherPatchRuntime(renderer: string, dispatcherFound: boolean): Dis
 }
 
 describe("renderer injection service tier dispatcher patch", () => {
-  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
-
   // issue #1960：这个补丁挂在 scanLightweight() 里每轮都跑，是 #1324 同一缺陷的第三个实例。
   it("does not start a new sweep while the previous one is still running", async () => {
-    const harness = dispatcherPatchRuntime(await readFile(rendererPath, "utf8"), false);
+    const harness = dispatcherPatchRuntime(await readRendererInjectSource(), false);
 
     for (let i = 0; i < 20; i += 1) harness.install();
 
@@ -674,7 +640,7 @@ describe("renderer injection service tier dispatcher patch", () => {
   });
 
   it("stops retrying and stops re-reporting once the dispatcher is clearly gone", async () => {
-    const harness = dispatcherPatchRuntime(await readFile(rendererPath, "utf8"), false);
+    const harness = dispatcherPatchRuntime(await readRendererInjectSource(), false);
 
     for (let i = 0; i < 40; i += 1) {
       harness.install();
@@ -692,7 +658,7 @@ describe("renderer injection service tier dispatcher patch", () => {
   });
 
   it("keeps working normally when the dispatcher is found", async () => {
-    const harness = dispatcherPatchRuntime(await readFile(rendererPath, "utf8"), true);
+    const harness = dispatcherPatchRuntime(await readRendererInjectSource(), true);
 
     harness.install();
     await harness.settle();
@@ -704,13 +670,11 @@ describe("renderer injection service tier dispatcher patch", () => {
 });
 
 describe("renderer injection plugin marketplace patch", () => {
-  const rendererPath = new URL("../../../assets/inject/renderer-inject.js", import.meta.url);
-
   // issue #1960：scanDeferred() 每轮都调用这个补丁，而早退守卫只在打上补丁后才写入。
   // Codex 侧 asset 改名后这层永远成功不了，过去既不去重也不放弃，
   // 于是每轮 scan 都把全部 app asset 重新 fetch 一遍（实测 530 次 fetch/秒）。
   it("does not start a new sweep while the previous one is still running", async () => {
-    const harness = marketplacePatchRuntime(await readFile(rendererPath, "utf8"), false);
+    const harness = marketplacePatchRuntime(await readRendererInjectSource(), false);
 
     // 模拟连续多轮 scan：上一轮还挂着，后续调用必须被 in-flight 守卫挡掉。
     for (let i = 0; i < 20; i += 1) harness.install();
@@ -720,7 +684,7 @@ describe("renderer injection plugin marketplace patch", () => {
   });
 
   it("stops retrying once the asset is clearly unavailable", async () => {
-    const harness = marketplacePatchRuntime(await readFile(rendererPath, "utf8"), false);
+    const harness = marketplacePatchRuntime(await readRendererInjectSource(), false);
 
     // 每次都跑完再发起下一轮，模拟长时间运行中的反复 scan。
     for (let i = 0; i < 40; i += 1) {
@@ -738,7 +702,7 @@ describe("renderer injection plugin marketplace patch", () => {
   });
 
   it("keeps working normally when the patch actually lands", async () => {
-    const harness = marketplacePatchRuntime(await readFile(rendererPath, "utf8"), true);
+    const harness = marketplacePatchRuntime(await readRendererInjectSource(), true);
 
     harness.install();
     await harness.settle();
@@ -779,7 +743,7 @@ describe("relay pureApi provider resolution", () => {
   }
 
   it("resolves the real model_provider from a pureApi relay profile instead of hardcoding custom", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const runtime = providerRuntime(
       renderer,
       {},
@@ -792,7 +756,7 @@ describe("relay pureApi provider resolution", () => {
   });
 
   it("still returns custom for pureApi relays that genuinely declare the custom provider", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const runtime = providerRuntime(
       renderer,
       {},
@@ -804,7 +768,7 @@ describe("relay pureApi provider resolution", () => {
   });
 
   it("falls back to custom when a pureApi relay declares no provider", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const runtime = providerRuntime(renderer, {}, { codex_model_provider: "" }, { relayMode: "pureApi", configContents: "" });
 
     assert.equal(runtime.codexRemoteSessionTargetProvider(), "custom");
@@ -815,7 +779,7 @@ describe("relay pureApi provider resolution", () => {
   // "custom"，不采信这个缓存——cdp_bridge.rs 的 refreshedPureApiResumeProvider
   // 正是钉这个：陈旧缓存是 stale_custom_provider 时必须仍解析成 custom。
   it("ignores a possibly stale activeRelayCodexProvider for pureApi relays", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const runtime = providerRuntime(
       renderer,
       { activeRelayCodexProvider: "stale_custom_provider" },
@@ -828,7 +792,7 @@ describe("relay pureApi provider resolution", () => {
 
   // 非 pureApi 才拿 activeRelayCodexProvider 兜底。
   it("still falls back to activeRelayCodexProvider outside pureApi", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const runtime = providerRuntime(
       renderer,
       { activeRelayCodexProvider: "deepseek" },
@@ -841,7 +805,7 @@ describe("relay pureApi provider resolution", () => {
 
   // profile 自己声明了供应方时，优先级高于全局缓存。
   it("prefers the profile's own configContents over the cached provider", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const runtime = providerRuntime(
       renderer,
       { activeRelayCodexProvider: "stale_custom_provider" },
@@ -856,10 +820,7 @@ describe("relay pureApi provider resolution", () => {
 describe("Stepwise generation mode contracts", () => {
   it("exposes automatic and manual generation in manager settings", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const renderer = await readFile(
-      new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
-      "utf8",
-    );
+    const renderer = await readRendererInjectSource();
 
     assert.match(app, /type StepwiseGenerationMode = "auto" \| "manual";/);
     assert.match(app, /type StepwiseProtocol = "auto" \| "chat_completions" \| "responses" \| "anthropic_messages";/);

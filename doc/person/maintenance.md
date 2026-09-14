@@ -18,6 +18,14 @@
 - 安装失败须如实报告，Watcher 按安装实例处理进程，避免误杀其他安装。入口：`crates/codex-plus-core/src/install/` / `watcher.rs`；验证 `updater.rs`、`installers.rs`、`watcher.rs`。
 - 会话快照、删除与撤销的数据保护见 [sessions.md](sessions.md)。
 
+## 注入脚本分片
+
+- 注入脚本按子系统拆成 `assets/inject/renderer/**` 分片，唯一拼装入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`；悬浮球的 `assets/inject/floating-panel/**` 是上游既有分片，规则相同。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。
+- 分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。新增分片只能插到正确位置，不能调整已有顺序。粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
+- `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；分片被 `include_str!` 内联，换行变化会改变注入内容。
+- 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts` 拼回原文；`inject-fragments.test.ts` 校验分片清单与 `assets.rs` 的 `concat!` 顺序一致，Rust 侧 `assets.rs` 的单元测试校验每个分片都真的拼进了结果。
+- 同步上游时，上游把新行为继续写在单文件注入脚本或别处时，迁入对应分片，不能同时保留旧内联实现；合并后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言拼装结果）与前端 `npm test`。
+
 ## 上游同步
 
 合并前记录个人功能入口、关键配置、注入点与测试基线；合并后复核 RPC、模型目录、配置分片、会话索引、路径和按钮布局，不能只接受 Git 自动合并结果。按项目指令执行 Rust 和前端检查，分别关注 Windows、macOS、Linux 的进程、路径、安装包与 UI 差异。

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
-const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+import { readRendererInjectSource } from "./inject-fragments.ts";
+
+const renderer = await readRendererInjectSource();
 const source = renderer.slice(renderer.indexOf('  const invalidSessionStorageKey ='), renderer.indexOf('  let cachedSessionRows ='));
 const lost = "01000000-0000-7000-8000-000000000001";
 const healthy = "01000000-0000-7000-8000-000000000002";

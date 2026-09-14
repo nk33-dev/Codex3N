@@ -149,7 +149,8 @@ apps/
   codex-plus-launcher/          Silent launcher
   codex-plus-manager/           Tauri manager
 assets/inject/
-  renderer-inject.js            Enhancement script injected into Codex
+  renderer/                     Fragments of the enhancement script injected into Codex
+  floating-panel/               Floating panel injection fragments
 crates/
   codex-plus-core/              Launch, injection, config, update, install, bridge
   codex-plus-data/              Session data, export, Provider Sync
