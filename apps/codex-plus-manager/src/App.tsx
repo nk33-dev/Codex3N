@@ -1,3 +1,4 @@
+import { codexModelFromConfig, codexBaseUrlFromConfig, codexExperimentalBearerTokenFromConfig, codexProviderStringFromConfig, codexApiKeyFromAuth, codexTopLevelIntFromConfig, rootTomlStringValue, tomlSectionName, tomlStringAssignmentValue, authJsonHasOpenAiApiKey, splitTomlRootAndTables, setAuthOpenAiApiKey } from "./provider-config";
 import {
   closestCenter,
   DndContext,
@@ -146,6 +147,7 @@ import { initializeManager, loadManagerPage, type ManagerPageLoaders, type Manag
 import { useManagerLifecycle } from "./use-manager-lifecycle";
 import { isWeixinQrPending, startWeixinQrPolling } from "./weixin-qr-polling";
 import { relayProtocolLabel, relayModeLabel, isAggregateRelayProfile } from "./provider-utils";
+import { parseProviderAuth } from "./provider-config";
 import type {
   AggregateRelayProfile,
   RelayAggregateConfig,
@@ -1024,6 +1026,7 @@ export function App() {
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
   const relaySwitchingRef = useRef(false);
+  const settingsSavingRef = useRef(false);
   const dreamSkinDraftDirty = Boolean(
     savedDreamSkinThemeDraft
       && dreamSkinThemeDraft
@@ -2262,28 +2265,32 @@ export function App() {
   };
 
   const saveSettings = async () => {
-    const next = normalizeSettings(settingsForm);
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
-    if (result) {
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
-      showNotice(t("设置保存"), result.message, result.status);
-    }
+    await saveSettingsValue(settingsForm, false);
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
-    const normalized = normalizeSettings(next);
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (result && isSuccessStatus(result.status)) {
-      const saved = normalizeSettings(result.settings);
-      setSettings(result);
-      setSettingsForm(saved);
-      if (!silent) showNotice(t("设置保存"), result.message, result.status);
-      return saved;
+    if (settingsSavingRef.current || relaySwitchingRef.current) return null;
+    settingsSavingRef.current = true;
+    const formAtSave = settingsFormRef.current;
+    try {
+      const normalized = normalizeSettings(next);
+      const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+      if (result && isSuccessStatus(result.status)) {
+        const saved = normalizeSettings(result.settings);
+        setSettings(result);
+        // 保存期间其他页面仍可能编辑设置，旧响应只更新已保存基线。
+        if (settingsFormRef.current === formAtSave) {
+          settingsFormRef.current = saved;
+          setSettingsForm(saved);
+        }
+        if (!silent) showNotice(t("设置保存"), result.message, result.status);
+        return saved;
+      }
+      if (result) showNotice(t("设置保存"), result.message, result.status);
+      return null;
+    } finally {
+      settingsSavingRef.current = false;
     }
-    if (result) showNotice(t("设置保存"), result.message, result.status);
-    await refreshSettings(true);
-    return null;
   };
 
   const beginWeixinQrLogin = async () => {
@@ -2671,6 +2678,7 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
+    if (settingsSavingRef.current) return;
     if (relaySwitchingRef.current) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return;
@@ -2700,6 +2708,7 @@ export function App() {
     }
     relaySwitchingRef.current = true;
     setRelaySwitching(true);
+    const formAtSwitch = settingsFormRef.current;
     try {
       switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
       const selectedAfterSave = activeRelayProfile(switchSettings);
@@ -2730,7 +2739,10 @@ export function App() {
         settings_path: result.settingsPath,
         user_scripts: result.user_scripts as UserScriptInventory,
       });
-      setSettingsForm(selectedSettings);
+      if (settingsFormRef.current === formAtSwitch) {
+        settingsFormRef.current = selectedSettings;
+        setSettingsForm(selectedSettings);
+      }
       setRelay({
         status: result.status,
         message: result.message,
@@ -4278,6 +4290,11 @@ function RelayScreen({
     try {
       const files = await actions.refreshRelayFiles();
       if (!files || !isSuccessStatus(files.status)) return;
+      const authError = parseProviderAuth(files.authContents).error;
+      if (authError) {
+        await actions.showMessage(t("供应商配置可能不正确"), authError, "failed");
+        return;
+      }
       if (!files.configContents.trim()) {
         await actions.showMessage(t("导入默认 config.toml"), t("默认配置为空，继续使用系统默认设置即可。"));
         return;
@@ -4575,10 +4592,10 @@ function EnhanceScreen({
               <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("远程项目")} detail={t("连接 Zed Remote 和 upstream worktree 辅助能力。")}>
-              <FeatureToggle title="Zed Remote open" detail={t("远程 SSH 文件引用可直接用 Zed Remote Development 打开。")} checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
+              <FeatureToggle title={t("用 Zed 打开远程文件")} detail={t("远程 SSH 文件引用可直接用 Zed Remote Development 打开。")} checked={form.codexAppZedRemoteOpen} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppZedRemoteOpen", value)} />
               <FeatureToggle title={t("Zed 项目记录")} detail={t("维护 Codex++ 自己的远程项目最近列表。")} checked={form.zedRemoteProjectRegistryEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteProjectRegistryEnabled", value)} />
               <FeatureToggle title={t("同步 Zed settings")} detail={t("高级选项，默认关闭；当前实现不主动改写 Zed settings。")} checked={form.zedRemoteSyncToZedSettings} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("zedRemoteSyncToZedSettings", value)} />
-              <FeatureToggle title="Upstream worktree" detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
+              <FeatureToggle title={t("从上游创建工作树")} detail={t("从最新 upstream 分支创建 Git worktree。")} checked={form.codexAppUpstreamWorktreeCreate} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUpstreamWorktreeCreate", value)} />
               <div className="feature-select-row">
                 <Field label={t("Zed 默认打开策略")}>
                   <AppSelect
@@ -6756,6 +6773,12 @@ function RelayProfileDetail({
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
+  const savingDraftRef = useRef(false);
+  const detailDisposed = useRef(false);
+  useEffect(() => {
+    detailDisposed.current = false;
+    return () => { detailDisposed.current = true; };
+  }, []);
   const isActive = !isNew && form.relayProfilesEnabled && profile.id === form.activeRelayId;
   const profileUsesLiveFiles = relayProfileUsesLiveFiles(profile);
   useEffect(() => {
@@ -6780,7 +6803,7 @@ function RelayProfileDetail({
     setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact));
   }, [profile.id, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata, profile.modelVlm, profileUsesLiveFiles, isActive, isNew, relayFiles?.configContents, relayFiles?.authContents]);
   const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
-  const validationError = relaySessionProviderValidation(draft)
+  const validationError = parseProviderAuth(draft.authContents).error ?? relaySessionProviderValidation(draft)
     ?? (isAggregateRelayProfile(draft)
       ? aggregateRelayProfileValidation(draft)
       : relayModelRoutesSettingsValidation(validationSettings));
@@ -6813,7 +6836,8 @@ function RelayProfileDetail({
     modelVlm: currentModelState.modelVlm,
   }) !== JSON.stringify(persistedModelState);
   const saveDraft = async () => {
-    if (savingDraft || validationError || modelRowsError) return;
+    if (savingDraftRef.current || actions.relaySwitching || validationError || modelRowsError) return;
+    savingDraftRef.current = true;
     setSavingDraft(true);
     try {
       const draftWithWindows = draftWithModelRows();
@@ -6835,11 +6859,11 @@ function RelayProfileDetail({
         return;
       }
       const savedSettings = await onFormChange(next);
-      if (!savedSettings) return;
+      if (!savedSettings || detailDisposed.current) return;
       if (requiresRestart) {
         const restarted = await actions.restart(true);
         if (!restarted) return;
-        onSaved?.();
+        if (!detailDisposed.current) onSaved?.();
         return;
       }
       const savedProfile = savedSettings.relayProfiles.find((candidate) => candidate.id === normalizedDraft.id)
@@ -6847,13 +6871,14 @@ function RelayProfileDetail({
       if (isActive && savedSettings.relayProfilesEnabled && relayProfileUsesLiveFiles(savedProfile)) {
         await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
       }
-      onSaved?.();
+      if (!detailDisposed.current) onSaved?.();
     } finally {
-      setSavingDraft(false);
+      savingDraftRef.current = false;
+      if (!detailDisposed.current) setSavingDraft(false);
     }
   };
   const switchDraft = () => {
-    if (isNew || !form.relayProfilesEnabled || validationError || modelRowsError) return;
+    if (savingDraftRef.current || actions.relaySwitching || isNew || !form.relayProfilesEnabled || validationError || modelRowsError) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -6884,7 +6909,7 @@ function RelayProfileDetail({
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-header">
         <div className="relay-editor-heading">
-          <Button aria-label={t("返回列表")} onClick={() => {
+          <Button disabled={savingDraft || actions.relaySwitching} aria-label={t("返回列表")} onClick={() => {
             if (hasUnsavedModelChanges && !window.confirm(t("有未保存的模型修改，确定放弃吗？"))) return;
             onBack();
           }} size="icon" title={t("返回列表")} type="button" variant="ghost">
@@ -6906,7 +6931,7 @@ function RelayProfileDetail({
             <UiBadge variant="secondary">{t("聚合")}</UiBadge>
           ) : isNew ? null : (
             <Button
-              disabled={!form.relayProfilesEnabled || actions.relaySwitching}
+              disabled={savingDraft || !form.relayProfilesEnabled || actions.relaySwitching}
               onClick={switchDraft}
               title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭") : actions.relaySwitching ? t("供应商切换中") : undefined}
               variant={form.relayProfilesEnabled && draft.id === form.activeRelayId ? "secondary" : "default"}
@@ -6915,7 +6940,7 @@ function RelayProfileDetail({
             </Button>
           )}
           <Button
-            disabled={savingDraft || !!validationError || !!modelRowsError}
+            disabled={savingDraft || actions.relaySwitching || !!validationError || !!modelRowsError}
             onClick={() => void saveDraft()}
             title={validationError || modelRowsError || t("保存")}
             type="button"
@@ -6925,7 +6950,7 @@ function RelayProfileDetail({
           </Button>
         </div>
       </div>
-      <div className="relay-detail-body">
+      <fieldset className="relay-detail-body" disabled={savingDraft || actions.relaySwitching} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
         <RelayProfileEditor
           profile={draft}
           form={form}
@@ -6947,7 +6972,7 @@ function RelayProfileDetail({
           actions={actions}
         />
         )}
-      </div>
+      </fieldset>
       {doctorOpen ? (
         <ProviderDoctorModal
           result={doctorResult}
@@ -10240,15 +10265,7 @@ function dedupeTomlRootLines(rootParts: string[]): string[] {
   return normalized ? [normalized] : [];
 }
 
-function splitTomlRootAndTables(section: string): { root: string; tables: string } {
-  const lines = section.trim().split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
-  if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
-  return {
-    root: lines.slice(0, firstTable).join("\n"),
-    tables: lines.slice(firstTable).join("\n"),
-  };
-}
+
 
 function tomlKey(key: string): string {
   return /^[A-Za-z0-9_-]+$/.test(key) ? key : `"${tomlString(key)}"`;
@@ -10885,16 +10902,7 @@ function applyRelayProfilePatchToFiles(
   return deriveRelayProfileFromFiles(next);
 }
 
-function codexModelFromConfig(contents: string): string {
-  for (const line of contents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("[")) break;
-    const match = /^model\s*=\s*(["'])(.*)\1\s*$/.exec(trimmed);
-    if (match) return match[2].replace(/\\(["'\\])/g, "$1");
-  }
-  return "";
-}
+
 
 /// 解析模型后缀语法，如 deepseek-v4-flash[1M] -> { slug: "deepseek-v4-flash", window: 1000000 }
 /// 非法或没有后缀时返回原串作为 slug。
@@ -10912,89 +10920,23 @@ function parseModelSuffix(raw: string): { slug: string; window?: number } {
   return { slug: match[1].trim(), window };
 }
 
-function codexBaseUrlFromConfig(contents: string): string {
-  return codexProviderStringFromConfig(contents, "base_url");
-}
 
-function codexExperimentalBearerTokenFromConfig(contents: string): string {
-  return codexProviderStringFromConfig(contents, "experimental_bearer_token");
-}
 
-function codexProviderStringFromConfig(contents: string, key: string): string {
-  const provider = rootTomlStringValue(contents, "model_provider");
-  const targetSection = provider ? `model_providers.${provider}` : "";
-  const lines = contents.split(/\r?\n/);
-  let currentSection = "";
-  const matches: string[] = [];
-  const providerMatches: string[] = [];
 
-  for (const line of lines) {
-    const section = tomlSectionName(line);
-    if (section !== null) {
-      currentSection = section;
-      continue;
-    }
-    const value = tomlStringAssignmentValue(line, key);
-    if (value === null) continue;
-    if (targetSection && currentSection === targetSection) return value;
-    if (currentSection.startsWith("model_providers.")) providerMatches.push(value);
-    else matches.push(value);
-  }
 
-  if (matches.length === 1) return matches[0];
-  return providerMatches.length === 1 ? providerMatches[0] : "";
-}
 
-function codexApiKeyFromAuth(contents: string): string {
-  try {
-    const parsed = JSON.parse(contents || "{}") as { OPENAI_API_KEY?: unknown };
-    return typeof parsed.OPENAI_API_KEY === "string" ? parsed.OPENAI_API_KEY : "";
-  } catch {
-    return "";
-  }
-}
 
-function codexTopLevelIntFromConfig(contents: string, key: string): string {
-  const topLevel = splitTomlRootAndTables(contents).root;
-  const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
-  for (const line of topLevel.split(/\r?\n/)) {
-    const match = pattern.exec(line);
-    if (match) return match[1];
-  }
-  return "";
-}
 
-function rootTomlStringValue(contents: string, key: string): string {
-  const topLevel = splitTomlRootAndTables(contents).root;
-  for (const line of topLevel.split(/\r?\n/)) {
-    const value = tomlStringAssignmentValue(line, key);
-    if (value !== null) return value;
-  }
-  return "";
-}
 
-function tomlSectionName(line: string): string | null {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  return match ? match[1].trim() : null;
-}
 
-function tomlStringAssignmentValue(line: string, key: string): string | null {
-  const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
-  if (!match) return null;
-  return match[2].replace(/\\(["'\\])/g, "$1");
-}
 
-function setAuthOpenAiApiKey(contents: string, apiKey: string): string {
-  let parsed: Record<string, unknown> = {};
-  try {
-    const value = JSON.parse(contents || "{}");
-    if (value && typeof value === "object" && !Array.isArray(value)) parsed = value as Record<string, unknown>;
-  } catch {
-    parsed = {};
-  }
-  parsed.OPENAI_API_KEY = apiKey.trim();
-  return `${JSON.stringify(parsed, null, 2)}\n`;
-}
+
+
+
+
+
+
+
 
 function setRootTomlStringKey(contents: string, key: string, value: string): string {
   const trimmed = value.trim();
@@ -11239,16 +11181,7 @@ function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
   return profile.relayMode !== "official" || profile.officialMixApiKey || !!profile.configContents.trim();
 }
 
-function authJsonHasOpenAiApiKey(contents: string): boolean {
-  const trimmed = contents.trim();
-  if (!trimmed) return false;
-  try {
-    const value = JSON.parse(trimmed);
-    return !!value && typeof value === "object" && typeof value.OPENAI_API_KEY === "string" && value.OPENAI_API_KEY.trim().length > 0;
-  } catch {
-    return /"OPENAI_API_KEY"\s*:/.test(trimmed);
-  }
-}
+
 
 function tomlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');

@@ -5,6 +5,8 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "用 Zed 打开远程文件": "Open remote files in Zed",
+  "从上游创建工作树": "Create a worktree from upstream",
   "删除无效会话": "Delete invalid sessions",
   "未发现可安全删除的无效会话。远程、归档和有恢复来源的会话均保留。": "No invalid sessions can be safely deleted. Remote, archived and recoverable sessions are kept.",
   "先退出 Codex 应用；检查所有本地会话，确认后备份并删除无效记录，不只是当前页。": "Quit Codex apps first. Scan all local sessions, not just this page, then confirm to back up and delete invalid records.",

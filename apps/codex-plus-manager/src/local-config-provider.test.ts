@@ -8,7 +8,7 @@ test("官方供应商的本机配置在前端标准化后仍可编辑和切换",
   const start = source.indexOf("function normalizeRelayProfile(");
   const end = source.indexOf("function hydrateAggregateRelayProfile(", start);
   const usesStart = source.indexOf("function relayProfileUsesLiveFiles(");
-  const usesEnd = source.indexOf("function authJsonHasOpenAiApiKey(", usesStart);
+  const usesEnd = source.indexOf("function tomlString(", usesStart);
   assert.ok(start >= 0 && end > start && usesStart >= 0 && usesEnd > usesStart);
   const compiled = ts.transpileModule(source.slice(start, end) + source.slice(usesStart, usesEnd), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
