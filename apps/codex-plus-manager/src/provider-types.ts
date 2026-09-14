@@ -1,0 +1,157 @@
+import type { DreamSkinThemeConfig } from "./dream-skin";
+import type { RelayModelRoute } from "./model-routes";
+
+export type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
+export type LaunchMode = "patch" | "relay";
+export type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
+export type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
+export type StepwiseGenerationMode = "auto" | "manual";
+
+export type RelayProtocol = "responses" | "chatCompletions";
+export type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
+export type RelaySessionProvider = "custom" | "openai";
+export type RelayContextSelection = { mcpServers: string[]; skills: string[]; plugins: string[] };
+export type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
+export type RelayAggregateMember = { profileId: string; weight: number };
+export type RelayAggregateRoute = { pattern: string; profileId: string; priority: number };
+export type RelayAggregateConfig = {
+  strategy: RelayAggregateStrategy;
+  members: RelayAggregateMember[];
+  routes?: RelayAggregateRoute[];
+};
+
+export type RelayProfile = {
+  id: string;
+  name: string;
+  model: string;
+  baseUrl: string;
+  upstreamBaseUrl: string;
+  apiKey: string;
+  protocol: RelayProtocol;
+  relayMode: RelayMode;
+  sessionProvider?: RelaySessionProvider;
+  officialMixApiKey: boolean;
+  hideOfficialUsageAlert: boolean;
+  testModel: string;
+  configContents: string;
+  authContents: string;
+  useCommonConfig: boolean;
+  contextSelection: RelayContextSelection;
+  contextSelectionInitialized: boolean;
+  contextWindow: string;
+  autoCompactLimit: string;
+  modelList: string;
+  modelWindows: string;
+  modelAutoCompact: string;
+  modelMetadata: string;
+  modelVlm: string;
+  vlmApiKey: string;
+  vlmModel: string;
+  vlmBaseUrl: string;
+  userAgent: string;
+  sub2apiEnabled: boolean;
+  sub2apiMultiplier: string;
+  modelRoutes?: RelayModelRoute[];
+  aggregate?: RelayAggregateConfig | null;
+};
+
+export type AggregateRelayMember = { relayId: string; weight: number };
+export type AggregateRelayProfile = {
+  id: string;
+  name: string;
+  sessionProvider?: RelaySessionProvider;
+  strategy: RelayAggregateStrategy;
+  members: AggregateRelayMember[];
+  routes?: { pattern: string; relayId: string; priority: number }[];
+};
+
+/** settings.json 中按工具保存的配置镜像。 */
+export type ToolShard = {
+  relayProfiles?: RelayProfile[];
+  activeRelayId?: string;
+  aggregateRelayProfiles?: AggregateRelayProfile[];
+  activeAggregateRelayId?: string;
+  relayCommonConfigContents?: string;
+  relayContextConfigContents?: string;
+  relayTestModel?: string;
+};
+
+export type BackendSettings = {
+  codexAppPath: string;
+  codexExtraArgs: string[];
+  providerSyncEnabled: boolean;
+  providerSyncSavedProviders: string[];
+  providerSyncManualProviders: string[];
+  providerSyncLastSelectedProvider: string;
+  relayProfilesEnabled: boolean;
+  localConfigProviderImported: boolean;
+  enhancementsEnabled: boolean;
+  codexAppPluginMarketplaceUnlock: boolean;
+  codexAppModelWhitelistUnlock: boolean;
+  codexAppIncludeNativeModels: boolean;
+  codexAppSessionDelete: boolean;
+  codexAppMarkdownExport: boolean;
+  codexAppPasteFix: boolean;
+  codexAppForceChineseLocale: boolean;
+  codexAppFastStartup: boolean;
+  codexAppThreadIdBadge: boolean;
+  codexAppConversationView: boolean;
+  codexAppThreadScrollRestore: boolean;
+  codexAppZedRemoteOpen: boolean;
+  zedRemoteOpenStrategy: ZedOpenStrategy;
+  zedRemoteProjectRegistryEnabled: boolean;
+  zedRemoteSyncToZedSettings: boolean;
+  codexAppUpstreamWorktreeCreate: boolean;
+  codexAppNativeMenuPlacement: boolean;
+  codexAppNativeMenuLocalization: boolean;
+  codexAppServiceTierControls: boolean;
+  codexAppPetRealMouseLook: boolean;
+  codexAppStepwiseEnabled: boolean;
+  codexAppAnswerOutlineEnabled: boolean;
+  codexAppStepwiseDirectSend: boolean;
+  codexAppStepwiseProtocol: StepwiseProtocol;
+  codexAppStepwiseGenerationMode: StepwiseGenerationMode;
+  codexAppStepwiseBaseUrl: string;
+  codexAppStepwiseApiKey: string;
+  codexAppStepwiseApiKeyEnv: string;
+  codexAppStepwiseModel: string;
+  codexAppStepwiseMaxItems: number;
+  codexAppStepwiseMaxInputChars: number;
+  codexAppStepwiseMaxOutputTokens: number;
+  codexAppStepwiseTimeoutMs: number;
+  codexAppImageOverlayEnabled: boolean;
+  codexAppImageOverlayPath: string;
+  codexAppImageOverlayOpacity: number;
+  codexAppImageOverlayFitMode: ImageOverlayFitMode;
+  codexAppDreamSkinEnabled: boolean;
+  codexAppDreamSkinPaused: boolean;
+  codexAppDreamSkinTheme: string;
+  codexAppDreamSkinThemeConfig: DreamSkinThemeConfig;
+  codexAppDreamSkinImagePath: string;
+  codexGoalsEnabled: boolean;
+  weixinConnectEnabled: boolean;
+  weixinConnectBaseUrl: string;
+  weixinConnectToken: string;
+  weixinConnectAccountId: string;
+  weixinConnectAllowFrom: string;
+  weixinConnectRouteTag: string;
+  weixinConnectWorkDir: string;
+  weixinConnectModel: string;
+  weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
+  weixinConnectCodexPath: string;
+  launchMode: LaunchMode;
+  relayBaseUrl: string;
+  relayApiKey: string;
+  relayProfiles: RelayProfile[];
+  aggregateRelayProfiles: AggregateRelayProfile[];
+  activeAggregateRelayId: string;
+  relayCommonConfigContents: string;
+  relayContextConfigContents: string;
+  activeRelayId: string;
+  relayTestModel: string;
+  /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
+  tools?: Record<string, ToolShard>;
+  /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
+  activeTool?: string;
+};
+

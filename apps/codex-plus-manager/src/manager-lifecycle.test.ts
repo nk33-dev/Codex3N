@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { setImmediate } from "node:timers/promises";
-import { createVisibleRefresh } from "./manager-lifecycle.ts";
+import { createVisibleRefresh, isVisibleRefreshCurrent } from "./manager-lifecycle.ts";
+
+test("后台刷新结果只在未销毁、可见且版本一致时有效", () => {
+  assert.equal(isVisibleRefreshCurrent(false, true, 3, 3), true);
+  assert.equal(isVisibleRefreshCurrent(true, true, 3, 3), false);
+  assert.equal(isVisibleRefreshCurrent(false, false, 3, 3), false);
+  assert.equal(isVisibleRefreshCurrent(false, true, 4, 3), false);
+});
 
 function deferred() {
   let resolve!: () => void;

@@ -22,6 +22,10 @@ const ts = require("typescript");
 const SRC_FILES = [
   "src/App.tsx",
   "src/components/ProviderPresetSelector.tsx",
+  "src/components/providers/ProviderImportActions.tsx",
+  "src/components/providers/EnvConflictNotice.tsx",
+  "src/components/providers/RelayProfileList.tsx",
+  "src/provider-utils.ts",
   "src/vlm-test-translation.ts",
 ];
 

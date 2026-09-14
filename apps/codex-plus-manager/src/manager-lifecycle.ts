@@ -4,6 +4,16 @@ type VisibleRefreshOptions = {
   onError: (error: unknown) => void;
 };
 
+/** 判断一次后台刷新结果是否仍允许提交，集中表达销毁、隐藏和版本失效条件。 */
+export function isVisibleRefreshCurrent(
+  disposed: boolean,
+  visible: boolean,
+  revision: number,
+  requestRevision: number,
+): boolean {
+  return !disposed && visible && revision === requestRevision;
+}
+
 /** 事件和定时刷新共用一个队列；隐藏时不调度，恢复后补读一次。 */
 export function createVisibleRefresh({ refresh, intervalMs, onError }: VisibleRefreshOptions) {
   let visible = false;
@@ -24,7 +34,7 @@ export function createVisibleRefresh({ refresh, intervalMs, onError }: VisibleRe
     running = true;
     const currentRevision = revision;
     try {
-      await refresh(() => !disposed && visible && revision === currentRevision);
+      await refresh(() => isVisibleRefreshCurrent(disposed, visible, revision, currentRevision));
     } catch (error) {
       if (!disposed) onError(error);
     } finally {
