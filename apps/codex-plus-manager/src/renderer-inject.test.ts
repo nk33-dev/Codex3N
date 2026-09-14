@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
+import ts from "typescript";
 
 import { readRendererInjectSource, readStepwiseSource } from "./inject-fragments.ts";
 
@@ -822,8 +823,16 @@ describe("Stepwise generation mode contracts", () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const renderer = await readRendererInjectSource();
 
-    assert.match(app, /type StepwiseGenerationMode = "auto" \| "manual";/);
-    assert.match(app, /type StepwiseProtocol = "auto" \| "chat_completions" \| "responses" \| "anthropic_messages";/);
+    const types = await readFile(new URL("./provider-types.ts", import.meta.url), "utf8");
+    const parsed = ts.createSourceFile("provider-types.ts", types, ts.ScriptTarget.Latest, true);
+    const members = (name: string) => {
+      const node = parsed.statements.find((item): item is ts.TypeAliasDeclaration =>
+        ts.isTypeAliasDeclaration(item) && item.name.text === name);
+      assert.ok(node && ts.isUnionTypeNode(node.type));
+      return node.type.types.map((item) => item.getText(parsed));
+    };
+    assert.deepEqual(members("StepwiseGenerationMode"), ['"auto"', '"manual"']);
+    assert.deepEqual(members("StepwiseProtocol"), ['"auto"', '"chat_completions"', '"responses"', '"anthropic_messages"']);
     assert.match(app, /codexAppStepwiseProtocol: "chat_completions",/);
     assert.match(app, /codexAppStepwiseGenerationMode: "auto",/);
     assert.match(app, /codexAppAnswerOutlineEnabled: false,/);

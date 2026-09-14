@@ -270,7 +270,15 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(app_tsx.contains("return \"apply_pure_api_injection\""));
     assert!(app_tsx.contains("return \"apply_relay_injection\""));
     assert!(app_tsx.contains("const createNewAggregateProfile = () =>"));
-    assert!(app_tsx.contains("onClick={createNewAggregateProfile}"));
+    assert!(app_tsx.contains("onCreateAggregate={createNewAggregateProfile}"));
+    let import_actions = std::fs::read_to_string(
+        manifest_dir
+            .parent()
+            .unwrap()
+            .join("src/components/providers/ProviderImportActions.tsx"),
+    )
+    .expect("读取供应商导入组件");
+    assert!(import_actions.contains("onClick={onCreateAggregate}"));
     assert!(app_tsx.contains("已打开聚合供应商详情"));
     assert!(app_tsx.contains(
         "buildRelayConfigToml(profile, { includeBearerToken: false, requiresOpenAiAuth: true })"
