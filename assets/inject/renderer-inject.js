@@ -6758,13 +6758,26 @@
     };
   }
 
-  function sortModelChoices(models, nameOf) {
+  function sortModelChoices(models, nameOf, preferredModels = []) {
     const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
+    const preferredOrder = new Map();
+    preferredModels.forEach((model) => {
+      const name = nameOf(model);
+      if (!preferredOrder.has(name)) preferredOrder.set(name, preferredOrder.size);
+    });
     const entries = models.map((model) => ({
       model,
+      name: nameOf(model),
       parts: nameOf(model).trim().replace(/[._\s]+/g, "-").match(/\d+|\D+/g) || [],
     }));
     entries.sort((left, right) => {
+      const leftPreferred = preferredOrder.get(left.name);
+      const rightPreferred = preferredOrder.get(right.name);
+      if (leftPreferred !== undefined || rightPreferred !== undefined) {
+        if (leftPreferred === undefined) return 1;
+        if (rightPreferred === undefined) return -1;
+        return leftPreferred - rightPreferred;
+      }
       const length = Math.min(left.parts.length, right.parts.length);
       for (let index = 0; index < length; index += 1) {
         const leftPart = left.parts[index];
@@ -6794,6 +6807,7 @@
     if (!stringArrayLooksPatchable(models)) return false;
     const customModels = codexPlusModelNames();
     if (!customModels.length) return false;
+    const preferredModels = models.slice();
     let changed = false;
     customModels.forEach((modelName) => {
       if (!models.includes(modelName)) {
@@ -6801,12 +6815,13 @@
         changed = true;
       }
     });
-    return sortModelChoices(models, (name) => name) || changed;
+    return sortModelChoices(models, (name) => name, preferredModels) || changed;
   }
 
   function patchModelArray(models, allowEmpty = false) {
     if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
     const customModels = codexPlusModelNames();
+    const preferredModels = models.filter((item) => !item.__codexPlusInjected);
     let changed = false;
     const sourceModels = new Set(customModels);
     const authoritative = codexPlusSettings().includeNativeModels === false
@@ -6838,7 +6853,7 @@
       }
     });
     if (customModels.length && codexModelCatalog.status === "ok") {
-      if (sortModelChoices(models, (item) => item.model)) changed = true;
+      if (sortModelChoices(models, (item) => item.model, preferredModels)) changed = true;
       models.forEach((item, index) => {
         if (item.priority !== index) { item.priority = index; changed = true; }
       });

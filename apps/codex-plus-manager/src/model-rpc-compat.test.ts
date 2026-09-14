@@ -10,7 +10,7 @@ function section(start: string, end: string) {
   return source.slice(offset, limit);
 }
 
-const apiModels = ["gpt-6-astra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
+const apiModels = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
 function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativeModels = true, models = apiModels } = {}) {
   const requests: Array<{ hostId: string; method: string; params: unknown }> = [];
   const invalidations: unknown[] = [];
@@ -137,7 +137,7 @@ test("默认混入原生模型，取消及重新勾选后可切换列表且不�
   const client = app.root.forHost("local");
   const names = async () => (await client.sendRequest("model/list", {})).data.map((item: { model: string }) => item.model);
   const initial = await names();
-  assert.equal(initial.length, 9);
+  assert.deepEqual(initial, [...apiModels.slice(0, 5), "gpt-5.2", ...apiModels.slice(5)]);
   assert.equal(new Set(initial).size, 9);
   assert.ok(initial.includes("gpt-5.2"));
   app.setIncludeNativeModels(false);
