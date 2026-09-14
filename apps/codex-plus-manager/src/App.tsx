@@ -1164,6 +1164,7 @@ export function App() {
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
+  const relaySwitchingRef = useRef(false);
   const dreamSkinDraftDirty = Boolean(
     savedDreamSkinThemeDraft
       && dreamSkinThemeDraft
@@ -2808,7 +2809,7 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
-    if (relaySwitching) {
+    if (relaySwitchingRef.current) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return;
     }
@@ -2835,18 +2836,19 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
-    const selectedAfterSave = activeRelayProfile(switchSettings);
-    const command = relayProfileSwitchCommand(selectedAfterSave);
-
-    logDiagnostic("switchRelayProfile.apply_start", {
-      targetRelayId: selectedAfterSave.id,
-      targetRelayName: selectedAfterSave.name,
-      previousActiveRelayId,
-      command,
-    });
+    relaySwitchingRef.current = true;
     setRelaySwitching(true);
     try {
+      switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+      const selectedAfterSave = activeRelayProfile(switchSettings);
+      const command = relayProfileSwitchCommand(selectedAfterSave);
+
+      logDiagnostic("switchRelayProfile.apply_start", {
+        targetRelayId: selectedAfterSave.id,
+        targetRelayName: selectedAfterSave.name,
+        previousActiveRelayId,
+        command,
+      });
       const result = await run(() =>
         call<RelaySwitchResult>("switch_relay_profile", {
           request: { settings: switchSettings, previousActiveRelayId },
@@ -2890,6 +2892,7 @@ export function App() {
         status: result.status,
       });
     } finally {
+      relaySwitchingRef.current = false;
       setRelaySwitching(false);
     }
   };
@@ -2917,6 +2920,7 @@ export function App() {
   const copyText = async (text: string, message: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      showNotice(t("复制"), message, "ok");
     } catch (error) {
       showNotice(t("复制失败"), stringifyError(error), "failed");
     }
@@ -3336,7 +3340,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, relaySwitching],
   );
   const hasUpdate = update?.updateAvailable === true;
 

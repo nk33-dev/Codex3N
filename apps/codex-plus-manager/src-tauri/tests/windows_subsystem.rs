@@ -234,6 +234,26 @@ fn github_ci_builds_personal_branch_with_codex3n_artifact_names() {
 }
 
 #[test]
+fn github_workflows_install_frontend_from_lockfile() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workflows = manifest_dir
+        .parent()
+        .and_then(std::path::Path::parent)
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .join(".github/workflows");
+
+    for name in ["pr-build.yml", "release-assets.yml"] {
+        let workflow = std::fs::read_to_string(workflows.join(name)).expect("read workflow");
+        assert!(workflow.contains("run: npm ci"), "{name} 未使用 npm ci");
+        assert!(
+            !workflow.contains("npm install --package-lock=false"),
+            "{name} 仍在忽略 package-lock.json"
+        );
+    }
+}
+
+#[test]
 fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
