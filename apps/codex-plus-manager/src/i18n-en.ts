@@ -5,6 +5,7 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "二维码已过期，请重新扫码": "QR code expired. Please scan a new code.",
   "用 Zed 打开远程文件": "Open remote files in Zed",
   "从上游创建工作树": "Create a worktree from upstream",
   "删除无效会话": "Delete invalid sessions",
