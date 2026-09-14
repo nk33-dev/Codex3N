@@ -1,3 +1,6 @@
+mod provider_import;
+pub use provider_import::*;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -1544,7 +1547,6 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload> {
-    let settings = normalize_settings_before_save(settings);
     let Ok(_guard) = relay_switch_mutex().lock() else {
         return failed(
             "供应商切换锁已损坏，请重启管理器后再试。",
@@ -1559,6 +1561,13 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
     };
     let store = SettingsStore::default();
     let previous = store.load().unwrap_or_default();
+    if let Err(message) = provider_import::validate_changed_provider_files(&settings, &previous) {
+        return failed(
+            &message,
+            settings_payload_value().unwrap_or_else(|(_, payload)| payload),
+        );
+    }
+    let settings = normalize_settings_before_save(settings);
     let dream_skin_enabled = settings.enhancements_enabled && settings.codex_app_dream_skin_enabled;
     if let Err(error) = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
         dream_skin_enabled,
@@ -2378,137 +2387,6 @@ fn dream_skin_content_type(path: &Path) -> &'static str {
         Some("gif") => "image/gif",
         Some("bmp") => "image/bmp",
         _ => "application/octet-stream",
-    }
-}
-
-#[tauri::command]
-pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
-    match codex_plus_core::ccs_import::resolve_codex_provider_source(&settings.ccs_db_path) {
-        Ok(source) => ok(
-            &format!(
-                "已读取 cc-switch Codex 供应商配置：{} 个。",
-                source.providers.len()
-            ),
-            CcsProvidersPayload {
-                db_path: source.db_path.to_string_lossy().to_string(),
-                configured_db_path: source.configured_db_path,
-                fallback_reason: source.fallback_reason,
-                providers: source.providers,
-            },
-        ),
-        Err(error) => failed(
-            &format!("读取 cc-switch 供应商配置失败：{error}"),
-            CcsProvidersPayload {
-                db_path: codex_plus_core::ccs_import::default_ccs_db_path()
-                    .to_string_lossy()
-                    .to_string(),
-                configured_db_path: settings.ccs_db_path,
-                fallback_reason: None,
-                providers: Vec::new(),
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
-    let store = SettingsStore::default();
-    let mut settings = store.load().unwrap_or_default();
-    let providers =
-        match codex_plus_core::ccs_import::resolve_codex_provider_source(&settings.ccs_db_path) {
-            Ok(source) => source.providers,
-            Err(error) => {
-                let payload = settings_payload_value().unwrap_or_else(|(_, payload)| payload);
-                return failed(&format!("读取 cc-switch 供应商配置失败：{error}"), payload);
-            }
-        };
-
-    let mut existing_keys: Vec<String> = settings
-        .relay_profiles
-        .iter()
-        .map(codex_plus_core::ccs_import::imported_provider_identity)
-        .collect();
-    let mut existing_ids: Vec<String> = settings
-        .relay_profiles
-        .iter()
-        .map(|profile| profile.id.clone())
-        .collect();
-    let mut imported = 0usize;
-
-    for provider in providers {
-        let key = codex_plus_core::ccs_import::provider_identity_from_ccs(&provider);
-        if existing_keys.iter().any(|existing| existing == &key) {
-            continue;
-        }
-        let profile = codex_plus_core::ccs_import::relay_profile_from_ccs(&provider, &existing_ids);
-        existing_ids.push(profile.id.clone());
-        existing_keys.push(key);
-        settings.relay_profiles.push(profile);
-        imported += 1;
-    }
-
-    if imported == 0 {
-        return settings_payload("没有新的 cc-switch 供应商配置需要导入。", "设置读取失败");
-    }
-
-    settings = normalize_settings_before_save(settings);
-    match store.save(&settings) {
-        Ok(()) => settings_payload(
-            &format!("已从 cc-switch 导入供应商配置：{imported} 个。"),
-            "导入供应商配置后重新读取设置失败",
-        ),
-        Err(error) => failed(
-            &format!("保存 cc-switch 供应商配置失败：{error}"),
-            settings_payload_value().unwrap_or_else(|(_, payload)| payload),
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn load_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
-    match codex_plus_core::provider_import::load_pending_provider_import() {
-        Ok(pending) => ok(
-            "待确认供应商导入已读取。",
-            PendingProviderImportPayload { pending },
-        ),
-        Err(error) => failed(
-            &format!("读取待确认供应商导入失败：{error}"),
-            PendingProviderImportPayload { pending: None },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn confirm_pending_provider_import() -> CommandResult<SettingsPayload> {
-    match codex_plus_core::provider_import::confirm_pending_provider_import() {
-        Ok(Some(result)) => {
-            let message = if result.imported {
-                format!("已导入供应商配置：{}。", result.profile_name)
-            } else {
-                format!("供应商配置已存在：{}。", result.profile_name)
-            };
-            settings_payload(&message, "供应商导入后重新读取设置失败")
-        }
-        Ok(None) => settings_payload("没有待确认的供应商导入。", "设置读取失败"),
-        Err(error) => failed(
-            &format!("导入供应商配置失败：{error}"),
-            settings_payload_value().unwrap_or_else(|(_, payload)| payload),
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn dismiss_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
-    match codex_plus_core::provider_import::clear_pending_provider_import() {
-        Ok(()) => ok(
-            "已取消供应商导入。",
-            PendingProviderImportPayload { pending: None },
-        ),
-        Err(error) => failed(
-            &format!("取消供应商导入失败：{error}"),
-            PendingProviderImportPayload { pending: None },
-        ),
     }
 }
 
