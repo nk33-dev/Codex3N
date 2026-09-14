@@ -26,7 +26,7 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 
 ## 代码入口
 
-- `assets/inject/renderer-inject.js`：`checkAndHideInvalidSessions` 及隐藏状态管理。
+- `assets/inject/renderer/sessions/health.js`：`checkAndHideInvalidSessions` 及隐藏状态管理。
 - `crates/codex-plus-core/src/routes.rs`：`/session/health`；`crates/codex-plus-data/src/session_health.rs`：恢复来源检查。
 - `apps/codex-plus-manager/src/App.tsx`：会话管理；`apps/codex-plus-manager/src-tauri/src/commands.rs`：`delete_local_session`、`preview_invalid_local_sessions`、`delete_invalid_local_sessions`。
 - `crates/codex-plus-data/src/storage.rs` / `backup.rs` / `provider_sync.rs`：删除、撤销、快照限长及索引维护。

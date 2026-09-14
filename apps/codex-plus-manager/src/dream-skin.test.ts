@@ -8,6 +8,7 @@ import {
   normalizeDreamSkinTheme,
   resolveDreamSkinStylePreset,
 } from "./dream-skin.ts";
+import { readRendererInjectSource } from "./inject-fragments.ts";
 
 describe("dream skin theme helpers", () => {
   it("uses the Codex-Dream-Skin theme.json defaults", () => {
@@ -40,7 +41,7 @@ describe("dream skin theme helpers", () => {
 
   it("runs the unmodified target renderers instead of the rewritten theme packages", async () => {
     const assets = await readFile(new URL("../../../crates/codex-plus-core/src/assets.rs", import.meta.url), "utf8");
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(assets, /upstream\/dream-skin/);
     assert.match(assets, /upstream\/cidala-tiger/);
@@ -91,7 +92,7 @@ describe("dream skin theme helpers", () => {
   });
 
   it("renders an optional image companion beside the visible composer", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
 
     assert.match(renderer, /codex-dream-skin-companion/);
     assert.match(renderer, /theme\.companion/);
@@ -103,7 +104,7 @@ describe("dream skin theme helpers", () => {
   });
 
   it("aligns tall companion images by rendered height with a wider vertical offset range", async () => {
-    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const renderer = await readRendererInjectSource();
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
 
     assert.match(renderer, /companion\.naturalWidth/);
@@ -121,10 +122,7 @@ describe("dream skin theme helpers", () => {
       new URL("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js", import.meta.url),
       "utf8",
     );
-    const compatibility = await readFile(
-      new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
-      "utf8",
-    );
+    const compatibility = await readRendererInjectSource();
     const assets = await readFile(
       new URL("../../../crates/codex-plus-core/src/assets.rs", import.meta.url),
       "utf8",

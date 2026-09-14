@@ -182,7 +182,8 @@ apps/
   codex-plus-launcher/          静默启动入口
   codex-plus-manager/           Tauri 管理工具
 assets/inject/
-  renderer-inject.js            注入到 Codex 渲染端的增强脚本
+  renderer/                     注入到 Codex 渲染端的增强脚本分片
+  floating-panel/               悬浮球注入脚本分片
 crates/
   codex-plus-core/              启动、注入、配置、更新、安装、桥接等核心逻辑
   codex-plus-data/              会话数据、导出、Provider 同步

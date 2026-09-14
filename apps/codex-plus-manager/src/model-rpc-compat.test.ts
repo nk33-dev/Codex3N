@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+import { readRendererInjectSource } from "./inject-fragments.ts";
+
+const source = await readRendererInjectSource();
 function section(start: string, end: string) {
   const offset = source.indexOf(start);
   const limit = source.indexOf(end, offset);

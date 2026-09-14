@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+import { readRendererInjectSource } from "./inject-fragments.ts";
+
+const renderer = await readRendererInjectSource();
 const source = renderer.slice(renderer.indexOf("  function sortModelChoices("), renderer.indexOf("  function modelArrayLooksPatchable("));
 const sort = new Function(source + "; return sortModelChoices;")();
 const nameOf = (name: string) => name;

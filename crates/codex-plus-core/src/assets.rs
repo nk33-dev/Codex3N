@@ -5,7 +5,46 @@ use std::path::Path;
 
 use crate::settings::BackendSettings;
 
-const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
+/// 注入到 Codex 渲染端的增强脚本。
+///
+/// 分片顺序**有意义**：整个脚本是一个共享作用域的 IIFE，`const` / `let` 存在
+/// TDZ，函数声明在 IIFE 内整体提升。分片只是把同一段脚本按子系统切开，拼接
+/// 结果必须与拆分前的单文件逐字节一致。新增分片时只能追加到正确位置，不能
+/// 调整已有顺序。粘贴修复块位于 IIFE 之外，必须留在 `"})();\n"` 之后。
+const RENDERER_SCRIPT: &str = concat!(
+    "(() => {\n",
+    include_str!("../../../assets/inject/renderer/shell/guard.js"),
+    include_str!("../../../assets/inject/renderer/shell/chinese-locale.js"),
+    include_str!("../../../assets/inject/renderer/shell/constants.js"),
+    include_str!("../../../assets/inject/renderer/shell/image-overlay.js"),
+    include_str!("../../../assets/inject/renderer/shell/styles.js"),
+    include_str!("../../../assets/inject/renderer/shell/settings.js"),
+    include_str!("../../../assets/inject/renderer/skins/dream-skin.js"),
+    include_str!("../../../assets/inject/renderer/shell/settings-menu.js"),
+    include_str!("../../../assets/inject/renderer/models/service-tier.js"),
+    include_str!("../../../assets/inject/renderer/models/remote-session.js"),
+    include_str!("../../../assets/inject/renderer/shell/backend-status.js"),
+    include_str!("../../../assets/inject/renderer/shell/page-menu.js"),
+    include_str!("../../../assets/inject/renderer/marketplace/plugin-bridge.js"),
+    include_str!("../../../assets/inject/renderer/sessions/health.js"),
+    include_str!("../../../assets/inject/renderer/sessions/rows-badge.js"),
+    include_str!("../../../assets/inject/renderer/sessions/thread-scroll.js"),
+    include_str!("../../../assets/inject/renderer/shell/markdown-export.js"),
+    include_str!("../../../assets/inject/renderer/models/catalog-patch.js"),
+    include_str!("../../../assets/inject/renderer/sessions/keys-share.js"),
+    include_str!("../../../assets/inject/renderer/shell/upstream-worktree.js"),
+    include_str!("../../../assets/inject/renderer/sessions/delete.js"),
+    include_str!("../../../assets/inject/renderer/shell/conversation-targets.js"),
+    include_str!("../../../assets/inject/renderer/models/service-tier-badge.js"),
+    include_str!("../../../assets/inject/renderer/shell/conversation-view.js"),
+    include_str!("../../../assets/inject/renderer/shell/scan-lightweight.js"),
+    include_str!("../../../assets/inject/renderer/shell/zed-remote.js"),
+    include_str!("../../../assets/inject/renderer/sessions/copy-menu.js"),
+    include_str!("../../../assets/inject/renderer/sessions/scan.js"),
+    "})();\n",
+    "\n",
+    include_str!("../../../assets/inject/renderer/shell/paste-fix.js"),
+);
 #[cfg(windows)]
 const DREAM_TARGET_CSS: &str =
     include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
@@ -835,6 +874,65 @@ mod tests {
         assert_eq!(
             array[2]["plugins"][0]["marketplacePath"].as_str(),
             Some("openai-curated-remote")
+        );
+    }
+
+    /// 每个分片都必须真正拼进结果，防止 `concat!` 列表被误删或漏加。
+    ///
+    /// 顺序本身无法在 Rust 侧校验（`concat!` 是编译期字符串拼接），顺序由
+    /// `apps/codex-plus-manager/src/inject-fragments.ts` 的结构测试对齐。
+    #[test]
+    fn renderer_script_keeps_every_fragment() {
+        let script = renderer_script();
+        for marker in [
+            "function installCodexPlusFastStartup()",
+            "function installCodexPlusForceChineseLocale()",
+            "const codexPlusMenuFloatingClass = \"codex-plus-menu-floating\";",
+            "function installCodexPlusImageOverlay()",
+            "function installStyle()",
+            "function defaultCodexPlusSettings()",
+            "function installDreamSkin(settings)",
+            "function setCodexPlusSetting(key, value)",
+            "function syncCodexServiceTierEffectiveState()",
+            "function codexRemoteSessionActiveProfile()",
+            "function loadBackendSettingsForStartup(attempt = 0)",
+            "function openCodexPlusModal(options = {})",
+            "function installPluginMarketplaceBridgePatch()",
+            "const invalidSessionStorageKey = \"codex3n.hiddenInvalidSessions.v1\";",
+            "function installThreadIdBadge(row)",
+            "function installThreadScrollProgrammaticScrollGuard()",
+            "function downloadMarkdownFallback(filename, markdown)",
+            "function patchAppServerModelResult(method, result)",
+            "function installSessionShareButton()",
+            "function installUpstreamWorktreeNativeAdapter()",
+            "function openDeleteConfirmForRow(row, button, ref, event)",
+            "function conversationViewFindComposerEl()",
+            "function installCodexServiceTierBadge()",
+            "function scheduleConversationViewAlign(frames = 16)",
+            "function scanLightweight()",
+            "function zedRemoteBestOpenRequest(",
+            "function createSessionCopyMenuItem(referenceItem, row)",
+            "function scheduleSidebarNavStartupRetry()",
+            "'[PasteFix]'",
+        ] {
+            assert!(
+                script.contains(marker),
+                "renderer script lost fragment: {marker}"
+            );
+        }
+    }
+
+    /// 粘贴修复块在 IIFE 之外：放进 IIFE 会随早返回守卫一起被跳过。
+    #[test]
+    fn renderer_script_keeps_paste_fix_outside_the_iife() {
+        let script = renderer_script();
+        assert!(script.starts_with("(() => {\n"));
+        let iife_end = script
+            .find("\n})();\n")
+            .expect("renderer script should close its iife");
+        assert!(
+            script[iife_end..].contains("__CODEX_PLUS_PASTE_FIX__"),
+            "paste fix must stay outside the renderer iife"
         );
     }
 }
