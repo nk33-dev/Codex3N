@@ -738,6 +738,10 @@
         visibility: visible;
       }
 
+      .csw-popover[data-open="false"][data-morphing="false"] .csw-panel {
+        clip-path: inset(100% round ${PANEL_RADIUS}px);
+      }
+
       .csw-popover[data-morphing="true"] .csw-panel {
         opacity: 1;
         pointer-events: none;
@@ -1059,10 +1063,23 @@
         display: grid;
         flex: 1 1 auto;
         gap: 16px;
-        grid-template-rows: max-content minmax(clamp(168px, 28vh, 240px), auto);
+        grid-template-columns: minmax(150px, .82fr) minmax(220px, 1.18fr);
+        grid-template-rows: minmax(0, 1fr);
         height: auto;
         min-height: 100%;
         width: 100%;
+      }
+
+      @media (max-width: 560px) {
+        .csw-next-layout {
+          grid-template-columns: 1fr;
+          grid-template-rows: max-content minmax(clamp(168px, 28vh, 240px), auto);
+        }
+        .csw-list {
+          height: max-content;
+          max-height: none;
+          overflow: visible;
+        }
       }
 
       .csw-next-layout::after {
@@ -1073,13 +1090,14 @@
       .csw-list {
         display: grid;
         align-content: start;
-        align-self: start;
+        align-self: stretch;
         flex: 0 0 auto;
         gap: 6px;
         grid-auto-rows: max-content;
-        height: max-content;
-        min-height: max-content;
-        overflow: visible;
+        height: 100%;
+        min-height: 0;
+        max-height: 100%;
+        overflow: auto;
         padding: 4px 2px 6px;
         width: 100%;
       }
@@ -1243,6 +1261,7 @@
       }
 
       .csw-prompt-preview {
+        min-width: 0;
         --csw-prompt-edge-fade-size: clamp(36px, 16%, 64px);
         background: transparent;
         border: 0;
@@ -1283,6 +1302,7 @@
       }
 
       .csw-prompt-preview-scroll {
+        min-width: 0;
         -webkit-mask-image: none;
         height: 100%;
         mask-image: none;
