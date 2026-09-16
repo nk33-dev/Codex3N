@@ -464,6 +464,18 @@ pub fn load_grok_providers() -> CommandResult<GrokProvidersPayload> {
 /// 让用户确认，所以这里不做隐式调用。
 #[tauri::command]
 pub fn apply_grok_relay_profile(settings: BackendSettings) -> CommandResult<GrokProvidersPayload> {
+    // 备份根目录固定走真实应用状态目录；测试走 `..._with_backup_root` 注入临时目录，
+    // 否则跑测试会把 `backups/grok/<时间戳>/config.toml` 写进用户真实的状态目录。
+    apply_grok_relay_profile_with_backup_root(
+        settings,
+        codex_plus_core::paths::default_app_state_dir().join("backups"),
+    )
+}
+
+fn apply_grok_relay_profile_with_backup_root(
+    settings: BackendSettings,
+    backup_root: PathBuf,
+) -> CommandResult<GrokProvidersPayload> {
     let store = SettingsStore::default();
     let mut next = settings;
     let shard = next.tool_config(&codex_plus_core::tools::ToolId::Grok);
@@ -479,7 +491,6 @@ pub fn apply_grok_relay_profile(settings: BackendSettings) -> CommandResult<Grok
         );
     };
 
-    let backup_root = codex_plus_core::paths::default_app_state_dir().join("backups");
     let live = match codex_plus_core::tools::grok::apply_profile_to_grok(&profile, &backup_root) {
         Ok(live) => live,
         Err(error) => {
@@ -1728,6 +1739,31 @@ pub struct InvalidLocalSessionsPayload {
     pub sessions: Vec<codex_plus_data::LocalSession>,
 }
 
+/// 会话删除相关备份的落盘根目录。
+///
+/// 生产固定走真实应用状态目录。测试构建下改走进程级临时目录：会话相关的
+/// 测试都用临时 `home` 与临时 SQLite，如果备份根目录还是真实目录，跑一次
+/// `cargo test` 就会往用户状态目录里塞进若干 `backups/<时间戳>-<id>.json`。
+/// 只影响 `cfg(test)`，生产路径不变；也不需要每个测试各自改参数。
+fn session_backup_root() -> PathBuf {
+    #[cfg(test)]
+    {
+        test_session_backup_root()
+    }
+    #[cfg(not(test))]
+    {
+        codex_plus_core::paths::default_app_state_dir().join("backups")
+    }
+}
+
+#[cfg(test)]
+fn test_session_backup_root() -> PathBuf {
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().expect("创建会话备份测试目录"))
+        .path()
+        .to_path_buf()
+}
+
 fn invalid_local_sessions_from_home(
     home: &Path,
     backups: &Path,
@@ -1759,7 +1795,7 @@ fn invalid_local_sessions_from_home(
 fn current_invalid_local_sessions() -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
     invalid_local_sessions_from_home(
         &codex_plus_core::codex_sqlite::default_codex_home_dir(),
-        &codex_plus_core::paths::default_app_state_dir().join("backups"),
+        &session_backup_root(),
         &codex_plus_core::watcher::find_session_index_cleanup_blocking_processes(),
     )
 }
@@ -1925,9 +1961,7 @@ pub fn delete_local_session(
     );
     let result = codex_plus_data::delete_local_from_paths(
         candidate_paths.clone(),
-        codex_plus_data::BackupStore::new(
-            codex_plus_core::paths::default_app_state_dir().join("backups"),
-        ),
+        codex_plus_data::BackupStore::new(session_backup_root()),
         &session,
         Some(&home),
     );
@@ -5888,7 +5922,10 @@ base_url = "https://example.invalid/v1"
 
         codex_plus_core::env_conflicts::remove_process_env_conflicts_for_tests(
             &[test_openai_name.to_string(), "CODEX_HOME".to_string()],
-            codex_plus_core::paths::default_app_state_dir().join("test-backups"),
+            // 备份目录必须落在临时目录里：以前这里用的是
+            // `paths::default_app_state_dir().join("test-backups")`，跑测试会把
+            // 备份文件写进用户真实的应用状态目录。
+            temp.path().join("test-backups"),
         )
         .unwrap();
         assert!(std::env::var_os(test_openai_name).is_none());
@@ -6551,7 +6588,9 @@ enabled = true
             ..BackendSettings::default()
         };
 
-        let result = apply_grok_relay_profile(settings);
+        // 注入临时备份根目录：这条链路会写 Grok 配置备份，不能让测试写进用户真实的状态目录。
+        let result =
+            apply_grok_relay_profile_with_backup_root(settings, temp.path().join("backups"));
         codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
         let written = std::fs::read_to_string(grok_home.join("config.toml"));
         unsafe {
@@ -6587,7 +6626,10 @@ enabled = true
         let previous_settings =
             codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
 
-        let result = apply_grok_relay_profile(BackendSettings::default());
+        let result = apply_grok_relay_profile_with_backup_root(
+            BackendSettings::default(),
+            temp.path().join("backups"),
+        );
         codex_plus_core::paths::set_settings_path_for_tests(previous_settings);
 
         assert_eq!(result.status, "failed");
