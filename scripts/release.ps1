@@ -99,7 +99,8 @@ if (-not $SkipChecks) {
     Invoke-Step "npm run check" { Push-Location $ManagerDir; try { npm run check } finally { Pop-Location } }
     Invoke-Step "npm run vite:build" { Push-Location $ManagerDir; try { npm run vite:build } finally { Pop-Location } }
     Invoke-Step "cargo check --workspace" { cargo check --workspace }
-    Invoke-Step "cargo test --workspace" { cargo test --workspace }
+    # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
+    Invoke-Step "cargo test --workspace" { cargo test --workspace --no-fail-fast }
 }
 
 Invoke-Step "创建标签 $tag" { git tag -a $tag -m "Codex3N $version" }

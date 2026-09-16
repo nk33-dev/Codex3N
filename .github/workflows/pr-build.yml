@@ -44,8 +44,9 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
+      # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
       - name: Rust tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
       - name: Build release binaries
         run: cargo build --release
