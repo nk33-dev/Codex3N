@@ -964,6 +964,84 @@ async fn default_helper_accepts_diagnostic_log_events_over_http() {
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
 }
 
+/// helper 会用服务端保存的 API Key 代发上游请求，且没有入站鉴权：
+/// 浏览器里的任意网页都不能借它消耗用户额度。
+#[tokio::test]
+async fn default_helper_rejects_web_origin_requests() {
+    let hooks = DefaultLaunchHooks::default();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    hooks.start_helper(port).await.unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+    for origin in ["https://evil.example", "http://127.0.0.1:1420", "null"] {
+        let rejected = client
+            .post(format!("http://127.0.0.1:{port}/diagnostics/log"))
+            .header(reqwest::header::ORIGIN, origin)
+            .json(&serde_json::json!({ "event": "probe" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status().as_u16(), 403, "origin: {origin}");
+        assert!(
+            rejected
+                .headers()
+                .get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "被拒绝的请求不应下发 CORS 头：origin {origin}"
+        );
+    }
+
+    // 注入脚本所在的 Codex 渲染进程来源照常放行，并且回显自身而不是通配符。
+    let allowed = client
+        .post(format!("http://127.0.0.1:{port}/backend/status"))
+        .header(reqwest::header::ORIGIN, "app://-")
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(allowed.status().is_success());
+    assert_eq!(
+        allowed
+            .headers()
+            .get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|value| value.to_str().ok()),
+        Some("app://-")
+    );
+
+    hooks.shutdown_helper(port).await;
+}
+
+/// 非浏览器调用（无 Origin，例如本机测试与管理器）保持可用，但不享受通配符 CORS。
+#[tokio::test]
+async fn default_helper_omits_wildcard_cors_for_requests_without_origin() {
+    let hooks = DefaultLaunchHooks::default();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    hooks.start_helper(port).await.unwrap();
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("http://127.0.0.1:{port}/backend/status"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    assert!(
+        response
+            .headers()
+            .get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none()
+    );
+    hooks.shutdown_helper(port).await;
+}
+
 #[tokio::test]
 async fn launch_lifecycle_runs_enabled_maintenance_without_applying_relay_profile() {
     let temp = tempfile::tempdir().unwrap();

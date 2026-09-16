@@ -614,12 +614,105 @@ impl DefaultLaunchHooks {
     }
 }
 
+const HELPER_LOOPBACK_HOST: &str = "127.0.0.1";
+
+/// 逃生开关：默认关闭。只有显式设为 `1` 才允许把 helper 绑到非回环地址，
+/// 或接受非回环来源的连接。两条限制必须同时放开，避免只改一半造成半暴露。
+fn helper_allow_remote() -> bool {
+    std::env::var("CODEX_PLUS_HELPER_ALLOW_REMOTE")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// 逃生开关：默认关闭。只有显式设为 `1` 才放行网页来源（`http(s)://` / `null`）。
+/// 仅在注入脚本无法通过来源校验时临时使用，放行会同时写一条诊断日志。
+fn helper_allow_web_origin() -> bool {
+    std::env::var("CODEX_PLUS_HELPER_ALLOW_WEB_ORIGIN")
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+}
+
 fn helper_bind_host() -> String {
-    std::env::var("CODEX_PLUS_HELPER_BIND")
+    let requested = std::env::var("CODEX_PLUS_HELPER_BIND")
         .ok()
         .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "127.0.0.1".to_string())
+        .filter(|value| !value.is_empty());
+    let Some(requested) = requested else {
+        return HELPER_LOOPBACK_HOST.to_string();
+    };
+    if helper_bind_host_is_loopback(&requested) || helper_allow_remote() {
+        return requested;
+    }
+    // helper 没有入站鉴权：把监听地址放开到非回环等于把本机保存的 API Key
+    // 暴露给局域网。默认拒绝并回落到回环，只留一条诊断说明原因。
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "helper.bind_host_rejected",
+        serde_json::json!({
+            "requested": requested,
+            "applied": HELPER_LOOPBACK_HOST,
+        }),
+    );
+    HELPER_LOOPBACK_HOST.to_string()
+}
+
+fn helper_bind_host_is_loopback(value: &str) -> bool {
+    let normalized = value
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    normalized == "localhost" || normalized == "::1" || normalized.starts_with("127.")
+}
+
+/// helper 只服务注入到 Codex 渲染进程的脚本，因此只放行注入目标真正会产生的来源：
+/// 本地主界面 `app://-`（`cdp.rs` 的 `is_exact_codex_app_main_target`），以及被识别为
+/// ChatGPT 桌面页的 `https://chatgpt.com` / `https://chat.openai.com`
+/// （`is_chatgpt_desktop_page`）——这两类都是 `is_supported_codex_page_target` 的注入目标。
+///
+/// 其余来源一律拒绝：沙箱化 iframe、`file://`、`data:` 页面都序列化成 `null`，
+/// 攻击者用 `<iframe sandbox srcdoc=...>` 就能伪造出同样的值，所以 `null` 不能当作
+/// “本地页面”放行；任意网页来源同理——helper 没有入站鉴权，还会用服务端保存的
+/// API Key 代发上游请求，任何网页只要能跨域打到它就能白白消耗用户额度。
+///
+/// 注意：`data:text/html` 类注入目标（预热的 quick-chat / 头像浮层）是不透明来源，
+/// 与攻击者伪造的 `null` 无法区分，因此不在放行范围。这些页面不渲染会话列表，
+/// 不会调用 helper；若真机诊断日志出现它们的 `helper.rejected_web_origin`，
+/// 用 `CODEX_PLUS_HELPER_ALLOW_WEB_ORIGIN=1` 临时放行并回头改成共享令牌方案。
+fn helper_origin_is_allowed(origin: &str) -> bool {
+    let origin = origin.trim();
+    if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
+        return false;
+    }
+    let lowered = origin.to_ascii_lowercase();
+    let lowered = lowered.trim_end_matches('/');
+    // 主界面来源是 `app://-`（Origin 不带路径，这里兼容多余斜杠）。
+    if lowered == "app://-" || lowered.starts_with("app://-/") {
+        return true;
+    }
+    // 精确匹配，避免 `https://chatgpt.com.evil.example` 这类前缀伪装。
+    matches!(lowered, "https://chatgpt.com" | "https://chat.openai.com")
+}
+
+/// 允许时回显请求来源；不允许时不下发该响应头（浏览器随即阻止读取响应）。
+/// 逃生开关打开时照样回显，保证 `CODEX_PLUS_HELPER_ALLOW_WEB_ORIGIN=1` 真的可用。
+fn helper_cors_allow_origin(origin: Option<&str>) -> String {
+    match origin {
+        Some(origin) if helper_allow_web_origin() || helper_origin_is_allowed(origin) => {
+            format!("Access-Control-Allow-Origin: {}\r\n", origin.trim())
+        }
+        _ => String::new(),
+    }
+}
+
+/// 非回环来源一律拒绝。`None` 表示调用方没有提供对端地址（测试或进程内调用），
+/// 此时不额外拦截——真实的 TCP 连接一定会带上地址。
+fn helper_remote_addr_is_allowed(address: Option<SocketAddr>, allow_remote: bool) -> bool {
+    if allow_remote {
+        return true;
+    }
+    address
+        .map(|address| address.ip().is_loopback())
+        .unwrap_or(true)
 }
 
 #[async_trait(?Send)]
@@ -1096,6 +1189,31 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 }
 
+/// 拒绝一个 helper 请求：记录原因后关闭连接，且不下发 CORS 响应头，
+/// 保证即使某个路径漏检，网页也无法读取响应内容。
+async fn reject_helper_request(
+    stream: &mut tokio::net::TcpStream,
+    message: &str,
+    event: &str,
+    detail: serde_json::Value,
+) -> anyhow::Result<()> {
+    let body = serde_json::to_vec(&serde_json::json!({
+        "status": "failed",
+        "message": message,
+    }))?;
+    write_http_response(
+        stream,
+        "403 Forbidden",
+        "application/json; charset=utf-8",
+        &body,
+        "",
+    )
+    .await?;
+    stream.shutdown().await?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(event, detail);
+    Ok(())
+}
+
 async fn handle_helper_connection(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
@@ -1112,6 +1230,7 @@ async fn handle_helper_connection(
                 error.status(),
                 "application/json; charset=utf-8",
                 &body,
+                "",
             )
             .await?;
             stream.shutdown().await?;
@@ -1129,6 +1248,9 @@ async fn handle_helper_connection(
     let request_content_encoding = header_value_from_headers(&request_headers, "content-encoding");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
 
+    let request_origin = header_value_from_headers(&request_headers, "origin");
+    let cors_allow_origin = helper_cors_allow_origin(request_origin.as_deref());
+
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "helper.request",
         serde_json::json!({
@@ -1136,9 +1258,43 @@ async fn handle_helper_connection(
             "path": path,
             "request_line": request_line,
             "remote_addr": remote_addr_text,
+            "origin": request_origin,
             "body_bytes": request.body.len()
         }),
     );
+
+    // 入站校验必须在任何路由分发之前完成：helper 没有鉴权，且会用服务端保存的
+    // API Key 代发上游请求，因此来源与非回环对端都必须挡在门外。
+    if !helper_remote_addr_is_allowed(remote_addr, helper_allow_remote()) {
+        return reject_helper_request(
+            &mut stream,
+            "helper 只接受本机回环请求",
+            "helper.rejected_non_loopback",
+            serde_json::json!({
+                "method": method,
+                "path": path,
+                "remote_addr": remote_addr_text,
+            }),
+        )
+        .await;
+    }
+
+    if let Some(origin) = request_origin.as_deref() {
+        if !helper_allow_web_origin() && !helper_origin_is_allowed(origin) {
+            return reject_helper_request(
+                &mut stream,
+                "helper 拒绝网页来源的跨域请求",
+                "helper.rejected_web_origin",
+                serde_json::json!({
+                    "origin": origin,
+                    "method": method,
+                    "path": path,
+                    "remote_addr": remote_addr_text,
+                }),
+            )
+            .await;
+        }
+    }
 
     if crate::protocol_proxy::is_audio_transcriptions_proxy_path(path) && method == "POST" {
         return handle_audio_transcriptions_proxy_connection(
@@ -1149,6 +1305,7 @@ async fn handle_helper_connection(
             method,
             path,
             remote_addr_text,
+            &cors_allow_origin,
         )
         .await;
     }
@@ -1161,6 +1318,7 @@ async fn handle_helper_connection(
             "204 No Content",
             "application/json; charset=utf-8",
             &[],
+            &cors_allow_origin,
         )
         .await?;
         stream.shutdown().await?;
@@ -1178,6 +1336,7 @@ async fn handle_helper_connection(
             method,
             path,
             remote_addr_text,
+            &cors_allow_origin,
         )
         .await;
     }
@@ -1191,6 +1350,7 @@ async fn handle_helper_connection(
             "426 Upgrade Required",
             "application/json; charset=utf-8",
             &body,
+            &cors_allow_origin,
         )
         .await?;
         log_helper_response(
@@ -1219,6 +1379,7 @@ async fn handle_helper_connection(
                     "400 Bad Request",
                     "application/json; charset=utf-8",
                     &body,
+                    &cors_allow_origin,
                 )
                 .await?;
                 log_helper_response(
@@ -1239,6 +1400,7 @@ async fn handle_helper_connection(
             method,
             path,
             remote_addr_text,
+            &cors_allow_origin,
         )
         .await;
     }
@@ -1251,6 +1413,7 @@ async fn handle_helper_connection(
             method,
             path,
             remote_addr_text,
+            &cors_allow_origin,
         )
         .await;
     }
@@ -1261,6 +1424,7 @@ async fn handle_helper_connection(
             method,
             path,
             remote_addr_text,
+            &cors_allow_origin,
         )
         .await;
     }
@@ -1352,11 +1516,11 @@ async fn handle_helper_connection(
     );
     let response = if method == "OPTIONS" {
         format!(
-            "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 204 No Content\r\n{cors_allow_origin}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
     } else {
         format!(
-            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{cors_allow_origin}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             body.len()
         )
     };
@@ -1511,6 +1675,7 @@ async fn handle_models_proxy_connection(
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     if method == "OPTIONS" {
         write_http_response(
@@ -1518,6 +1683,7 @@ async fn handle_models_proxy_connection(
             "204 No Content",
             "application/json; charset=utf-8",
             &[],
+            &cors_allow_origin,
         )
         .await?;
         stream.shutdown().await?;
@@ -1535,6 +1701,7 @@ async fn handle_models_proxy_connection(
                 "502 Bad Gateway",
                 "application/json; charset=utf-8",
                 &body,
+                &cors_allow_origin,
             )
             .await?;
             log_helper_response(
@@ -1556,7 +1723,7 @@ async fn handle_models_proxy_connection(
         upstream.content_type.clone()
     };
     let body = upstream.response.bytes().await?.to_vec();
-    write_http_response(stream, &status, &content_type, &body).await?;
+    write_http_response(stream, &status, &content_type, &body, &cors_allow_origin).await?;
     log_helper_response(
         if is_success {
             "helper.models_proxy_ok"
@@ -1578,6 +1745,7 @@ async fn handle_protocol_proxy_connection(
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
     let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path(
@@ -1597,6 +1765,7 @@ async fn handle_protocol_proxy_connection(
                 "502 Bad Gateway",
                 "application/json; charset=utf-8",
                 &body,
+                &cors_allow_origin,
             )
             .await?;
             log_helper_response(
@@ -1620,7 +1789,14 @@ async fn handle_protocol_proxy_connection(
             &upstream_body,
         );
         let body = serde_json::to_vec(&error)?;
-        write_http_response(stream, &status, "application/json; charset=utf-8", &body).await?;
+        write_http_response(
+            stream,
+            &status,
+            "application/json; charset=utf-8",
+            &body,
+            &cors_allow_origin,
+        )
+        .await?;
         log_helper_response(
             "helper.protocol_proxy_upstream_error",
             method,
@@ -1632,7 +1808,13 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     if upstream.is_stream {
-        write_http_stream_headers(stream, "200 OK", "text/event-stream; charset=utf-8").await?;
+        write_http_stream_headers(
+            stream,
+            "200 OK",
+            "text/event-stream; charset=utf-8",
+            &cors_allow_origin,
+        )
+        .await?;
         if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
             let mut bytes_stream = upstream.response.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
@@ -1706,6 +1888,7 @@ async fn handle_protocol_proxy_connection(
                 &upstream.content_type
             },
             &upstream_body,
+            &cors_allow_origin,
         )
         .await?;
         log_helper_response(
@@ -1725,7 +1908,14 @@ async fn handle_protocol_proxy_connection(
         crate::protocol_proxy::chat_completion_to_response(chat_json)?
     };
     let body = serde_json::to_vec(&response_json)?;
-    write_http_response(stream, "200 OK", "application/json; charset=utf-8", &body).await?;
+    write_http_response(
+        stream,
+        "200 OK",
+        "application/json; charset=utf-8",
+        &body,
+        &cors_allow_origin,
+    )
+    .await?;
     log_helper_response(
         "helper.protocol_proxy_ok",
         method,
@@ -1744,6 +1934,7 @@ async fn handle_audio_transcriptions_proxy_connection(
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let upstream = match crate::protocol_proxy::open_audio_transcriptions_proxy_request(
         request_body,
@@ -1763,6 +1954,7 @@ async fn handle_audio_transcriptions_proxy_connection(
                 "502 Bad Gateway",
                 "application/json; charset=utf-8",
                 &body,
+                &cors_allow_origin,
             )
             .await?;
             log_helper_response(
@@ -1784,7 +1976,7 @@ async fn handle_audio_transcriptions_proxy_connection(
         upstream.content_type.clone()
     };
     let body = upstream.response.bytes().await?.to_vec();
-    write_http_response(stream, &status, &content_type, &body).await?;
+    write_http_response(stream, &status, &content_type, &body, &cors_allow_origin).await?;
     log_helper_response(
         if is_success {
             "helper.audio_transcriptions_proxy_ok"
@@ -1808,6 +2000,7 @@ async fn handle_image_proxy_connection(
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let upstream = if crate::protocol_proxy::is_image_generations_proxy_path(path) {
         crate::protocol_proxy::open_image_generations_proxy_request(
@@ -1835,6 +2028,7 @@ async fn handle_image_proxy_connection(
                 "502 Bad Gateway",
                 "application/json; charset=utf-8",
                 &body,
+                &cors_allow_origin,
             )
             .await?;
             log_helper_response(
@@ -1856,7 +2050,7 @@ async fn handle_image_proxy_connection(
         upstream.content_type.clone()
     };
     let body = upstream.response.bytes().await?.to_vec();
-    write_http_response(stream, &status, &content_type, &body).await?;
+    write_http_response(stream, &status, &content_type, &body, &cors_allow_origin).await?;
     log_helper_response(
         if is_success {
             "helper.image_proxy_ok"
@@ -1879,6 +2073,7 @@ async fn handle_chat_completions_proxy_connection(
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let upstream = match crate::protocol_proxy::open_chat_completions_proxy_request(
         request_body,
@@ -1896,6 +2091,7 @@ async fn handle_chat_completions_proxy_connection(
                 "502 Bad Gateway",
                 "application/json; charset=utf-8",
                 &body,
+                &cors_allow_origin,
             )
             .await?;
             log_helper_response(
@@ -1917,7 +2113,7 @@ async fn handle_chat_completions_proxy_connection(
         upstream.content_type.clone()
     };
     if upstream.is_stream && is_success {
-        write_http_stream_headers(stream, &status, &content_type).await?;
+        write_http_stream_headers(stream, &status, &content_type, &cors_allow_origin).await?;
         let mut bytes_stream = upstream.response.bytes_stream();
         while let Some(chunk) = bytes_stream.next().await {
             stream.write_all(&chunk?).await?;
@@ -1933,7 +2129,7 @@ async fn handle_chat_completions_proxy_connection(
         return Ok(());
     }
     let body = upstream.response.bytes().await?.to_vec();
-    write_http_response(stream, &status, &content_type, &body).await?;
+    write_http_response(stream, &status, &content_type, &body, &cors_allow_origin).await?;
     log_helper_response(
         if is_success {
             "helper.chat_completions_proxy_ok"
@@ -1954,9 +2150,10 @@ async fn write_http_response(
     status: &str,
     content_type: &str,
     body: &[u8],
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{cors_allow_origin}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(response.as_bytes()).await?;
@@ -1968,9 +2165,10 @@ async fn write_http_stream_headers(
     stream: &mut tokio::net::TcpStream,
     status: &str,
     content_type: &str,
+    cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let response = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
+        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\n{cors_allow_origin}Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(response.as_bytes()).await?;
     Ok(())
@@ -3257,6 +3455,77 @@ mod tests {
                 Ok(())
             })
         })
+    }
+
+    #[test]
+    fn helper_origin_gate_rejects_web_and_opaque_origins() {
+        // helper 会用服务端保存的 API Key 代发上游请求：任意网页来源必须挡死。
+        assert!(!helper_origin_is_allowed("https://evil.example"));
+        assert!(!helper_origin_is_allowed("HTTP://Evil.Example"));
+        assert!(!helper_origin_is_allowed("http://127.0.0.1:1420"));
+        // 前缀/后缀伪装不能被当成 ChatGPT 桌面页。
+        assert!(!helper_origin_is_allowed(
+            "https://chatgpt.com.evil.example"
+        ));
+        assert!(!helper_origin_is_allowed(
+            "https://evil.example/chatgpt.com"
+        ));
+        assert!(!helper_origin_is_allowed("http://chatgpt.com"));
+        // 只能精确到 scheme，`app://` 不算。
+        assert!(!helper_origin_is_allowed("app://evil"));
+        // 沙箱化 iframe / file:// / data: 页面都序列化成 null。
+        assert!(!helper_origin_is_allowed("null"));
+        assert!(!helper_origin_is_allowed("  "));
+        assert!(!helper_origin_is_allowed(""));
+        // 注入脚本真正会出现的来源。
+        assert!(helper_origin_is_allowed("app://-"));
+        assert!(helper_origin_is_allowed("app://-/"));
+        assert!(helper_origin_is_allowed("https://chatgpt.com"));
+        assert!(helper_origin_is_allowed("https://CHATGPT.COM/"));
+        assert!(helper_origin_is_allowed("https://chat.openai.com"));
+    }
+
+    #[test]
+    fn helper_cors_header_echoes_allowed_origin_and_stays_absent_otherwise() {
+        assert_eq!(
+            helper_cors_allow_origin(Some("app://-")),
+            "Access-Control-Allow-Origin: app://-\r\n"
+        );
+        // 不再下发通配符：网页来源连响应头都拿不到。
+        assert!(helper_cors_allow_origin(Some("https://evil.example")).is_empty());
+        assert!(helper_cors_allow_origin(Some("null")).is_empty());
+        // ChatGPT 桌面页是合法的注入目标，来源照样回显。
+        assert_eq!(
+            helper_cors_allow_origin(Some("https://chatgpt.com")),
+            "Access-Control-Allow-Origin: https://chatgpt.com\r\n"
+        );
+        // 非浏览器调用（无 Origin）本来也不需要 CORS。
+        assert!(helper_cors_allow_origin(None).is_empty());
+    }
+
+    #[test]
+    fn helper_rejects_non_loopback_peers() {
+        let loopback_v4: SocketAddr = "127.0.0.1:51000".parse().unwrap();
+        let loopback_v6: SocketAddr = "[::1]:51000".parse().unwrap();
+        let lan_peer: SocketAddr = "192.168.1.20:51000".parse().unwrap();
+        assert!(helper_remote_addr_is_allowed(Some(loopback_v4), false));
+        assert!(helper_remote_addr_is_allowed(Some(loopback_v6), false));
+        assert!(helper_remote_addr_is_allowed(None, false));
+        assert!(!helper_remote_addr_is_allowed(Some(lan_peer), false));
+        // 逃生开关同时放开对端限制，避免只放开绑定地址的半暴露状态。
+        assert!(helper_remote_addr_is_allowed(Some(lan_peer), true));
+    }
+
+    #[test]
+    fn helper_bind_host_only_accepts_loopback_forms() {
+        assert!(helper_bind_host_is_loopback("127.0.0.1"));
+        assert!(helper_bind_host_is_loopback("127.0.0.53"));
+        assert!(helper_bind_host_is_loopback("::1"));
+        assert!(helper_bind_host_is_loopback("[::1]"));
+        assert!(helper_bind_host_is_loopback("LOCALHOST"));
+        assert!(!helper_bind_host_is_loopback("0.0.0.0"));
+        assert!(!helper_bind_host_is_loopback("192.168.1.20"));
+        assert!(!helper_bind_host_is_loopback("::"));
     }
 
     #[test]
