@@ -19,7 +19,6 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
-  ArrowRight,
   Bell,
   Blocks,
   Bot,
@@ -80,10 +79,24 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  AppSelect,
+  Badge,
+  CardHead,
+  ConfirmDialog,
+  Field,
+  Panel,
+  StatusRow,
+  ToggleVisual,
+  Toolbar,
+  formatBytes,
+  formatProgressPercent,
+  formatTime,
+  providerSyncTargetLabel,
+} from "@/components/ui/manager-primitives";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
@@ -148,6 +161,10 @@ import { useManagerLifecycle } from "./use-manager-lifecycle";
 import { isWeixinQrPending, startWeixinQrPolling } from "./weixin-qr-polling";
 import { relayProtocolLabel, relayModeLabel, isAggregateRelayProfile } from "./provider-utils";
 import { parseProviderAuth } from "./provider-config";
+import { defaultSettings, emptyContextSelection } from "./lib/default-settings";
+import { GrokScreen } from "./screens/GrokScreen";
+import { SessionsScreen } from "./screens/SessionsScreen";
+import { WeixinConnectScreen } from "./screens/WeixinConnectScreen";
 import type {
   AggregateRelayProfile,
   RelayAggregateConfig,
@@ -175,7 +192,7 @@ const dreamSkinMacPreviewUrl = new URL("../../../assets/inject/upstream/dream-sk
 const dreamSkinCompanionDataUrlLimit = 240_000;
 const dreamSkinCompanionMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
-type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
+export type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
 function modelWindowRowsValidationMessage(issue: ModelWindowRowsValidationIssue | null): string | null {
   if (!issue) return null;
@@ -186,7 +203,7 @@ function modelWindowRowsValidationMessage(issue: ModelWindowRowsValidationIssue 
   return tf("模型 {0} 的自动压缩百分比无效；请输入 0 到 100 之间、最多 6 位小数的十进制数。", [issue.model]);
 }
 
-type CommandResult<T> = T & {
+export type CommandResult<T> = T & {
   status: Status;
   message: string;
 };
@@ -293,12 +310,6 @@ type CodexContextEntries = {
 const CHAT_UPSTREAM_BASE_URL_KEY = "codex_plus_chat_base_url";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
-const emptyContextSelection = (): RelayContextSelection => ({
-  mcpServers: [],
-  skills: [],
-  plugins: [],
-});
-
 type UserScriptInventory = {
   enabled?: boolean;
   scripts?: Array<{
@@ -316,13 +327,13 @@ type UserScriptInventory = {
   }>;
 };
 
-type SettingsResult = CommandResult<{
+export type SettingsResult = CommandResult<{
   settings: BackendSettings;
   settings_path: string;
   user_scripts: UserScriptInventory;
 }>;
 
-type WeixinConnectStatusResult = CommandResult<{
+export type WeixinConnectStatusResult = CommandResult<{
   state: string;
   message: string;
   accountId: string;
@@ -332,7 +343,7 @@ type WeixinConnectStatusResult = CommandResult<{
   processedMessages: number;
 }>;
 
-type WeixinQrResult = CommandResult<{
+export type WeixinQrResult = CommandResult<{
   qrStatus: string;
   qrContent: string;
   qrSvg: string;
@@ -365,7 +376,7 @@ type RelayFilesResult = CommandResult<{
   authContents: string;
 }>;
 
-type LocalSession = {
+export type LocalSession = {
   id: string;
   title: string;
   cwd: string;
@@ -376,7 +387,7 @@ type LocalSession = {
   dbPath: string;
 };
 
-type LocalSessionsResult = CommandResult<{
+export type LocalSessionsResult = CommandResult<{
   dbPath: string;
   dbPaths: string[];
   sessions: LocalSession[];
@@ -609,9 +620,9 @@ type SessionIndexCleanupApplyPayload = {
   backupDir?: string | null;
 };
 
-type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
+export type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
 
-type ProviderSyncTargetOption = {
+export type ProviderSyncTargetOption = {
   id: string;
   sources: ProviderSyncTargetSource[];
   isCurrentProvider: boolean;
@@ -626,9 +637,9 @@ type ProviderSyncTargetsPayload = {
   targets: ProviderSyncTargetOption[];
 };
 
-type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
+export type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
 
-type ProviderSyncProgress = {
+export type ProviderSyncProgress = {
   active: boolean;
   percent: number;
   message: string;
@@ -725,20 +736,6 @@ function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>)
   ]);
 }
 
-const providerSyncSourceLabels: Record<ProviderSyncTargetSource, string> = {
-  config: t("配置"),
-  rollout: t("会话"),
-  sqlite: t("索引"),
-  manual: t("手动"),
-};
-
-function providerSyncTargetLabel(target: ProviderSyncTargetOption): string {
-  const labels = target.sources.map((source) => providerSyncSourceLabels[source]).filter(Boolean);
-  const current = target.isCurrentProvider ? [t("当前")] : [];
-  const unavailable = isProviderSyncTargetSelectable(target) ? [] : [t("供应商切换不可用")];
-  return [...labels, ...current, ...unavailable].join(" / ") || t("发现");
-}
-
 function syncMarketInstalledState(current: ScriptMarketResult | null, userScripts: UserScriptInventory): ScriptMarketResult | null {
   if (!current) return current;
   const installed = new Map(
@@ -827,115 +824,6 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
     placement: "bottom",
   },
 ];
-
-const defaultSettings: BackendSettings = {
-  codexAppPath: "",
-  codexExtraArgs: [],
-  providerSyncEnabled: false,
-  providerSyncSavedProviders: [],
-  providerSyncManualProviders: [],
-  providerSyncLastSelectedProvider: "",
-  relayProfilesEnabled: false,
-  localConfigProviderImported: false,
-  enhancementsEnabled: true,
-  codexAppPluginMarketplaceUnlock: true,
-  codexAppModelWhitelistUnlock: true,
-  codexAppIncludeNativeModels: true,
-  codexAppSessionDelete: true,
-  codexAppMarkdownExport: true,
-  codexAppPasteFix: false,
-  codexAppForceChineseLocale: true,
-  codexAppFastStartup: false,
-  codexAppThreadIdBadge: false,
-  codexAppConversationView: false,
-  codexAppThreadScrollRestore: true,
-  codexAppZedRemoteOpen: true,
-  zedRemoteOpenStrategy: "addToFocusedWorkspace",
-  zedRemoteProjectRegistryEnabled: true,
-  zedRemoteSyncToZedSettings: false,
-  codexAppUpstreamWorktreeCreate: true,
-  codexAppNativeMenuPlacement: true,
-  codexAppNativeMenuLocalization: true,
-  codexAppServiceTierControls: false,
-  codexAppPetRealMouseLook: false,
-  codexAppStepwiseEnabled: false,
-  codexAppAnswerOutlineEnabled: false,
-  codexAppStepwiseDirectSend: false,
-  codexAppStepwiseProtocol: "chat_completions",
-  codexAppStepwiseGenerationMode: "auto",
-  codexAppStepwiseBaseUrl: "",
-  codexAppStepwiseApiKey: "",
-  codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
-  codexAppStepwiseModel: "",
-  codexAppStepwiseMaxItems: 4,
-  codexAppStepwiseMaxInputChars: 6000,
-  codexAppStepwiseMaxOutputTokens: 500,
-  codexAppStepwiseTimeoutMs: 8000,
-  codexAppImageOverlayEnabled: false,
-  codexAppImageOverlayPath: "",
-  codexAppImageOverlayOpacity: 35,
-  codexAppImageOverlayFitMode: "fit",
-  codexAppDreamSkinEnabled: false,
-  codexAppDreamSkinPaused: false,
-  codexAppDreamSkinTheme: "pink",
-  codexAppDreamSkinThemeConfig: defaultDreamSkinTheme(),
-  codexAppDreamSkinImagePath: "",
-  codexGoalsEnabled: false,
-  weixinConnectEnabled: false,
-  weixinConnectBaseUrl: "https://ilinkai.weixin.qq.com",
-  weixinConnectToken: "",
-  weixinConnectAccountId: "",
-  weixinConnectAllowFrom: "",
-  weixinConnectRouteTag: "",
-  weixinConnectWorkDir: "",
-  weixinConnectModel: "",
-  weixinConnectSandbox: "read-only",
-  weixinConnectCodexPath: "",
-  launchMode: "patch",
-  relayBaseUrl: "",
-  relayApiKey: "",
-  relayProfiles: [
-    {
-      id: "default",
-      name: t("默认中转"),
-      model: "",
-      baseUrl: "",
-      upstreamBaseUrl: "",
-      apiKey: "",
-      protocol: "responses",
-      relayMode: "official",
-      officialMixApiKey: false,
-      hideOfficialUsageAlert: false,
-      testModel: "",
-      configContents: "",
-      authContents: "",
-      useCommonConfig: true,
-      contextSelection: emptyContextSelection(),
-      contextSelectionInitialized: true,
-      contextWindow: "",
-      autoCompactLimit: "",
-      modelList: "",
-      modelWindows: "",
-      modelAutoCompact: "",
-      modelMetadata: "",
-      modelVlm: "",
-      vlmApiKey: "",
-      vlmModel: "",
-      vlmBaseUrl: "",
-      userAgent: "",
-      sub2apiEnabled: false,
-      sub2apiMultiplier: "",
-    },
-  ],
-  relayCommonConfigContents: "",
-  relayContextConfigContents: "",
-  activeRelayId: "default",
-  aggregateRelayProfiles: [],
-  activeAggregateRelayId: "",
-  relayTestModel: "gpt-5.4-mini",
-  tools: {},
-  activeTool: "codex",
-};
 
 export function App() {
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
@@ -3519,7 +3407,7 @@ export function App() {
   );
 }
 
-type Actions = {
+export type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
@@ -3626,456 +3514,6 @@ type Actions = {
   toggleTheme: () => void;
   checkHealth: () => Promise<void>;
 };
-
-function SearchablePathPicker({
-  value,
-  options,
-  placeholder,
-  onChange,
-}: {
-  value: string;
-  options: string[];
-  placeholder: string;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const filteredOptions = useMemo(() => {
-    const query = value.trim().toLowerCase();
-    return options.filter((option) => !query || option.toLowerCase().includes(query)).slice(0, 30);
-  }, [options, value]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [open]);
-
-  return (
-    <div className="weixin-search-picker" ref={rootRef}>
-      <div className="weixin-search-input-wrap">
-        <Search className="weixin-search-input-icon h-4 w-4" />
-        <Input
-          aria-expanded={open}
-          aria-label={placeholder}
-          className="h-10"
-          onChange={(event) => {
-            onChange(event.target.value);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setOpen(false);
-          }}
-          placeholder={placeholder}
-          value={value}
-        />
-        <ChevronDown className={`weixin-search-input-chevron h-4 w-4${open ? " is-open" : ""}`} />
-      </div>
-      {open ? (
-        <div className="weixin-search-menu" role="listbox">
-          {filteredOptions.length ? filteredOptions.map((option) => (
-            <button
-              className="weixin-search-option"
-              key={option}
-              onClick={() => {
-                onChange(option);
-                setOpen(false);
-              }}
-              type="button"
-            >
-              <span>{option}</span>
-            </button>
-          )) : (
-            <div className="weixin-search-empty">{t("没有匹配的已有目录，可继续直接输入。")}</div>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SearchableSessionPicker({
-  sessions,
-  selectedId,
-  onSelect,
-}: {
-  sessions: LocalSession[];
-  selectedId: string;
-  onSelect: (session: LocalSession | null) => void;
-}) {
-  const selected = sessions.find((session) => session.id === selectedId) ?? null;
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const rootRef = useRef<HTMLDivElement>(null);
-  const filteredSessions = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return sessions
-      .filter((session) => !normalized || [session.title, session.cwd, session.id, session.modelProvider].some((value) => value.toLowerCase().includes(normalized)))
-      .slice(0, 30);
-  }, [query, sessions]);
-
-  useEffect(() => {
-    if (selected) setQuery(selected.title || selected.id);
-  }, [selected]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [open]);
-
-  return (
-    <div className="weixin-search-picker" ref={rootRef}>
-      <div className="weixin-search-input-wrap">
-        <Search className="weixin-search-input-icon h-4 w-4" />
-        <Input
-          aria-expanded={open}
-          aria-label={t("已有会话")}
-          className="h-10"
-          onChange={(event) => {
-            setQuery(event.target.value);
-            if (selectedId) onSelect(null);
-            setOpen(true);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") setOpen(false);
-          }}
-          placeholder={sessions.length ? t("搜索已有会话") : t("暂无可用的本地会话")}
-          value={query}
-        />
-        <ChevronDown className={`weixin-search-input-chevron h-4 w-4${open ? " is-open" : ""}`} />
-      </div>
-      {open ? (
-        <div className="weixin-search-menu weixin-session-menu" role="listbox">
-          {filteredSessions.length ? filteredSessions.map((session) => (
-            <button
-              aria-selected={session.id === selectedId}
-              className="weixin-search-option weixin-session-option"
-              key={session.id}
-              onClick={() => {
-                onSelect(session);
-                setQuery(session.title || session.id);
-                setOpen(false);
-              }}
-              type="button"
-            >
-              <strong>{session.title || t("未命名会话")}</strong>
-              <span>{session.cwd || t("未记录项目路径")}</span>
-              <small>{formatTime(session.updatedAtMs ?? 0)} · {session.modelProvider || t("provider 未记录")}</small>
-            </button>
-          )) : (
-            <div className="weixin-search-empty">{t("没有匹配的本地会话。")}</div>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function WeixinConnectScreen({
-  form,
-  status,
-  qr,
-  sessions,
-  onFormChange,
-  onSave,
-  onQrLogin,
-  onStart,
-  onStop,
-  onChooseWorkDir,
-  onChooseCodexPath,
-  onUseDesktopCodexCli,
-  onOpenQr,
-  onCopyQr,
-}: {
-  form: BackendSettings;
-  status: WeixinConnectStatusResult | null;
-  qr: WeixinQrResult | null;
-  sessions: LocalSession[];
-  onFormChange: (value: BackendSettings) => void;
-  onSave: () => void;
-  onQrLogin: () => void;
-  onStart: () => void;
-  onStop: () => void;
-  onChooseWorkDir: () => void;
-  onChooseCodexPath: () => void;
-  onUseDesktopCodexCli: () => void;
-  onOpenQr: (url: string) => void;
-  onCopyQr: (url: string) => void;
-}) {
-  const [selectedSessionId, setSelectedSessionId] = useState("");
-  const workDirOptions = useMemo(
-    () => Array.from(new Set(sessions.map((session) => session.cwd.trim()).filter(Boolean))).sort(),
-    [sessions],
-  );
-  const runtimeState = status?.state ?? "stopped";
-  const running = ["starting", "running", "retrying"].includes(runtimeState);
-  const stopping = runtimeState === "stopping";
-  const statusLabel = {
-    starting: t("正在启动"),
-    running: t("运行中"),
-    retrying: t("正在重试"),
-    stopping: t("正在停止"),
-    error: t("异常"),
-    stopped: t("已停止"),
-  }[runtimeState] ?? runtimeState;
-
-  return (
-    <div className="weixin-connect-page">
-      <Panel className={`weixin-status-panel is-${runtimeState}`}>
-        <CardContent className="weixin-status-content">
-          <div className="weixin-connect-head">
-            <div className="weixin-status-primary">
-              <div className="weixin-status-icon" aria-hidden="true">
-                <MessageCircle className="h-5 w-5" />
-              </div>
-              <div>
-                <div className="section-heading-row">
-                  <h2>{t("个人微信连接")}</h2>
-                  <UiBadge variant={runtimeState === "running" ? "default" : runtimeState === "error" ? "outline" : "secondary"}>
-                    {statusLabel}
-                  </UiBadge>
-                </div>
-                <p className="muted">{status?.message ?? t("微信连接未启动。")}</p>
-              </div>
-            </div>
-            <div className="toolbar weixin-connect-actions">
-              <Button onClick={onSave} variant="outline">
-                <Save className="h-4 w-4" />
-                {t("保存")}
-              </Button>
-              <Button onClick={onQrLogin} variant="outline">
-                <ScanLine className="h-4 w-4" />
-                {form.weixinConnectToken ? t("重新登录") : t("扫码登录")}
-              </Button>
-              {running || stopping ? (
-                <Button disabled={stopping} onClick={onStop} variant="outline">
-                  <PowerOff className="h-4 w-4" />
-                  {stopping ? t("正在停止") : t("停止")}
-                </Button>
-              ) : (
-                <Button disabled={!form.weixinConnectToken} onClick={onStart}>
-                  <Play className="h-4 w-4" />
-                  {t("启动")}
-                </Button>
-              )}
-            </div>
-          </div>
-          <div className="weixin-runtime-meta">
-            <div>
-              <span>{t("账号")}</span>
-              <code title={status?.accountId || form.weixinConnectAccountId || t("未登录")}>
-                {status?.accountId || form.weixinConnectAccountId || t("未登录")}
-              </code>
-            </div>
-            <div>
-              <span>{t("已处理消息")}</span>
-              <strong>{status?.processedMessages ?? 0}</strong>
-            </div>
-            <div>
-              <span>{t("最近联系人")}</span>
-              <code title={status?.lastPeerId || t("暂无")}>{status?.lastPeerId || t("暂无")}</code>
-            </div>
-          </div>
-        </CardContent>
-      </Panel>
-
-      {qr?.qrContent ? (
-        <Panel>
-          <CardHeader>
-            <CardTitle>{qr.qrStatus === "expired" ? t("二维码已过期，请重新扫码") : qr.qrStatus === "scaned" ? t("已扫码，请在手机上确认") : t("微信扫码登录")}</CardTitle>
-            <CardDescription>{t("在手机微信中打开登录链接，或复制到可生成二维码的设备完成确认。")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {qr.qrSvg ? (
-              <div className="weixin-qr-image" dangerouslySetInnerHTML={{ __html: qr.qrSvg }} />
-            ) : null}
-            <div className="weixin-qr-content">{qr.qrContent}</div>
-            <div className="toolbar">
-              <Button onClick={() => onOpenQr(qr.qrContent)}>
-                <ExternalLink className="h-4 w-4" />
-                {t("打开登录链接")}
-              </Button>
-              <Button onClick={() => onCopyQr(qr.qrContent)} variant="outline">
-                <Copy className="h-4 w-4" />
-                {t("复制链接")}
-              </Button>
-            </div>
-          </CardContent>
-        </Panel>
-      ) : null}
-
-      <Panel className="weixin-settings-panel">
-        <CardHeader className="weixin-settings-head">
-          <div>
-            <CardTitle>{t("连接设置")}</CardTitle>
-            <CardDescription>{t("每个微信联系人会映射到独立的 Codex 会话。")}</CardDescription>
-          </div>
-        </CardHeader>
-        <CardContent className="weixin-connect-form">
-          <section className="weixin-form-section">
-            <div className="weixin-form-section-title">
-              <KeyRound className="h-4 w-4" />
-              <strong>{t("账号")}</strong>
-            </div>
-            <div className="weixin-form-fields">
-              <label className="field">
-                <span>{t("iLink API 地址")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectBaseUrl: event.target.value })}
-                  value={form.weixinConnectBaseUrl}
-                />
-              </label>
-              <label className="field">
-                <span>{t("登录凭据")}</span>
-                <Input
-                  autoComplete="off"
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectToken: event.target.value })}
-                  placeholder={t("扫码后自动保存，也可粘贴已有 Bearer token")}
-                  type="password"
-                  value={form.weixinConnectToken}
-                />
-              </label>
-              <label className="field">
-                <span>{t("允许的微信用户 ID")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectAllowFrom: event.target.value })}
-                  placeholder="user@im.wechat"
-                  value={form.weixinConnectAllowFrom}
-                />
-              </label>
-              <label className="field">
-                <span>{t("账号标识")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectAccountId: event.target.value })}
-                  placeholder={t("扫码后自动填写")}
-                  value={form.weixinConnectAccountId}
-                />
-              </label>
-              <label className="field">
-                <span>{t("SKRouteTag")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectRouteTag: event.target.value })}
-                  placeholder={t("仅在网关要求时填写")}
-                  value={form.weixinConnectRouteTag}
-                />
-              </label>
-            </div>
-          </section>
-
-          <section className="weixin-form-section">
-            <div className="weixin-form-section-title">
-              <MessageCircle className="h-4 w-4" />
-              <strong>{t("会话管理")}</strong>
-            </div>
-            <div className="weixin-form-fields">
-              <label className="field">
-                <span>{t("工作目录")}</span>
-                <div className="weixin-path-row">
-                  <SearchablePathPicker
-                    onChange={(value) => {
-                      setSelectedSessionId("");
-                      onFormChange({ ...form, weixinConnectWorkDir: value });
-                    }}
-                    options={workDirOptions}
-                    placeholder={t("搜索或输入工作目录")}
-                    value={form.weixinConnectWorkDir}
-                  />
-                  <Button onClick={onChooseWorkDir} size="icon" title={t("选择工作目录")} type="button" variant="outline">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </div>
-              </label>
-              <label className="field">
-                <span>{t("已有会话")}</span>
-                <SearchableSessionPicker
-                  onSelect={(session) => {
-                    setSelectedSessionId(session?.id ?? "");
-                    if (session?.cwd) onFormChange({ ...form, weixinConnectWorkDir: session.cwd });
-                  }}
-                  selectedId={selectedSessionId}
-                  sessions={sessions}
-                />
-                <small className="weixin-field-hint">{t("选择后自动带入该会话的工作目录，微信联系人仍保持独立会话。")}</small>
-              </label>
-              <label className="field">
-                <span>{t("模型")}</span>
-                <Input
-                  className="h-10"
-                  onChange={(event) => onFormChange({ ...form, weixinConnectModel: event.target.value })}
-                  placeholder={t("留空时使用 Codex 当前默认模型")}
-                  value={form.weixinConnectModel}
-                />
-              </label>
-              <label className="field">
-                <span>{t("沙箱权限")}</span>
-                <select
-                  className="field-select"
-                  onChange={(event) => onFormChange({
-                    ...form,
-                    weixinConnectSandbox: event.target.value as BackendSettings["weixinConnectSandbox"],
-                  })}
-                  value={form.weixinConnectSandbox}
-                >
-                  <option value="read-only">{t("只读")}</option>
-                  <option value="workspace-write">{t("允许修改工作目录")}</option>
-                  <option value="danger-full-access">{t("完全访问")}</option>
-                </select>
-              </label>
-            </div>
-          </section>
-
-          <section className="weixin-form-section">
-            <div className="weixin-form-section-title">
-              <Settings className="h-4 w-4" />
-              <strong>Codex CLI</strong>
-            </div>
-            <div className="weixin-form-fields">
-              <label className="field">
-                <span>{t("Codex CLI 路径")}</span>
-                <div className="weixin-path-row weixin-cli-path-row">
-                  <Input
-                    className="h-10"
-                    onChange={(event) => onFormChange({ ...form, weixinConnectCodexPath: event.target.value })}
-                    placeholder={t("留空时从 PATH 查找 codex")}
-                    value={form.weixinConnectCodexPath}
-                  />
-                  <Button
-                    className="weixin-bundled-cli-button"
-                    onClick={onUseDesktopCodexCli}
-                    size="sm"
-                    title={t("使用桌面版内置 CLI")}
-                    type="button"
-                    variant="secondary"
-                  >
-                    <PackageOpen className="h-4 w-4" />
-                    {t("使用桌面版内置 CLI")}
-                  </Button>
-                  <Button onClick={onChooseCodexPath} size="icon" title={t("选择 Codex CLI")} type="button" variant="outline">
-                    <ExternalLink className="h-4 w-4" />
-                  </Button>
-                </div>
-              </label>
-            </div>
-          </section>
-        </CardContent>
-      </Panel>
-    </div>
-  );
-}
 
 function OverviewScreen({
   overview,
@@ -5851,310 +5289,6 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
           <div className="table">
             {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
           </div>
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
-function SessionsScreen({
-  settings,
-  form,
-  sessions,
-  providerSyncProgress,
-  providerSyncTargets,
-  selectedProviderSyncTarget,
-  onFormChange,
-  actions,
-}: {
-  settings: SettingsResult | null;
-  form: BackendSettings;
-  sessions: LocalSessionsResult | null;
-  providerSyncProgress: ProviderSyncProgress;
-  providerSyncTargets: ProviderSyncTargetsResult | null;
-  selectedProviderSyncTarget: string;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const items = sessions?.sessions ?? [];
-  const pageOffset = sessions?.offset ?? 0;
-  const pageSize = sessions?.limit ?? 50;
-  const currentPage = Math.floor(pageOffset / pageSize) + 1;
-  const hasPreviousPage = pageOffset > 0;
-  const hasNextPage = sessions?.hasMore === true;
-  const activeCount = items.filter((item) => !item.archived).length;
-  const archivedCount = items.length - activeCount;
-  const totalCount = sessions?.totalCount ?? items.length;
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [bulkDeleting, setBulkDeleting] = useState(false);
-  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
-  const selectedCount = selectedSessions.length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
-  const providerTargets = providerSyncTargets?.targets ?? [];
-  const selectedProviderTarget = providerTargets.find(
-    (target) => target.id === selectedProviderSyncTarget,
-  );
-  const canRepairProviderSessions = selectedProviderTarget
-    ? isProviderSyncTargetSelectable(selectedProviderTarget)
-    : false;
-
-  useEffect(() => {
-    const itemIds = new Set(items.map((session) => session.id));
-    setSelectedSessionIds((current) => {
-      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
-    setSelectedSessionIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      return next;
-    });
-  };
-
-  const selectAllSessions = () => {
-    setSelectionMode(true);
-    setSelectedSessionIds(new Set(items.map((session) => session.id)));
-  };
-
-  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const deleteSelectedSessions = async () => {
-    if (!selectionMode) {
-      setSelectionMode(true);
-      return;
-    }
-    setBulkDeleting(true);
-    try {
-      await actions.deleteLocalSessions(selectedSessions);
-    } finally {
-      setBulkDeleting(false);
-    }
-  };
-
-  return (
-    <>
-      <Panel className="sessions-overview-panel">
-        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
-        <CardContent className="sessions-overview-content">
-          <div className="session-summary-bar">
-            <div>
-              <span>{t("会话总数")}</span>
-              <strong>{tf("{0} 个", [totalCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页会话")}</span>
-              <strong>{tf("{0} 个", [items.length])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页未归档")}</span>
-              <strong>{tf("{0} 个", [activeCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页已归档")}</span>
-              <strong>{tf("{0} 个", [archivedCount])}</strong>
-            </div>
-            <div className="session-summary-path">
-              <span>{t("数据库")}</span>
-              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
-            </div>
-          </div>
-
-          <div className="session-repair-tools">
-            <Field className="session-sync-target" label={t("同步目标")}>
-              <AppSelect
-                disabled={providerSyncProgress.active || !providerTargets.length}
-                value={selectedProviderSyncTarget}
-                onChange={(value) => actions.setProviderSyncTarget(value)}
-                options={
-                  providerTargets.length
-                    ? [
-                        ...(!selectedProviderSyncTarget
-                          ? [{ value: "", label: t("当前配置 provider"), disabled: true }]
-                          : []),
-                        ...providerTargets.map((target) => ({
-                          value: target.id,
-                          label: `${target.id}${t("（")}${providerSyncTargetLabel(target)}${t("）")}`,
-                          disabled: !isProviderSyncTargetSelectable(target),
-                          title: target.unavailableReason ?? undefined,
-                        })),
-                      ]
-                    : [{ value: "", label: t("当前配置 provider"), disabled: true }]
-                }
-              />
-            </Field>
-
-            <label className="switch-row compact session-auto-repair">
-              <input
-                checked={form.providerSyncEnabled}
-                onChange={(event) => onFormChange({ ...form, providerSyncEnabled: event.currentTarget.checked })}
-                type="checkbox"
-              />
-              <span>
-                <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动 Codex 前整理旧对话的归属标记。")}</small>
-              </span>
-              <ToggleVisual />
-            </label>
-
-            <div className="session-repair-actions">
-              <Button disabled={bulkDeleting} onClick={() => void actions.refreshLocalSessions()} variant="outline">
-                <RefreshCw className="h-4 w-4" />
-                {t("刷新会话")}
-              </Button>
-              <Button disabled={bulkDeleting} title={t("先退出 Codex 应用；检查所有本地会话，确认后备份并删除无效记录，不只是当前页。")} onClick={async () => {
-                setBulkDeleting(true);
-                try { await actions.deleteInvalidLocalSessions(); } finally { setBulkDeleting(false); }
-              }} variant="outline">
-                <Trash2 className="h-4 w-4" />
-                {bulkDeleting ? t("正在检查或删除…") : t("删除无效会话")}
-              </Button>
-              <Button disabled={bulkDeleting} onClick={() => void actions.importLocalSession()} variant="outline">
-                <PackageOpen className="h-4 w-4" />
-                {t("导入文件")}
-              </Button>
-              <Button
-                disabled={providerSyncProgress.active || !canRepairProviderSessions}
-                onClick={() => void actions.syncProvidersNow()}
-                variant="outline"
-              >
-                <Wrench className="h-4 w-4" />
-                {providerSyncProgress.active ? t("正在修复…") : t("修复历史会话")}
-              </Button>
-              <Button onClick={() => void actions.saveSettings()}>
-                <Save className="h-4 w-4" />
-                {t("保存设置")}
-              </Button>
-            </div>
-            <div className="session-share-import">
-              <Input
-                aria-label={t("会话分享链接")}
-                onChange={(event) => actions.setSessionShareUrl(event.currentTarget.value)}
-                placeholder={t("粘贴 Codex++ 会话分享链接")}
-                value={actions.sessionShareUrl}
-              />
-              <Button disabled={!actions.sessionShareUrl.trim()} onClick={() => void actions.importSessionUrl()} variant="outline">
-                <Download className="h-4 w-4" />
-                {t("导入链接")}
-              </Button>
-            </div>
-          </div>
-
-          {providerSyncProgress.active || providerSyncProgress.percent > 0 ? (
-            <div className="provider-sync-progress session-repair-progress" data-active={providerSyncProgress.active}>
-              <div className="provider-sync-progress-head">
-                <strong>{providerSyncProgress.active ? t("正在修复历史会话") : t("历史会话修复进度")}</strong>
-                <span>{formatProgressPercent(providerSyncProgress.percent)}%</span>
-              </div>
-              <div
-                aria-valuemax={100}
-                aria-valuemin={0}
-                aria-valuenow={providerSyncProgress.percent}
-                className="provider-sync-progress-bar"
-                role="progressbar"
-              >
-                <div className="provider-sync-progress-fill" style={{ width: `${providerSyncProgress.percent}%` }} />
-              </div>
-              <small>{providerSyncProgress.message}</small>
-            </div>
-          ) : null}
-
-          <div className="hint-line session-delete-hint">
-            <Info className="h-4 w-4" />
-            <span>{t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}</span>
-          </div>
-        </CardContent>
-      </Panel>
-      <Panel className="sessions-list-panel">
-        <CardHead
-          title={t("本地会话")}
-          detail={sessions ? tf("第 {0} 页，每页最多 {1} 条，按更新时间倒序显示", [currentPage, pageSize]) : t("点击刷新会话读取本地数据库")}
-        />
-        <CardContent className="session-list-content">
-          {items.length ? (
-            <>
-              <div className="session-list-toolbar">
-                <span className="session-selection-summary">{t("已选择")} {selectedCount} / {items.length} {t("个会话")}</span>
-                <div className="session-selection-actions">
-                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
-                    {t("全选当前列表")}
-                  </Button>
-                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
-                    {t("清空选择")}
-                  </Button>
-                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
-                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
-                    {selectionMode ? (bulkDeleting ? t("正在删除…") : t("删除已选")) : t("多选")}
-                  </Button>
-                </div>
-              </div>
-              <div className="session-list">
-                {items.map((session) => {
-                  const selected = selectedSessionIds.has(session.id);
-                  return (
-                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
-                      {selectionMode ? (
-                        <label className="session-select" title={t("选择会话")}>
-                          <input
-                            aria-label={tf("选择会话 {0}", [session.title || session.id])}
-                            checked={selected}
-                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
-                            type="checkbox"
-                          />
-                        </label>
-                      ) : null}
-                      <div className="session-main">
-                        <strong>{session.title || t("未命名会话")}</strong>
-                        <span>{session.id}</span>
-                        <small>{session.cwd || t("未记录项目路径")}</small>
-                      </div>
-                      <div className="session-meta">
-                        <Badge status={session.archived ? "archived" : "ok"} />
-                        <span>{session.modelProvider || t("provider 未记录")}</span>
-                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                      </div>
-                      <Button disabled={bulkDeleting} className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                        <Trash2 className="h-4 w-4" />
-                        {t("删除")}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="session-pagination">
-                <Button
-                  aria-label={t("上一页")}
-                  disabled={!hasPreviousPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, Math.max(0, pageOffset - pageSize))}
-                  size="icon"
-                  title={t("上一页")}
-                  variant="outline"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <span>{tf("第 {0} 页", [currentPage])}</span>
-                <Button
-                  aria-label={t("下一页")}
-                  disabled={!hasNextPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, pageOffset + pageSize)}
-                  size="icon"
-                  title={t("下一页")}
-                  variant="outline"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
-          )}
         </CardContent>
       </Panel>
     </>
@@ -8830,31 +7964,6 @@ function FeatureToggle({
   );
 }
 
-function ToggleVisual() {
-  return (
-    <span aria-hidden="true" className="toggle-switch-visual">
-      <span className="toggle-switch-thumb" />
-    </span>
-  );
-}
-
-function formatBytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let value = bytes;
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) {
-    value /= 1024;
-    index += 1;
-  }
-  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
-}
-
-function formatProgressPercent(value: number): string {
-  if (!Number.isFinite(value)) return "0.00";
-  return Math.min(100, Math.max(0, value)).toFixed(2);
-}
-
 function GuideList({ items }: { items: string[] }) {
   return (
     <div className="guide-list">
@@ -8924,39 +8033,6 @@ function NoticeDialog({
           <p>{notice.message}</p>
         </div>
         <button className="toast-close" onClick={onClose} type="button">×</button>
-      </div>
-    </div>
-  );
-}
-
-function ConfirmDialog({
-  confirm,
-  onConfirm,
-  onCancel,
-}: {
-  confirm: { title: string; message: string; confirmText: string; cancelText: string };
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="confirm-layer" role="dialog" aria-modal="true">
-      <div className="modal-card confirm-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{confirm.title}</h2>
-          </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <div className="confirm-modal-body">
-          <p className="modal-message">{confirm.message}</p>
-        </div>
-        <Toolbar className="confirm-modal-actions">
-          <Button onClick={onConfirm}>
-            <Trash2 className="h-4 w-4" />
-            {confirm.confirmText}
-          </Button>
-          <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
-        </Toolbar>
       </div>
     </div>
   );
@@ -9133,399 +8209,6 @@ function TaskProgressBox({ progress, title, completedTitle = t("上次修复结�
   );
 }
 
-function Panel({ children, fill = false, className = "" }: { children: React.ReactNode; fill?: boolean; className?: string }) {
-  return (
-    <Card className={`panel ${fill ? "fill" : ""} ${className}`}>
-      {children}
-    </Card>
-  );
-}
-
-function CardHead({ title, detail }: { title: string; detail: string }) {
-  return (
-    <CardHeader className="panel-head">
-      <CardTitle>{title}</CardTitle>
-      <CardDescription>{detail}</CardDescription>
-    </CardHeader>
-  );
-}
-
-function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`toolbar ${className}`.trim()}>{children}</div>;
-}
-
-type GrokProvidersResult = CommandResult<{
-  profiles: RelayProfile[];
-  activeRelayId: string;
-  live: {
-    grokHome: string;
-    configPath: string;
-    configExists: boolean;
-    cliPath: string | null;
-    cliInstalled: boolean;
-    revision: string;
-    defaultModel: string;
-    modelsBaseUrl: string;
-    models: Array<{ alias: string; model: string; baseUrl: string; contextWindow: number | null; apiKeyConfigured: boolean }>;
-  };
-  liveProfile: RelayProfile;
-}>;
-
-function newGrokProfileDraft(): RelayProfile {
-  return {
-    ...defaultSettings.relayProfiles[0],
-    id: `grok-${Date.now().toString(36)}`,
-    name: t("新建 Grok 供应商"),
-    modelList: "",
-    upstreamBaseUrl: "",
-    baseUrl: "",
-    apiKey: "",
-    protocol: "chatCompletions",
-    relayMode: "pureApi",
-    configContents: "",
-    authContents: "",
-  };
-}
-
-/**
- * Grok 分区的供应商管理。
- *
- * 映射约定是「一个供应商 = 一个 base_url」：应用到 Grok 时，这个供应商的模型
- * 列表会整体替换 `~/.grok/config.toml` 里所有受管的 `[model.*]` 表，未管理字段
- * （`[ui]`、`[models].web_search` 等）保留。所以「应用到 Grok」是需要确认的
- * 破坏性操作，这里显式二次确认。
- */
-function GrokScreen({
-  settings,
-  form,
-  actions,
-}: {
-  settings: SettingsResult | null;
-  form: BackendSettings;
-  actions: {
-    saveSettingsValue: (next: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
-    showMessage: (title: string, message: string, status?: Status) => Promise<void>;
-    refreshCurrent: () => void;
-  };
-}) {
-  const [result, setResult] = useState<GrokProvidersResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  // 编辑区走本地草稿 + 显式保存，跟 Codex 供应商页一致。
-  // 直接在 onChange 里写盘的话，敲一个 Base URL 会触发几十次全量 save_settings。
-  const [draft, setDraft] = useState<RelayProfile | null>(null);
-
-  const shard = form.tools?.grok;
-  const profiles = shard?.relayProfiles?.length ? shard.relayProfiles : [];
-  const activeId = shard?.activeRelayId || "";
-  const activeProfile = profiles.find((profile) => profile.id === activeId);
-
-  // 切换选中的供应商（或外部刷新）时，把草稿重置成磁盘上的值。
-  useEffect(() => {
-    setDraft(activeProfile ? { ...activeProfile } : null);
-    // 只在选中的供应商变化时重置，不要在每次 profiles 数组变化时打断编辑。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProfile?.id, activeProfile?.name, activeProfile?.upstreamBaseUrl, activeProfile?.apiKey, activeProfile?.modelList]);
-
-  const draftDirty = Boolean(
-    draft
-      && activeProfile
-      && (draft.name !== activeProfile.name
-        || draft.upstreamBaseUrl !== activeProfile.upstreamBaseUrl
-        || draft.apiKey !== activeProfile.apiKey
-        || draft.modelList !== activeProfile.modelList),
-  );
-
-  const refresh = async () => {
-    setLoading(true);
-    try {
-      const loaded = await invoke<GrokProvidersResult>("load_grok_providers");
-      setResult(loaded);
-    } catch (error) {
-      await actions.showMessage(t("调用失败"), String(error), "failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void refresh();
-    // 只在进入本页时拉一次；后续状态由本页自己的操作维护。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /// 唯一真正落盘的地方。结构性操作（新增/删除/切换选中）用它，
-  /// 编辑区则攒够了再调一次。
-  const writeShard = async (
-    nextProfiles: RelayProfile[],
-    nextActiveId: string,
-  ): Promise<boolean> => {
-    const next: BackendSettings = {
-      ...form,
-      activeTool: "grok",
-      tools: {
-        ...form.tools,
-        grok: {
-          ...shard,
-          relayProfiles: nextProfiles,
-          activeRelayId: nextActiveId,
-        },
-      },
-    };
-    // saveSettingsValue 会把结果写回 settings / settingsForm，所以这里不需要
-    // 自己先 setState（那反而会跟服务端归一化后的结果打架）。
-    const saved = await actions.saveSettingsValue(next, true);
-    if (!saved) return false;
-    await refresh();
-    return true;
-  };
-
-  const addProfile = async () => {
-    const fresh = newGrokProfileDraft();
-    const ok = await writeShard([...profiles, fresh], fresh.id);
-    if (!ok) return;
-    // 新增后直接把草稿铺好，用户马上就能填。
-    setDraft({ ...fresh });
-    await actions.showMessage(t("已新增"), tf("已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。", [fresh.name]), "ok");
-  };
-
-  const saveDraft = async () => {
-    if (!draft || !activeProfile || saving) return;
-    setSaving(true);
-    try {
-      const ok = await writeShard(
-        profiles.map((profile) => (profile.id === draft.id ? { ...profile, ...draft } : profile)),
-        activeId,
-      );
-      if (ok) await actions.showMessage(t("已保存"), tf("供应商「{0}」已保存。", [draft.name]), "ok");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeProfile = async (id: string) => {
-    const rest = profiles.filter((profile) => profile.id !== id);
-    await writeShard(rest, activeId === id ? (rest[0]?.id ?? "") : activeId);
-  };
-
-  const selectProfile = async (id: string) => {
-    if (id === activeId) return;
-    await writeShard(profiles, id);
-  };
-
-  const applyToGrok = async () => {
-    if (draftDirty) {
-      await actions.showMessage(t("有未保存修改"), t("请先保存当前供应商，再应用到 Grok。"), "failed");
-      setConfirming(false);
-      return;
-    }
-    setApplying(true);
-    try {
-      // 只把 Grok 分片交给后端，避免整份 settings 被当成「本次改动」写回去。
-      const applied = await invoke<GrokProvidersResult>("apply_grok_relay_profile", {
-        settings: {
-          ...form,
-          tools: { ...form.tools, grok: { ...shard, activeRelayId: activeId } },
-        },
-      });
-      setConfirming(false);
-      if (applied.status === "ok") {
-        await actions.showMessage(t("已应用"), applied.message, "ok");
-      } else {
-        await actions.showMessage(t("应用失败"), applied.message, "failed");
-      }
-      await refresh();
-    } catch (error) {
-      await actions.showMessage(t("调用失败"), String(error), "failed");
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const live = result?.live;
-
-  return (
-    <>
-      <Panel className="grok-panel">
-        <CardHead
-          title={t("Grok 供应商")}
-          detail={t("每个供应商对应一套 Base URL + API Key + 模型列表。")}
-        />
-        <CardContent>
-          <div className="toolbar">
-            <Button disabled={loading} onClick={() => void refresh()} variant="outline">
-              <RefreshCw className="h-4 w-4" />
-              {loading ? t("刷新中") : t("刷新")}
-            </Button>
-            <Button onClick={() => void addProfile()} variant="outline">
-              <Plus className="h-4 w-4" />
-              {t("新增供应商")}
-            </Button>
-            <Button
-              disabled={saving || !draftDirty}
-              onClick={() => void saveDraft()}
-              title={draftDirty ? undefined : t("没有需要保存的修改")}
-              variant="outline"
-            >
-              <Save className="h-4 w-4" />
-              {saving ? t("保存中") : t("保存此供应商")}
-            </Button>
-            <Button
-              disabled={!activeProfile || applying || draftDirty}
-              onClick={() => setConfirming(true)}
-              title={
-                !activeProfile
-                  ? t("请先选择一个供应商")
-                  : draftDirty
-                    ? t("请先保存当前修改")
-                    : undefined
-              }
-            >
-              <Play className="h-4 w-4" />
-              {applying ? t("应用中") : t("应用到 Grok")}
-            </Button>
-          </div>
-
-          {profiles.length === 0 ? (
-            <div className="grok-empty">
-              <Blocks className="h-5 w-5" aria-hidden="true" />
-              <div>
-                <strong>{t("还没有 Grok 供应商")}</strong>
-                <span>{t("点「新增供应商」，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。")}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="grok-provider-list">
-              {profiles.map((profile) => {
-                const selected = profile.id === activeId;
-                const modelCount = profile.modelList.split(/[\r\n,]+/).filter((line) => line.trim()).length;
-                const endpoint = profile.upstreamBaseUrl || profile.baseUrl;
-                return (
-                  <div className={`grok-provider-row ${selected ? "active" : ""}`} key={profile.id}>
-                    <button
-                      className="grok-provider-pick"
-                      onClick={() => void selectProfile(profile.id)}
-                      type="button"
-                    >
-                      <span className="grok-provider-name">
-                        {profile.name}
-                        {selected ? <span className="grok-provider-badge">{t("使用中")}</span> : null}
-                      </span>
-                      <span className="grok-provider-url">
-                        {endpoint || t("未填写 Base URL")}
-                      </span>
-                    </button>
-                    <span className="grok-provider-models">{tf("{0} 个模型", [String(modelCount)])}</span>
-                    <Button
-                      onClick={() => void removeProfile(profile.id)}
-                      size="icon"
-                      title={t("删除供应商")}
-                      variant="outline"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Panel>
-
-      {draft ? (
-        <Panel className="grok-panel">
-          <CardHead title={t("编辑供应商")} detail={draft.name} />
-          <CardContent>
-            <div className="grok-provider-editor">
-              <Field label={t("名称")}>
-                <Input
-                  onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
-                  value={draft.name}
-                />
-              </Field>
-              <Field label="Base URL">
-                <Input
-                  onChange={(event) => setDraft({ ...draft, upstreamBaseUrl: event.currentTarget.value })}
-                  placeholder="https://your-endpoint.example/v1"
-                  value={draft.upstreamBaseUrl}
-                />
-              </Field>
-              <Field label="API Key">
-                <Input
-                  onChange={(event) => setDraft({ ...draft, apiKey: event.currentTarget.value })}
-                  placeholder={t("留空则不改动 Grok 里已有的 Key")}
-                  type="password"
-                  value={draft.apiKey}
-                />
-              </Field>
-              <Field label={t("模型列表")}>
-                <Textarea
-                  onChange={(event) => setDraft({ ...draft, modelList: event.currentTarget.value })}
-                  placeholder={"grok-4.5[1M]\ngrok-4.1-fast"}
-                  rows={4}
-                  value={draft.modelList}
-                />
-              </Field>
-            </div>
-            <p className="muted-line">
-              {t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。")}
-              {" "}
-              {t("改完点「保存此供应商」，再点「应用到 Grok」生效。")}
-            </p>
-          </CardContent>
-        </Panel>
-      ) : null}
-
-      <Panel className="grok-panel">
-        <CardHead title={t("Grok 当前配置")} detail={live?.configPath || t("读取 ~/.grok/config.toml")} />
-        <CardContent>
-          {live ? (
-            <div className="grok-live-grid">
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("CLI")}</span>
-                <span className="grok-live-value">{live.cliPath || t("未检测到")}</span>
-              </div>
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("默认模型")}</span>
-                <span className="grok-live-value">{live.defaultModel || t("未设置")}</span>
-              </div>
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("全局端点")}</span>
-                <span className="grok-live-value">{live.modelsBaseUrl || t("未设置")}</span>
-              </div>
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("受管模型")}</span>
-                <span className="grok-live-value">
-                  {live.models.length ? live.models.map((model) => model.alias).join("、") : t("无")}
-                </span>
-              </div>
-            </div>
-          ) : (
-            <p className="muted-line">{t("尚未读取。")}</p>
-          )}
-        </CardContent>
-      </Panel>
-
-      {confirming ? (
-        <ConfirmDialog
-          confirm={{            title: t("应用到 Grok？"),
-            message: tf(
-              "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。",
-              [activeProfile?.name || ""],
-            ),
-            confirmText: applying ? t("应用中") : t("确认应用"),
-            cancelText: t("取消"),
-          }}
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => void applyToGrok()}
-        />
-      ) : null}
-    </>
-  );
-}
-
 /**
  * 顶栏的工具切换条：一排工具图标，点击切换当前聚焦的工具。
  *
@@ -9570,102 +8253,6 @@ function ToolSwitcher({
       })}
     </div>
   );
-}
-
-function Field({ label, children, className = "" }: { label: string; children: React.ReactNode; className?: string }) {
-  return (
-    <Label className={`field ${className}`}>
-      <span>{label}</span>
-      {children}
-    </Label>
-  );
-}
-
-type AppSelectOption<T extends string> = {
-  value: T;
-  label: ReactNode;
-  disabled?: boolean;
-  title?: string;
-};
-
-function AppSelect<T extends string>({
-  value,
-  options,
-  onChange,
-  disabled = false,
-  className = "",
-  title = "",
-}: {
-  value: T;
-  options: AppSelectOption<T>[];
-  onChange: (value: T) => void;
-  disabled?: boolean;
-  className?: string;
-  title?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const selected = options.find((option) => option.value === value) || options[0];
-  const selectOption = (option: AppSelectOption<T>) => {
-    if (option.disabled) return;
-    onChange(option.value);
-    setOpen(false);
-  };
-  return (
-    <div
-      className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
-      }}
-    >
-      <button
-        aria-expanded={open}
-        className="app-select-trigger"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        title={title}
-        type="button"
-      >
-        <span>{selected?.label ?? value}</span>
-        <ChevronDown className="h-4 w-4" />
-      </button>
-      {open && !disabled ? (
-        <div className="app-select-menu" role="listbox">
-          {options.map((option) => (
-            <button
-              aria-selected={option.value === value}
-              className={`app-select-option ${option.value === value ? "selected" : ""}`}
-              disabled={option.disabled}
-              key={option.value}
-              onClick={() => selectOption(option)}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                selectOption(option);
-              }}
-              title={option.title}
-              type="button"
-            >
-              {option.value === value ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
-              <span>{option.label}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function StatusRow({ title, status = "unknown", path }: { title: string; status?: string; path?: string | null }) {
-  return (
-    <div className="status-row">
-      <span>{title}</span>
-      <Badge status={status} />
-      <code>{path || t("未记录路径")}</code>
-    </div>
-  );
-}
-
-function Badge({ status }: { status: string }) {
-  return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
 
 function LatestLaunch({ status }: { status: LaunchStatus | null }) {
@@ -10314,34 +8901,6 @@ function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, 
   if (isNew) return t("新建供应商需要先保存到列表");
   if (!form.relayProfilesEnabled) return t("供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件");
   return profile.id === form.activeRelayId ? t("当前正在使用") : t("编辑后保存列表，再切换模式时会使用新配置");
-}
-
-
-
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    found: t("已找到"),
-    missing: t("缺失"),
-    installed: t("已安装"),
-    ok: t("正常"),
-    running: t("运行中"),
-    running_degraded: t("运行中（增强等待中）"),
-    starting: t("启动中"),
-    failed: t("失败"),
-    archived: t("已归档"),
-    accepted: t("已受理"),
-    not_checked: t("未检查"),
-    not_implemented: t("未实现"),
-    disabled: t("已禁用"),
-    unknown: t("未知"),
-  };
-  return labels[status] ?? status;
-}
-
-function statusClass(status: string) {
-  if (["found", "installed", "ok", "running", "running_degraded"].includes(status)) return "good";
-  if (["failed", "missing"].includes(status)) return "bad";
-  return "warn";
 }
 
 function isSuccessStatus(status?: Status) {
@@ -11553,11 +10112,6 @@ function zedRemoteSourceLabel(source: string) {
   if (source === "sqliteThreadCwd") return "SQLite cwd";
   if (source === "recent") return t("最近打开");
   return source || t("未知来源");
-}
-
-function formatTime(value: number) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("zh-CN");
 }
 
 function formatDuration(startedAtMs: number): string {

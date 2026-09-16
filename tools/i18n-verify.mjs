@@ -25,6 +25,11 @@ const SRC_FILES = [
   "src/components/providers/ProviderImportActions.tsx",
   "src/components/providers/EnvConflictNotice.tsx",
   "src/components/providers/RelayProfileList.tsx",
+  "src/components/ui/manager-primitives.tsx",
+  "src/screens/GrokScreen.tsx",
+  "src/screens/SessionsScreen.tsx",
+  "src/screens/WeixinConnectScreen.tsx",
+  "src/lib/default-settings.ts",
   "src/provider-utils.ts",
   "src/vlm-test-translation.ts",
 ];

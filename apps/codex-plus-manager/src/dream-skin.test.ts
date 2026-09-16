@@ -251,12 +251,16 @@ describe("dream skin theme helpers", () => {
 
   it("restores the original appearance as pending without reloading or restarting Codex", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const commands = await readFile(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+    const commands = await readFile(new URL("../src-tauri/src/commands/dream_skin.rs", import.meta.url), "utf8");
     const restoreStart = app.indexOf("const restoreDreamSkin = async () =>");
     const restoreEnd = app.indexOf("const verifyDreamSkin", restoreStart);
     const restoreHandler = app.slice(restoreStart, restoreEnd);
     const commandStart = commands.indexOf("pub async fn restore_dream_skin");
-    const commandEnd = commands.indexOf("pub fn reset_dream_skin_theme", commandStart);
+    // 终点锚点用紧随其后的 verify_dream_skin（原锚点 reset_dream_skin_theme 已随死命令清理删除）。
+    const commandEnd = commands.indexOf("pub async fn verify_dream_skin", commandStart);
+    // indexOf 找不到时返回 -1，slice 会静默切到文件末尾，哨兵就失效了，所以显式断言。
+    assert.ok(commandStart >= 0, "找不到 restore_dream_skin 命令源码");
+    assert.ok(commandEnd > commandStart, "找不到 restore_dream_skin 之后的切片锚点 verify_dream_skin");
     const restoreCommand = commands.slice(commandStart, commandEnd);
 
     assert.match(restoreHandler, /Codex 原始外观/);
