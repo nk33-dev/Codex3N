@@ -245,7 +245,9 @@ pub async fn generate(
         ));
     }
 
-    let client = crate::http_client::proxied_client("")?;
+    // base_url 可能指向环回地址（本地 relay / 协议代理），此时必须绕开系统代理；
+    // 下面各协议的 endpoint 都是在 base_url 后追加路径，主机与 base_url 相同。
+    let client = crate::http_client::client_for_url("", base_url)?;
     let timeout = Duration::from_millis(settings.codex_app_stepwise_timeout_ms);
     let protocols = stepwise_protocols(&configured_protocol);
     let auto_protocol = configured_protocol == "auto";

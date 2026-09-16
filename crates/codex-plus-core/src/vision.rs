@@ -633,12 +633,15 @@ pub async fn test_vlm_once(
 
 /// 单 batch VLM 调用（含错误详情截断）。
 async fn call_vlm_batch(urls: &[String], config: &VlmConfig) -> Result<String, String> {
-    let client = crate::http_client::vlm_http_client_with_timeout(
+    let url = vlm_endpoint(&config.base_url);
+    // VLM Base URL 可能是环回地址（本地 VLM 服务/代理），按目标 URL 选 client：
+    // 环回绕开系统代理，其余保持原代理行为；connect/total 超时语义不变。
+    let client = crate::http_client::vlm_http_client_for_url(
+        &url,
         std::time::Duration::from_secs(5),
         VLM_REQUEST_TIMEOUT,
     )
     .map_err(|e| format!("client: {e}"))?;
-    let url = vlm_endpoint(&config.base_url);
     let body = build_vlm_request_body(urls, &config.model);
     let resp = client
         .post(&url)
@@ -2871,19 +2874,42 @@ mod tests {
         assert!(outcome.http_code.is_none());
     }
 
-    /// 连接错误（非超时）→ send_error。
-    /// 用端口 0：Windows 安全软件可能让「连接被拒」延迟 ~2s 才返回，恰好撞上
-    /// cfg(test) 的 2s 请求超时而被误判为 timeout；连接端口 0 则立即报
-    /// 传输层错误（WSAEADDRNOTAVAIL），确定性地走 send_error 路径。
+    /// 传输层错误（非超时）→ send_error，且 http_code 为 None、raw_request 保留。
+    ///
+    /// 这里刻意不依赖 `http://127.0.0.1:0`：端口 0 只在「客户端直连」时才立刻返回
+    /// WSAEADDRNOTAVAIL。开启系统代理的机器上这一前提不成立——hyper-util 解析
+    /// WinINET 的 `ProxyOverride`（本机为 `localhost;127.*;192.168.*;…`）时，
+    /// `127.*` 既不是 IP/CIDR、也不是域名后缀，无法成为绕过规则，于是发往
+    /// 127.0.0.1 的请求仍被交给系统代理；代理连不上端口 0 又不立即报错，请求
+    /// 一直挂到 cfg(test) 的 2s 超时，被误判为 timeout。同理，「连接被拒」在本机
+    /// 需要 ~2s 才返回（安全软件过滤所致），也落在超时窗口内，故不能用空闲端口。
+    ///
+    /// 改用本机监听器：接受连接后立即关闭且不写任何响应，客户端在读到响应前就
+    /// 遇到传输层错误，与「拒绝/关闭」的返回时机无关；同时用 `no_proxy()` 客户端
+    /// 排除系统代理这一外部变量，使结论只由被测代码（`e.is_timeout()` 分类）决定。
     #[tokio::test]
     async fn test_vlm_once_send_error_on_connection_refused() {
-        let client = reqwest::Client::new();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback listener");
+        let base_url = format!("http://{}", listener.local_addr().expect("local addr"));
+        // 循环 accept：即使客户端重试，也只会再次落到「连上即被关闭」。
+        let server = tokio::spawn(async move {
+            while let Ok((sock, _)) = listener.accept().await {
+                drop(sock);
+            }
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build no-proxy client");
         let outcome = test_vlm_once(
-            &test_vlm_config("http://127.0.0.1:0".to_string()),
+            &test_vlm_config(base_url),
             "data:image/png;base64,QUJD",
             &client,
         )
         .await;
+        server.abort();
         assert_eq!(outcome.status, "send_error");
         assert!(outcome.http_code.is_none());
         assert!(outcome.raw_request.is_some());

@@ -2205,7 +2205,7 @@ async fn upstream_request_returns_when_provider_accepts_but_never_sends_headers(
 
 #[tokio::test]
 async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -2485,7 +2485,7 @@ async fn model_route_rejects_missing_or_non_responses_targets() {
 
 #[tokio::test]
 async fn aggregate_stream_request_sends_sse_accept_header() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -2537,7 +2537,7 @@ async fn aggregate_stream_request_sends_sse_accept_header() {
 
 #[tokio::test]
 async fn aggregate_proxy_rewrites_requested_model_to_selected_member_default_model() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .unwrap();
@@ -2759,7 +2759,7 @@ fn aggregate_proxy_settings(
 }
 #[tokio::test]
 async fn audio_transcriptions_proxy_forwards_multipart_body() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -2830,7 +2830,7 @@ async fn audio_transcriptions_proxy_forwards_multipart_body() {
 
 #[tokio::test]
 async fn image_generations_proxy_forwards_json_and_upstream_error() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -2879,7 +2879,7 @@ async fn image_generations_proxy_forwards_json_and_upstream_error() {
 
 #[tokio::test]
 async fn image_edits_proxy_preserves_multipart_body_and_content_type() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -2925,7 +2925,7 @@ async fn image_edits_proxy_preserves_multipart_body_and_content_type() {
 
 #[tokio::test]
 async fn chat_completions_proxy_uses_configured_user_agent() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let server = spawn_chat_server();
@@ -2945,7 +2945,7 @@ async fn chat_completions_proxy_uses_configured_user_agent() {
 
 #[tokio::test]
 async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfigured() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let server = spawn_chat_server();
@@ -2965,7 +2965,7 @@ async fn chat_completions_proxy_passes_through_original_user_agent_when_unconfig
 
 #[tokio::test]
 async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let server = spawn_chat_server();
@@ -2985,7 +2985,7 @@ async fn responses_proxy_passes_through_original_user_agent_when_unconfigured() 
 
 #[tokio::test]
 async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
     let server = spawn_chat_server();
@@ -3002,7 +3002,7 @@ async fn models_proxy_passes_through_original_user_agent_when_unconfigured() {
 
 #[tokio::test]
 async fn no_auth_proxy_endpoints_omit_authorization_header() {
-    let _lock = settings_path_test_lock().lock().unwrap();
+    let _lock = lock_settings_path();
     let temp = tempfile::tempdir().unwrap();
     let _guard = SettingsPathGuard::set(temp.path().join("settings.json"));
 
@@ -3130,6 +3130,20 @@ struct SettingsPathGuard {
 fn settings_path_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// 取设置路径测试锁，并**显式忽略 poison**。
+///
+/// 这里容忍 poison 是安全的：本锁保护的共享状态只有"全局设置路径"这一个值，而它在
+/// 持锁期间由 `SettingsPathGuard` 的 `Drop` 负责还原（panic 展开时同样会执行），
+/// 所以锁被污染并不代表共享状态损坏。反过来，如果继续 `unwrap()`，任何一个测试在
+/// 持锁时 panic 都会让后面十几个毫不相关的测试一起报 `PoisonError`，掩盖真正的失败
+/// 原因——`cargo test` 默认 fail-fast 时尤其难以定位。真正 panic 的那个测试自己仍会
+/// 如实失败，不会被这里掩盖。
+fn lock_settings_path() -> std::sync::MutexGuard<'static, ()> {
+    settings_path_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl SettingsPathGuard {
