@@ -386,6 +386,10 @@
   function patchPluginMarketplaceRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
     if (client.__codexPluginMarketplaceUnlockPatch === codexPluginMarketplaceUnlockVersion) return true;
+    if (!client.__codexPluginMarketplaceRawSendRequest) {
+      // 原始方法本身留给还原用；绑定副本只给包装器调用。
+      client.__codexPluginMarketplaceRawSendRequest = client.sendRequest;
+    }
     const originalSendRequest = client.__codexPluginMarketplaceOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;
     client.sendRequest = async function codexPluginMarketplacePatchedSendRequest(method, params, options) {
@@ -627,7 +631,10 @@
       return;
     }
     if (!bridge.__codexPluginMarketplaceOriginalSendMessageFromView) {
-      bridge.__codexPluginMarketplaceOriginalSendMessageFromView = bridge.sendMessageFromView.bind(bridge);
+      const originalSendMessageFromView = bridge.sendMessageFromView;
+      // 原始方法本身留给还原用；绑定副本只给包装器调用。
+      bridge.__codexPluginMarketplaceRawSendMessageFromView = originalSendMessageFromView;
+      bridge.__codexPluginMarketplaceOriginalSendMessageFromView = originalSendMessageFromView.bind(bridge);
       bridge.sendMessageFromView = function codexPluginMarketplacePatchedSendMessageFromView(message) {
         let nextMessage = message;
         try {
@@ -675,7 +682,8 @@
     }
     if (!window.__codexPluginMarketplaceResponseListenerInstalled) {
       window.__codexPluginMarketplaceResponseListenerInstalled = true;
-      window.addEventListener("message", (event) => {
+      // 保留引用：切到 relay 模式或关闭插件市场解锁后必须能把这个监听摘掉。
+      window.__codexPluginMarketplaceResponseListener = (event) => {
         try {
           patchPluginMarketplaceResponseData(event?.data);
         } catch (error) {
@@ -684,7 +692,8 @@
             errorMessage: error?.message || String(error),
           });
         }
-      }, true);
+      };
+      window.addEventListener("message", window.__codexPluginMarketplaceResponseListener, true);
     }
     window.__codexPluginMarketplaceWindowEventPatch = codexPluginMarketplaceUnlockVersion;
   }
@@ -732,7 +741,14 @@
         const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
         let patchedCount = 0;
         for (const candidate of candidates) {
-          if (patchPluginMarketplaceRequestClient(candidate)) patchedCount += 1;
+          if (patchPluginMarketplaceRequestClient(candidate)) {
+            patchedCount += 1;
+            // 记下改过的客户端，还原时不必再把全部 app asset 拉一遍。
+            if (!window.__codexPluginMarketplacePatchedClients) {
+              window.__codexPluginMarketplacePatchedClients = [];
+            }
+            window.__codexPluginMarketplacePatchedClients.push(candidate);
+          }
         }
         if (patchedCount > 0) {
           window.__codexPluginMarketplaceUnlockInstalled = codexPluginMarketplaceUnlockVersion;
@@ -768,5 +784,109 @@
     return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
   }
 
+  // 补丁还原。以前这里是个空函数，于是「切到 relay 模式 / 关掉插件市场解锁」之后
+  // Array.prototype.filter、window.dispatchEvent、electronBridge.sendMessageFromView
+  // 以及被改写的 RPC sendRequest 会一直保持被替换的状态：用户以为已经停用，实际仍在生效。
+  // 每个还原函数返回是否真的撤掉了东西，只有撤掉了才上报诊断，避免每轮 scan 都刷日志。
+  function restorePluginBuildFlavorFilterPatch() {
+    let restored = false;
+    try {
+      const original = Array.prototype.__codexPluginBuildFlavorOriginalFilter;
+      // 只撤我们自己装的那一层：filter 上带标记才说明当前生效的是本补丁。
+      if (typeof original === "function" && Array.prototype.filter?.__codexPluginBuildFlavorPatched) {
+        Array.prototype.filter = original;
+        restored = true;
+      }
+      delete Array.prototype.__codexPluginBuildFlavorOriginalFilter;
+      delete window.__codexPluginBuildFlavorFilterPatch;
+    } catch {
+    }
+    return restored;
+  }
+
+  function restorePluginMarketplaceWindowEventPatch() {
+    let restored = false;
+    try {
+      const original = window.__codexPluginMarketplaceOriginalDispatchEvent;
+      if (typeof original === "function" && window.dispatchEvent !== original) {
+        window.dispatchEvent = original;
+        restored = true;
+      }
+      const listener = window.__codexPluginMarketplaceResponseListener;
+      if (typeof listener === "function") {
+        window.removeEventListener("message", listener, true);
+        restored = true;
+      }
+      delete window.__codexPluginMarketplaceOriginalDispatchEvent;
+      delete window.__codexPluginMarketplaceResponseListener;
+      delete window.__codexPluginMarketplaceResponseListenerInstalled;
+      delete window.__codexPluginMarketplaceWindowEventPatch;
+    } catch {
+    }
+    return restored;
+  }
+
+  function restorePluginMarketplaceBridgePatch() {
+    let restored = false;
+    try {
+      const bridge = window.electronBridge;
+      if (bridge) {
+        // 优先还原未经绑定的原方法，做到与打补丁前完全一致。
+        const original = bridge.__codexPluginMarketplaceRawSendMessageFromView
+          || bridge.__codexPluginMarketplaceOriginalSendMessageFromView;
+        if (typeof original === "function" && bridge.sendMessageFromView !== original) {
+          bridge.sendMessageFromView = original;
+          restored = true;
+        }
+        delete bridge.__codexPluginMarketplaceRawSendMessageFromView;
+        delete bridge.__codexPluginMarketplaceOriginalSendMessageFromView;
+        delete bridge.__codexPluginMarketplaceBridgePatch;
+      }
+      delete window.__codexPluginMarketplaceBridgePatch;
+    } catch {
+    }
+    return restored;
+  }
+
+  function restorePluginMarketplaceRequestPatch() {
+    let restored = false;
+    try {
+      const clients = window.__codexPluginMarketplacePatchedClients;
+      if (Array.isArray(clients)) {
+        for (const client of clients) {
+          try {
+            // 优先还原未经绑定的原方法，做到与打补丁前完全一致。
+            const original = client?.__codexPluginMarketplaceRawSendRequest
+              || client?.__codexPluginMarketplaceOriginalSendRequest;
+            if (typeof original === "function" && client.sendRequest !== original) {
+              client.sendRequest = original;
+              restored = true;
+            }
+            delete client.__codexPluginMarketplaceRawSendRequest;
+            delete client.__codexPluginMarketplaceOriginalSendRequest;
+          } catch {
+          }
+        }
+      }
+      delete window.__codexPluginMarketplacePatchedClients;
+      delete window.__codexPluginMarketplaceUnlockInstalled;
+    } catch {
+    }
+    // 放宽放弃状态，让「切回来」时最多再试满一轮 miss 上限，而不是永久失效。
+    pluginMarketplaceRequestPatchMissCount = 0;
+    pluginMarketplaceRequestPatchDisabled = false;
+    pluginMarketplaceRequestPatchPromise = null;
+    return restored;
+  }
+
   function clearPluginPatchArtifacts() {
+    const restored = [
+      restorePluginBuildFlavorFilterPatch(),
+      restorePluginMarketplaceWindowEventPatch(),
+      restorePluginMarketplaceBridgePatch(),
+      restorePluginMarketplaceRequestPatch(),
+    ].some(Boolean);
+    if (restored) {
+      sendCodexPlusDiagnostic("plugin_marketplace_patches_cleared", {});
+    }
   }
