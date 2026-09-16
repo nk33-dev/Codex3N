@@ -1,4 +1,4 @@
-# Codex++
+# Codex3N
 
 <p align="center">
   <img src="docs/images/codex-plus-plus.png" alt="Codex++ icon" width="160">
@@ -9,22 +9,26 @@
 </p>
 
 <p align="center">
-  <img alt="Release" src="https://img.shields.io/github/v/release/BigPizzaV3/CodexPlusPlus">
-  <img alt="Stars" src="https://img.shields.io/github/stars/BigPizzaV3/CodexPlusPlus">
-  <img alt="License" src="https://img.shields.io/github/license/BigPizzaV3/CodexPlusPlus">
+  <img alt="Release" src="https://img.shields.io/github/v/release/nk33-dev/Codex3N">
+  <img alt="License" src="https://img.shields.io/github/license/nk33-dev/Codex3N">
   <img alt="Rust" src="https://img.shields.io/badge/rust-1.85%2B-orange">
   <img alt="Tauri" src="https://img.shields.io/badge/tauri-2.x-24C8DB">
 </p>
+
+> **This is Codex3N — a personal fork of [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus).**
+> Upstream features are mostly kept, with adaptations to personal usage habits; compared with upstream, the advertising/recommendation subsystem has been removed.
 
 Codex++ is an external launcher and manager for the OpenAI Codex / ChatGPT desktop app. It uses the Chromium DevTools Protocol and a local helper for provider switching, protocol conversion, session management, and UI enhancements without modifying the official app's `app.asar` or installation files.
 
 ## Quick Start
 
-Download the latest installer from [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases):
+Download the latest installer from [this repository's Releases](https://github.com/nk33-dev/Codex3N/releases) (**do not** download from the upstream repository — upstream packages do not contain Codex3N's personal adaptations):
 
-- Windows: `CodexPlusPlus-*-windows-x64-setup.exe`
-- macOS Intel: `CodexPlusPlus-*-macos-x64.dmg`
-- macOS Apple Silicon: `CodexPlusPlus-*-macos-arm64.dmg`
+- Windows: `Codex3N-<version>-windows-x64-setup.exe`
+- macOS Intel: `Codex3N-<version>-macos-x64.dmg`
+- macOS Apple Silicon: `Codex3N-<version>-macos-arm64.dmg`
+
+Versions follow the scheme "upstream version + `-3n.N`"; for example, `1.3.0-3n.3` is the third personal revision based on upstream 1.3.0. Installers are built only from the tags on the `personal` branch.
 
 After installation, two entry points are available:
 
