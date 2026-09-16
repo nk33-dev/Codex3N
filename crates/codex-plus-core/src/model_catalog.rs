@@ -147,6 +147,9 @@ struct CodexConfig {
     model_providers: HashMap<String, HashMap<String, String>>,
 }
 
+/// 模型目录探测使用的 User-Agent，与 `read_codex_model_catalog` 保持一致。
+const MODEL_CATALOG_USER_AGENT: &str = "CodexPlusPlus/1.0";
+
 pub async fn read_codex_model_catalog() -> Value {
     let home = codex_home_dir();
     let settings_path = crate::paths::default_settings_path();
@@ -165,7 +168,7 @@ pub async fn read_codex_model_catalog() -> Value {
         }
     }
     let env = std::env::vars().collect::<HashMap<_, _>>();
-    let client = match crate::http_client::proxied_client("CodexPlusPlus/1.0") {
+    let client = match crate::http_client::proxied_client(MODEL_CATALOG_USER_AGENT) {
         Ok(client) => client,
         Err(error) => {
             return json!({
@@ -318,7 +321,18 @@ pub async fn read_codex_model_catalog_from_home(
     let fetched = stream::iter(sources)
         .map(|source| {
             let client = client.clone();
-            async move { cached_models_from_source(&client, &source).await }
+            async move {
+                let endpoint = models_endpoint(&source.base_url);
+                // 环回来源（本地 relay、把协议代理当供应商）必须绕开系统代理，
+                // 否则请求被本机代理接管并可能回 502；非环回来源继续沿用调用方
+                // 注入的 client，保持可注入性。
+                let client = if crate::http_client::url_targets_loopback(&endpoint) {
+                    crate::http_client::direct_client(MODEL_CATALOG_USER_AGENT).unwrap_or(client)
+                } else {
+                    client
+                };
+                cached_models_from_source(&client, &source).await
+            }
         })
         .buffered(3)
         .collect::<Vec<_>>()
@@ -705,7 +719,7 @@ pub async fn fetch_relay_profile_model_ids(
         anyhow::bail!("Base URL 不能为空");
     }
     let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::proxied_client(&profile.user_agent)?;
+    let client = crate::http_client::client_for_url(&profile.user_agent, &endpoint)?;
     let (models, status) = fetch_models_from_source(&client, &source).await;
     if models.is_empty() {
         let message = status

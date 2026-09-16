@@ -216,6 +216,9 @@ async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider(
     std::fs::create_dir_all(&codex_home).unwrap();
     let settings_path = temp.path().join("settings.json");
     let previous_codex_home = std::env::var_os("CODEX_HOME");
+    // 刻意**不**在进程里设 `NO_PROXY`：`test_codex_model` 自己构造客户端，环回
+    // mock server 必须靠产品侧 `http_client::client_for_url` 绕开系统代理。设了
+    // 环境变量就等于替产品把这条路径掩盖掉，产品回归时这里不会再报错。
     let previous_settings_path =
         codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path.clone()));
     unsafe {
@@ -565,11 +568,17 @@ fn spawn_models_server(payload: serde_json::Value) -> ModelsServer {
                 .and_then(|line| line.split_whitespace().nth(1))
                 .unwrap_or_default()
                 .to_string();
+            // HTTP 头名大小写不敏感（RFC 9110），且请求可能被中间代理按规范形式重写，
+            // 因此这里不能依赖 HTTP 客户端输出的全小写形式。
             let authorization = request
                 .lines()
-                .find_map(|line| line.strip_prefix("authorization: "))
-                .unwrap_or_default()
-                .to_string();
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.trim()
+                        .eq_ignore_ascii_case("authorization")
+                        .then(|| value.trim().to_string())
+                })
+                .unwrap_or_default();
             let (status, body) = (200, models_body.as_str());
             let response = format!(
                 "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

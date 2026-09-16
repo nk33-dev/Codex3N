@@ -673,11 +673,14 @@ pub async fn test_relay_profile(
         anyhow::bail!("API Key 不能为空");
     }
 
-    let client = crate::http_client::proxied_client("CodexPlusPlus/RelayTest")?;
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => format!("{base_url}/responses"),
         RelayProtocol::ChatCompletions => format!("{base_url}/chat/completions"),
     };
+    // 供应商 Base URL 可能指向环回地址（本地 relay / 协议代理），此时必须绕开
+    // 系统代理，否则测试请求会被本机代理接管。endpoint 与 base_url 同主机，
+    // 用 endpoint 判定即可。
+    let client = crate::http_client::client_for_url("CodexPlusPlus/RelayTest", &endpoint)?;
     let test_model = model.trim();
     if test_model.is_empty() {
         anyhow::bail!("测试模型不能为空");
