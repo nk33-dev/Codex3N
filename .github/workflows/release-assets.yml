@@ -86,8 +86,9 @@ jobs:
       - name: Rust formatting
         run: cargo fmt --all --check
 
+      # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
       - name: Rust tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
 
   windows-installer:
     if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
@@ -248,7 +249,10 @@ jobs:
       - windows-installer
       - macos-dmg
     steps:
-      - name: Generate latest.json
+      # 自更新链在客户端是「失败关闭」：latest.json 里没有 sha256、
+      # 又拿不到 SHA256SUMS.txt 时，管理器会拒绝安装。所以校验和必须和
+      # latest.json 在同一轮里产出，并且只能在产物 job 全部结束后做。
+      - name: Generate latest.json and SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -257,31 +261,85 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$TAG" --repo "$REPO" --json assets,body,tagName,url > release.json
+          # 下载目录故意不用 `assets`：仓库根就有同名目录，一旦这个 job 以后
+          # 加了 checkout，就会把仓库文件当成发布产物算进校验和。
+          mkdir -p release-downloads
+          # 先整份下载再过滤：gh 的 --pattern 在无匹配文件时会直接退出 1，
+          # 而 latest.json / SHA256SUMS.txt 属于上一轮生成物，不能算进校验和。
+          gh release download "$TAG" --repo "$REPO" --dir release-downloads --clobber
+          rm -f release-downloads/latest.json release-downloads/SHA256SUMS.txt
+          ls -l release-downloads
           node <<'NODE'
           const fs = require("fs");
-          const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
-          const repo = process.env.REPO;
-          const tag = release.tagName || process.env.TAG;
-          const version = tag.replace(/^v/i, "");
-          const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
-          const assets = (release.assets || [])
-            .map((asset) => asset.name)
-            .filter((name) => name !== "latest.json")
-            .map((name) => ({ name, url: `${baseUrl}/${encodeURIComponent(name)}` }));
-          const payload = {
-            version: `v${version}`,
-            url: release.url || `https://github.com/${repo}/releases/tag/${tag}`,
-            body: release.body || "",
-            assets
+          const path = require("path");
+          const crypto = require("crypto");
+
+          const DOWNLOAD_DIR = "release-downloads";
+          const GENERATED = new Set(["latest.json", "SHA256SUMS.txt"]);
+
+          const sha256File = (file) =>
+            new Promise((resolve, reject) => {
+              const hash = crypto.createHash("sha256");
+              fs.createReadStream(file)
+                .on("data", (chunk) => hash.update(chunk))
+                .on("error", reject)
+                .on("end", () => resolve(hash.digest("hex")));
+            });
+
+          const main = async () => {
+            const release = JSON.parse(fs.readFileSync("release.json", "utf8"));
+            const repo = process.env.REPO;
+            const tag = release.tagName || process.env.TAG;
+            const version = tag.replace(/^v/i, "");
+            const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
+
+            const names = fs
+              .readdirSync(DOWNLOAD_DIR)
+              .filter((name) => !GENERATED.has(name))
+              .filter((name) => fs.statSync(path.join(DOWNLOAD_DIR, name)).isFile())
+              .sort();
+            if (names.length === 0) {
+              throw new Error("release 里没有可校验的产物，拒绝生成 latest.json");
+            }
+
+            const hashes = new Map();
+            for (const name of names) {
+              hashes.set(name, await sha256File(path.join(DOWNLOAD_DIR, name)));
+            }
+
+            // BSD 风格校验和文件：`<hex>  <文件名>`，两个空格，按文件名排序。
+            const sums = names.map((name) => `${hashes.get(name)}  ${name}`).join("\n") + "\n";
+            fs.writeFileSync("SHA256SUMS.txt", sums);
+
+            const assets = names.map((name) => ({
+              name,
+              url: `${baseUrl}/${encodeURIComponent(name)}`,
+              sha256: hashes.get(name),
+            }));
+            const payload = {
+              version: `v${version}`,
+              url: release.url || `https://github.com/${repo}/releases/tag/${tag}`,
+              body: release.body || "",
+              assets,
+            };
+            fs.writeFileSync("latest.json", `${JSON.stringify(payload, null, 2)}\n`);
           };
-          fs.writeFileSync("latest.json", `${JSON.stringify(payload, null, 2)}\n`);
+
+          main().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
           NODE
+          cat SHA256SUMS.txt
           cat latest.json
 
-      - name: Upload latest.json
+      - name: Upload latest.json and SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
           REPO: ${{ github.repository }}
         shell: bash
-        run: gh release upload "$TAG" latest.json --clobber --repo "$REPO"
+        run: |
+          set -euo pipefail
+          # 同一次上传：latest.json 与它引用的校验和文件必须成对更新。
+          gh release upload "$TAG" latest.json SHA256SUMS.txt --clobber --repo "$REPO"

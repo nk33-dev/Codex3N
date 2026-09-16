@@ -209,7 +209,9 @@ fn github_release_workflow_uploads_static_latest_json() {
 
     assert!(workflow.contains("latest-json:"));
     assert!(workflow.contains("latest.json"));
-    assert!(workflow.contains("gh release upload \"$TAG\" latest.json --clobber"));
+    // 发布侧必须同时产出并上传校验和清单，客户端才能做 sha256 校验。
+    assert!(workflow.contains("SHA256SUMS.txt"));
+    assert!(workflow.contains("gh release upload \"$TAG\" latest.json SHA256SUMS.txt --clobber"));
     assert!(workflow.contains("Codex3N-$version-windows-x64.zip"));
     assert!(workflow.contains("Codex3N-${VERSION}-macos-${{ matrix.arch }}.zip"));
     assert!(workflow.contains("verify-release:"));
