@@ -1,5 +1,5 @@
-const repository = "BigPizzaV3/CodexPlusPlus";
-const fallbackVersion = "1.2.46";
+const repository = "nk33-dev/Codex3N";
+const fallbackVersion = "1.3.0-3n.7";
 
 const translations = {
   "跳到主要内容": "Skip to main content",
@@ -243,17 +243,17 @@ const updateDynamicLabels = () => {
 const platformConfig = {
   windows: {
     assetPattern: /windows-x64-setup\.exe$/i,
-    fallbackName: `CodexPlusPlus-${fallbackVersion}-windows-x64-setup.exe`,
+    fallbackName: `Codex3N-${fallbackVersion}-windows-x64-setup.exe`,
     type: "EXE",
   },
   "mac-arm": {
     assetPattern: /macos-arm64\.dmg$/i,
-    fallbackName: `CodexPlusPlus-${fallbackVersion}-macos-arm64.dmg`,
+    fallbackName: `Codex3N-${fallbackVersion}-macos-arm64.dmg`,
     type: "DMG",
   },
   "mac-intel": {
     assetPattern: /macos-x64\.dmg$/i,
-    fallbackName: `CodexPlusPlus-${fallbackVersion}-macos-x64.dmg`,
+    fallbackName: `Codex3N-${fallbackVersion}-macos-x64.dmg`,
     type: "DMG",
   },
 };
