@@ -1,54 +1,23 @@
 # Codex3N 项目指令
 
-## 项目定位
+Codex3N 是 CodexPlusPlus 的个人定制版。只开发用户要求的个人功能、同步上游及处理兼容问题，不做无关重构。
 
-Codex3N 是基于 CodexPlusPlus 长期维护的个人定制版本。
+## 日常约定
 
-## 当前目标
+- 中文交流与新增注释，代码标识符保持英文；修改前读懂相关文件，不确定的技术细节先查文档。
+- `main` 只快进同步 `upstream/main`；`personal` 是个人开发及 GitHub 默认分支，短期分支从它创建并合回。不强制覆盖分叉历史。
+- 提交信息用 `type(scope): 中文说明`；GitHub 操作显式指定 `--repo nk33-dev/Codex3N`，避免命中上游。
+- 修改功能时按[个人文档导航](doc/person/README.md)读取并更新相关文档；这里只留关键规则，详细步骤不重复写入。
 
-当前只处理以下两类工作：
+## 同步与验证
 
-1. 根据个人使用需求开发和维护定制功能。
-2. 持续同步 CodexPlusPlus 官方仓库的最新代码，在保留个人定制功能的前提下完成兼容与冲突处理。
+- 同步前必须读[维护流程](doc/person/maintenance.md)。Git 无冲突不代表行为正确：按旧入口到新模块映射迁移上游行为，保持唯一运行入口，并覆盖上游修复与个人功能回归。
+- 大版本及重构重叠在独立同步分支验证后合回，保留上游合并历史；数据迁移先在副本验证，代码回退不等于数据回退。
+- 同步至少执行 `cargo fmt --check`、`cargo check --workspace`、`cargo test --workspace`，以及管理器目录下的 `npm test`、`npm run check`。日常修改运行相关检查；纯文档检查差异与链接。
+- 平台相关改动检查 Windows、macOS、Linux 的实际行为；如实记录未验证范围和失败，编译或 mock 通过不能代替真实运行验证。
 
-## 分支约定
+## 发布
 
-- `main`：只同步 `upstream/main`，不直接开发个人功能。
-- `personal`：基于 `main` 维护 Codex3N 的个人定制功能；**GitHub 默认分支就是它**，因为对外可见的始终是个人版。
-- 新功能需要单独开发时，从 `personal` 创建短期功能分支，完成后合并回 `personal`。
-
-## 版本与发布
-
-- Codex3N 版本使用“上游版本号 + `-3n.N`”格式，例如 `1.2.56-3n.1`。
-- 发布标签必须与 `Cargo.toml` 中的版本一致，例如 `v1.2.56-3n.1`。
-- 正式安装包只从 `personal` 对应的 Codex3N 标签构建和发布。
-- 写 release 说明时要用真实换行，避免把 `\n` 当成普通文字显示出来；多行说明优先用 notes 文件。
-- 默认确认 GitHub Release 创建成功后即结束发布操作，不持续轮询或等待安装包构建；只有用户明确要求时才监控构建进度，避免无谓消耗 token。
-- **发布统一走 `pwsh scripts/release.ps1 -NotesFile <说明文件>`**：脚本会校验分支/工作区/标签格式/标签是否已存在，本地先跑一遍 release 门禁（fmt + Rust 测试 + 前端测试与类型检查），再推送分支、打标签、创建 Release。
-- **`gh` 在本仓库默认会解析到上游**：仓库同时配置了 `origin` 与 `upstream`，`gh` 优先用 `upstream`，所以任何 `gh` 命令都必须显式带 `--repo nk33-dev/Codex3N`（`scripts/release.ps1` 已写死）。`.git/config` 里的 `pushurl = DISABLED` 只挡 `git push`，挡不住 `gh`。
-- release workflow（`.github/workflows/release-assets.yml`）有测试门禁 job（`verify-tests`）与“标签 == Cargo.toml 版本”校验，安装包 job 都在门禁之后；门禁红了不会产出安装包。
-
-## 提交规范
-
-- 提交信息用 `type(scope): 说明`。
-- 说明要直接写这次改了什么，不要堆太多虚词。
-- 示例：
-  - `fix(payment): 修复并发下单导致库存超卖的问题`
-  - `feat(user): 增加后台用户列表导出Excel功能`
-
-## 官方同步检查
-
-把 `upstream/main` 合入 `personal` 时，必须同时做合并前和合并后检查：
-
-- 合并前记录个人分支的功能入口、关键配置字段、注入脚本和测试基线，先确认工作区没有未说明的修改。
-- 合并时重点检查个人改动与官方改动重叠的模块，不能只接受 Git 的自动合并结果。
-- 按 `doc/person` 记录的当前代码入口合并：已拆出的核心逻辑只保留一个运行入口，把上游的新行为迁入现有模块，不能同时恢复旧内联实现和保留拆分模块。合并后搜索旧入口、重复监听和定时器，并更新对应回归测试。
-- 合并后检查运行时契约和数据结构是否变化，尤其是 RPC 客户端、模型列表、配置分片、会话索引、路径处理和前端按钮布局。
-- 至少执行 `cargo fmt --check`、`cargo check --workspace`、`cargo test --workspace` 和前端 `npm test`、`npm run check`；不能只用编译通过代替测试。
-- 对 Windows、macOS、Linux 有差异的路径、进程、安装包和 UI 行为分别检查，优先修复跨平台测试和真实运行时不一致。
-
-## 范围限制
-
-除上述两项目标外，暂不主动增加其他功能，不进行无关重构，也不扩大项目范围。新增工作必须由用户明确提出。
-
-个人版业务与代码入口见 `doc/person/README.md`；修改功能或同步上游时同步维护，删除过时说明，保持文档与当前实现一致。
+- 版本为“上游版本号 + `-3n.N`”，标签与 `Cargo.toml` 一致；正式包只从 `personal` 对应标签发布。
+- 发布必须先读维护流程中的发布步骤，统一运行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`；检查失败不继续。
+- Release 创建成功后默认结束，不持续等待安装包构建，除非用户明确要求监控。
