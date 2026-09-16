@@ -822,6 +822,8 @@ describe("Stepwise generation mode contracts", () => {
   it("exposes automatic and manual generation in manager settings", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const renderer = await readRendererInjectSource();
+    // defaultSettings 已搬到 src/lib/default-settings.ts，断言语义不变，只是读取文件路径跟着迁移。
+    const defaultSettingsSource = await readFile(new URL("./lib/default-settings.ts", import.meta.url), "utf8");
 
     const types = await readFile(new URL("./provider-types.ts", import.meta.url), "utf8");
     const parsed = ts.createSourceFile("provider-types.ts", types, ts.ScriptTarget.Latest, true);
@@ -833,9 +835,9 @@ describe("Stepwise generation mode contracts", () => {
     };
     assert.deepEqual(members("StepwiseGenerationMode"), ['"auto"', '"manual"']);
     assert.deepEqual(members("StepwiseProtocol"), ['"auto"', '"chat_completions"', '"responses"', '"anthropic_messages"']);
-    assert.match(app, /codexAppStepwiseProtocol: "chat_completions",/);
-    assert.match(app, /codexAppStepwiseGenerationMode: "auto",/);
-    assert.match(app, /codexAppAnswerOutlineEnabled: false,/);
+    assert.match(defaultSettingsSource, /codexAppStepwiseProtocol: "chat_completions",/);
+    assert.match(defaultSettingsSource, /codexAppStepwiseGenerationMode: "auto",/);
+    assert.match(defaultSettingsSource, /codexAppAnswerOutlineEnabled: false,/);
     assert.match(renderer, /answerOutline: false,/);
     assert.match(app, /<Field label=\{t\("模式"\)\}>/);
     assert.match(app, /\{ value: "auto", label: t\("自动生成"\) \}/);
