@@ -1,14 +1,16 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Context;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use toml_edit::{DocumentMut, Item};
 
+use crate::secret_store;
 use crate::tools::{ToolConfig, ToolId};
 use crate::zed_remote::ZedOpenStrategy;
 
@@ -1193,8 +1195,21 @@ impl SettingsStore {
             }
         };
 
-        let settings = match serde_json::from_str::<BackendSettings>(&contents) {
-            Ok(settings) => settings,
+        // 先当 JSON 树解开密钥密文，再反序列化成结构体：这样不用给任何字段加
+        // 自定义反序列化、也不用改调用方。明文老格式原样返回，下次保存自动升级。
+        let settings = match serde_json::from_str::<Value>(&contents) {
+            Ok(mut value) => {
+                if let Some(map) = value.as_object_mut() {
+                    decrypt_settings_secrets(map);
+                }
+                match serde_json::from_value::<BackendSettings>(value) {
+                    Ok(settings) => settings,
+                    Err(error) => {
+                        quarantine_corrupt_settings(&self.path, &error.to_string());
+                        BackendSettings::default()
+                    }
+                }
+            }
             Err(error) => {
                 quarantine_corrupt_settings(&self.path, &error.to_string());
                 BackendSettings::default()
@@ -1207,7 +1222,11 @@ impl SettingsStore {
         let _lock = SettingsWriteLock::acquire(&self.path)?;
         let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
-        let bytes = serde_json::to_vec_pretty(&settings)?;
+        let mut value = serde_json::to_value(&settings)?;
+        if let Some(map) = value.as_object_mut() {
+            encrypt_settings_secrets(map);
+        }
+        let bytes = serde_json::to_vec_pretty(&value)?;
         atomic_write(&self.path, &bytes)
     }
 
@@ -1238,6 +1257,7 @@ impl SettingsStore {
             "tools".to_string(),
             serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
         );
+        encrypt_settings_secrets(&mut raw);
         let bytes = serde_json::to_vec_pretty(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
         Ok(settings)
@@ -1256,7 +1276,12 @@ impl SettingsStore {
         };
 
         match serde_json::from_str::<Value>(&contents) {
-            Ok(Value::Object(map)) => Ok(map),
+            Ok(Value::Object(mut map)) => {
+                // 读-改-写路径用「解不开就保留密文」的解密方式：写回时密文原样回盘，
+                // 绝不会因为凭据库临时不可用就把用户已存的密钥抹成空串。
+                decrypt_settings_secrets_preserving(&mut map);
+                Ok(map)
+            }
             Ok(_) => {
                 quarantine_corrupt_settings(&self.path, "settings root is not a JSON object");
                 Ok(settings_to_object(&BackendSettings::default()))
@@ -1267,6 +1292,156 @@ impl SettingsStore {
             }
         }
     }
+}
+
+/// 密钥字段的判定规则：键名精确等于 `apiKey`，或以 `ApiKey` 结尾。
+///
+/// 覆盖 `relayProfiles[].apiKey`、`tools.<tool>.relayProfiles[].apiKey`、
+/// `vlmApiKey`、`relayApiKey`、`codexAppStepwiseApiKey`，将来新增的 `*ApiKey`
+/// 字段自动生效。`codexAppStepwiseApiKeyEnv` 这类「环境变量名」字段以 `Env`
+/// 结尾，不会被命中——它的值是变量名不是密钥。
+fn is_secret_field_name(key: &str) -> bool {
+    key == "apiKey" || key.ends_with("ApiKey")
+}
+
+/// 递归遍历设置对象里的密钥字段，`visit` 只收到非空字符串值。
+fn visit_secret_fields(
+    map: &mut Map<String, Value>,
+    path: &str,
+    visit: &mut impl FnMut(&mut String, &str),
+) {
+    for (key, child) in map.iter_mut() {
+        let child_path = if path.is_empty() {
+            key.clone()
+        } else {
+            format!("{path}.{key}")
+        };
+        if is_secret_field_name(key) {
+            if let Value::String(text) = child {
+                if !text.is_empty() {
+                    visit(text, &child_path);
+                }
+            }
+        }
+        visit_secret_value(child, &child_path, visit);
+    }
+}
+
+fn visit_secret_value(value: &mut Value, path: &str, visit: &mut impl FnMut(&mut String, &str)) {
+    match value {
+        Value::Object(map) => visit_secret_fields(map, path, visit),
+        Value::Array(items) => {
+            for (index, child) in items.iter_mut().enumerate() {
+                visit_secret_value(child, &format!("{path}[{index}]"), visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 落盘前加密所有密钥字段。
+///
+/// 拿不到主密钥时**不阻断保存**：该值按明文写入并写一条诊断日志（每个进程只记
+/// 一次）。用户配置必须始终可用，「加密不可用」不能升级成「存不了设置」。
+/// 已经是密文的值原样保留，避免读-改-写路径二次加密。
+fn encrypt_settings_secrets(map: &mut Map<String, Value>) {
+    encrypt_settings_secrets_with(map, secret_store::encrypt_secret);
+}
+
+/// 同上，但加密动作可注入，便于测试确定性地模拟「凭据库不可用」。
+fn encrypt_settings_secrets_with(
+    map: &mut Map<String, Value>,
+    encrypt: impl Fn(&str) -> anyhow::Result<String>,
+) {
+    let mut failure: Option<anyhow::Error> = None;
+    visit_secret_fields(map, "", &mut |text, _path| match encrypt(text) {
+        Ok(encrypted) => *text = encrypted,
+        Err(error) => {
+            if failure.is_none() {
+                failure = Some(error);
+            }
+        }
+    });
+    if let Some(error) = failure {
+        log_secret_encryption_unavailable(&error);
+    }
+}
+
+/// 解密从磁盘读到的密钥字段。
+///
+/// 解不开的值**不能当成有效 key 用**，置为空串；同时绝不改写磁盘上的文件
+/// （代码回退不等于数据回退），用户修好凭据库后仍然能读回原来的密文。
+fn decrypt_settings_secrets(map: &mut Map<String, Value>) {
+    visit_secret_fields(map, "", &mut |text, path| {
+        if !secret_store::is_encrypted(text) {
+            return;
+        }
+        match secret_store::decrypt_secret(text) {
+            Ok(plaintext) => *text = plaintext,
+            Err(error) => {
+                log_secret_decrypt_failed(path, &error);
+                text.clear();
+            }
+        }
+    });
+}
+
+/// 读-改-写路径的解密：解不开时保留密文，让回写把密文原样写回磁盘。
+///
+/// 与 `decrypt_settings_secrets` 的差别是有意的：`update` 会把读到的内容写回，
+/// 置空等于**删掉用户的密钥**；`load` 只读不写，所以那里按契约置空。
+/// 代价是凭据库不可用时 `update` 返回的设置快照里这些字段仍是密文——它是给界面
+/// 看的快照，`load` 才是真正拿密钥去用的入口（那里一定置空），磁盘安全优先。
+fn decrypt_settings_secrets_preserving(map: &mut Map<String, Value>) {
+    visit_secret_fields(map, "", &mut |text, path| {
+        if !secret_store::is_encrypted(text) {
+            return;
+        }
+        match secret_store::decrypt_secret(text) {
+            Ok(plaintext) => *text = plaintext,
+            Err(error) => log_secret_decrypt_failed(path, &error),
+        }
+    });
+}
+
+/// 「主密钥不可用」每个进程只提示一次：每次保存都写会把诊断日志刷爆。
+static SECRET_ENCRYPTION_UNAVAILABLE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// 解密失败按字段路径去重，避免每次 load 都重复记同一条。
+static SECRET_DECRYPT_FAILED_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn log_secret_encryption_unavailable(error: &anyhow::Error) {
+    if SECRET_ENCRYPTION_UNAVAILABLE_LOGGED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "settings.secret_encryption_unavailable",
+        serde_json::json!({
+            "error": format!("{error:#}"),
+            "effect": "本次保存的 API Key 以明文写入 settings.json",
+            "disable_hint": "设置 CODEX_PLUS_SETTINGS_NO_ENCRYPT=1 可显式接受明文存储",
+        }),
+    );
+}
+
+fn log_secret_decrypt_failed(path: &str, error: &anyhow::Error) {
+    let logged = SECRET_DECRYPT_FAILED_PATHS.get_or_init(|| Mutex::new(HashSet::new()));
+    let first = match logged.lock() {
+        Ok(mut paths) => paths.insert(path.to_string()),
+        Err(poisoned) => poisoned.into_inner().insert(path.to_string()),
+    };
+    if !first {
+        return;
+    }
+    // 只带字段路径与原因，不带密文内容。
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "settings.secret_decrypt_failed",
+        serde_json::json!({
+            "path": path,
+            "error": format!("{error:#}"),
+            "effect": "该字段按空值处理，磁盘文件未做任何改写",
+        }),
+    );
 }
 
 /// 解析失败的 settings.json 不能"悄悄当默认值用掉"。
@@ -2168,6 +2343,8 @@ mod tests {
     fn corrupt_settings_file_is_quarantined_instead_of_silently_defaulted() {
         // 解析失败时回落默认值是为了不让应用打不开，但必须留证：
         // 以前是 `unwrap_or_default()`，用户看到的是"配置全没了"且没有任何痕迹。
+        // 诊断日志路径是进程级状态，与其它碰它的测试串行。
+        let _diagnostics_guard = settings_diagnostics_test_guard();
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, b"{ not json").unwrap();
@@ -3017,6 +3194,8 @@ experimental_bearer_token = "sk-existing""#
 
     #[test]
     fn settings_store_update_only_mutates_present_known_fields() {
+        // 这条测试经手 relayApiKey，落盘会加密，所以固定主密钥并和其它密文测试串行。
+        let _secret_guard = crate::secret_store::install_test_master_key();
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
         let initial = BackendSettings {
@@ -3064,6 +3243,10 @@ experimental_bearer_token = "sk-existing""#
             ]
         );
         assert_eq!(store.load().unwrap(), updated);
+        // 新增契约：内存里仍是明文，盘上是密文。
+        let raw = std::fs::read_to_string(&store.path).unwrap();
+        assert!(!raw.contains("sk-relay"), "relayApiKey 不能明文落盘：{raw}");
+        assert!(raw.contains("\"relayApiKey\": \"enc:v1:"));
     }
 
     #[test]
@@ -3158,6 +3341,8 @@ experimental_bearer_token = "sk-existing""#
 
     #[test]
     fn settings_store_update_persists_stepwise_settings() {
+        // 这条测试经手 codexAppStepwiseApiKey，落盘会加密，固定主密钥并与密文测试串行。
+        let _secret_guard = crate::secret_store::install_test_master_key();
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
 
@@ -3197,6 +3382,15 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.codex_app_stepwise_max_output_tokens, 100);
         assert_eq!(updated.codex_app_stepwise_timeout_ms, 60000);
         assert_eq!(store.load().unwrap(), updated);
+
+        // 新增契约：密钥落盘是密文，而"环境变量名"字段保持明文可读。
+        let raw = std::fs::read_to_string(&store.path).unwrap();
+        assert!(!raw.contains("sk-stepwise"), "密钥不能明文落盘：{raw}");
+        assert!(raw.contains("\"codexAppStepwiseApiKey\": \"enc:v1:"));
+        assert!(
+            raw.contains("\"codexAppStepwiseApiKeyEnv\": \"CODEX_STEPWISE_API_KEY\""),
+            "环境变量名不是密钥，不该被加密：{raw}"
+        );
     }
 
     #[test]
@@ -3527,5 +3721,384 @@ experimental_bearer_token = "sk-existing""#
 
         assert!(!updated.provider_sync_enabled);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// 诊断日志路径与「只记一次」标记都是进程级状态，碰它们的测试串行执行。
+    fn settings_diagnostics_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn encrypt_settings_secrets_encrypts_api_key_fields_and_skips_env_names() {
+        // 递归边界：精确等于 `apiKey` 或以 `ApiKey` 结尾的字符串值都要加密，
+        // 以 `Env` 结尾的「环境变量名」不能碰。
+        let mut value = json!({
+            "relayApiKey": "sk-relay",
+            "codexAppStepwiseApiKey": "sk-stepwise",
+            "codexAppStepwiseApiKeyEnv": "CODEX_STEPWISE_API_KEY",
+            "relayProfiles": [
+                { "id": "a", "apiKey": "sk-profile", "vlmApiKey": "sk-vlm" }
+            ],
+            "tools": {
+                "grok": {
+                    "relayProfiles": [
+                        { "id": "grok-a", "apiKey": "sk-grok", "vlmApiKey": "sk-grok-vlm" }
+                    ]
+                }
+            },
+            "unrelated": { "nested": [{ "someApiKey": "sk-nested" }] },
+            "codexAppPath": "C:\\Portable\\Codex\\Codex.exe"
+        });
+        let map = value.as_object_mut().unwrap();
+
+        encrypt_settings_secrets_with(map, |plaintext| Ok(format!("enc:v1:sealed-{plaintext}")));
+
+        assert_eq!(map["relayApiKey"], json!("enc:v1:sealed-sk-relay"));
+        assert_eq!(
+            map["codexAppStepwiseApiKey"],
+            json!("enc:v1:sealed-sk-stepwise")
+        );
+        assert_eq!(
+            map["codexAppStepwiseApiKeyEnv"],
+            json!("CODEX_STEPWISE_API_KEY"),
+            "环境变量名不是密钥，不能被加密"
+        );
+        assert_eq!(
+            map["relayProfiles"][0]["apiKey"],
+            json!("enc:v1:sealed-sk-profile")
+        );
+        assert_eq!(
+            map["relayProfiles"][0]["vlmApiKey"],
+            json!("enc:v1:sealed-sk-vlm")
+        );
+        assert_eq!(
+            map["tools"]["grok"]["relayProfiles"][0]["apiKey"],
+            json!("enc:v1:sealed-sk-grok")
+        );
+        assert_eq!(
+            map["tools"]["grok"]["relayProfiles"][0]["vlmApiKey"],
+            json!("enc:v1:sealed-sk-grok-vlm")
+        );
+        assert_eq!(
+            map["unrelated"]["nested"][0]["someApiKey"],
+            json!("enc:v1:sealed-sk-nested")
+        );
+        assert_eq!(
+            map["codexAppPath"],
+            json!("C:\\Portable\\Codex\\Codex.exe"),
+            "非密钥字段必须原样保留"
+        );
+    }
+
+    #[test]
+    fn encrypt_settings_secrets_keeps_plaintext_and_logs_once_without_a_master_key() {
+        // 用注入的失败加密器代替「真实凭据库坏掉」：进程级主密钥缓存不能被这类
+        // 测试改坏，否则并行的其它测试会读到「写的时候有密钥、读的时候没有」。
+        //
+        // 锁顺序遵循本文件约定：先主密钥、后诊断日志。先拿主密钥 guard 还有一个
+        // 必要作用——它把进程级主密钥钉在「可用」，于是并行跑的、没有拿 guard 的
+        // 测试即使保存了密钥也不会走到「凭据库不可用」分支；否则它们会把同一事件
+        // 写进本测试刚装上的诊断日志文件，让下面的「只记一次」计数偶发变成 2。
+        let _secret_guard = crate::secret_store::install_test_master_key();
+        let _guard = settings_diagnostics_test_guard();
+        let dir = temp_dir();
+        let log_path = dir.join("codex-plus.log");
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+        SECRET_ENCRYPTION_UNAVAILABLE_LOGGED.store(false, Ordering::Relaxed);
+
+        let mut value = json!({
+            "relayApiKey": "sk-keep",
+            "relayProfiles": [{ "id": "a", "vlmApiKey": "sk-keep-vlm" }]
+        });
+        let map = value.as_object_mut().unwrap();
+        encrypt_settings_secrets_with(map, |_| Err(anyhow::anyhow!("凭据库不可用")));
+        encrypt_settings_secrets_with(map, |_| Err(anyhow::anyhow!("凭据库不可用")));
+
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+
+        // 拿不到主密钥时按明文写入，绝不因此丢掉保存。
+        assert_eq!(map["relayApiKey"], json!("sk-keep"));
+        assert_eq!(map["relayProfiles"][0]["vlmApiKey"], json!("sk-keep-vlm"));
+
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert_eq!(
+            log.matches("settings.secret_encryption_unavailable")
+                .count(),
+            1,
+            "同一个进程只记一次"
+        );
+        assert!(!log.contains("sk-keep"), "诊断日志不能出现密钥明文：{log}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_store_encrypts_api_keys_on_disk_and_restores_plaintext_in_memory() {
+        let _guard = crate::secret_store::install_test_master_key();
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+
+        let mut settings = BackendSettings {
+            relay_api_key: "sk-relay-secret".to_string(),
+            codex_app_stepwise_api_key: "sk-stepwise-secret".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "relay-a".to_string(),
+                vlm_api_key: "sk-vlm-secret".to_string(),
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        // 工具分区里嵌套的密钥也要加密（`tools.<tool>.relayProfiles[].vlmApiKey`）。
+        settings.tools.insert(
+            ToolId::Grok,
+            ToolConfig {
+                relay_profiles: vec![RelayProfile {
+                    id: "grok-a".to_string(),
+                    vlm_api_key: "sk-grok-vlm-secret".to_string(),
+                    ..RelayProfile::default()
+                }],
+                ..ToolConfig::default()
+            },
+        );
+
+        store.save(&settings).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        for plaintext in [
+            "sk-relay-secret",
+            "sk-stepwise-secret",
+            "sk-vlm-secret",
+            "sk-grok-vlm-secret",
+        ] {
+            assert!(!raw.contains(plaintext), "落盘内容不能有明文：{plaintext}");
+        }
+        assert!(raw.contains("enc:v1:"), "密钥应当以密文落盘：{raw}");
+        assert!(
+            raw.contains("\"codexAppStepwiseApiKeyEnv\": \"CODEX_STEPWISE_API_KEY\""),
+            "环境变量名保持可读：{raw}"
+        );
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.relay_api_key, "sk-relay-secret");
+        assert_eq!(loaded.codex_app_stepwise_api_key, "sk-stepwise-secret");
+        assert_eq!(loaded.relay_profiles[0].vlm_api_key, "sk-vlm-secret");
+        assert_eq!(
+            loaded.tools[&ToolId::Grok].relay_profiles[0].vlm_api_key,
+            "sk-grok-vlm-secret"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_store_reads_legacy_plaintext_keys() {
+        // 老格式（明文）必须原样读出来，向后兼容不靠迁移命令。
+        let _guard = crate::secret_store::install_test_master_key();
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"relayApiKey":"sk-legacy","relayProfiles":[{"id":"relay-a","name":"A","apiKey":"sk-profile-legacy"}]}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let loaded = store.load().unwrap();
+
+        assert_eq!(loaded.relay_api_key, "sk-legacy");
+        assert_eq!(loaded.relay_profiles[0].api_key, "sk-profile-legacy");
+
+        // 下一次保存顺手升级成密文。
+        store.save(&loaded).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("sk-legacy"), "保存后不能再有明文：{raw}");
+        assert!(raw.contains("\"relayApiKey\": \"enc:v1:"));
+        assert_eq!(store.load().unwrap().relay_api_key, "sk-legacy");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_store_update_reencrypts_legacy_api_keys_including_tool_shards() {
+        let _guard = crate::secret_store::install_test_master_key();
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"relayApiKey":"sk-legacy","tools":{"grok":{"relayProfiles":[{"id":"grok-a","name":"Grok A","vlmApiKey":"sk-grok-vlm"}]}}}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let updated = store
+            .update(json!({ "providerSyncEnabled": true }))
+            .unwrap();
+
+        assert!(updated.provider_sync_enabled);
+        assert_eq!(updated.relay_api_key, "sk-legacy");
+        assert_eq!(
+            updated.tools[&ToolId::Grok].relay_profiles[0].vlm_api_key,
+            "sk-grok-vlm"
+        );
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("sk-legacy"), "读-改-写也要重新加密：{raw}");
+        assert!(
+            !raw.contains("sk-grok-vlm"),
+            "工具分片里的密钥同样要加密：{raw}"
+        );
+        assert!(raw.contains("enc:v1:"));
+        assert_eq!(store.load().unwrap().relay_api_key, "sk-legacy");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_store_load_blanks_unreadable_ciphertext_without_rewriting_the_file() {
+        // 锁顺序统一为：先主密钥、后诊断日志，避免两个测试交叉持锁。
+        let _guard = crate::secret_store::install_test_master_key();
+        let _diagnostics_guard = settings_diagnostics_test_guard();
+        let dir = temp_dir();
+        let log_path = dir.join("codex-plus.log");
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+        SECRET_DECRYPT_FAILED_PATHS
+            .get_or_init(|| Mutex::new(HashSet::new()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+
+        let good =
+            crate::secret_store::encrypt_with_key(&crate::secret_store::TEST_MASTER_KEY, "sk-good")
+                .unwrap();
+        // 改一个字节：格式仍然合法，但 GCM 认证必然失败。
+        use base64::Engine as _;
+        let mut tampered = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(good.strip_prefix("enc:v1:").unwrap())
+            .unwrap();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        let broken_payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&tampered);
+        let broken = format!("enc:v1:{broken_payload}");
+
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "relayApiKey": good,
+                "codexAppStepwiseApiKey": broken,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let store = SettingsStore::new(path.clone());
+
+        let loaded = store.load().unwrap();
+
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+        assert_eq!(loaded.relay_api_key, "sk-good");
+        assert_eq!(
+            loaded.codex_app_stepwise_api_key, "",
+            "解不开的密文不能当成有效 key 用"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            before,
+            "解密失败不得改写磁盘文件"
+        );
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert!(log.contains("settings.secret_decrypt_failed"), "{log}");
+        assert!(
+            log.contains("codexAppStepwiseApiKey"),
+            "日志要带字段路径：{log}"
+        );
+        assert!(!log.contains(&broken_payload), "日志不能带密文内容：{log}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_store_saves_plaintext_when_the_credential_store_is_unavailable() {
+        // 锁顺序统一为：先主密钥、后诊断日志。
+        let _secret_guard = crate::secret_store::install_test_master_key();
+        let _diagnostics_guard = settings_diagnostics_test_guard();
+        let dir = temp_dir();
+        let log_path = dir.join("codex-plus.log");
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
+        SECRET_ENCRYPTION_UNAVAILABLE_LOGGED.store(false, Ordering::Relaxed);
+
+        // 模拟凭据库不可用：保存必须成功，只是退回明文，并留一条诊断日志。
+        crate::secret_store::set_master_key_for_tests(None);
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        store
+            .save(&BackendSettings {
+                relay_api_key: "sk-plain-fallback".to_string(),
+                ..BackendSettings::default()
+            })
+            .expect("拿不到主密钥也不能让保存失败");
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.contains("\"relayApiKey\": \"sk-plain-fallback\""),
+            "{raw}"
+        );
+        assert!(!raw.contains("enc:v1:"), "{raw}");
+        assert_eq!(store.load().unwrap().relay_api_key, "sk-plain-fallback");
+
+        let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+        assert_eq!(
+            log.matches("settings.secret_encryption_unavailable")
+                .count(),
+            1,
+            "同一个进程只记一次：{log}"
+        );
+        assert!(
+            !log.contains("sk-plain-fallback"),
+            "日志不能出现明文：{log}"
+        );
+
+        crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
+        // 立刻把注入的测试密钥放回去，别的测试还在用同一把。
+        crate::secret_store::set_master_key_for_tests(Some(crate::secret_store::TEST_MASTER_KEY));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_encryption_escape_hatch_writes_plaintext() {
+        struct NoEncryptEnv;
+
+        impl NoEncryptEnv {
+            fn enable() -> Self {
+                // 与 update.rs 的逃生开关同风格：非空且不是 0/false 即为开启。
+                unsafe { std::env::set_var("CODEX_PLUS_SETTINGS_NO_ENCRYPT", "1") };
+                Self
+            }
+        }
+
+        impl Drop for NoEncryptEnv {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var("CODEX_PLUS_SETTINGS_NO_ENCRYPT") };
+            }
+        }
+
+        // 开关打开时写盘的就是明文，必须和「断言盘上是密文」的测试串行。
+        let _guard = crate::secret_store::install_test_master_key();
+        let _env = NoEncryptEnv::enable();
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+
+        store
+            .save(&BackendSettings {
+                relay_api_key: "sk-plain".to_string(),
+                ..BackendSettings::default()
+            })
+            .unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"relayApiKey\": \"sk-plain\""), "{raw}");
+        assert!(!raw.contains("enc:v1:"), "{raw}");
+        assert_eq!(store.load().unwrap().relay_api_key, "sk-plain");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

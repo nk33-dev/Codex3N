@@ -31,6 +31,7 @@ zstd.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
+  "Win32_Security_Cryptography",
   "Win32_Storage_EnhancedStorage",
   "Win32_Storage_FileSystem",
   "Win32_Storage_Packaging_Appx",
@@ -45,6 +46,10 @@ windows = { version = "0.58", features = [
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+# macOS 的 Keychain 访问：settings.json 里的 API Key 主密钥存在通用密码项里。
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
 
 [dev-dependencies]
 tempfile.workspace = true

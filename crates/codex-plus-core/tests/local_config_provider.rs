@@ -3,6 +3,26 @@ use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
 };
 
+/// 把设置主密钥文件重定向到本进程共用的临时目录。
+///
+/// 主密钥默认与 `paths::default_settings_path()` 同级；本文件用
+/// `SettingsStore::new(临时路径)` 而不是改全局设置路径，所以不重定向的话
+/// `settings.json` 的加密会往用户真实的应用状态目录写 `secret.key`。
+/// 进程级只重定向一次，避免并行测试各自改写同一个全局覆盖值。
+fn redirect_secret_key() {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        codex_plus_core::secret_store::set_secret_key_path_for_tests(Some(
+            dir.path().join("secret.key"),
+        ));
+        dir
+    });
+    // 目录由静态量持有，这里只是确保它已经被初始化。
+    let _ = dir.path();
+}
+
 fn api_profile(id: &str) -> RelayProfile {
     RelayProfile {
         id: id.to_string(),
@@ -21,6 +41,7 @@ fn api_profile(id: &str) -> RelayProfile {
 
 #[test]
 fn imports_local_files_as_an_ordinary_selectable_provider() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let local = api_profile("local");
@@ -53,6 +74,7 @@ fn imports_local_files_as_an_ordinary_selectable_provider() {
 
 #[test]
 fn preserves_existing_selection_and_does_not_reimport_after_edit_or_delete() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let existing = api_profile("existing");
@@ -89,6 +111,7 @@ fn preserves_existing_selection_and_does_not_reimport_after_edit_or_delete() {
 
 #[test]
 fn missing_local_files_create_an_editable_official_provider() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let settings = initialize_local_config_provider(&store, temp.path()).unwrap();
@@ -101,6 +124,7 @@ fn missing_local_files_create_an_editable_official_provider() {
 
 #[test]
 fn invalid_local_config_does_not_mark_import_complete_or_change_settings() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     store.save(&BackendSettings::default()).unwrap();
@@ -121,6 +145,7 @@ fn invalid_local_config_does_not_mark_import_complete_or_change_settings() {
 
 #[test]
 fn keeps_a_previously_imported_default_and_legacy_credentials() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     store
@@ -155,6 +180,7 @@ fn keeps_a_previously_imported_default_and_legacy_credentials() {
 
 #[test]
 fn local_proxy_import_keeps_real_upstream_and_protocol() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let mut existing = api_profile("custom");
@@ -191,6 +217,7 @@ fn local_proxy_import_keeps_real_upstream_and_protocol() {
 
 #[test]
 fn default_provider_uses_the_same_switch_path_as_other_providers() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let local = api_profile("local");
@@ -238,6 +265,7 @@ fn default_provider_uses_the_same_switch_path_as_other_providers() {
 
 #[test]
 fn switching_back_to_imported_official_provider_restores_its_local_config() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     std::fs::write(
