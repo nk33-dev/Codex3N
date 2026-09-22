@@ -83,6 +83,8 @@ export const defaultSettings: BackendSettings = {
       baseUrl: "",
       upstreamBaseUrl: "",
       apiKey: "",
+      apiKeys: [],
+      activeApiKeyId: "",
       protocol: "responses",
       relayMode: "official",
       officialMixApiKey: false,

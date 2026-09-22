@@ -129,6 +129,7 @@ import {
 } from "./model-windows";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys } from "./provider-api-keys";
 import { resolveProviderSyncCompletion } from "./provider-sync-flow";
 import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus } from "./launch-status";
@@ -6212,6 +6213,15 @@ function RelayProfileEditor({
   const updateDraft = (patch: Partial<RelayProfile>) => {
     onProfileChange(applyRelayProfilePatchToFiles(profile, patch, { allowGenerateFiles: isNew }));
   };
+  const normalizedApiKeys = normalizeRelayApiKeys(profile);
+  const updateApiKeys = (apiKeys: typeof normalizedApiKeys.apiKeys, activeApiKeyId = normalizedApiKeys.activeApiKeyId) => {
+    const selected = apiKeys.find((entry) => entry.id === activeApiKeyId) || apiKeys[0];
+    updateDraft({
+      apiKeys,
+      activeApiKeyId: selected?.id || "",
+      apiKey: selected?.apiKey || "",
+    });
+  };
   const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
   const modelRouteTargets = form.relayProfiles.filter(
     (candidate) => candidate.id !== profile.id && !isAggregateRelayProfile(candidate) && candidate.protocol === "responses",
@@ -6487,13 +6497,71 @@ function RelayProfileEditor({
                 placeholder={t("填写中转服务 Base URL")}
               />
             </Field>
-            <Field className="relay-field-key" label="Key">
-              <Input
-                type="password"
-                value={profile.apiKey}
-                onChange={(event) => updateDraft({ apiKey: event.currentTarget.value })}
-                placeholder={t("输入中转服务的 API Key")}
-              />
+            <Field className="relay-field-key" label="API Keys">
+              <div className="relay-api-key-list">
+                {normalizedApiKeys.apiKeys.map((entry) => {
+                  const active = entry.id === normalizedApiKeys.activeApiKeyId;
+                  return (
+                    <div className={`relay-api-key-row ${active ? "active" : ""}`} key={entry.id}>
+                      <button
+                        aria-label={active ? t("当前使用的 Key") : tf("使用 {0}", [entry.name])}
+                        className="relay-api-key-select"
+                        onClick={() => updateApiKeys(normalizedApiKeys.apiKeys, entry.id)}
+                        title={active ? t("当前使用的 Key") : t("设为当前 Key")}
+                        type="button"
+                      >
+                        <CheckCircle2 className="h-4 w-4" />
+                      </button>
+                      <Input
+                        aria-label={t("Key 名称")}
+                        value={entry.name}
+                        onChange={(event) => updateApiKeys(
+                          normalizedApiKeys.apiKeys.map((candidate) => candidate.id === entry.id
+                            ? { ...candidate, name: event.currentTarget.value }
+                            : candidate),
+                        )}
+                        placeholder={t("例如 主账号")}
+                      />
+                      <Input
+                        aria-label={tf("{0} 的 API Key", [entry.name])}
+                        type="password"
+                        value={entry.apiKey}
+                        onChange={(event) => updateApiKeys(
+                          normalizedApiKeys.apiKeys.map((candidate) => candidate.id === entry.id
+                            ? { ...candidate, apiKey: event.currentTarget.value }
+                            : candidate),
+                        )}
+                        placeholder={t("输入 API Key")}
+                      />
+                      <Button
+                        aria-label={t("删除 Key")}
+                        disabled={normalizedApiKeys.apiKeys.length === 1}
+                        onClick={() => updateApiKeys(normalizedApiKeys.apiKeys.filter((candidate) => candidate.id !== entry.id))}
+                        size="icon"
+                        title={normalizedApiKeys.apiKeys.length === 1 ? t("至少保留一个 Key") : t("删除 Key")}
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  );
+                })}
+                <Button
+                  className="relay-api-key-add"
+                  onClick={() => {
+                    const next = createRelayApiKey(normalizedApiKeys.apiKeys);
+                    updateApiKeys([...normalizedApiKeys.apiKeys, next], next.id);
+                  }}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("添加 Key")}
+                </Button>
+              </div>
+              <p className="field-hint">{t("为 Key 命名后，可在 Codex++ 页面中快速切换当前使用项。")}</p>
             </Field>
             <Field className="relay-field-protocol" label={t("上游协议")}>
               <div className="protocol-options">
@@ -8963,6 +9031,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
             apiKey: settings.relayApiKey || "",
+            apiKeys: [],
+            activeApiKeyId: "",
             protocol: "responses" as RelayProtocol,
             relayMode: "official" as RelayMode,
             sessionProvider: "custom" as RelaySessionProvider,
@@ -9064,6 +9134,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         baseUrl: "",
         upstreamBaseUrl: "",
         apiKey: "",
+        apiKeys: [],
+        activeApiKeyId: "",
         protocol: "responses",
         relayMode: "aggregate",
         sessionProvider: normalizeRelaySessionProvider(profile.sessionProvider),
@@ -9123,7 +9195,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiMultiplier: profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     aggregate: null,
   };
-  return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+  const derived = relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
+  return relayProfileWithNormalizedApiKeys(derived);
 }
 
 function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: AggregateRelayProfile | undefined): RelayProfile {
@@ -9814,6 +9887,8 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     baseUrl: defaultSettings.relayBaseUrl,
     upstreamBaseUrl: defaultSettings.relayBaseUrl,
     apiKey: "",
+    apiKeys: [],
+    activeApiKeyId: "",
     protocol: "responses" as RelayProtocol,
     relayMode: "pureApi" as RelayMode,
     sessionProvider: "custom" as RelaySessionProvider,
@@ -9855,6 +9930,8 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       baseUrl: "",
       upstreamBaseUrl: "",
       apiKey: "",
+      apiKeys: [],
+      activeApiKeyId: "",
       protocol: "responses",
       relayMode: "aggregate",
       sessionProvider: "custom",

@@ -64,6 +64,10 @@ pub trait BridgeSettingsService: Send + Sync {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings>;
 
+    async fn select_relay_api_key(&self, _key_id: String) -> anyhow::Result<BackendSettings> {
+        anyhow::bail!("当前后端不支持切换 API Key")
+    }
+
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
     }
@@ -149,6 +153,15 @@ pub async fn handle_bridge_request(
         "/settings/get" => settings_value(&ctx, ctx.settings.get_settings().await).await,
         "/settings/set" => {
             settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
+        }
+        "/relay-api-keys" => relay_api_keys_value(ctx.settings.get_settings().await),
+        "/relay-api-keys/select" => {
+            let key_id = payload
+                .get("keyId")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            relay_api_key_selection_value(ctx.settings.select_relay_api_key(key_id).await)
         }
         "/user-scripts/list" => {
             ctx.runtime
@@ -346,6 +359,15 @@ impl BridgeSettingsService for CoreSettingsService {
 
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings> {
         self.store.update(payload)
+    }
+
+    async fn select_relay_api_key(&self, key_id: String) -> anyhow::Result<BackendSettings> {
+        let result = crate::relay_switch::select_active_relay_api_key_in_home(
+            &self.store,
+            &crate::relay_config::default_codex_home_dir(),
+            &key_id,
+        )?;
+        Ok(result.settings)
     }
 
     async fn codex_app_version(&self) -> anyhow::Result<String> {
@@ -666,7 +688,25 @@ fn settings_payload_value(
             Value::String(codex_app_version),
         );
     }
+    remove_named_api_keys(&mut value);
     Ok(value)
+}
+
+fn remove_named_api_keys(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            object.remove("apiKeys");
+            for child in object.values_mut() {
+                remove_named_api_keys(child);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                remove_named_api_keys(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 async fn settings_value(
@@ -676,6 +716,42 @@ async fn settings_value(
     let settings = result?;
     let codex_app_version = ctx.settings.codex_app_version().await.unwrap_or_default();
     settings_payload_value(settings, codex_app_version)
+}
+
+fn relay_api_keys_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    let settings = result?;
+    let profile = settings.active_relay_profile();
+    let mut keys = profile
+        .api_keys
+        .iter()
+        .map(|entry| json!({ "id": entry.id, "name": entry.name }))
+        .collect::<Vec<_>>();
+    let active_key_id =
+        if keys.is_empty() && !crate::relay_config::relay_profile_api_key(&profile).is_empty() {
+            keys.push(json!({ "id": "default", "name": "默认" }));
+            "default"
+        } else {
+            profile.active_api_key_id.as_str()
+        };
+    Ok(json!({
+        "status": "ok",
+        "enabled": settings.relay_profiles_enabled,
+        "providerId": profile.id,
+        "providerName": profile.name,
+        "activeKeyId": active_key_id,
+        "keys": keys
+    }))
+}
+
+fn relay_api_key_selection_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+    let settings = result?;
+    let profile = settings.active_relay_profile();
+    Ok(json!({
+        "status": "ok",
+        "providerId": profile.id,
+        "providerName": profile.name,
+        "activeKeyId": profile.active_api_key_id
+    }))
 }
 
 fn backend_status_value(

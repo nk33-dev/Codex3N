@@ -243,6 +243,7 @@ async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider(
                 relay_mode: RelayMode::MixedApi,
                 model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible\ngpt-5.6-sol"
                     .to_string(),
+                model_windows: r#"{"deepseek-coder":"1M"}"#.to_string(),
                 config_contents: "model = \"qwen3-coder\"\nmodel_provider = \"vendor_alpha\"\n"
                     .to_string(),
                 ..RelayProfile::default()
@@ -314,6 +315,10 @@ async fn model_catalog_uses_active_relay_profile_model_list_and_actual_provider(
     assert_eq!(
         result["modelMetadata"]["gpt-5.6-sol"]["defaultReasoningEffort"],
         "low"
+    );
+    assert_eq!(
+        result["modelMetadata"]["deepseek-coder"]["contextWindow"],
+        1_000_000
     );
     assert_eq!(
         result["modelMetadata"]["gpt-5.6-sol"]["supportedReasoningEfforts"]

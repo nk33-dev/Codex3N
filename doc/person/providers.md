@@ -7,16 +7,20 @@
 - `providerSyncEnabled` 和 `relayProfilesEnabled` 默认关闭；首次导入不应自动启用代理或接管当前配置。
 - 供应商切换从读取当前配置快照开始即锁定操作，完成或失败后释放，避免重复点击排队执行旧切换请求。
 - 设置保存与供应商切换共用互斥检查，重复保存不会排队；保存失败保留草稿，保存/切换的旧响应不覆盖期间产生的新编辑。供应商详情在保存或切换期间禁用编辑、返回和再次操作，销毁后的保存结果不再触发旧页面回调。
+- 普通 API 供应商支持多个命名 Key，`apiKeys` 保存条目，`activeApiKeyId` 指向当前项；旧 `apiKey` 配置自动迁移为“默认”条目。Key 内容继续按密钥字段规则加密落盘。
+- Codex++ 轻量页面只读取 Key 的 ID 和名称，不返回密钥正文；配置多个 Key 后，模型选择器旁显示当前 Key 名称作为快捷入口。切换当前 Key 通过 `/relay-api-keys/select` 原子更新供应商存档和 live `config.toml` / `auth.json`，无需退出或重启 Codex；切换完成后前端强制刷新模型目录。
 
 ## 代码入口与配置
 
 - `crates/codex-plus-core/src/provider_import.rs`：`initialize_local_config_provider`，关注 `localConfigProviderImported`。
 - `crates/codex-plus-core/src/settings.rs`：供应商持久化与工具配置分片。
 - `crates/codex-plus-core/src/relay_config.rs` / `relay_switch.rs`：配置应用与切换。
+- `crates/codex-plus-core/src/routes.rs`：`/relay-api-keys` 提供脱敏列表，`/relay-api-keys/select` 执行当前供应商 Key 切换。
 - `apps/codex-plus-manager/src/App.tsx`：供应商页状态、配置保存与切换编排。列表的 `onSwitch` 先调用 `syncLegacyRelayFields` 同步目标配置，再将结果和旧供应商 ID 交给 `switchRelayProfile`，保留切换前快照与锁定流程。
 - `apps/codex-plus-manager/src/provider-types.ts`：`BackendSettings`、`ToolShard`、`RelayProfile` 及其关联类型；不从 `App.tsx` 反向导入。
 - `apps/codex-plus-manager/src/provider-utils.ts`：供应商首字、模式/协议/倍率标签，以及聚合和系统默认判断的唯一实现。涉及配置解析、聚合归一化的摘要仍由 `App.tsx` 生成。
 - `apps/codex-plus-manager/src/provider-config.ts`：导入与编辑共用的配置读取和鉴权 JSON 解析；保留既有 TOML 字段读取兼容规则，`parseProviderAuth` 给出文件/字段错误。后端保存前使用既有 `toml_edit` 检查完整 TOML 语法；仅检查新增或变更的文件，避免历史未修改配置阻断其他设置保存。
+- `apps/codex-plus-manager/src/provider-api-keys.ts`：命名 Key 的迁移、归一化、当前项解析及新增 ID 生成。
 - `apps/codex-plus-manager/src-tauri/src/commands/provider_import.rs`：cc-switch 读取/导入、待确认供应商读取/确认/取消五个命令；`commands.rs` 重导出原入口，Tauri 命令名称、参数和返回载荷保持兼容。配置校验也在此边界实施，失败信息不包含配置原文或密钥。
 - `apps/codex-plus-manager/src/components/providers/`：`ProviderImportActions`、`EnvConflictNotice`、`RelayProfileList` 分别负责导入操作栏、环境冲突提示和可拖拽列表。组件通过明确的操作回调连接业务；列表不直接操作 Tauri 或同步配置，也不接收整个 `Actions` 对象。
 

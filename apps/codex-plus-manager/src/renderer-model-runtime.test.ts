@@ -24,6 +24,23 @@ test("模型仍可选择，但不再插入管理面板或未测试状态", () =>
   assert.doesNotMatch(renderer, /data-codex-model-controls|data-codex-model-source|管理自定义模型|codex-plus-hidden-models/);
 });
 
+test("手工上下文窗口覆盖同名上游模型描述", () => {
+  const patch = new Function("codexPlusModelMetadata", "modelReasoningEfforts", `
+    ${section("  function applyCodexPlusModelMetadata(", "  function codexPlusModelDescriptor(")}
+    return applyCodexPlusModelMetadata;
+  `)(() => ({ contextWindow: 1_000_000, maxContextWindow: 1_000_000 }), () => []);
+  const descriptor = { model: "deepseek-flash", contextWindow: 262_144, maxContextWindow: 262_144 };
+  assert.equal(patch(descriptor, descriptor.model), true);
+  assert.equal(descriptor.contextWindow, 1_000_000);
+  assert.equal(descriptor.maxContextWindow, 1_000_000);
+});
+
+test("模型切换区提供命名 Key 快捷入口", () => {
+  assert.match(renderer, /data-codex-relay-api-key-badge/);
+  assert.match(renderer, /openCodexPlusPage\("apiKeys"\)/);
+  assert.match(renderer, /\/relay-api-keys\/select/);
+});
+
 test("相同目录刷新不重绘菜单，也不重启白名单补扫", async () => {
   let now = 1000;
   let renders = 0;

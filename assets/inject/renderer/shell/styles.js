@@ -558,11 +558,55 @@
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
+      .${codexRelayApiKeyBadgeClass} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 1 auto;
+        max-width: 132px;
+        height: 24px;
+        border: 1px solid rgba(148,163,184,.28);
+        border-radius: 7px;
+        background: rgba(148,163,184,.12);
+        color: #d4d4d8;
+        font: 600 12px/1 system-ui, sans-serif;
+        padding: 0 8px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .${codexRelayApiKeyBadgeClass}:hover { border-color: rgba(16,163,127,.44); background: rgba(16,163,127,.13); }
+      .${codexRelayApiKeyBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .65; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-tabs { display: flex; gap: 8px; padding: 0 20px 6px; flex: 0 0 auto; }
       .codex-plus-tab-button { border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: transparent; color: #d1d5db; font: 12px system-ui, sans-serif; padding: 5px 10px; }
       .codex-plus-tab-button[data-active="true"] { background: #10a37f; color: white; border-color: #10a37f; }
       .codex-plus-panel[hidden] { display: none; }
+      .codex-plus-api-key-section { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 360px); align-items: start; }
+      .codex-plus-api-key-copy { min-width: 0; }
+      .codex-plus-api-key-list { display: grid; gap: 6px; min-width: 0; }
+      .codex-plus-api-key-button {
+        display: grid;
+        grid-template-columns: 16px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        min-height: 38px;
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 7px;
+        background: #3f3f46;
+        color: #f3f4f6;
+        padding: 7px 10px;
+        text-align: left;
+      }
+      .codex-plus-api-key-button span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-api-key-button small { color: #a1a1aa; font-size: 11px; }
+      .codex-plus-api-key-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.16); }
+      .codex-plus-api-key-button:disabled { cursor: not-allowed; opacity: .72; }
+      .codex-plus-api-key-check { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%; }
+      .codex-plus-api-key-button[data-active="true"] .codex-plus-api-key-check { border-color: #10a37f; background: #10a37f; }
+      .codex-plus-api-key-empty { color: #a1a1aa; font-size: 12px; line-height: 1.45; padding: 8px 0; }
+      @media (max-width: 680px) { .codex-plus-api-key-section { grid-template-columns: 1fr; } }
       .codex-plus-action-button,
       .codex-plus-issue-button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #3f3f46; color: #f3f4f6; font: 12px system-ui, sans-serif; padding: 6px 8px; }
       .codex-plus-worktree-actions {
@@ -757,6 +801,13 @@
       .codex-plus-tab-button:hover,
       .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       .codex-plus-user-script-item { border-color: var(--codex-plus-border-subtle); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); }
+      .codex-plus-api-key-button { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text); font: inherit; }
+      .codex-plus-api-key-button:hover:not(:disabled),
+      .codex-plus-api-key-button:focus-visible { background: var(--codex-plus-bg-hover); outline: none; }
+      .codex-plus-api-key-button[data-active="true"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); }
+      .codex-plus-api-key-button small,
+      .codex-plus-api-key-empty { color: var(--codex-plus-text-tertiary); }
+      .codex-plus-api-key-button[data-active="true"] .codex-plus-api-key-check { border-color: var(--codex-plus-focus); background: var(--codex-plus-focus); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
@@ -777,10 +828,12 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
+      .${codexRelayApiKeyBadgeClass} { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text-secondary); font-family: inherit; }
+      .${codexRelayApiKeyBadgeClass}:hover,
+      .${codexRelayApiKeyBadgeClass}:focus-visible { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       .codex-plus-form-message[data-status="ok"], .codex-plus-service-tier-status[data-status="ok"], .codex-plus-backend-label[data-status="ok"] { color: var(--codex-plus-success); }
       .codex-plus-form-message[data-status="failed"], .codex-plus-service-tier-status[data-status="failed"], .codex-plus-backend-label[data-status="failed"], .codex-plus-user-script-error { color: var(--codex-plus-danger); }
       .codex-plus-form-message[data-status="loading"], .codex-plus-service-tier-status[data-status="unsupported"], .codex-plus-user-script-warning, .codex-plus-model-compat-warning { color: var(--codex-plus-warning); }
     `;
     document.documentElement.appendChild(style);
   }
-

@@ -27,6 +27,7 @@
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     refreshConversationView();
     installCodexServiceTierBadge();
+    installCodexRelayApiKeyBadge();
     installSessionShareButton();
     scheduleThreadScrollSync();
     refreshCodexModelWhitelistFromScan();
@@ -48,7 +49,7 @@
   }
 
   function isExtensionUiNode(node) {
-    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
+    return !!node?.closest?.(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, .${codexServiceTierBadgeClass}, .${codexRelayApiKeyBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`);
   }
 
   function scanRelevantSelector() {

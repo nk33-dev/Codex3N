@@ -11,6 +11,7 @@ export type RelayProtocol = "responses" | "chatCompletions";
 export type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 export type RelaySessionProvider = "custom" | "openai";
 export type RelayContextSelection = { mcpServers: string[]; skills: string[]; plugins: string[] };
+export type RelayApiKey = { id: string; name: string; apiKey: string };
 export type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
 export type RelayAggregateMember = { profileId: string; weight: number };
 export type RelayAggregateRoute = { pattern: string; profileId: string; priority: number };
@@ -27,6 +28,8 @@ export type RelayProfile = {
   baseUrl: string;
   upstreamBaseUrl: string;
   apiKey: string;
+  apiKeys?: RelayApiKey[];
+  activeApiKeyId?: string;
   protocol: RelayProtocol;
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;

@@ -898,7 +898,15 @@ export const EN_PLAIN: Record<string, string> = {
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "调用失败": "Call failed",
   "资源": "Asset",
-  "输入中转服务的 API Key": "Enter the relay service API Key",
+  "当前使用的 Key": "Current Key",
+  "设为当前 Key": "Use this Key",
+  "Key 名称": "Key name",
+  "例如 主账号": "For example, Primary account",
+  "输入 API Key": "Enter API Key",
+  "删除 Key": "Delete Key",
+  "至少保留一个 Key": "Keep at least one Key",
+  "添加 Key": "Add Key",
+  "为 Key 命名后，可在 Codex++ 页面中快速切换当前使用项。": "Name each Key to switch the active one quickly from the Codex++ page.",
   "运行中": "Running",
   "返回列表": "Back to list",
   "这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。":
@@ -1097,6 +1105,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "使用 {0}": "Use {0}",
+  "{0} 的 API Key": "API Key for {0}",
   "检查发现 {0} 个缺少恢复来源的本地会话。确认删除数据库记录和索引？删除会创建备份；确认后会再次检查，已恢复的会话将跳过。请保持 Codex 应用关闭。\n\n{1}": "Found {0} local sessions without recovery sources. Delete their database records and indexes? Backups will be created and recovered sessions will be skipped after rechecking. Keep Codex apps closed.\n\n{1}",
   "路由规则「{0}」的优先级必须是大于等于 0 的整数。":
     "Route rule \"{0}\" priority must be an integer greater than or equal to 0.",

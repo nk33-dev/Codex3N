@@ -14,6 +14,7 @@
         </div>
         <div class="codex-plus-tabs" role="tablist" aria-label="Codex++">
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="home" data-active="true">主页</button>
+          <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="apiKeys" data-active="false">密钥</button>
           <button type="button" class="codex-plus-tab-button" data-codex-plus-tab="userScripts" data-active="false">用户脚本</button>
         </div>
         <div class="codex-plus-modal-body">
@@ -143,6 +144,16 @@
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
             </div>
           </div>
+          <div class="codex-plus-panel" data-codex-plus-panel="apiKeys" hidden>
+            <div class="codex-plus-row codex-plus-api-key-section">
+              <div class="codex-plus-api-key-copy">
+                <div class="codex-plus-row-title">快速切换 Key</div>
+                <div class="codex-plus-row-description" data-codex-relay-api-key-summary="true">正在读取当前供应商…</div>
+                <div class="codex-plus-row-description">切换后会立即更新当前配置，并使用新 Key 重新获取可用模型。</div>
+              </div>
+              <div class="codex-plus-api-key-list" data-codex-relay-api-key-list="true"></div>
+            </div>
+          </div>
           <div class="codex-plus-panel" data-codex-plus-panel="userScripts" hidden>
             <div class="codex-plus-row" data-codex-user-scripts-section="true">
               <div>
@@ -200,6 +211,11 @@
       }
       if (tabButton) {
         selectCodexPlusTab(tabButton.getAttribute("data-codex-plus-tab"));
+        return;
+      }
+      const relayApiKeyButton = target?.closest("[data-codex-relay-api-key-id]");
+      if (relayApiKeyButton) {
+        void selectRelayApiKey(relayApiKeyButton.getAttribute("data-codex-relay-api-key-id"));
         return;
       }
       if (target?.closest("[data-codex-open-devtools]")) {
@@ -297,7 +313,7 @@
         window.addEventListener("resize", window.__codexPlusPageResizeHandler);
       }
     }
-    selectCodexPlusTab("home");
+    selectCodexPlusTab(options.tab || "home");
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
@@ -305,8 +321,8 @@
     loadUserScripts();
   }
 
-  function openCodexPlusPage() {
-    openCodexPlusModal({ page: true });
+  function openCodexPlusPage(tab = "home") {
+    openCodexPlusModal({ page: true, tab });
   }
 
   function closeCodexPlusPage() {
