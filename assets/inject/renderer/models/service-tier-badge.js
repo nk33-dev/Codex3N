@@ -194,3 +194,52 @@
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((badge) => badge.remove());
   }
 
+  function refreshCodexRelayApiKeyBadges() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    const active = keys.find((entry) => entry.id === codexPlusRelayApiKeys.activeKeyId) || keys[0];
+    document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`).forEach((badge) => {
+      badge.textContent = active?.name || "Key";
+      badge.title = active ? `当前 Key：${active.name}；点击切换` : "切换 API Key";
+      badge.setAttribute("aria-label", badge.title);
+      badge.dataset.disabled = String(codexPlusRelayApiKeySwitching);
+    });
+  }
+
+  function installCodexRelayApiKeyBadge() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "loading") {
+      void loadRelayApiKeys().then(() => installCodexRelayApiKeyBadge());
+      return;
+    }
+    const existing = Array.from(document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`));
+    if (!codexPlusRelayApiKeys.enabled || keys.length < 2) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    const composer = codexServiceTierFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    if (!placement?.parent) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    let badge = existing[0];
+    existing.slice(1).forEach((node) => node.remove());
+    if (!badge || badge.dataset.codexRelayApiKeyBadgeVersion !== codexRelayApiKeyBadgeVersion) {
+      badge?.remove();
+      badge = document.createElement("button");
+      badge.type = "button";
+      badge.className = codexRelayApiKeyBadgeClass;
+      badge.dataset.codexRelayApiKeyBadge = "true";
+      badge.dataset.codexRelayApiKeyBadgeVersion = codexRelayApiKeyBadgeVersion;
+      badge.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!codexPlusRelayApiKeySwitching) openCodexPlusPage("apiKeys");
+      });
+    }
+    const before = placement.before?.parentElement === placement.parent ? placement.before : null;
+    if (badge.parentElement !== placement.parent || badge.nextSibling !== before) {
+      placement.parent.insertBefore(badge, before);
+    }
+    refreshCodexRelayApiKeyBadges();
+  }

@@ -46,6 +46,8 @@
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
   const codexServiceTierBadgeVersion = "3";
+  const codexRelayApiKeyBadgeClass = "codex-relay-api-key-badge";
+  const codexRelayApiKeyBadgeVersion = "1";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
     ["Toggle Sidebar", "切换侧边栏"],
@@ -119,4 +121,3 @@
   (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
   window.__codexThreadScrollSyncTimers = [];
   window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-

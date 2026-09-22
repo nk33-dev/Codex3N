@@ -36,6 +36,9 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
+  let codexPlusRelayApiKeys = { status: "loading", enabled: false, providerId: "", providerName: "", activeKeyId: "", keys: [] };
+  let codexPlusRelayApiKeySwitching = false;
+  let codexPlusRelayApiKeysPromise = null;
   let codexPlusBackendStatus = window.__codexPlusBackendStatus || { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
@@ -73,6 +76,7 @@
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
     }
     refreshCodexServiceTierControls();
+    installCodexRelayApiKeyBadge();
   }
 
   function withBackendTimeout(request) {
@@ -171,6 +175,78 @@
     }
   }
 
+  function renderRelayApiKeys() {
+    const summary = document.querySelector("[data-codex-relay-api-key-summary]");
+    const list = document.querySelector("[data-codex-relay-api-key-list]");
+    if (!summary || !list) return;
+    if (codexPlusRelayApiKeys.status === "loading") {
+      summary.textContent = "正在读取当前供应商…";
+      list.textContent = "";
+      return;
+    }
+    if (codexPlusRelayApiKeys.status !== "ok") {
+      summary.textContent = codexPlusRelayApiKeys.message || "读取 Key 失败";
+      list.textContent = "";
+      return;
+    }
+    summary.textContent = codexPlusRelayApiKeys.enabled
+      ? `当前供应商：${codexPlusRelayApiKeys.providerName || codexPlusRelayApiKeys.providerId || "未命名"}`
+      : "供应商配置切换尚未启用";
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (!keys.length) {
+      list.innerHTML = '<div class="codex-plus-api-key-empty">当前供应商没有可切换的命名 Key，请先在管理工具中添加。</div>';
+      return;
+    }
+    list.innerHTML = keys.map((entry) => {
+      const active = entry.id === codexPlusRelayApiKeys.activeKeyId;
+      return `<button type="button" class="codex-plus-api-key-button" data-codex-relay-api-key-id="${escapeHtml(entry.id)}" data-active="${String(active)}" ${!codexPlusRelayApiKeys.enabled || codexPlusRelayApiKeySwitching ? "disabled" : ""}>
+        <span class="codex-plus-api-key-check" aria-hidden="true"></span>
+        <span>${escapeHtml(entry.name || "未命名 Key")}</span>
+        <small>${active ? "使用中" : "切换"}</small>
+      </button>`;
+    }).join("");
+    refreshCodexRelayApiKeyBadges();
+  }
+
+  async function loadRelayApiKeys(force = false) {
+    if (codexPlusRelayApiKeysPromise) return codexPlusRelayApiKeysPromise;
+    if (!force && codexPlusRelayApiKeys.status === "ok") return codexPlusRelayApiKeys;
+    codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, status: "loading" };
+    renderRelayApiKeys();
+    codexPlusRelayApiKeysPromise = postJson("/relay-api-keys", {})
+      .then((result) => {
+        codexPlusRelayApiKeys = result && typeof result === "object"
+          ? result
+          : { status: "failed", message: "读取 Key 失败", keys: [] };
+        renderRelayApiKeys();
+        return codexPlusRelayApiKeys;
+      })
+      .finally(() => { codexPlusRelayApiKeysPromise = null; });
+    return codexPlusRelayApiKeysPromise;
+  }
+
+  async function selectRelayApiKey(keyId) {
+    if (!keyId || codexPlusRelayApiKeySwitching || keyId === codexPlusRelayApiKeys.activeKeyId) return;
+    codexPlusRelayApiKeySwitching = true;
+    renderRelayApiKeys();
+    try {
+      const result = await postJson("/relay-api-keys/select", { keyId });
+      if (result?.status !== "ok") {
+        showToast(result?.message || "切换 Key 失败", null);
+        return;
+      }
+      codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, activeKeyId: result.activeKeyId || keyId };
+      codexModelCatalogLoadedAt = 0;
+      await loadCodexModelCatalog(true);
+      refreshCodexModelQueries();
+      scheduleCodexModelWhitelistRefresh();
+      showToast("Key 已切换，可用模型已刷新", null);
+    } finally {
+      codexPlusRelayApiKeySwitching = false;
+      await loadRelayApiKeys(true);
+    }
+  }
+
   function selectCodexPlusTab(tab) {
     document.querySelectorAll(".codex-plus-modal-content").forEach((modal) => {
       modal.dataset.codexPlusActiveTab = tab;
@@ -182,6 +258,7 @@
       panel.hidden = panel.getAttribute("data-codex-plus-panel") !== tab;
     });
     if (tab === "userScripts") loadUserScripts();
+    if (tab === "apiKeys") void loadRelayApiKeys();
   }
 
   function setCodexPlusSidebarNavActive(active) {
@@ -264,4 +341,3 @@
     Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
     overlay.dataset.codexPlusTheme = light ? "light" : "dark";
   }
-

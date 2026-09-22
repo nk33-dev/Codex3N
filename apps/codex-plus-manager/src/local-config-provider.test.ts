@@ -20,6 +20,7 @@ test("官方供应商的本机配置在前端标准化后仍可编辑和切换",
     const relaySessionProvider = () => "openai";
     const buildOfficialRelayAuthJson = value => value;
     const deriveRelayProfileFromFiles = value => value;
+    const relayProfileWithNormalizedApiKeys = value => value;
     ${compiled}
     return { normalizeRelayProfile, relayProfileUsesLiveFiles };
   `)();

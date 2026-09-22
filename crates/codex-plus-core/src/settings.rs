@@ -39,6 +39,14 @@ pub struct RelayProfile {
         deserialize_with = "deserialize_profile_api_key"
     )]
     pub api_key: String,
+    #[serde(rename = "apiKeys", default, skip_serializing_if = "Vec::is_empty")]
+    pub api_keys: Vec<RelayApiKey>,
+    #[serde(
+        rename = "activeApiKeyId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub active_api_key_id: String,
     #[serde(default)]
     pub protocol: RelayProtocol,
     #[serde(rename = "relayMode", default)]
@@ -114,6 +122,15 @@ pub struct RelayProfile {
     pub sub2api_multiplier: String,
     #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
     pub model_routes: Vec<RelayModelRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayApiKey {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -204,6 +221,8 @@ impl Default for RelayProfile {
             base_url: default_relay_base_url(),
             upstream_base_url: String::new(),
             api_key: String::new(),
+            api_keys: Vec::new(),
+            active_api_key_id: String::new(),
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
@@ -233,6 +252,13 @@ impl Default for RelayProfile {
 }
 
 impl RelayProfile {
+    pub fn selected_api_key(&self) -> Option<&RelayApiKey> {
+        self.api_keys
+            .iter()
+            .find(|entry| entry.id == self.active_api_key_id)
+            .or_else(|| self.api_keys.first())
+    }
+
     pub fn uses_no_auth(&self) -> bool {
         self.relay_mode == RelayMode::PureApi && self.no_auth
     }
@@ -700,6 +726,8 @@ impl BackendSettings {
                     self.relay_base_url.clone()
                 },
                 api_key: self.relay_api_key.clone(),
+                api_keys: Vec::new(),
+                active_api_key_id: String::new(),
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
@@ -754,6 +782,8 @@ impl BackendSettings {
                 self.relay_base_url.clone()
             },
             api_key: self.relay_api_key.clone(),
+            api_keys: Vec::new(),
+            active_api_key_id: String::new(),
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
@@ -3848,6 +3878,12 @@ experimental_bearer_token = "sk-existing""#
             relay_profiles: vec![RelayProfile {
                 id: "relay-a".to_string(),
                 vlm_api_key: "sk-vlm-secret".to_string(),
+                api_keys: vec![RelayApiKey {
+                    id: "group-a".to_string(),
+                    name: "分组 A".to_string(),
+                    api_key: "sk-group-secret".to_string(),
+                }],
+                active_api_key_id: "group-a".to_string(),
                 ..RelayProfile::default()
             }],
             ..BackendSettings::default()
@@ -3872,6 +3908,7 @@ experimental_bearer_token = "sk-existing""#
             "sk-relay-secret",
             "sk-stepwise-secret",
             "sk-vlm-secret",
+            "sk-group-secret",
             "sk-grok-vlm-secret",
         ] {
             assert!(!raw.contains(plaintext), "落盘内容不能有明文：{plaintext}");
@@ -3886,6 +3923,10 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(loaded.relay_api_key, "sk-relay-secret");
         assert_eq!(loaded.codex_app_stepwise_api_key, "sk-stepwise-secret");
         assert_eq!(loaded.relay_profiles[0].vlm_api_key, "sk-vlm-secret");
+        assert_eq!(
+            loaded.relay_profiles[0].api_keys[0].api_key,
+            "sk-group-secret"
+        );
         assert_eq!(
             loaded.tools[&ToolId::Grok].relay_profiles[0].vlm_api_key,
             "sk-grok-vlm-secret"

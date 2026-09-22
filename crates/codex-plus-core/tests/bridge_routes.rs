@@ -21,6 +21,8 @@ async fn bridge_routes_cover_all_current_paths() {
     let cases = [
         ("/settings/get", json!({})),
         ("/settings/set", json!({"providerSyncEnabled": true})),
+        ("/relay-api-keys", json!({})),
+        ("/relay-api-keys/select", json!({"keyId": "missing"})),
         ("/user-scripts/list", json!({})),
         ("/user-scripts/set-enabled", json!({"enabled": false})),
         (
@@ -256,6 +258,39 @@ async fn settings_get_does_not_expose_stepwise_api_key_to_renderer() {
         result["codexAppStepwiseApiKeyEnv"],
         json!("CODEX_STEPWISE_API_KEY")
     );
+}
+
+#[tokio::test]
+async fn relay_api_keys_route_only_exposes_names() {
+    let settings = BackendSettings {
+        relay_profiles_enabled: true,
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            id: "relay-a".to_string(),
+            name: "Relay A".to_string(),
+            api_keys: vec![codex_plus_core::settings::RelayApiKey {
+                id: "group-a".to_string(),
+                name: "分组 A".to_string(),
+                api_key: "sk-secret".to_string(),
+            }],
+            active_api_key_id: "group-a".to_string(),
+            ..codex_plus_core::settings::RelayProfile::default()
+        }],
+        active_relay_id: "relay-a".to_string(),
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let list = handle_bridge_request(ctx.clone(), "/relay-api-keys", json!({})).await;
+    let settings = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    assert_eq!(list["keys"], json!([{"id": "group-a", "name": "分组 A"}]));
+    assert!(!list.to_string().contains("sk-secret"));
+    assert!(!settings.to_string().contains("sk-secret"));
+    assert!(settings["relayProfiles"][0].get("apiKeys").is_none());
 }
 
 #[tokio::test]

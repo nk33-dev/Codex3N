@@ -2866,6 +2866,11 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         return "codex-plus-aggregate".to_string();
     }
+    if let Some(selected) = profile.selected_api_key()
+        && !selected.api_key.trim().is_empty()
+    {
+        return selected.api_key.trim().to_string();
+    }
     if profile.relay_mode == crate::settings::RelayMode::Official {
         return experimental_bearer_token_from_config(&profile.config_contents)
             .ok()
@@ -2996,6 +3001,33 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
 }
 
 pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let mut seen_api_key_ids = HashSet::new();
+    profile.api_keys = profile
+        .api_keys
+        .drain(..)
+        .filter_map(|mut entry| {
+            entry.id = entry.id.trim().to_string();
+            entry.name = entry.name.trim().to_string();
+            if entry.id.is_empty() || !seen_api_key_ids.insert(entry.id.clone()) {
+                return None;
+            }
+            if entry.name.is_empty() {
+                entry.name = "未命名 Key".to_string();
+            }
+            Some(entry)
+        })
+        .collect();
+    if !profile
+        .api_keys
+        .iter()
+        .any(|entry| entry.id == profile.active_api_key_id)
+    {
+        profile.active_api_key_id = profile
+            .api_keys
+            .first()
+            .map(|entry| entry.id.clone())
+            .unwrap_or_default();
+    }
     profile.no_auth = profile.relay_mode == crate::settings::RelayMode::PureApi && profile.no_auth;
     if profile.no_auth {
         profile.api_key.clear();

@@ -156,7 +156,7 @@ pub async fn read_codex_model_catalog() -> Value {
     if settings_path.exists() {
         if let Ok(settings) = SettingsStore::new(settings_path).load() {
             let profile = settings.active_relay_profile();
-            let catalog = relay_profile_model_catalog_value(&home, &profile);
+            let catalog = relay_profile_model_catalog_value(&home, &profile).await;
             if settings.relay_profiles_enabled
                 && catalog
                     .get("models")
@@ -190,18 +190,67 @@ pub async fn read_codex_model_catalog() -> Value {
     read_codex_model_catalog_from_home(&home, &env, client).await
 }
 
-fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
-    let models = relay_profile_model_ids(profile);
+async fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Value {
+    let configured_models = relay_profile_model_ids(profile);
+    let mut models = configured_models.clone();
     let model = profile.model.trim().to_string();
     let codex_model_provider = codex_model_provider_for_relay_profile(home, profile);
-    let default_model = models.first().cloned().unwrap_or_default();
     let provider_name = if profile.name.trim().is_empty() {
         profile.id.trim()
     } else {
         profile.name.trim()
     };
-    let model_count = models.len();
-    let model_metadata = model_ui_metadata_map(&models);
+    let configured_model_count = configured_models.len();
+    let mut sources = vec![json!({
+        "id": format!("relay-profile:{}", profile.id),
+        "type": "relay_profile_model_list",
+        "name": provider_name,
+        "base_url": profile.base_url.trim(),
+        "status": "ok",
+        "models": configured_model_count,
+        "responses_api": responses_api_status("unknown", "", "")
+    })];
+    let base_url = if profile.upstream_base_url.trim().is_empty() {
+        profile.base_url.trim()
+    } else {
+        profile.upstream_base_url.trim()
+    };
+    let api_key = crate::relay_config::relay_profile_api_key(profile);
+    let api_profile = profile.relay_mode != RelayMode::Official || profile.official_mix_api_key;
+    if api_profile && !base_url.is_empty() && (!api_key.is_empty() || profile.uses_no_auth()) {
+        let source = ModelSource {
+            source_id: format!("relay-profile-models:{}", profile.id),
+            source_type: "relay_profile_models_endpoint".to_string(),
+            name: provider_name.to_string(),
+            base_url: base_url.to_string(),
+            api_key,
+        };
+        let endpoint = models_endpoint(base_url);
+        match crate::http_client::client_for_url(&profile.user_agent, &endpoint) {
+            Ok(client) => {
+                let (discovered, mut status) = cached_models_from_source(&client, &source).await;
+                models = unique_strings(discovered.into_iter().chain(models).collect());
+                status["responses_api"] = responses_api_status("unknown", "", "");
+                sources.push(status);
+            }
+            Err(error) => sources.push(json!({
+                "id": source.source_id,
+                "type": source.source_type,
+                "name": source.name,
+                "base_url": safe_url_for_status(&source.base_url),
+                "status": "failed",
+                "message": error.to_string(),
+                "models": 0,
+                "responses_api": responses_api_status("unknown", "", "")
+            })),
+        }
+    }
+    let default_model = if models.iter().any(|item| item == &model) {
+        model.clone()
+    } else {
+        models.first().cloned().unwrap_or_default()
+    };
+    let model_metadata = relay_profile_model_ui_metadata_map(profile, &models);
     json!({
         "status": if models.is_empty() { "not_configured" } else { "ok" },
         "path": home.join("config.toml").to_string_lossy(),
@@ -213,17 +262,7 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
         "default_model": default_model,
         "models": models,
         "modelMetadata": model_metadata,
-        "sources": [
-            {
-                "id": format!("relay-profile:{}", profile.id),
-                "type": "relay_profile_model_list",
-                "name": provider_name,
-                "base_url": profile.base_url.trim(),
-                "status": "ok",
-                "models": model_count,
-                "responses_api": responses_api_status("unknown", "", "")
-            }
-        ],
+        "sources": sources,
         "responses_api": responses_api_status("unknown", "", "")
     })
 }
@@ -260,6 +299,38 @@ fn model_ui_metadata_map(models: &[String]) -> Value {
     for model in models {
         if let Some(value) = crate::model_suffix::model_ui_metadata(model) {
             metadata.insert(model.clone(), value);
+        }
+    }
+    Value::Object(metadata)
+}
+
+fn relay_profile_model_ui_metadata_map(profile: &RelayProfile, models: &[String]) -> Value {
+    let mut metadata = model_ui_metadata_map(models)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let windows = serde_json::from_str::<Value>(&profile.model_windows)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .unwrap_or_default();
+    for model in models {
+        let Some(window) = windows
+            .get(model)
+            .and_then(Value::as_str)
+            .and_then(crate::model_suffix::parse_window_token)
+        else {
+            continue;
+        };
+        let entry = metadata
+            .entry(model.clone())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(object) = entry.as_object_mut() {
+            // Codex 不同版本的模型描述对象同时出现过 camelCase 与 snake_case。
+            // 两套字段都写入，保证手工窗口始终覆盖同名 `/models` 条目。
+            object.insert("contextWindow".to_string(), json!(window));
+            object.insert("maxContextWindow".to_string(), json!(window));
+            object.insert("context_window".to_string(), json!(window));
+            object.insert("max_context_window".to_string(), json!(window));
         }
     }
     Value::Object(metadata)
@@ -713,7 +784,7 @@ pub async fn fetch_relay_profile_model_ids(
         } else {
             profile.upstream_base_url.trim().to_string()
         },
-        api_key: profile.api_key.trim().to_string(),
+        api_key: crate::relay_config::relay_profile_api_key(profile),
     };
     if source.base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");

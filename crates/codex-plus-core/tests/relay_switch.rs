@@ -1,7 +1,8 @@
+use codex_plus_core::relay_switch::select_active_relay_api_key_in_home;
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
+    LaunchMode, RelayApiKey, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
 };
 
 #[test]
@@ -403,6 +404,54 @@ fn switch_captures_safe_app_state_before_writing_provider_config() {
         snapshot["state"]["electron-persisted-atom-state"]
             .get("provider-token-cache")
             .is_none()
+    );
+}
+
+#[test]
+fn named_api_key_switch_updates_settings_and_live_auth_without_restart() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    let store = SettingsStore::new(temp.path().join("settings.json"));
+    let mut profile = pure_profile("a", "https://a.example/v1", "sk-old");
+    profile.api_keys = vec![
+        RelayApiKey {
+            id: "group-a".to_string(),
+            name: "分组 A".to_string(),
+            api_key: "sk-a".to_string(),
+        },
+        RelayApiKey {
+            id: "group-b".to_string(),
+            name: "分组 B".to_string(),
+            api_key: "sk-b".to_string(),
+        },
+    ];
+    profile.active_api_key_id = "group-a".to_string();
+    store
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            active_relay_id: "a".to_string(),
+            relay_profiles: vec![profile],
+            ..BackendSettings::default()
+        })
+        .unwrap();
+
+    let result = select_active_relay_api_key_in_home(&store, &home, "group-b").unwrap();
+
+    assert_eq!(
+        result.settings.relay_profiles[0].active_api_key_id,
+        "group-b"
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &std::fs::read_to_string(home.join("auth.json")).unwrap()
+        )
+        .unwrap()["OPENAI_API_KEY"],
+        "sk-b"
+    );
+    assert_eq!(
+        store.load().unwrap().relay_profiles[0].active_api_key_id,
+        "group-b"
     );
 }
 
