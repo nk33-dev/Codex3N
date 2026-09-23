@@ -56,9 +56,12 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     const codexPlusModelUnlockEnabled = () => true;
     const codexPlusModelMetadata = () => null, modelReasoningEfforts = () => [];
     const applyCodexPlusModelMetadata = () => false, sendCodexPlusDiagnostic = () => {};
-    const codexAppServerModelRequestPatchVersion = '8';
+    const codexAppServerModelRequestPatchVersion = '9';
+    const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
+    const codexAppServerClientCaptureAnchor = "async sendRequest(";
     const codexRemoteSessionProviderRequestMethod = () => false;
     const applyCodexRemoteSessionProviderOverride = (_method, params) => params;
+    const applyCodexServiceTierRequestOnly = (_method, params) => params;
     const refreshCodexThreadModelBeforeTurn = async () => null;
     const codexThreadModelRequestState = () => ({});
     const loadCodexModelCatalog = async () => codexModelCatalog;

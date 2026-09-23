@@ -52,6 +52,9 @@ export type RelayProfile = {
   vlmModel: string;
   vlmBaseUrl: string;
   userAgent: string;
+  customHeaders: { key: string; value: string }[];
+  noAuth: boolean;
+  standardOpenaiProtocol: boolean;
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];
@@ -97,6 +100,7 @@ export type BackendSettings = {
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppFastStartup: boolean;
+  codexAppNativeBrowserRequireIdentification: boolean;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;

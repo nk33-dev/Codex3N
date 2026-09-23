@@ -6,6 +6,7 @@
 - 启用供应商配置时，模型目录会使用当前命名 Key 请求该供应商 `/models`；Key 参与缓存身份，切换分组 Key 后不会复用旧 Key 的模型结果。动态发现结果与手工模型列表合并。
 - 手工模型列表是显式覆盖层：同名 `/models` 条目存在时，`modelWindows` 中的上下文窗口仍覆盖上游描述，避免手工 `1M` 被上游 `256K` 反向覆盖。
 - 官方响应和个人版补入的模型使用同一显示排序，新增高版本不会被旧官方条目整体压到后面。
+- 生成每个供应商的托管目录时保留原生模型条目；供应商模型排在前面，切换供应商会重建当前目录，不沿用上一份目录。用户显式指定的上下文窗口同时约束实际窗口和能力上限。
 - 原生菜单保留选择能力，不重新插入个人版已去掉的模型管理面板或未测试提示。
 
 ## 排序规则
@@ -20,7 +21,7 @@
 
 ## 代码入口与配置
 
-- `assets/inject/renderer/models/catalog-patch.js`：`sortModelChoices`、`patchModelNameArray`、`patchModelArray`、模型目录加载及现有 RPC 适配层。
+- `assets/inject/renderer/models/catalog-patch.js`：`sortModelChoices`、`patchModelNameArray`、`patchModelArray`、模型目录加载及现有 RPC 适配层；新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
 - `assets/inject/renderer/models/service-tier.js`：作用域 RPC 发现（`codexAppScopeNodes`、`collectScopedAppServerRequestCandidates`）与 fast service tier 控制。
 - 注入脚本的唯一拼装入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`，分片不能各自成为入口。
 - `crates/codex-plus-core/src/model_catalog.rs` / `model_suffix.rs`：目录来源与模型元数据。

@@ -82,26 +82,11 @@
     return rect.left + rect.width / 2;
   }
 
-  function conversationViewHasRoomForHtmlCenter(nativeRect, bounds) {
+  function conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter) {
     if (!nativeRect || !bounds) return false;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
+    const targetLeft = htmlCenter - nativeRect.width / 2;
     const targetRight = targetLeft + nativeRect.width;
     return targetLeft >= bounds.left - 0.5 && targetRight <= bounds.right + 0.5;
-  }
-
-  function conversationViewAlignElement(el) {
-    if (!el?.isConnected) return;
-    conversationViewApplyNativeWidth(el);
-    conversationViewResetOwnOffset(el);
-    const nativeRect = el.getBoundingClientRect();
-    const bounds = conversationViewSessionRectFor(el);
-    if (!conversationViewHasRoomForHtmlCenter(nativeRect, bounds)) return;
-    const targetLeft = conversationViewHtmlCenter() - nativeRect.width / 2;
-    const delta = targetLeft - nativeRect.left;
-    if (Math.abs(delta) > 0.5) {
-      const nextLeft = `${delta.toFixed(2)}px`;
-      if (el.style.left !== nextLeft) el.style.left = nextLeft;
-    }
   }
 
   function conversationViewObserveIfNeeded(el) {
@@ -128,8 +113,25 @@
   function conversationViewAlignNow() {
     if (!codexPlusSettings().conversationView) return;
     conversationViewResolveTargets();
-    conversationViewAlignElement(conversationViewState.contentEl);
-    conversationViewAlignElement(conversationViewState.composerEl);
+    const targets = [conversationViewState.contentEl, conversationViewState.composerEl]
+      .filter((element) => element?.isConnected);
+    if (!targets.length) return;
+    targets.forEach((element) => {
+      conversationViewApplyNativeWidth(element);
+      conversationViewResetOwnOffset(element);
+    });
+    const htmlCenter = conversationViewHtmlCenter();
+    targets.forEach((element) => {
+      const nativeRect = element.getBoundingClientRect();
+      const bounds = conversationViewSessionRectFor(element);
+      if (!conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter)) return;
+      const targetLeft = htmlCenter - nativeRect.width / 2;
+      const delta = targetLeft - nativeRect.left;
+      if (Math.abs(delta) > 0.5) {
+        const nextLeft = `${delta.toFixed(2)}px`;
+        if (element.style.left !== nextLeft) element.style.left = nextLeft;
+      }
+    });
   }
 
   function scheduleConversationViewAlign(frames = 16) {
@@ -154,6 +156,7 @@
     conversationViewState.mo = null;
     conversationViewState.ro = null;
     conversationViewState.moObserved = false;
+    conversationViewState.runtimeStarted = false;
     conversationViewState.observed = new WeakSet();
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();
@@ -164,7 +167,7 @@
   window.__codexPlusConversationViewCleanup = cleanupConversationView;
 
   function ensureConversationViewRuntime() {
-    if (conversationViewState.ro && conversationViewState.mo) return;
+    if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
     conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
     if (document.body && !conversationViewState.moObserved) {
@@ -176,6 +179,7 @@
       });
       conversationViewState.moObserved = true;
     }
+    conversationViewState.runtimeStarted = true;
     // ResizeObserver 和 DOM 变化负责布局校正，不再常驻轮询。
   }
 
@@ -187,4 +191,3 @@
     ensureConversationViewRuntime();
     scheduleConversationViewAlign();
   }
-

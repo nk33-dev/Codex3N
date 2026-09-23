@@ -71,7 +71,21 @@
         if (safeKey) pruned[safeKey] = value;
       });
     window.__codexThreadScrollEntries = pruned;
-    localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: pruned }));
+    const payload = JSON.stringify({ version: codexThreadScrollVersion, entries: pruned });
+    try {
+      localStorage.setItem(codexThreadScrollKey, payload);
+    } catch {
+      try {
+        const newestKey = Object.keys(pruned)[0];
+        const emergency = Object.create(null);
+        if (newestKey) emergency[newestKey] = pruned[newestKey];
+        window.__codexThreadScrollEntries = emergency;
+        localStorage.removeItem(codexThreadScrollKey);
+        localStorage.setItem(codexThreadScrollKey, JSON.stringify({ version: codexThreadScrollVersion, entries: emergency }));
+      } catch {
+        try { localStorage.removeItem(codexThreadScrollKey); } catch {}
+      }
+    }
   }
 
   function currentThreadScroller() {
@@ -640,6 +654,7 @@
       }
     }
     if (!window.__codexSessionDeleteBridge) {
+      recordCodexPlusBridgeFailure();
       if (path === "/backend/status") {
         return await fetchBackendStatusFromHelper(path, payload);
       }
@@ -651,6 +666,7 @@
       try {
         request = window.__codexSessionDeleteBridge(path, payload);
       } catch (error) {
+        recordCodexPlusBridgeFailure();
         return Promise.resolve({ status: "failed", message: error?.message || "未连接" });
       }
       return withBackendTimeout(request);
@@ -662,7 +678,11 @@
           recordCodexPlusBridgeSuccess();
           return result;
         }
-        if (result?.timeout) sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        recordCodexPlusBridgeFailure();
+        if (result?.timeout) {
+          recordCodexPlusBridgeAttempt();
+          sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        }
         const fallback = await fetchBackendStatusFromHelper(path, payload);
         if (fallback?.status === "ok") {
           sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
@@ -679,8 +699,11 @@
         });
         return fallback;
       }
-      return await window.__codexSessionDeleteBridge(path, payload);
+      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
+      recordCodexPlusBridgeSuccess();
+      return bridgeResult;
     } catch (error) {
+      recordCodexPlusBridgeFailure();
       sendCodexPlusDiagnostic("bridge_call_failed", {
         path,
         errorName: error?.name || "",
@@ -706,4 +729,3 @@
       throw error;
     }
   }
-

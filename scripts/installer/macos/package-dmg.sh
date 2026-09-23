@@ -177,6 +177,7 @@ MOUNT_DEVICE=""
 detach_dmg() {
   local target="$1"
   local attempt
+  local device_info
 
   [ -z "$target" ] && return 0
   for attempt in 1 2 3 4; do
@@ -186,16 +187,21 @@ detach_dmg() {
 
     # hdiutil can report a transient failure even though the device detached
     # while the command was returning. Treat an already-gone device as done.
-    if ! hdiutil info 2>/dev/null | grep -Fq -- "$target"; then
+    if [[ "$target" == /dev/* ]] && device_info="$(hdiutil info 2>/dev/null)" &&
+      ! printf '%s\n' "$device_info" | awk -v target="$target" '$1 == target { found = 1 } END { exit !found }'; then
       return 0
     fi
 
     sleep "$attempt"
-    hdiutil detach "$target" -force >/dev/null 2>&1 || true
-    if ! hdiutil info 2>/dev/null | grep -Fq -- "$target"; then
-      return 0
-    fi
   done
+
+  if hdiutil detach "$target" -force >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ "$target" == /dev/* ]] && device_info="$(hdiutil info 2>/dev/null)" &&
+    ! printf '%s\n' "$device_info" | awk -v target="$target" '$1 == target { found = 1 } END { exit !found }'; then
+    return 0
+  fi
 
   echo "error: failed to detach DMG device: $target" >&2
   return 1
@@ -233,8 +239,8 @@ fi
 MOUNT_OUTPUT="$(hdiutil attach "$DMG_WORK_PATH" -readwrite -noverify -noautoopen -nobrowse)"
 MOUNT_DEVICE="$(printf '%s\n' "$MOUNT_OUTPUT" | awk '/^\/dev\/disk/ {print $1; exit}')"
 MOUNT_POINT="$(printf '%s\n' "$MOUNT_OUTPUT" | awk 'match($0, /\/Volumes\//) {print substr($0, RSTART)}' | tail -1)"
-if [ -z "$MOUNT_POINT" ]; then
-  echo "error: failed to find mounted DMG volume" >&2
+if [ -z "$MOUNT_POINT" ] || [ -z "$MOUNT_DEVICE" ]; then
+  echo "error: failed to find mounted DMG device and volume" >&2
   exit 1
 fi
 VOLUME_NAME="$(basename "$MOUNT_POINT")"
@@ -278,7 +284,6 @@ fi
 # diskimages-help）。GitHub runner 上它经常迟迟不松手，后面的 eject 就一直报
 # Resource busy，所以布局落盘后直接让 Finder 退出。
 osascript -e 'tell application "Finder" to quit' >/dev/null 2>&1 || true
-
 # 镜像是否还挂着。只认磁盘映像文件本身，不看挂载点：eject 失败时卷的挂载点
 # 往往已经消失，只看挂载点会误判成「卸载干净了」，紧接着 convert 必然报
 # Resource temporarily unavailable。
@@ -287,9 +292,10 @@ osascript -e 'tell application "Finder" to quit' >/dev/null 2>&1 || true
 # 而 hdiutil info 打印的形态不一定一样；文件名在同一台 runner 上是唯一的。
 image_still_attached() {
   [ -n "$DMG_WORK_PATH" ] || return 1
-  hdiutil info 2>/dev/null | grep -Fq -- "$(basename "$DMG_WORK_PATH")"
+  local info
+  info="$(hdiutil info 2>/dev/null)" || return 0
+  printf '%s\n' "$info" | grep -Fq -- "$(basename "$DMG_WORK_PATH")"
 }
-
 # GitHub macOS runner 上 Finder 刚完成窗口布局，镜像仍被 diskimages-help 持有，
 # 卷的 eject 会报 Resource busy：此时挂载点已经不存在，按挂载点 -force 只会
 # 报 No such file or directory，等于什么都没做。必须按设备路径（/dev/diskN）
@@ -297,12 +303,10 @@ image_still_attached() {
 detach_volume() {
   local attempt
   local output=""
-
   for attempt in 1 2 3 4 5 6 7 8; do
     if ! image_still_attached; then
       return 0
     fi
-
     if [ -n "$MOUNT_DEVICE" ]; then
       output="$(hdiutil detach "$MOUNT_DEVICE" -force 2>&1)" || true
     fi
@@ -315,14 +319,12 @@ detach_volume() {
     fi
     sleep "$((attempt * 2))"
   done
-
   if image_still_attached; then
     echo "error: 磁盘映像仍处于挂载状态，最后一次卸载输出：${output:-（无输出）}" >&2
     return 1
   fi
   return 0
 }
-
 detached=true
 if ! detach_volume; then
   # 卷卸不掉时不要去硬推 convert：它必然报 Resource temporarily unavailable，
@@ -330,7 +332,6 @@ if ! detach_volume; then
   detached=false
   echo "warning: DMG 卷未能正常卸载，跳过自定义窗口布局镜像的转换" >&2
 fi
-
 # 上一步 detach 可能触发延迟弹出：卷目录已消失但磁盘镜像仍在弹出中，
 # convert 会暂时报 Resource temporarily unavailable——每次重试都再强制卸载一遍。
 # 重试期间还需要设备路径，所以 MOUNT_DEVICE/MOUNT_POINT 留到这里之后再清空。
@@ -340,14 +341,12 @@ if [ "$detached" = true ]; then
       DMG_CONVERTED=true
       break
     fi
-
     detach_volume || true
     if [ "$attempt" -lt 5 ]; then
       sleep "$((attempt * 3))"
     fi
   done
 fi
-
 if [ "$DMG_CONVERTED" != true ]; then
   # 布局路径在 GitHub runner 上偶发不可用（create / attach / detach / convert
   # 任何一步都可能被 DiskImages 的瞬时占用打断）。窗口布局只是外观，不该让发布
@@ -356,7 +355,6 @@ if [ "$DMG_CONVERTED" != true ]; then
   echo "warning: 自定义窗口布局的 DMG 生成失败，退回直接打包（无背景图与窗口布局）" >&2
   detach_volume || true
   rm -f "$DMG"
-
   for attempt in 1 2 3 4 5; do
     if hdiutil create -volname "Codex++" -srcfolder "$STAGE" -ov -format UDZO "$DMG"; then
       DMG_CONVERTED=true
@@ -367,11 +365,18 @@ if [ "$DMG_CONVERTED" != true ]; then
     fi
   done
 fi
-
 # 这里必须用独立于 create 的标记：早期版本复用 DMG_CREATED，导致 convert 连续
 # 失败后仍然「成功」退出，CI 只会看到上传步骤缺文件，真正的失败原因被吞掉。
 if [ "$DMG_CONVERTED" != true ]; then
   echo "error: failed to create DMG after 5 attempts (布局与直接打包都失败)" >&2
+  exit 1
+fi
+for attempt in 1 2 3 4 5; do
+  [ -s "$DMG" ] && break
+  sleep "$attempt"
+done
+if [ ! -s "$DMG" ]; then
+  echo "error: DMG output is missing or empty after conversion: $DMG" >&2
   exit 1
 fi
 

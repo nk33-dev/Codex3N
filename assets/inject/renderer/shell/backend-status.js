@@ -10,6 +10,24 @@
     });
   }
 
+  let syncBackendSettingsInFlight = false;
+  async function syncBackendSettingsFromHeartbeat() {
+    if (syncBackendSettingsInFlight) return;
+    syncBackendSettingsInFlight = true;
+    try {
+      const previousConversationView = !!codexPlusSettings().conversationView;
+      const loaded = await loadBackendSettingsState();
+      if (loaded) {
+        syncOfficialUsagePolicy();
+        if (previousConversationView !== !!codexPlusSettings().conversationView) {
+          refreshConversationView();
+        }
+      }
+    } finally {
+      syncBackendSettingsInFlight = false;
+    }
+  }
+
   async function setBackendSetting(key, value) {
     const seq = ++codexPlusBackendSettingsSeq;
     codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
@@ -44,36 +62,54 @@
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
+  let codexPlusBridgeFailureCount = 0;
+  const CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD = 3;
   const codexPlusBackendGeneration = (Number(window.__codexPlusBackendGeneration) || 0) + 1;
   window.__codexPlusBackendGeneration = codexPlusBackendGeneration;
 
-  function recordCodexPlusBridgeSuccess() {
+  function recordCodexPlusBridgeHealth(field) {
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     const health = window.__codexPlusBridgeHealth || (window.__codexPlusBridgeHealth = {});
-    health.lastSuccessAt = Date.now();
+    health[field] = Date.now();
+  }
+
+  function recordCodexPlusBridgeSuccess() {
+    recordCodexPlusBridgeHealth("lastSuccessAt");
+    codexPlusBridgeFailureCount = 0;
+  }
+
+  function recordCodexPlusBridgeAttempt() {
+    recordCodexPlusBridgeHealth("lastAttemptAt");
+  }
+
+  function recordCodexPlusBridgeFailure() {
+    codexPlusBridgeFailureCount += 1;
   }
 
   function renderBackendStatus() {
-    const status = codexPlusBackendStatus.status || "failed";
+    const bridgeDegraded = codexPlusBridgeFailureCount >= CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD;
+    const rawStatus = codexPlusBackendStatus.status || "failed";
+    const status = bridgeDegraded && rawStatus === "ok" ? "degraded" : rawStatus;
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
         node.textContent = `Codex++ ${codexPlusVersion}`;
       });
     }
+    const labelFallback = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，自动修复中" : "未连接";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       label.dataset.status = status;
-      label.textContent = codexPlusBackendStatus.message || (status === "ok" ? "后端已连接" : "未连接");
+      label.textContent = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      indicator.title = status === "ok" ? "后端已连接" : status === "degraded" ? labelFallback : status === "checking" ? "正在检查后端" : "未连接";
     });
     const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
     if (sidebarStatus) {
       sidebarStatus.dataset.status = status;
-      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "checking" ? "正在检查后端" : "未连接";
+      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? labelFallback : status === "checking" ? "正在检查后端" : "未连接";
     }
     refreshCodexServiceTierControls();
     installCodexRelayApiKeyBadge();
@@ -98,8 +134,9 @@
         codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
         if (typeof nextStatus.hideOfficialUsageAlert === "boolean") {
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
-          refreshOfficialUsageAlertVisibility();
+          syncOfficialUsagePolicy();
         }
+        void syncBackendSettingsFromHeartbeat();
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,6 +20,10 @@ pub enum LaunchMode {
     #[default]
     Patch,
     Relay,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -122,6 +126,21 @@ pub struct RelayProfile {
     pub sub2api_multiplier: String,
     #[serde(rename = "modelRoutes", default, skip_serializing_if = "Vec::is_empty")]
     pub model_routes: Vec<RelayModelRoute>,
+    /// 自定义上游请求头（有序列表，保住用户写的顺序）。
+    /// 传输头（Host / Content-Length 等）与跳头由协议层掌控，写入前会被校验拦下。
+    #[serde(
+        rename = "customHeaders",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub custom_headers: Vec<RelayHeaderKeyValue>,
+    // 上游审查要求：导出 round-trip 不改变既有 provider；为 false 时不写出该字段。
+    #[serde(
+        rename = "standardOpenaiProtocol",
+        default,
+        skip_serializing_if = "is_false"
+    )]
+    pub standard_openai_protocol: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -145,6 +164,19 @@ pub struct RelayModelRoute {
         skip_serializing_if = "String::is_empty"
     )]
     pub target_model: String,
+}
+
+/// 供应商自定义上游请求头。
+///
+/// 用有序 Vec 而不是 map：与 MCP 的 env / http_headers 一致，保住用户书写顺序，
+/// 也让设置文件的 diff 稳定。
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayHeaderKeyValue {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -247,6 +279,8 @@ impl Default for RelayProfile {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            custom_headers: Vec::new(),
+            standard_openai_protocol: false,
         }
     }
 }
@@ -474,6 +508,8 @@ pub struct BackendSettings {
     pub codex_app_native_menu_placement: bool,
     #[serde(rename = "codexAppNativeMenuLocalization", default = "default_true")]
     pub codex_app_native_menu_localization: bool,
+    #[serde(rename = "codexAppNativeBrowserRequireIdentification", default)]
+    pub codex_app_native_browser_require_identification: bool,
     #[serde(rename = "codexAppServiceTierControls", default)]
     pub codex_app_service_tier_controls: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
@@ -652,6 +688,7 @@ impl Default for BackendSettings {
             codex_app_upstream_worktree_create: true,
             codex_app_native_menu_placement: true,
             codex_app_native_menu_localization: true,
+            codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
             codex_app_pet_real_mouse_look: false,
             codex_app_stepwise_enabled: false,
@@ -752,6 +789,8 @@ impl BackendSettings {
                 sub2api_enabled: false,
                 sub2api_multiplier: String::new(),
                 model_routes: Vec::new(),
+                custom_headers: Vec::new(),
+                standard_openai_protocol: false,
             };
         }
 
@@ -808,6 +847,8 @@ impl BackendSettings {
             sub2api_enabled: false,
             sub2api_multiplier: String::new(),
             model_routes: Vec::new(),
+            custom_headers: Vec::new(),
+            standard_openai_protocol: false,
         }
     }
 
@@ -1085,6 +1126,14 @@ pub fn default_relay_profiles() -> Vec<RelayProfile> {
     vec![RelayProfile::default()]
 }
 
+/// 判断一份供应商列表是否退化成了「仅剩默认 profile」。
+///
+/// 这是 `load` 失败后退回默认设置、再被原样回写磁盘的典型形态。
+/// `RelayProfile::default()` 的 id 固定为 `default`，用户手工创建的条目不会长这样。
+pub fn is_default_single_profile(profiles: &[RelayProfile]) -> bool {
+    profiles.len() == 1 && profiles[0] == RelayProfile::default()
+}
+
 pub fn default_aggregate_member_weight() -> u32 {
     1
 }
@@ -1225,31 +1274,49 @@ impl SettingsStore {
             }
         };
 
-        // 先当 JSON 树解开密钥密文，再反序列化成结构体：这样不用给任何字段加
-        // 自定义反序列化、也不用改调用方。明文老格式原样返回，下次保存自动升级。
-        let settings = match serde_json::from_str::<Value>(&contents) {
-            Ok(mut value) => {
-                if let Some(map) = value.as_object_mut() {
-                    decrypt_settings_secrets(map);
-                }
-                match serde_json::from_value::<BackendSettings>(value) {
-                    Ok(settings) => settings,
-                    Err(error) => {
-                        quarantine_corrupt_settings(&self.path, &error.to_string());
-                        BackendSettings::default()
-                    }
-                }
-            }
-            Err(error) => {
-                quarantine_corrupt_settings(&self.path, &error.to_string());
-                BackendSettings::default()
-            }
-        };
+        let mut parsed: Value = serde_json::from_str(&contents).with_context(|| {
+            format!(
+                "settings {} 解析失败，拒绝退回默认设置以免覆盖用户配置",
+                self.path.display()
+            )
+        })?;
+        if let Some(map) = parsed.as_object_mut() {
+            decrypt_settings_secrets(map);
+        }
+        let settings = serde_json::from_value(parsed).with_context(|| {
+            format!(
+                "settings {} 格式无效，拒绝覆盖用户配置",
+                self.path.display()
+            )
+        })?;
         Ok(normalize_settings_config_sections(settings))
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         let _lock = SettingsWriteLock::acquire(&self.path)?;
+        // `save()` 是整体覆盖写，manager 的 save_settings 走的就是这条路。
+        // 历史事故：load 失败退回默认设置（只剩 1 条默认 profile），前端把它原样
+        // 回写，用户的 N 条供应商配置被清空。这里在写盘前比一次条数。
+        // 读不到旧文件（不存在/解析失败）时按 0 处理，不拦——整体覆盖语义下
+        // 不能因为旧文件读不出来就拒绝写入。
+        let existing_profile_count = self
+            .load_raw_object()?
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if settings.relay_profiles.is_empty() && existing_profile_count > 0 {
+            anyhow::bail!(
+                "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存的列表为空；为避免清空用户配置，已保持原文件不变",
+                existing_profile_count
+            );
+        }
+        if is_default_single_profile(&settings.relay_profiles) && existing_profile_count > 1 {
+            anyhow::bail!(
+                "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存退化为仅剩默认供应商；为避免覆盖用户配置，已保持原文件不变",
+                existing_profile_count
+            );
+        }
         let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
         let mut value = serde_json::to_value(&settings)?;
@@ -1269,6 +1336,11 @@ impl SettingsStore {
         // 先写者的字段整片盖掉（用户表现为"改了但没生效"）。
         let _lock = SettingsWriteLock::acquire(&self.path)?;
         let mut raw = self.load_raw_object()?;
+        let existing_profile_count = raw
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
         merge_known_setting_fields(&mut raw, &payload);
         let settings = normalize_settings_config_sections(
             serde_json::from_value(Value::Object(raw.clone())).unwrap_or_default(),
@@ -1287,6 +1359,17 @@ impl SettingsStore {
             "tools".to_string(),
             serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
         );
+        let new_profile_count = raw
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|items| items.len())
+            .unwrap_or(0);
+        if new_profile_count == 0 && existing_profile_count > 0 {
+            anyhow::bail!(
+                "拒绝写入 settings：本次更新会把供应商列表从 {} 条清空为 0 条，已保持原文件不变",
+                existing_profile_count
+            );
+        }
         encrypt_settings_secrets(&mut raw);
         let bytes = serde_json::to_vec_pretty(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
@@ -1307,19 +1390,19 @@ impl SettingsStore {
 
         match serde_json::from_str::<Value>(&contents) {
             Ok(Value::Object(mut map)) => {
-                // 读-改-写路径用「解不开就保留密文」的解密方式：写回时密文原样回盘，
-                // 绝不会因为凭据库临时不可用就把用户已存的密钥抹成空串。
                 decrypt_settings_secrets_preserving(&mut map);
                 Ok(map)
             }
-            Ok(_) => {
-                quarantine_corrupt_settings(&self.path, "settings root is not a JSON object");
-                Ok(settings_to_object(&BackendSettings::default()))
-            }
-            Err(error) => {
-                quarantine_corrupt_settings(&self.path, &error.to_string());
-                Ok(settings_to_object(&BackendSettings::default()))
-            }
+            Ok(_) => Err(anyhow::anyhow!(
+                "settings {} 顶层不是 JSON 对象，拒绝用默认值覆盖",
+                self.path.display()
+            )),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "settings {} 解析失败，拒绝用默认值覆盖；请先修复该文件",
+                    self.path.display()
+                )
+            }),
         }
     }
 }
@@ -1474,47 +1557,6 @@ fn log_secret_decrypt_failed(path: &str, error: &anyhow::Error) {
     );
 }
 
-/// 解析失败的 settings.json 不能"悄悄当默认值用掉"。
-///
-/// 回落到默认值是为了不让应用直接打不开，但损坏这件事必须留痕：先把原始文件
-/// 挪到 `<名字>.corrupt-<时间戳>` 保底，再写一条诊断日志，用户与排障都能看到
-/// "配置曾经坏过、原件在哪"，而不是发现所有设置凭空回到出厂状态。
-fn quarantine_corrupt_settings(path: &Path, reason: &str) -> Option<PathBuf> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|value| value.as_secs())
-        .unwrap_or_default();
-    let quarantined = match path.extension().and_then(|value| value.to_str()) {
-        Some(extension) => path.with_extension(format!("{extension}.corrupt-{timestamp}")),
-        None => path.with_extension(format!("corrupt-{timestamp}")),
-    };
-    let quarantined = match fs::rename(path, &quarantined) {
-        Ok(()) => Some(quarantined),
-        Err(error) => {
-            let _ = crate::diagnostic_log::append_diagnostic_log(
-                "settings_corrupt_quarantine_failed",
-                serde_json::json!({
-                    "path": path.to_string_lossy(),
-                    "reason": reason,
-                    "error": error.to_string(),
-                }),
-            );
-            None
-        }
-    };
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "settings_corrupt",
-        serde_json::json!({
-            "path": path.to_string_lossy(),
-            "reason": reason,
-            "quarantined": quarantined
-                .as_ref()
-                .map(|value| value.to_string_lossy().to_string()),
-        }),
-    );
-    quarantined
-}
-
 /// settings.json 的跨进程写锁。
 ///
 /// 管理器进程与 launcher 的 bridge 会写同一份配置，且 `SettingsStore` 每次都是
@@ -1646,6 +1688,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppUpstreamWorktreeCreate");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeMenuLocalization");
+    merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppServiceTierControls");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
@@ -1828,13 +1871,45 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("relayApiKey".to_string(), Value::String(value.to_string()));
     }
     if let Some(value) = source.get("relayProfiles").and_then(Value::as_array) {
-        let mut profiles = serde_json::from_value::<Vec<RelayProfile>>(Value::Array(value.clone()))
-            .unwrap_or_default();
-        preserve_official_mix_bearer_tokens(&mut profiles, target);
-        target.insert(
-            "relayProfiles".to_string(),
-            serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
-        );
+        // 逐个反序列化：单个坏条目只丢自己，不能把整份供应商列表清空。
+        // 历史实现用 serde_json::from_value::<Vec<RelayProfile>>(...).unwrap_or_default()，
+        // 任一 profile 字段不匹配就会让整个数组变空，随后被 update 写回磁盘。
+        let mut profiles = Vec::with_capacity(value.len());
+        let mut dropped = 0usize;
+        for entry in value {
+            match serde_json::from_value::<RelayProfile>(entry.clone()) {
+                Ok(profile) => profiles.push(profile),
+                Err(_) => dropped += 1,
+            }
+        }
+        if dropped > 0 {
+            eprintln!(
+                "codex-plus settings: {dropped} 个供应商条目反序列化失败已跳过（共 {} 个）",
+                value.len()
+            );
+        }
+        // 新列表为空、或退化为仅剩默认 profile，而现有列表非空时，保留现有列表。
+        // 空列表和「默认单条」都是 load 失败后默认设置被原样回写的形态。
+        let existing_count = target
+            .get("relayProfiles")
+            .and_then(Value::as_array)
+            .map(|existing| existing.len())
+            .unwrap_or(0);
+        let should_reject = (profiles.is_empty() && existing_count > 0)
+            || (is_default_single_profile(&profiles) && existing_count > 1);
+        if should_reject {
+            eprintln!(
+                "codex-plus settings: 新供应商列表退化为 {} 条，现有 {} 条，已拒绝覆盖",
+                profiles.len(),
+                existing_count
+            );
+        } else {
+            preserve_official_mix_bearer_tokens(&mut profiles, target);
+            target.insert(
+                "relayProfiles".to_string(),
+                serde_json::to_value(profiles).unwrap_or_else(|_| Value::Array(Vec::new())),
+            );
+        }
     }
     if let Some(value) = source
         .get("relayCommonConfigContents")
@@ -2073,6 +2148,12 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     }
     .to_string();
     settings.weixin_connect_codex_path = settings.weixin_connect_codex_path.trim().to_string();
+    // #2028 存量迁移：系统保护目录（WindowsApps）里的 CLI 无法被第三方进程执行，
+    // 早期版本点「使用桌面版内置 CLI」写入过这类路径；置空后启动时会自动
+    // 选用桌面版维护的标准 CLI，用户无需手动清理。
+    if crate::app_paths::is_windows_store_cli_path(&settings.weixin_connect_codex_path) {
+        settings.weixin_connect_codex_path = String::new();
+    }
     settings.codex_app_stepwise_max_items =
         clamp_stepwise_max_items(settings.codex_app_stepwise_max_items);
     settings.codex_app_stepwise_max_input_chars =
@@ -2137,11 +2218,29 @@ fn normalize_text_config(contents: String) -> String {
 }
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    atomic_write_with(path, |file| file.write_all(bytes))
+}
+
+/// 流式原子写入：内容由 `write_contents` 直接写进临时文件，调用方不必先把
+/// 完整字节拼在内存里。大文件（如历史会话的 rollout JSONL）走这条路径。
+pub fn atomic_write_with(
+    path: &Path,
+    write_contents: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory {}", parent.display()))?;
     }
 
+    // 保留原文件权限：临时文件默认权限不一定和它一致。
+    let existing_permissions = match fs::metadata(path) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read permissions for {}", path.display()));
+        }
+    };
     let temp_path = temp_path_for(path);
     // 与 grok_config::secure_atomic_write 一致的 create_new 语义：临时文件必须由
     // 本次写入创建，绝不覆盖别人（或上次崩溃残留）的同名文件。
@@ -2151,14 +2250,17 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
             .write(true)
             .open(&temp_path)
             .with_context(|| format!("failed to create temp file {}", temp_path.display()))?;
-        temp_file
-            .write_all(bytes)
-            .with_context(|| format!("failed to write temp file {}", temp_path.display()))?;
+        write_contents(&mut temp_file)?;
+        temp_file.flush()?;
+        if let Some(permissions) = existing_permissions {
+            temp_file.set_permissions(permissions)?;
+        }
         Ok(())
     })();
     if let Err(error) = write_result {
         let _ = fs::remove_file(&temp_path);
-        return Err(error);
+        return Err(error)
+            .with_context(|| format!("failed to write temp file {}", temp_path.display()));
     }
     if let Err(error) = replace_file(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
@@ -2370,42 +2472,20 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_settings_file_is_quarantined_instead_of_silently_defaulted() {
-        // 解析失败时回落默认值是为了不让应用打不开，但必须留证：
-        // 以前是 `unwrap_or_default()`，用户看到的是"配置全没了"且没有任何痕迹。
-        // 诊断日志路径是进程级状态，与其它碰它的测试串行。
-        let _diagnostics_guard = settings_diagnostics_test_guard();
+    fn corrupt_settings_file_is_preserved_and_cannot_be_overwritten() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, b"{ not json").unwrap();
-        let log_path = dir.join("diagnostics.log");
-        crate::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
         let store = SettingsStore::new(path.clone());
 
-        let loaded = store.load().unwrap();
-        crate::diagnostic_log::set_diagnostic_log_path_for_tests(None);
-
-        let mut expected = BackendSettings::default();
-        expected.sync_tool_shards();
-        assert_eq!(loaded, expected);
-        assert!(!path.exists(), "损坏的配置文件应当被移走留证");
-
-        let quarantined = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .find(|name| name.contains(".corrupt-"))
-            .expect("应当留下 .corrupt- 备份");
-        assert_eq!(
-            std::fs::read_to_string(dir.join(&quarantined)).unwrap(),
-            "{ not json"
-        );
+        assert!(store.load().is_err());
+        assert!(store.save(&BackendSettings::default()).is_err());
         assert!(
-            std::fs::read_to_string(&log_path)
-                .unwrap_or_default()
-                .contains("settings_corrupt"),
-            "应当写一条诊断日志"
+            store
+                .update(json!({ "providerSyncEnabled": true }))
+                .is_err()
         );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -3007,6 +3087,13 @@ experimental_bearer_token = "sk-existing""#
         assert!(!profile.auth_contents.contains("OPENAI_API_KEY"));
     }
 
+    fn normalized_default_settings() -> BackendSettings {
+        // Keep expected values independent of the production normalizer.
+        let mut expected = BackendSettings::default();
+        expected.tools.insert(ToolId::Codex, ToolConfig::default());
+        expected
+    }
+
     #[test]
     fn settings_store_load_missing_file_returns_default() {
         let dir = temp_dir();
@@ -3017,16 +3104,108 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(store.load().unwrap(), expected);
     }
 
+    /// 坏 JSON 不再静默退回默认设置：解析失败必须报错，避免拿默认值把磁盘上的
+    /// 供应商列表覆盖掉。原文件内容必须原样保留。
     #[test]
-    fn settings_store_load_bad_json_returns_default() {
+    fn settings_store_load_bad_json_returns_error_and_keeps_file() {
         let dir = temp_dir();
         let path = dir.join("settings.json");
         std::fs::write(&path, "{bad json").unwrap();
-        let store = SettingsStore::new(path);
+        let store = SettingsStore::new(path.clone());
 
-        let mut expected = BackendSettings::default();
-        expected.sync_tool_shards();
-        assert_eq!(store.load().unwrap(), expected);
+        let error = store
+            .load()
+            .expect_err("坏 JSON 必须报错，而不是退回默认值");
+        assert!(
+            error.to_string().contains("解析失败"),
+            "错误信息应指出解析失败，实际是: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{bad json");
+    }
+    /// 回归：一次把 relayProfiles 传空的 update，不得清掉磁盘上已有的供应商配置。
+    /// 这就是「供应商配置一个都不剩」那次故障的核心防护。
+    #[test]
+    fn settings_store_update_does_not_wipe_existing_relay_profiles() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+    {"id": "relay-b", "name": "B", "relayMode": "pureApi"}
+  ],
+  "activeRelayId": "relay-a"
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+        assert_eq!(store.load().unwrap().relay_profiles.len(), 2);
+        let _ = store.update(json!({ "relayProfiles": [] }));
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles.len(),
+            2,
+            "传空 relayProfiles 不得覆盖磁盘上已有的供应商配置"
+        );
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("relay-a"), "原条目不得被清空: {raw}");
+        assert!(raw.contains("relay-b"), "原条目不得被清空: {raw}");
+    }
+    /// 回归：数组里混入一条反序列化失败的条目时，好条目必须保留，
+    /// 而不是像旧实现那样整个列表退化成空。
+    #[test]
+    fn settings_store_update_keeps_good_profiles_when_one_entry_is_broken() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"relayProfiles":[]}"#).unwrap();
+        let store = SettingsStore::new(path.clone());
+        let _ = store.update(json!({
+            "relayProfiles": [
+                {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+                {"id": 12345, "name": "broken"}
+            ]
+        }));
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles.len(),
+            1,
+            "坏条目应被跳过，好条目必须保留"
+        );
+        assert_eq!(after.relay_profiles[0].id, "relay-a");
+    }
+    /// 回归：一次把 relayProfiles 退化为「仅默认 profile」的 save，不得覆盖磁盘上
+    /// 多条供应商配置。这就是「20 条变 1 条」那次故障的核心防护。
+    #[test]
+    fn settings_store_save_does_not_collapse_to_default_single_profile() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {"id": "relay-a", "name": "A", "relayMode": "pureApi"},
+    {"id": "relay-b", "name": "B", "relayMode": "pureApi"},
+    {"id": "relay-c", "name": "C", "relayMode": "pureApi"}
+  ]
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+        let collapsed = BackendSettings {
+            relay_profiles: vec![RelayProfile::default()],
+            ..BackendSettings::default()
+        };
+        let error = store
+            .save(&collapsed)
+            .expect_err("退化为默认单条必须被拒绝");
+        assert!(
+            error.to_string().contains("退化为仅剩默认"),
+            "实际错误: {error}"
+        );
+        let after = store.load().unwrap();
+        assert_eq!(after.relay_profiles.len(), 3, "原 3 条不得被覆盖");
+        assert_eq!(after.relay_profiles[0].id, "relay-a");
     }
 
     #[test]
@@ -3457,6 +3636,25 @@ experimental_bearer_token = "sk-existing""#
         assert_eq!(updated.weixin_connect_sandbox, "workspace-write");
         assert_eq!(updated.weixin_connect_codex_path, "/usr/local/bin/codex");
         assert_eq!(store.load().unwrap(), updated);
+    }
+
+    /// #2028 存量迁移：系统保护目录（WindowsApps）里的 CLI 无法被第三方进程执行，
+    /// 旧版点「使用桌面版内置 CLI」写入过这类路径；归一化时置空，
+    /// 让连接启动时自动选用桌面版维护的标准 CLI。
+    #[test]
+    fn windows_store_codex_path_is_cleared_for_auto_resolution() {
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+
+        let updated = store
+            .update(json!({
+                "weixinConnectCodexPath":
+                    r"C:\Program Files\WindowsApps\OpenAI.Codex_26.915.4065.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+            }))
+            .unwrap();
+
+        assert_eq!(updated.weixin_connect_codex_path, "");
+        assert_eq!(store.load().unwrap().weixin_connect_codex_path, "");
     }
 
     #[test]
@@ -4141,5 +4339,33 @@ experimental_bearer_token = "sk-existing""#
         assert!(!raw.contains("enc:v1:"), "{raw}");
         assert_eq!(store.load().unwrap().relay_api_key, "sk-plain");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn relay_profile_standard_openai_protocol_defaults_off_for_legacy_profiles() {
+        // 旧 profile 没有该字段：反序列化后默认关闭。
+        let mut enabled = RelayProfile::default();
+        enabled.standard_openai_protocol = true;
+        let mut legacy = serde_json::to_value(&enabled).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("standardOpenaiProtocol");
+        let profile: RelayProfile = serde_json::from_value(legacy).unwrap();
+        assert!(!profile.standard_openai_protocol);
+    }
+
+    #[test]
+    fn relay_profile_standard_openai_protocol_round_trip_keeps_existing_providers() {
+        // 关闭时导出不写该字段，round-trip 不改变既有 provider。
+        let value = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(value.get("standardOpenaiProtocol").is_none());
+
+        let mut enabled = RelayProfile::default();
+        enabled.standard_openai_protocol = true;
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["standardOpenaiProtocol"], json!(true));
+        let round_tripped: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(round_tripped.standard_openai_protocol);
     }
 }

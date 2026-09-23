@@ -93,7 +93,9 @@
       try {
         if (window.sessionStorage.getItem(localeReloadStorageKey) === marker) return;
         window.sessionStorage.setItem(localeReloadStorageKey, marker);
+        if (window.sessionStorage.getItem(localeReloadStorageKey) !== marker) return;
       } catch {
+        return;
       }
       window.location.reload();
     };
@@ -276,4 +278,3 @@
 
   installCodexPlusFastStartup();
   installCodexPlusForceChineseLocale();
-

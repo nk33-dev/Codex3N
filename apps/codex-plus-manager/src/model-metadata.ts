@@ -16,7 +16,10 @@ export type ModelMetadataImportResult =
   | { ok: true; value: ImportedModelMetadata }
   | { ok: false; error: string };
 
-// 只有 slug 和两个由界面专门编辑的数值字段不进入 metadata map。
+// slug 和三个由界面专门编辑的数值字段（context_window / max_context_window /
+// auto_compact_token_limit）不进入 metadata map：窗口字段由「上下文窗口」列统一
+// 管辖（catalog 生成时写为同值），压缩阈值换算成百分比。否则残留值会在生成后
+// 反向覆盖界面编辑的窗口（issue #2191）。
 // 其余字段属于供应商模型事实，导入时保留并在 catalog 中优先于生成默认值。
 const MANAGED_MODEL_METADATA_FIELDS = new Set<string>();
 
@@ -27,6 +30,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isImportedMetadataField(key: string): boolean {
   return key !== "slug"
     && key !== "context_window"
+    && key !== "max_context_window"
     && key !== "auto_compact_token_limit"
     && !MANAGED_MODEL_METADATA_FIELDS.has(key);
 }
@@ -215,6 +219,13 @@ function unwrapJsonCompatibleDocument(source: string): string {
   return text.replace(/;\s*$/, "").trim();
 }
 
+// 供应商 Model Key 大小写不统一（如智谱 GLM-5.3-FlashX），上游 API 对大小写宽容，
+// 本地 slug 匹配若用严格相等会漏配元数据。
+function slugMatchesIgnoreCase(candidateSlug: unknown, targetSlug: string): boolean {
+  return typeof candidateSlug === "string"
+    && candidateSlug.toLowerCase() === targetSlug.toLowerCase();
+}
+
 function documentCandidates(root: unknown): ModelMetadata[] | null {
   if (Array.isArray(root)) return root.filter(isRecord);
   if (isRecord(root) && Array.isArray(root.models)) return root.models.filter(isRecord);
@@ -225,7 +236,7 @@ function documentCandidates(root: unknown): ModelMetadata[] | null {
 // 强制管理字段顺序，避免保存后 context_window 跑到压缩字段之后。
 function reorderManagedModelFields(model: ModelMetadata): void {
   const ordered: ModelMetadata = {};
-  for (const key of ["slug", "context_window", "auto_compact_token_limit"]) {
+  for (const key of ["slug", "context_window", "max_context_window", "auto_compact_token_limit"]) {
     if (Object.hasOwn(model, key)) ordered[key] = model[key];
   }
   for (const [key, value] of Object.entries(model)) {
@@ -248,15 +259,24 @@ export function synchronizeModelMetadataDocumentContextWindow(
   }
   const candidates = documentCandidates(root);
   if (!candidates) return null;
-  const matches = candidates.filter((candidate) => candidate.slug === targetSlug);
+  const matches = candidates.filter((candidate) => slugMatchesIgnoreCase(candidate.slug, targetSlug));
   if (matches.length !== 1) return null;
   const trimmed = contextWindow.trim();
   const tokens = contextWindowToTokens(trimmed);
   if (trimmed && !tokens) return null;
-  if (tokens) matches[0].context_window = tokens;
-  else if (Object.hasOwn(matches[0], "context_window")) {
+  if (tokens) {
+    matches[0].context_window = tokens;
+    // max_context_window 是 codex 运行时的 clamp 权威（issue #2191）：
+    // 文档条目若带该字段，必须与界面窗口同值，否则重新解析时它仍会赢。
+    if (Object.hasOwn(matches[0], "max_context_window")) {
+      matches[0].max_context_window = tokens;
+    }
+  } else if (Object.hasOwn(matches[0], "context_window")) {
     // 保留供应商字段位置；null 表示界面清空，重新填写时不会把键移到末尾。
     matches[0].context_window = null;
+    if (Object.hasOwn(matches[0], "max_context_window")) {
+      matches[0].max_context_window = null;
+    }
   }
   reorderManagedModelFields(matches[0]);
   return JSON.stringify(root, null, 2);
@@ -278,7 +298,7 @@ export function synchronizeModelMetadataDocumentLimits(
   }
   const candidates = documentCandidates(root);
   if (!candidates) return null;
-  const matches = candidates.filter((candidate) => candidate.slug === targetSlug);
+  const matches = candidates.filter((candidate) => slugMatchesIgnoreCase(candidate.slug, targetSlug));
   if (matches.length !== 1) return null;
   const compactTokenLimit = autoCompactPercentToTokenLimit(contextWindow, autoCompactPercent);
   if (compactTokenLimit) matches[0].auto_compact_token_limit = compactTokenLimit;
@@ -363,7 +383,7 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
   }
   const candidates = documentCandidates(root);
   if (!candidates) return { ok: false, error: "配置中没有找到 models 数组或带 slug 的模型对象。" };
-  const matches = candidates.filter((model) => model.slug === targetSlug);
+  const matches = candidates.filter((model) => slugMatchesIgnoreCase(model.slug, targetSlug));
   if (matches.length === 0) {
     const available = candidates
       .map((model) => model.slug)
@@ -374,16 +394,22 @@ export function parseModelMetadataDocument(source: string, targetSlug: string): 
   if (matches.length > 1) return { ok: false, error: `文档中存在多个 slug 为 ${targetSlug} 的模型，无法确定要导入哪一个。` };
 
   const model = matches[0];
+  // 窗口提取 max_context_window 优先：它是 codex 运行时的 clamp 权威
+  // （openai/codex#19185），取 context_window 会把模型真实能力上限写低。
+  // 两者同值与仅其一的常见形态不受影响。
+  const windowField = Object.hasOwn(model, "max_context_window") && model.max_context_window !== null
+    ? "max_context_window"
+    : "context_window";
   let contextWindow: string | null = null;
-  if (Object.hasOwn(model, "context_window") && model.context_window !== null) {
-    contextWindow = positiveIntegerString(model.context_window);
-    if (!contextWindow) return { ok: false, error: "context_window 必须是正整数。" };
+  if (Object.hasOwn(model, windowField) && model[windowField] !== null) {
+    contextWindow = positiveIntegerString(model[windowField]);
+    if (!contextWindow) return { ok: false, error: `${windowField} 必须是正整数。` };
   }
   let autoCompactPercent: string | null = null;
   if (Object.hasOwn(model, "auto_compact_token_limit") && model.auto_compact_token_limit !== null) {
     const limit = positiveIntegerString(model.auto_compact_token_limit);
     if (!limit) return { ok: false, error: "auto_compact_token_limit 必须是正整数或 null。" };
-    if (!contextWindow) return { ok: false, error: "存在 auto_compact_token_limit 时必须同时提供 context_window。" };
+    if (!contextWindow) return { ok: false, error: "存在 auto_compact_token_limit 时必须同时提供 context_window 或 max_context_window。" };
     autoCompactPercent = autoCompactTokenLimitToPercent(contextWindow, limit);
     if (!autoCompactPercent) return { ok: false, error: "auto_compact_token_limit 必须小于或等于 context_window。" };
   }

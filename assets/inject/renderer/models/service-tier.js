@@ -17,6 +17,7 @@
   };
   const codexDefaultServiceTierSetting = { key: "default-service-tier", default: null };
   const codexServiceTierFallbackFastValue = "priority";
+  const codexServiceTierReadTimeoutMs = 5000;
   const codexServiceTierModulePromises = new Map();
   // namePart -> { at, attempts, error }，见 loadCodexAppModule 里的说明。
   const codexAppModuleFailures = new Map();
@@ -358,11 +359,21 @@
 
   async function getCodexServiceTierSetting() {
     try {
-      const settingStorage = await codexSettingStorageModule();
-      return await settingStorage.n(codexDefaultServiceTierSetting);
+      const read = (async () => {
+        const settingStorage = await codexSettingStorageModule();
+        return await settingStorage.n(codexDefaultServiceTierSetting);
+      })();
+      return await Promise.race([
+        read,
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Codex 应用设置读取超时")), codexServiceTierReadTimeoutMs)),
+      ]);
     } catch (error) {
       if (typeof codexStateCall === "function") {
-        const result = await codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
+        const fallbackRead = codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
+        const result = await Promise.race([
+          fallbackRead,
+          new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
+        ]);
         return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
       }
       throw error;
@@ -802,7 +813,10 @@
   }
 
   async function getConfigTomlServiceTier() {
-    const catalog = await loadCodexModelCatalog();
+    const catalog = await Promise.race([
+      loadCodexModelCatalog(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("config.toml service_tier 读取超时")), codexServiceTierReadTimeoutMs)),
+    ]);
     const rawTier = catalog && typeof catalog === "object" ? catalog.service_tier : null;
     const normalized = String(rawTier || "").trim();
     return normalized ? normalized : null;
@@ -965,11 +979,10 @@
     };
   }
 
-  function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
-    const providerParams = applyCodexRemoteSessionProviderOverride(method, params);
+  function applyCodexServiceTierRequestOnly(method, params, threadIdHint = "") {
     const override = codexServiceTierOverrideForRequest(method, params, threadIdHint);
-    if (!override) return providerParams;
-    const nextParams = { ...(providerParams || {}), serviceTier: override.serviceTier };
+    if (!override) return params;
+    const nextParams = { ...(params || {}), serviceTier: override.serviceTier };
     if (Object.prototype.hasOwnProperty.call(nextParams, "service_tier") || override.fastBlocked) {
       nextParams.service_tier = override.serviceTier;
     }
@@ -985,3 +998,7 @@
     return nextParams;
   }
 
+  function applyCodexServiceTierRequestOverride(method, params, threadIdHint = "") {
+    const providerParams = applyCodexRemoteSessionProviderOverride(method, params);
+    return applyCodexServiceTierRequestOnly(method, providerParams, threadIdHint);
+  }

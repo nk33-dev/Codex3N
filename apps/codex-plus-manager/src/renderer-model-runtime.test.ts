@@ -148,10 +148,10 @@ test("远程供应商模块失败后退避，页面扫描不会绕过等待", as
   await settle();
   assert.equal(attempts, 2);
   assert.equal(timers[0].delay, 500);
-  for (let index = 0; index < 8; index += 1) {
-    timers.shift()!.callback();
-    await settle();
-  }
-  assert.equal(timers.length, 1);
-  assert.equal(timers[0].delay, 30000);
+    for (let index = 0; index < 6; index += 1) {
+      timers.shift()!.callback();
+      await settle();
+    }
+    assert.equal(attempts, 8);
+    assert.equal(timers.length, 0);
 });
