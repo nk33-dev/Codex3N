@@ -30,7 +30,7 @@
   const zedRemoteOpenInMenuVersion = "1";
   const zedRemoteOpenInMenuActivationWindowMs = 600;
   const styleId = "codex-delete-style";
-  const codexDeleteStyleVersion = "19";
+  const codexDeleteStyleVersion = "20";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -98,7 +98,9 @@
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
   const codexServiceTierRequestOverrideVersion = "9";
-  const codexAppServerModelRequestPatchVersion = "8";
+  const codexAppServerModelRequestPatchVersion = "9";
+  const codexAppServerClientCaptureMarker = "AppServerRequestClient is missing a message dispatcher";
+  const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "15";
   const codexThreadScrollMaxEntries = 120;

@@ -30,7 +30,7 @@
 
 ## 配置和安装维护
 
-- 设置写入采用跨进程锁、唯一临时文件和损坏内容隔离，避免并发写丢失或静默覆盖损坏配置。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
+- 设置写入采用跨进程锁和唯一临时文件；损坏内容会报错并保留原件，禁止静默回退默认值或覆盖用户配置，保存时保护已有供应商列表。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
 - **settings.json 里的 API Key 落盘加密**（`crates/codex-plus-core/src/secret_store.rs`）：文件名精确等于 `apiKey` 或以 `ApiKey` 结尾的字符串值（`relayApiKey`、`vlmApiKey`、`codexAppStepwiseApiKey`、`relayProfiles[].apiKey`、`tools.<tool>.relayProfiles[].apiKey`，未来新增的 `*ApiKey` 字段自动生效）以 `enc:v1:<base64url(nonce||ciphertext||tag)>` 的 AES-256-GCM 密文存储；`codexAppStepwiseApiKeyEnv` 这类**环境变量名**字段（以 `Env` 结尾）不是密钥，保持明文。加解密只在 `SettingsStore::load`/`save`/`update` 的落盘边界发生，内存中与调用方看到的仍是明文，老版本的明文配置照常读取、下次保存自动升级，没有额外的迁移命令。
 - 32 字节主密钥交给系统凭据库：Windows 用 DPAPI 用户作用域加密后写设置目录旁的 `secret.key`（`CryptProtectData` + `CRYPTPROTECT_UI_FORBIDDEN`，只读属性尽力而为）；macOS 用 Keychain 通用密码项（service `dev.nk33.Codex3N`，account `settings-master-key`）。进程内只取一次，失败也缓存，避免中途换密钥导致「刚加密的马上解不开」。
 - 凭据库不可用（其他平台、DPAPI 失败、Keychain 拒绝等）时**不阻断保存**：该值按明文写入并记一条 `settings.secret_encryption_unavailable` 诊断日志（每进程只记一次）；`CODEX_PLUS_SETTINGS_NO_ENCRYPT` 为非空且不等于 `0`/`false` 时主动退回明文存储（与 `CODEX_PLUS_UPDATE_*` 逃生开关同风格）。读取时解不开的 `enc:v1:` 值按空串处理（不当成有效 key 用），记 `settings.secret_decrypt_failed`（只带字段路径，不带密文），并且**绝不改写或删除磁盘上的文件**（代码回退不等于数据回退）：修好凭据库或恢复 `secret.key` 后原文仍能读回；`update` 的读-改-写路径刻意保留解不开的密文，避免把用户已存的密钥写没了。

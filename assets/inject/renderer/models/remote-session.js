@@ -410,6 +410,20 @@
   let serviceTierDispatcherPatchDisabled = false;
   let serviceTierDispatcherPatchPromise = null;
 
+  function codexServiceTierDispatcherPatchable(dispatcher) {
+    if (!dispatcher || typeof dispatcher !== "object") return false;
+    try {
+      if (!Object.isExtensible(dispatcher)) return false;
+      for (const key of ["__codexServiceTierOriginalDispatchMessage", "dispatchMessage"]) {
+        const descriptor = Object.getOwnPropertyDescriptor(dispatcher, key);
+        if (descriptor && descriptor.writable === false && typeof descriptor.set !== "function") return false;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // issue #1960：这是 installAppServerModelRequestPatch（#1324）和插件市场那两层的同一个缺陷。
   // 补丁挂在 scanLightweight() 里每轮都跑，而早退守卫只在装上之后才写入，
   // Codex 侧 asset 改名后就永远装不上，于是每轮 scan 重新拉一遍全部 app asset，
@@ -437,6 +451,9 @@
     const patch = async () => {
       try {
         const { dispatcher, assetPrefix } = await loadDispatcher();
+        if (!codexServiceTierDispatcherPatchable(dispatcher)) {
+          throw new Error(`dispatcher is a non-writable RPC stub (${assetPrefix})`);
+        }
         if (!dispatcher.__codexServiceTierOriginalDispatchMessage) {
           dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
         }
@@ -567,6 +584,29 @@
       void loadCodexModelCatalog();
     }
     refreshCodexPlusBackendToggles();
+    if (loaded) syncOfficialUsagePolicy();
+    if (loaded) void installExternalApiQuotaGate();
     return loaded;
   }
 
+  let externalApiQuotaGateAttempted = false;
+  async function installExternalApiQuotaGate() {
+    window.__codexPlusExternalApiQuotaAllowed = (hostId) =>
+      codexPlusBackendSettingsLoaded
+      && window.__codexPlusApiQuotaGate?.permitsExternalApi(codexPlusBackendSettings, hostId) === true;
+    if (externalApiQuotaGateAttempted || !window.__codexPlusApiQuotaGate) return;
+    externalApiQuotaGateAttempted = true;
+    try {
+      const url = codexAppAssetUrl("app-primary-") || await codexAppAssetUrlFromScriptText("app-primary-");
+      if (!url) return;
+      const response = await fetch(url);
+      if (!response.ok) return;
+      const location = window.__codexPlusApiQuotaGate.locate(await response.text(), url);
+      if (!location) return;
+      window.__codexPlusApiQuotaBreakpoint = {
+        ...location,
+        condition: window.__codexPlusApiQuotaGate.condition(location),
+      };
+    } catch {
+    }
+  }

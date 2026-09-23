@@ -176,6 +176,8 @@ pub fn relay_profile_from_ccs(
         sub2api_enabled: false,
         sub2api_multiplier: String::new(),
         model_routes: Vec::new(),
+        custom_headers: Vec::new(),
+        standard_openai_protocol: false,
     }
 }
 

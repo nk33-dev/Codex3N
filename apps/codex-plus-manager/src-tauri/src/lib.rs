@@ -53,6 +53,8 @@ pub fn run() {
             let mut main_window_builder =
                 tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App(url.into()))
                     .title("Codex++ 管理工具")
+                    .visible(!startup_is_background())
+                    .focused(!startup_is_background())
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
             if let Some(icon) = app.default_window_icon().cloned() {
@@ -72,6 +74,7 @@ pub fn run() {
             commands::launch_codex_plus,
             commands::restart_codex_plus,
             commands::load_settings,
+            commands::native_browser_status,
             commands::save_settings,
             commands::list_tools,
             commands::test_vlm,
@@ -122,6 +125,7 @@ pub fn run() {
             commands::sync_providers_now,
             commands::refresh_script_market,
             commands::refresh_user_script_inventory,
+            commands::reload_user_scripts,
             commands::install_market_script,
             commands::set_user_script_enabled,
             commands::delete_user_script,
@@ -301,10 +305,10 @@ fn register_main_window_events<R: tauri::Runtime>(
     transient: bool,
 ) {
     let event_window = window.clone();
-    let minimized_window = event_window.clone();
     let close_event_window = event_window.clone();
     let close_event_app = event_window.app_handle().clone();
     let focus_event_window = event_window.clone();
+    let minimized_window = event_window.clone();
     let was_minimized = AtomicBool::new(false);
 
     event_window.on_window_event(move |event| match event {
@@ -320,6 +324,10 @@ fn register_main_window_events<R: tauri::Runtime>(
             }
         }
         WindowEvent::Focused(focused) if !APP_EXITING.load(Ordering::SeqCst) => {
+            if *focused {
+                #[cfg(windows)]
+                let _ = focus_event_window.show();
+            }
             // 失焦可能只是切换应用，是否暂停刷新以窗口实际可见性为准。
             emit_manager_visibility(&focus_event_window);
             if *focused {
@@ -347,6 +355,36 @@ fn register_main_window_events<R: tauri::Runtime>(
 
 fn startup_is_transient() -> bool {
     std::env::args().any(|arg| arg == "--transient")
+}
+
+fn startup_is_background() -> bool {
+    is_background_launch(std::env::args())
+}
+
+fn is_background_launch(args: impl IntoIterator<Item = String>) -> bool {
+    args.into_iter().any(|arg| arg == "--background")
+}
+
+#[cfg(test)]
+mod manager_launch_mode_tests {
+    use super::is_background_launch;
+
+    #[test]
+    fn explicit_open_is_visible_and_only_background_flag_hides() {
+        for args in [
+            vec!["manager"],
+            vec!["manager", "--transient"],
+            vec!["manager", "--show-update"],
+        ] {
+            assert!(!is_background_launch(args.into_iter().map(String::from)));
+        }
+        for args in [
+            vec!["manager", "--background"],
+            vec!["manager", "--show-update", "--background"],
+        ] {
+            assert!(is_background_launch(args.into_iter().map(String::from)));
+        }
+    }
 }
 
 #[tauri::command]
@@ -427,7 +465,7 @@ async fn apply_dream_skin_from_tray() -> anyhow::Result<()> {
     )?;
     codex_plus_core::dream_skin_runtime::apply_dream_skin_live(
         DREAM_SKIN_DEBUG_PORT,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
     )
     .await?;
     Ok(())
@@ -535,7 +573,9 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
                     "guard_port": codex_plus_core::ports::manager_guard_port()
                 }),
             );
-            focus_existing_manager_window();
+            if !startup_is_background() {
+                focus_existing_manager_window();
+            }
             None
         }
         Err(error) => {

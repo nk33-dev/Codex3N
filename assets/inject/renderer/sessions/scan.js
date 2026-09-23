@@ -161,6 +161,7 @@
   }
 
   void loadBackendSettingsForStartup();
+  syncOfficialUsagePolicy();
   installUpstreamBranchDropdownAdapter();
   installUpstreamWorktreeNativeAdapter();
   scan();

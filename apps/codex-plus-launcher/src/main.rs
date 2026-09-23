@@ -18,6 +18,7 @@ struct LauncherHooks {
     data: Arc<LauncherDataService>,
     runtime: Arc<LauncherRuntimeService>,
     bridge_context: Arc<Mutex<Option<BridgeContext>>>,
+    browser_monitor: Arc<Mutex<Option<codex_plus_core::native_browser::BrowserMonitor>>>,
 }
 
 impl Default for LauncherHooks {
@@ -30,6 +31,7 @@ impl Default for LauncherHooks {
                 default_user_script_manager(),
             )),
             bridge_context: Arc::new(Mutex::new(None)),
+            browser_monitor: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -66,6 +68,7 @@ async fn main() -> Result<()> {
                 codex_app: options
                     .app_dir
                     .map(|path| path.to_string_lossy().to_string()),
+                aumid: None,
             });
         }
         return Err(error);
@@ -92,6 +95,7 @@ async fn launcher_main(helper_only: bool, options: LaunchOptions) -> Result<()> 
             codex_app: options
                 .app_dir
                 .map(|path| path.to_string_lossy().to_string()),
+            aumid: None,
         })?;
         return Ok(());
     };
@@ -285,7 +289,7 @@ async fn notify_manager_when_update_available() -> anyhow::Result<bool> {
 fn open_manager_with_update_prompt() -> anyhow::Result<()> {
     codex_plus_core::install::spawn_companion(
         codex_plus_core::install::MANAGER_BINARY,
-        ["--show-update"],
+        ["--show-update", "--background"],
     )
     .map(|_| ())
     .map_err(|error| anyhow::anyhow!("启动管理工具失败：{error}"))
@@ -348,6 +352,32 @@ impl LaunchHooks for LauncherHooks {
 
     async fn load_settings(&self) -> anyhow::Result<codex_plus_core::settings::BackendSettings> {
         self.core.load_settings().await
+    }
+
+    async fn start_native_browser_compatibility(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) {
+        let monitor = codex_plus_core::native_browser::start_monitor(
+            settings.enhancements_enabled
+                && settings.codex_app_native_browser_require_identification,
+        )
+        .await;
+        *self
+            .browser_monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = monitor;
+    }
+
+    async fn stop_native_browser_compatibility(&self) {
+        let monitor = self
+            .browser_monitor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(monitor) = monitor {
+            monitor.stop().await;
+        }
     }
 
     fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
@@ -868,13 +898,24 @@ impl BridgeRuntimeService for LauncherRuntimeService {
         self.user_scripts.inventory()
     }
 
+    async fn load_user_scripts(&self) -> anyhow::Result<Value> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        codex_plus_core::user_scripts::load_scripts_at(&websocket_url, &self.user_scripts).await
+    }
+
     async fn reload_user_scripts(&self) -> anyhow::Result<Value> {
-        let bundle = self.user_scripts.build_enabled_bundle()?;
-        let websocket_url = self.websocket_url.lock().unwrap().clone();
-        if let Some(websocket_url) = websocket_url.filter(|_| !bundle.trim().is_empty()) {
-            codex_plus_core::bridge::evaluate_script(&websocket_url, &bundle).await?;
-        }
-        self.user_scripts.inventory()
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        codex_plus_core::user_scripts::reload_scripts_at(&websocket_url, &self.user_scripts).await
     }
 
     async fn open_devtools(&self) -> anyhow::Result<Value> {
@@ -1044,15 +1085,10 @@ async fn try_inject_with_context(
         .load()
         .unwrap_or_default();
     let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
-    let user_bundle = runtime
-        .user_scripts
-        .build_enabled_bundle()
-        .unwrap_or_default();
-    let new_document_scripts = if user_bundle.is_empty() {
-        vec![script]
-    } else {
-        vec![script, user_bundle]
-    };
+    let new_document_scripts = vec![
+        script,
+        codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string(),
+    ];
     codex_plus_core::bridge::install_bridge(
         websocket_url,
         codex_plus_core::bridge::BRIDGE_BINDING_NAME,
@@ -1337,6 +1373,7 @@ mod tests {
                 ),
             )),
             bridge_context: Arc::new(Mutex::new(None)),
+            browser_monitor: Arc::new(Mutex::new(None)),
         };
 
         hooks.bridge_context(9229, &test_dir).await.unwrap();

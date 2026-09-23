@@ -56,6 +56,7 @@
     settleFramesLeft: 0,
     mo: null,
     ro: null,
+    runtimeStarted: false,
     moObserved: false,
     observed: new WeakSet(),
     elements: new Set(),
@@ -72,4 +73,3 @@
   function conversationViewFindComposerEl() {
     return conversationViewFindByClasses(conversationViewComposerClasses);
   }
-

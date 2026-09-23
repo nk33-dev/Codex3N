@@ -27,6 +27,7 @@ use codex_plus_core::user_scripts::UserScriptManager;
 use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tauri::Emitter;
 
 use crate::install::{self, InstallActionResult, InstallOptions};
 
@@ -82,6 +83,7 @@ struct WeixinQrSession {
 
 struct WeixinRuntime {
     stop: Arc<AtomicBool>,
+    codex_path: codex_plus_core::connect::WeixinCodexPath,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -735,8 +737,42 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    codex_plus_core::watcher::stop_launcher_processes_and_wait();
-    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(request.debug_port);
+    #[cfg(windows)]
+    let launchers = match codex_plus_core::watcher::LauncherExitSnapshot::capture() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            return failed(
+                &format!("无法确认旧启动器身份，未执行重启：{error}"),
+                json!({}),
+            );
+        }
+    };
+    if let Err(error) = stop_codex_plus_for_restart(
+        || {
+            codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
+                request.debug_port,
+            )
+        },
+        || {
+            codex_plus_core::native_browser::wait_for_monitor_shutdown(
+                std::time::Duration::from_secs(10),
+            )
+        },
+        || {
+            #[cfg(windows)]
+            launchers.wait_for_exit(std::time::Duration::from_secs(10))?;
+            #[cfg(not(windows))]
+            codex_plus_core::watcher::stop_launcher_processes_and_wait();
+            Ok(())
+        },
+    ) {
+        return failed(
+            &format!(
+                "Codex 已请求停止，但原生浏览器清理或旧启动器退出未完成；未强制终止启动器或启动新实例：{error}"
+            ),
+            json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
+        );
+    }
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.restart_requested",
@@ -789,6 +825,18 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             )
         }
     }
+}
+
+fn stop_codex_plus_for_restart(
+    stop_codex: impl FnOnce(),
+    wait_native: impl FnOnce() -> anyhow::Result<()>,
+    stop_launcher: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    // The launcher owns native recovery; terminating it first skips that cleanup.
+    stop_codex();
+    wait_native()?;
+    stop_launcher()?;
+    Ok(())
 }
 
 fn restart_codex_plus_after_stop<F>(
@@ -884,11 +932,11 @@ fn sync_active_relay_to_home(
         return codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
             home,
             &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-                codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+                codex_plus_core::protocol_proxy::protocol_proxy_port(),
             ),
             "codex-plus-aggregate",
             codex_plus_core::settings::RelayProtocol::Responses,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             aggregate.session_provider,
         );
     }
@@ -913,7 +961,7 @@ fn sync_active_relay_to_home(
     let mut protocol = relay.protocol;
     if relay.has_model_routes() {
         base_url = codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         );
         protocol = codex_plus_core::settings::RelayProtocol::Responses;
     }
@@ -923,7 +971,7 @@ fn sync_active_relay_to_home(
             &base_url,
             &relay.api_key,
             protocol,
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
             codex_plus_core::relay_config::relay_session_provider_from_config(
                 &relay.config_contents,
             ),
@@ -939,7 +987,7 @@ fn sync_active_relay_to_home(
         &base_url,
         &relay.api_key,
         protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     )
 }
@@ -1040,6 +1088,7 @@ fn requested_launch_status(
         helper_port: Some(request.helper_port),
         codex_app: (!request.app_path.trim().is_empty())
             .then(|| request.app_path.trim().to_string()),
+        aumid: None,
     }
 }
 
@@ -1295,31 +1344,51 @@ pub fn weixin_connect_stop() -> CommandResult<codex_plus_core::connect::WeixinCo
 
 #[tauri::command]
 pub fn find_desktop_codex_cli() -> CommandResult<Value> {
-    let settings = match SettingsStore::default().load() {
-        Ok(settings) => settings,
-        Err(error) => {
+    // Windows 标准路径：桌面版在用户目录维护、可直接运行的 CLI。
+    // Store 包目录（WindowsApps）内的资源受系统保护，第三方进程无法执行（#2028），
+    // 因此这里不再返回包内路径，避免把必然失败的路径写进设置。
+    #[cfg(windows)]
+    {
+        return match codex_plus_core::app_paths::find_desktop_managed_codex_cli() {
+            Some(path) => ok(
+                "已填入桌面版内置 Codex CLI。",
+                json!({ "path": path.to_string_lossy() }),
+            ),
+            None => failed(
+                "未找到可运行的桌面版内置 Codex CLI。请先通过 Codex++ 启动一次 Codex 桌面版后重试，\
+                 或将「Codex CLI 路径」留空自动查找。",
+                json!({ "path": null }),
+            ),
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let settings = match SettingsStore::default().load() {
+            Ok(settings) => settings,
+            Err(error) => {
+                return failed(
+                    &format!("读取 Codex 应用设置失败：{error}"),
+                    json!({ "path": null }),
+                );
+            }
+        };
+        let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
+            None,
+            Some(settings.codex_app_path.as_str()),
+        ) else {
+            return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
+        };
+        let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
             return failed(
-                &format!("读取 Codex 应用设置失败：{error}"),
+                "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
                 json!({ "path": null }),
             );
-        }
-    };
-    let Some(app_dir) = codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
-        None,
-        Some(settings.codex_app_path.as_str()),
-    ) else {
-        return failed("未找到 Codex Desktop 应用。", json!({ "path": null }));
-    };
-    let Some(path) = codex_plus_core::app_paths::find_bundled_codex_cli(&app_dir) else {
-        return failed(
-            "已找到 Codex Desktop，但包内没有可用的 Codex CLI。",
-            json!({ "path": null }),
-        );
-    };
-    ok(
-        "已填入桌面版内置 Codex CLI。",
-        json!({ "path": path.to_string_lossy() }),
-    )
+        };
+        ok(
+            "已填入桌面版内置 Codex CLI。",
+            json!({ "path": path.to_string_lossy() }),
+        )
+    }
 }
 
 fn spawn_weixin_connect(
@@ -1347,8 +1416,10 @@ fn spawn_weixin_connect(
     if runtime.is_some() {
         anyhow::bail!("微信连接已在运行或正在停止");
     }
+    let codex_path = codex_plus_core::connect::WeixinCodexPath::new(&config.codex_path);
     *runtime = Some(WeixinRuntime {
         stop: Arc::clone(&stop),
+        codex_path: codex_path.clone(),
     });
     drop(runtime);
     let status = weixin_status();
@@ -1361,9 +1432,13 @@ fn spawn_weixin_connect(
     let task_status = Arc::clone(&status);
     let task_stop = Arc::clone(&stop);
     tauri::async_runtime::spawn(async move {
-        if let Err(error) =
-            codex_plus_core::connect::run_weixin_connect(config, stop, Arc::clone(&task_status))
-                .await
+        if let Err(error) = codex_plus_core::connect::run_weixin_connect_with_codex_path(
+            config,
+            stop,
+            Arc::clone(&task_status),
+            codex_path,
+        )
+        .await
             && let Ok(mut current) = task_status.lock()
         {
             current.state = "error".to_string();
@@ -1412,6 +1487,11 @@ fn empty_weixin_qr_payload(status: &str) -> WeixinQrPayload {
         linked_user_id: String::new(),
         has_token: false,
     }
+}
+
+#[tauri::command]
+pub fn native_browser_status() -> codex_plus_core::native_browser::BrowserStatus {
+    codex_plus_core::native_browser::read_status()
 }
 
 #[tauri::command]
@@ -1482,7 +1562,14 @@ pub fn save_settings(settings: BackendSettings) -> CommandResult<SettingsPayload
         );
     }
     match store.save(&settings) {
-        Ok(()) => settings_payload("设置已保存。", "设置保存后重新读取失败"),
+        Ok(()) => {
+            if let Ok(runtime) = weixin_runtime().lock()
+                && let Some(runtime) = runtime.as_ref()
+            {
+                runtime.codex_path.set(&settings.weixin_connect_codex_path);
+            }
+            settings_payload("设置已保存。", "设置保存后重新读取失败")
+        }
         Err(error) => {
             let _ = codex_plus_core::dream_skin::sync_default_dream_skin_base_theme(
                 previous.enhancements_enabled && previous.codex_app_dream_skin_enabled,
@@ -2415,8 +2502,13 @@ pub async fn apply_session_index_cleanup(
     }
 }
 
+const PROVIDER_SYNC_PROGRESS_EVENT: &str = "provider-sync-progress";
+
 #[tauri::command]
-pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResult<Value> {
+pub async fn sync_providers_now(
+    window: tauri::WebviewWindow,
+    target_provider: Option<String>,
+) -> CommandResult<Value> {
     let target_provider = target_provider
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
@@ -2438,8 +2530,19 @@ pub async fn sync_providers_now(target_provider: Option<String>) -> CommandResul
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
     prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
+    let progress_window = window.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_data::run_provider_sync_with_target(None, target_provider.as_deref())
+        codex_plus_data::run_provider_sync_with_target_and_progress(
+            None,
+            target_provider.as_deref(),
+            |progress| {
+                let _ = progress_window.emit_to(
+                    progress_window.label(),
+                    PROVIDER_SYNC_PROGRESS_EVENT,
+                    progress,
+                );
+            },
+        )
     })
     .await
     .map_err(|error| anyhow::anyhow!("provider sync task failed: {error}"));
@@ -2611,6 +2714,48 @@ pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
             user_scripts,
         },
     )
+}
+
+#[tauri::command]
+pub async fn reload_user_scripts() -> CommandResult<SettingsPayload> {
+    let debug_port = StatusStore::default()
+        .load_latest()
+        .ok()
+        .flatten()
+        .and_then(|status| status.debug_port)
+        .unwrap_or_else(default_debug_port);
+    let manager = default_user_script_manager();
+    match codex_plus_core::user_scripts::reload_live_scripts(debug_port, &manager).await {
+        Ok(user_scripts) => {
+            let page_reload = user_scripts["reload_mode"] == "page";
+            let script_failed = user_scripts["scripts"]
+                .as_array()
+                .is_some_and(|scripts| scripts.iter().any(|script| script["status"] == "failed"));
+            let payload = SettingsPayload {
+                settings: SettingsStore::default().load().unwrap_or_default(),
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts,
+            };
+            if script_failed {
+                failed("部分脚本执行失败，请查看本地脚本状态。", payload)
+            } else {
+                ok(
+                    if page_reload {
+                        "已请求刷新 Codex 页面以安全重载旧脚本。"
+                    } else {
+                        "用户脚本已热重载。"
+                    },
+                    payload,
+                )
+            }
+        }
+        Err(error) => failed(
+            &format!("用户脚本热重载失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
 }
 
 #[tauri::command]
@@ -4165,7 +4310,7 @@ pub fn apply_relay_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
@@ -4210,11 +4355,11 @@ fn apply_aggregate_relay_injection_to_home(
     match codex_plus_core::relay_config::apply_relay_config_to_home_with_session_provider(
         home,
         &codex_plus_core::protocol_proxy::local_responses_proxy_base_url(
-            codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+            codex_plus_core::protocol_proxy::protocol_proxy_port(),
         ),
         "codex-plus-aggregate",
         codex_plus_core::settings::RelayProtocol::Responses,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         session_provider,
     ) {
         Ok(result) => {
@@ -4310,7 +4455,7 @@ pub fn apply_pure_api_injection() -> CommandResult<RelayPayload> {
         &relay.base_url,
         &relay.api_key,
         relay.protocol,
-        codex_plus_core::protocol_proxy::DEFAULT_PROTOCOL_PROXY_PORT,
+        codex_plus_core::protocol_proxy::protocol_proxy_port(),
         codex_plus_core::relay_config::relay_session_provider_from_config(&relay.config_contents),
     ) {
         Ok(result) => {
@@ -5717,10 +5862,16 @@ base_url = "https://example.invalid/v1"
         let parsed = config.parse::<toml_edit::DocumentMut>().unwrap();
         let auth = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
         assert!(parsed.get("model_provider").is_none());
-        assert_eq!(
-            parsed["model_providers"]["custom"]["base_url"].as_str(),
-            Some("https://old.example/v1")
+        // 切回官方后残留的 base_url 会让请求继续发往中转站（issue #2216），
+        // 所以整段中转站 provider 都要清掉，而不是只清掉「选择」。
+        assert!(
+            parsed
+                .get("model_providers")
+                .and_then(|providers| providers.get("custom"))
+                .is_none(),
+            "leftover relay provider must be removed: {config}"
         );
+        assert!(!config.contains("old.example/v1"));
         assert!(!auth.contains("OPENAI_API_KEY"));
         assert!(auth.contains("auth_mode"));
     }
@@ -5755,7 +5906,43 @@ base_url = "https://example.invalid/v1"
         assert!(config.contains(r#"experimental_bearer_token = "codex-plus-aggregate""#));
     }
 
+    /// 回归（issue #1604）：用户点「重启 Codex++」走的就是这条同步路径。
+    /// 现场遗留的 0 字节 auth.json 必须被修复成合法 JSON，否则仍然停在登录页。
     #[test]
+    fn active_aggregate_sync_repairs_empty_auth_json() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("auth.json"), "").unwrap();
+        let settings = BackendSettings {
+            relay_profiles_enabled: true,
+            active_relay_id: "aggregate".to_string(),
+            active_aggregate_relay_id: "aggregate".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "aggregate".to_string(),
+                relay_mode: codex_plus_core::settings::RelayMode::Aggregate,
+                ..RelayProfile::default()
+            }],
+            aggregate_relay_profiles: vec![codex_plus_core::settings::AggregateRelayProfile {
+                id: "aggregate".to_string(),
+                name: "Aggregate".to_string(),
+                session_provider: codex_plus_core::settings::RelaySessionProvider::Custom,
+                strategy: codex_plus_core::settings::AggregateRelayStrategy::Failover,
+                members: Vec::new(),
+                routes: Vec::new(),
+            }],
+            ..BackendSettings::default()
+        };
+
+        sync_active_relay_to_home(&settings, temp.path()).unwrap();
+
+        let raw = std::fs::read_to_string(temp.path().join("auth.json")).unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&raw).expect("重启同步后 auth.json 必须是合法 JSON");
+        assert_eq!(
+            auth.get("OPENAI_API_KEY").and_then(|item| item.as_str()),
+            Some("codex-plus-aggregate")
+        );
+    }
+
     fn failed_active_relay_sync_does_not_spawn_or_change_live_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();
@@ -5794,6 +5981,41 @@ base_url = "https://example.invalid/v1"
             std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
             "{\"old\":true}\n"
         );
+    }
+
+    #[test]
+    fn restart_stops_codex_then_waits_for_native_cleanup_before_launcher() {
+        let events = std::cell::RefCell::new(Vec::new());
+        stop_codex_plus_for_restart(
+            || events.borrow_mut().push("codex"),
+            || {
+                events.borrow_mut().push("cleanup");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("launcher");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*events.borrow(), ["codex", "cleanup", "launcher"]);
+    }
+
+    #[test]
+    fn restart_does_not_kill_launcher_when_native_cleanup_is_still_running() {
+        let stopped = std::cell::Cell::new(false);
+        let killed = std::cell::Cell::new(false);
+        let result = stop_codex_plus_for_restart(
+            || stopped.set(true),
+            || anyhow::bail!("cleanup still running"),
+            || {
+                killed.set(true);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(stopped.get());
+        assert!(!killed.get());
     }
 
     #[test]

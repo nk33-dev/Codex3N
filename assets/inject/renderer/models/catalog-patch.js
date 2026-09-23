@@ -72,6 +72,12 @@
       stateApiFromModule: codexStateApiFromModule,
       dispatcherFromModule: codexServiceTierDispatcherFromModule,
       patchAppServerClient: patchAppServerModelRequestClient,
+      locateAppServerClientBreakpoint: locateCodexAppServerClientBreakpoint,
+      installAppServerClientPrototypePatch: installCodexAppServerClientPrototypePatch,
+      appServerClientPrototypeState: () => ({
+        hasClass: typeof window.__codexPlusAppServerClientClass === "function",
+        installed: window.__codexPlusAppServerClientPrototypePatchInstalled || null,
+      }),
     };
     return;
   }
@@ -604,6 +610,22 @@
   function patchAppServerModelRequestClient(client) {
     if (!client || typeof client.sendRequest !== "function") return false;
     if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
+    try {
+      if (!Object.isExtensible(client)) return false;
+      for (const key of [
+        "__codexPlusModelRequestPatch",
+        "__codexPlusModelOriginalSendRequest",
+        "__codexPlusThreadModels",
+        "__codexPlusServiceTierOriginalPrewarmThreadStart",
+        "sendRequest",
+        "prewarmThreadStart",
+      ]) {
+        const descriptor = Object.getOwnPropertyDescriptor(client, key);
+        if (descriptor && descriptor.writable === false && typeof descriptor.set !== "function") return false;
+      }
+    } catch {
+      return false;
+    }
     const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
@@ -623,9 +645,10 @@
           && !codexRemoteSessionTargetProvider()) {
         await loadCodexModelCatalog();
       }
-      const nextParams = providerRefreshFailed
+      const providerParams = providerRefreshFailed
         ? params
         : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
       const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
         client,
         originalSendRequest,
@@ -645,7 +668,134 @@
       await loadCodexModelCatalog();
       return patchAppServerModelResult(requestMethod, result);
     };
+    if (typeof client.prewarmThreadStart === "function"
+        && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
+      const originalPrewarmThreadStart = client.prewarmThreadStart.bind(client);
+      client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
+      client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
+        return originalPrewarmThreadStart(applyCodexServiceTierRequestOnly("thread/start", params), options);
+      };
+    }
     client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    return true;
+  }
+
+  function locateCodexAppServerClientBreakpoint(text) {
+    if (typeof text !== "string" || !text) return null;
+    const markerIdx = text.indexOf(codexAppServerClientCaptureMarker);
+    if (markerIdx < 0) return null;
+    const anchorIdx = text.lastIndexOf(codexAppServerClientCaptureAnchor, markerIdx);
+    if (anchorIdx < 0 || markerIdx - anchorIdx > 220) return null;
+    const braceIdx = text.indexOf("{", anchorIdx);
+    if (braceIdx < 0) return null;
+    let lineNumber = 0;
+    let lastNewline = -1;
+    for (let index = 0; index < braceIdx; index += 1) {
+      if (text.charCodeAt(index) === 10) {
+        lineNumber += 1;
+        lastNewline = index;
+      }
+    }
+    return { lineNumber, columnNumber: braceIdx - lastNewline - 1 };
+  }
+
+  let codexAppServerClientCaptureStarted = false;
+  async function installCodexAppServerClientCapture() {
+    if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
+    codexAppServerClientCaptureStarted = true;
+    try {
+      if (typeof fetch !== "function") return;
+      const url = codexAppAssetUrl("app-initial-") || await codexAppAssetUrlFromScriptText("app-initial-");
+      if (!url) {
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "asset_url_missing" });
+        return;
+      }
+      const response = await fetch(url);
+      const text = response.ok ? await response.text() : "";
+      const location = locateCodexAppServerClientBreakpoint(text);
+      if (!location) {
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
+        return;
+      }
+      const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      window.__codexPlusAppServerClientCapture = { urlRegex, ...location };
+      sendCodexPlusDiagnostic("app_server_client_capture_located", location);
+    } catch (error) {
+      codexAppServerClientCaptureStarted = false;
+      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
+  }
+
+  function installCodexAppServerClientPrototypePatch() {
+    if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
+    if (!codexPlusModelUnlockEnabled()
+        && !(codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
+        && !codexPlusSettings().serviceTierControls) return false;
+    const klass = window.__codexPlusAppServerClientClass;
+    if (typeof klass !== "function" || !klass.prototype) return false;
+    const proto = klass.prototype;
+    if (proto.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
+      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      return true;
+    }
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "sendRequest");
+      if (!descriptor || descriptor.writable === false) {
+        sendCodexPlusDiagnostic("app_server_client_prototype_patch_skipped", {});
+        window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+        return false;
+      }
+    } catch {
+      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      return false;
+    }
+    const originalSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
+    proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
+    proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const client = this;
+      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      let providerRefreshFailed = false;
+      if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderPatchEnabled()
+          && window.__codexSessionDeleteBridge) {
+        providerRefreshFailed = !await loadBackendSettingsState();
+        if (providerRefreshFailed) sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
+      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderOverrideEnabled()
+          && !codexRemoteSessionTargetProvider()) {
+        await loadCodexModelCatalog();
+      }
+      const providerParams = providerRefreshFailed
+        ? params : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
+      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
+        client, originalSendRequest.bind(client), method, nextParams, options
+      );
+      const result = await originalSendRequest.call(client, method, nextParams, options);
+      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      if (modelContextRefresh !== false && threadState.threadId && threadState.model
+          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
+        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
+      }
+      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+      return patchAppServerModelResult(requestMethod, result);
+    };
+    if (typeof proto.prewarmThreadStart === "function"
+        && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {
+      const originalPrewarmThreadStart = proto.prewarmThreadStart;
+      proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
+      proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
+        return originalPrewarmThreadStart.call(this, applyCodexServiceTierRequestOnly("thread/start", params), options);
+      };
+    }
+    proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+    sendCodexPlusDiagnostic("app_server_client_prototype_patch_installed", {});
     return true;
   }
 
@@ -671,16 +821,18 @@
     if (appServerModelRequestPatchMissCount === 1) {
       sendCodexPlusDiagnostic(event, detail);
     }
-    if (codexRemoteSessionProviderPatchEnabled()) {
-      scheduleAppServerModelRequestPatchRetry();
-      return;
-    }
     if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
       appServerModelRequestPatchDisabled = true;
+      clearTimeout(appServerModelRequestPatchRetryTimer);
+      appServerModelRequestPatchRetryTimer = 0;
       sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
         misses: appServerModelRequestPatchMissCount,
         lastEvent: event,
       });
+      return;
+    }
+    if (!appServerModelRequestPatchDisabled) {
+      scheduleAppServerModelRequestPatchRetry();
     }
   }
 
@@ -741,8 +893,10 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
-        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())) {
+        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
+        || codexPlusSettings().serviceTierControls) {
       installAppServerModelRequestPatch();
+      void installCodexAppServerClientCapture().catch(() => {});
     }
     void installDictationSupportPatch();
     if (!codexPlusModelUnlockEnabled()) return;

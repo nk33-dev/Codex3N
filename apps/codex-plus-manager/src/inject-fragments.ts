@@ -37,6 +37,7 @@ export const RENDERER_FRAGMENT_PATHS = [
   "renderer/models/service-tier-badge.js",
   "renderer/shell/conversation-view.js",
   "renderer/shell/scan-lightweight.js",
+  "renderer/shell/usage-policy.js",
   "renderer/shell/zed-remote.js",
   "renderer/sessions/copy-menu.js",
   "renderer/sessions/scan.js",

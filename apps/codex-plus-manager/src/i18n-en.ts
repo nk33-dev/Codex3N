@@ -289,6 +289,8 @@ export const EN_PLAIN: Record<string, string> = {
   "上次修复结果": "Last repair result",
   "上次更新结果": "Last update result",
   "上游协议": "Upstream protocol",
+  "纯标准协议": "Standard protocol only",
+  "强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。": "Force the standard OpenAI protocol without vendor-specific reasoning parameters, for third-party gateways that accept only standard OpenAI fields and reject vendor-bundled private parameters.",
   "上一页": "Previous page",
   "下一页": "Next page",
   "下载并运行安装包": "Download and run installer",
@@ -442,6 +444,7 @@ export const EN_PLAIN: Record<string, string> = {
   "删除供应商": "Delete provider",
   "删除已选": "Delete selected",
   "删除扩展项": "Delete entry",
+  "删除这一项": "Remove this entry",
   "删除模型": "Delete model",
   "刷新": "Refresh",
   "刷新会话": "Refresh sessions",
@@ -449,6 +452,8 @@ export const EN_PLAIN: Record<string, string> = {
   "刷新市场": "Refresh marketplace",
   "刷新当前页面": "Refresh current page",
   "刷新本地": "Refresh local",
+  "热重载脚本": "Reload scripts",
+  "应用本地脚本及开关；旧脚本可能需要刷新 Codex 页面": "Apply local scripts and switches; legacy scripts may require refreshing the Codex page",
   "刷新项目": "Refresh projects",
   "加入当前工作区": "Add to current workspace",
   "包含版本、路径、设置和平台信息": "Includes version, paths, settings and platform info",
@@ -716,7 +721,11 @@ export const EN_PLAIN: Record<string, string> = {
   "正在准备安装包下载…": "Preparing installer download…",
   "下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。": "The download or launch is taking longer than usual. Keep this window open; the status will update when it finishes or fails.",
   "正在写入 Codex 配置…": "Writing Codex config…",
-  "正在写入修复与备份…": "Writing repairs and backups…",
+  "正在创建修复备份…": "Creating a repair backup…",
+  "正在写入会话修复…": "Writing session repairs…",
+  "正在更新会话索引…": "Updating session indexes…",
+  "正在回滚已写入的会话…": "Rolling back session changes…",
+  "正在完成历史会话修复…": "Finishing historical session repairs…",
   "正在删除…": "Deleting…",
   "正在扫描历史会话与索引…": "Scanning historical sessions and indexes…",
   "正在检查会话 provider 标记…": "Checking session provider tags…",
@@ -745,8 +754,8 @@ export const EN_PLAIN: Record<string, string> = {
   "混入 API": "Mixed-in API",
   "混入 API KEY": "Mix in API KEY",
   "关闭官方低额度提示": "Hide official low-usage alert",
-  "关闭后仍可从 Codex 左下角账户菜单查看官方剩余额度。":
-    "When hidden, you can still view the official quota from the account menu in the lower-left corner of Codex.",
+  "只隐藏低额度和已用完提示，不改变发送限制。左下角账户菜单仍显示官方剩余额度。":
+    "Only hides low-usage and exhausted prompts. It does not change send restrictions. The account menu in Codex's lower-left corner still shows the official remaining quota.",
   "混入 API Key": "Mix in API Key",
   "添加自定义供应商": "Add custom provider",
   "系统默认配置": "System default configuration",
@@ -759,6 +768,7 @@ export const EN_PLAIN: Record<string, string> = {
   "正在读取配置…": "Reading configuration…",
   "从 Codex 默认目录读取 config.toml 和 auth.json，检查后保存为独立供应商。": "Read config.toml and auth.json from the default Codex directory, then review and save as a separate provider.",
   "添加模型": "Add model",
+  "添加请求头": "Add request header",
   "添加聚合供应商": "Add aggregate provider",
   "清空模型": "Clear models",
   "清空选择": "Clear selection",
@@ -979,6 +989,8 @@ export const EN_PLAIN: Record<string, string> = {
   "例：gpt-5.6-luna": "Example: gpt-5.6-luna",
   "留空保持原模型名": "Leave empty to keep the original model name",
   "删除模型路由": "Delete model route",
+  "原生 Edge / Chrome 请求标识兼容（实验）": "Native Edge / Chrome request identity compatibility (experimental)",
+  "仅 Windows Edge / Chrome；下次启动 Codex++ 时应用。扩展可能持久保留请求标识。": "Windows Edge / Chrome only; applies on the next Codex++ launch. Extensions may retain their request identity.",
   "请先创建一个 Responses API 目标供应商": "Create a Responses API target provider first",
   "添加模型路由": "Add model route",
   "单模型路由需要填写模型名称和目标供应商。": "Each model route requires a model name and target provider.",
@@ -1032,7 +1044,6 @@ export const EN_PLAIN: Record<string, string> = {
     "❌ Batch description parse failed (should not trigger for single-image tests)",
   "❌ HTTP 客户端构建失败": "❌ Failed to build the HTTP client",
   "❌ 未知错误": "❌ Unknown error",
-
   // 会话导入与分享 / Dream Skin 社区 / 悬浮球与回答大纲 / 脚本市场排版 /
   // 模型配置与 Sub2API 倍率 等新增条目
   "导入 Codex 会话": "Import Codex sessions",
@@ -1101,6 +1112,14 @@ export const EN_PLAIN: Record<string, string> = {
   "安全提示：网页链接中的自定义 config.toml 和 auth.json 不会执行；管理工具只会使用上方字段生成受管配置。": "Security note: custom config.toml and auth.json from a web link are never executed; the manager only uses the fields above to build the managed configuration.",
   "保存此模型": "Save this model",
   "更新此模型配置": "Update this model configuration",
+  // issue #1685：供应商自定义上游请求头。
+  "自定义请求头": "Custom request headers",
+  "请求头名称": "Header name",
+  "请求头值": "Header value",
+  "自定义请求头会同时用于测试连接、模型列表与实际代理请求。":
+    "Custom headers apply to the connection test, the model list and proxied requests alike.",
+  "Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。":
+    "Transport headers such as Host and Content-Length are managed by the proxy and cannot be overridden. When Authorization is set here it takes precedence and the API key is not injected.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -1183,7 +1202,6 @@ export const EN_TEMPLATE: Record<string, string> = {
   "第 {0} 页": "Page {0}",
   "第 {0} 页，每页最多 {1} 条，按更新时间倒序显示": "Page {0}, up to {1} sessions per page, newest first",
   "打开选择器失败：{0}": "Failed to open the picker: {0}",
-  "正在同步到 {0}…": "Syncing to {0}…",
   "发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。":
     "Found {0} candidate record(s) that exist only in session_index.jsonl and have no source in the local databases or rollout files. They may still represent cloud-only or not-yet-persisted tasks, so review each item. Titles are shown only for preview; cleanup is decided by thread ID and data sources. Fully exit Codex App / ChatGPT before cleanup.",
   "确认清理 {0} 条": "Confirm cleanup of {0}",
