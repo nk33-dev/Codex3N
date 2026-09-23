@@ -97,8 +97,11 @@ if (-not $SkipChecks) {
     Invoke-Step "cargo fmt --all --check" { cargo fmt --all --check }
     Invoke-Step "npm test" { Push-Location $ManagerDir; try { npm test } finally { Pop-Location } }
     Invoke-Step "npm run check" { Push-Location $ManagerDir; try { npm run check } finally { Pop-Location } }
+    Invoke-Step "npm audit" { Push-Location $ManagerDir; try { npm audit --audit-level=high --registry=https://registry.npmjs.org } finally { Pop-Location } }
     Invoke-Step "npm run vite:build" { Push-Location $ManagerDir; try { npm run vite:build } finally { Pop-Location } }
     Invoke-Step "cargo check --workspace" { cargo check --workspace }
+    Invoke-Step "relay Clippy" { cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings }
+    Invoke-Step "cargo audit" { cargo audit }
     # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
     Invoke-Step "cargo test --workspace" { cargo test --workspace --no-fail-fast }
 }

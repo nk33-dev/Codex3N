@@ -3681,18 +3681,14 @@ body {
 
 .weixin-qr-image {
   width: min(320px, 100%);
+  height: auto;
+  display: block;
   margin-bottom: 14px;
   overflow: hidden;
   border: 1px solid hsl(var(--border));
   border-radius: 6px;
   background: #fff;
   padding: 10px;
-}
-
-.weixin-qr-image svg {
-  display: block;
-  width: 100%;
-  height: auto;
 }
 
 @media (max-width: 760px) {

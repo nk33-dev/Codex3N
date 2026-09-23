@@ -769,9 +769,6 @@ fn launcher_applies_codexplusplus_window_icon_after_packaged_activation() {
 fn launcher_no_longer_contains_mobile_control_runtime() {
     let launcher_source = include_str!("../src/launcher.rs");
     let settings_source = include_str!("../src/settings.rs");
-    let workspace_toml = include_str!("../../../Cargo.toml");
-
-    assert!(!workspace_toml.contains("apps/codex-plus-mobile-relay"));
     assert!(!launcher_source.contains("MobileRelay"));
     assert!(!launcher_source.contains("mobile_relay"));
     assert!(!launcher_source.contains("\"/mobile\""));

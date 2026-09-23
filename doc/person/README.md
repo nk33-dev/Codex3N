@@ -9,6 +9,7 @@
 | 会话分页、隐藏、删除、无效会话清理与备份 | [sessions.md](sessions.md) |
 | 去广告、增强设置保存与悬浮球 | [enhancements.md](enhancements.md) |
 | 管理器加载与后台刷新、配置安装、注入拼装 | [runtime.md](runtime.md) |
+| WebView 与 mobile relay 安全边界、CI 门禁 | [security.md](security.md) |
 | 上游同步、重构迁移、数据恢复与发布步骤 | [maintenance.md](maintenance.md) |
 
 ## 维护约定

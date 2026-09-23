@@ -12,6 +12,7 @@ function section(start: string, end: string) {
 }
 
 const apiModels = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
+const sortedModels = ["gpt-6-astra", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.3-codex-spark", "gpt-image-2", "gpt-image-1.5"];
 function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativeModels = true, models = apiModels } = {}) {
   const requests: Array<{ hostId: string; method: string; params: unknown }> = [];
   const invalidations: unknown[] = [];
@@ -77,7 +78,7 @@ test("从已挂载作用域发现 RPC，8 个供应商模型进入原生 model/l
   const clients = app.collectScopedAppServerRequestCandidates([{ renamedRpcSignal: app.signal, ignored }]);
   assert.equal(clients.length, 1);
   const result = await app.root.forHost("local").sendRequest("model/list", { limit: 100 });
-  assert.deepEqual(result.data.map((item: { model: string }) => item.model), apiModels);
+  assert.deepEqual(result.data.map((item: { model: string }) => item.model), sortedModels);
   assert.equal(result.nextCursor, "next-page");
   assert.equal(result.data.find((item: { model: string }) => item.model === "gpt-5.5").isDefault, true);
   assert.equal(app.writes(), 0);
@@ -138,11 +139,11 @@ test("默认混入原生模型，取消及重新勾选后可切换列表且不�
   const client = app.root.forHost("local");
   const names = async () => (await client.sendRequest("model/list", {})).data.map((item: { model: string }) => item.model);
   const initial = await names();
-  assert.deepEqual(initial, [...apiModels.slice(0, 5), "gpt-5.2", ...apiModels.slice(5)]);
+  assert.deepEqual(initial, [...sortedModels.slice(0, 6), "gpt-5.2", ...sortedModels.slice(6)]);
   assert.equal(new Set(initial).size, 9);
   assert.ok(initial.includes("gpt-5.2"));
   app.setIncludeNativeModels(false);
-  assert.deepEqual(await names(), apiModels);
+  assert.deepEqual(await names(), sortedModels);
   app.setIncludeNativeModels(true);
   assert.deepEqual(await names(), initial);
 });

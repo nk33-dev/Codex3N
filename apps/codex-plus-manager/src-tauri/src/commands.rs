@@ -1,7 +1,9 @@
 mod dream_skin;
+mod external_url;
 mod provider_import;
 mod shared;
 pub use dream_skin::*;
+pub use external_url::*;
 pub use provider_import::*;
 pub use shared::*;
 
@@ -2693,18 +2695,6 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
-pub fn open_external_url(url: String) -> CommandResult<Value> {
-    let trimmed = url.trim();
-    if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
-        return failed("只允许打开 http 或 https 链接。", json!({}));
-    }
-    match open_url(trimmed) {
-        Ok(()) => ok("已在系统浏览器打开链接。", json!({ "url": trimmed })),
-        Err(error) => failed(&format!("打开链接失败：{error}"), json!({ "url": trimmed })),
-    }
-}
-
-#[tauri::command]
 pub async fn install_entrypoints() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::install_entrypoints)
         .await
@@ -4591,21 +4581,6 @@ fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
         Ok(contents) => Ok(contents),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
         Err(error) => Err(error.into()),
-    }
-}
-
-fn open_url(url: &str) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    {
-        codex_plus_core::windows_open_url(url)
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("open")
-            .arg(url)
-            .spawn()
-            .map(|_| ())
-            .map_err(|error| anyhow::anyhow!("启动系统浏览器失败：{error}"))
     }
 }
 
@@ -6868,13 +6843,5 @@ model_reasoning_effort = "high"
                 .relay_context_config_contents
                 .contains("[mcp_servers.context7]")
         );
-    }
-
-    #[test]
-    fn open_external_url_rejects_non_http_urls() {
-        let result = open_external_url("file:///C:/Windows/win.ini".to_string());
-
-        assert_eq!(result.status, "failed");
-        assert!(result.message.contains("只允许打开 http 或 https 链接"));
     }
 }
