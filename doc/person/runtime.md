@@ -11,6 +11,7 @@
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
 - 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入、会话分享和皮肤链接。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
+- 启动器在已启用且保存微信连接凭据时，以 `--background` 启动管理器；管理器 `lib.rs` 隐藏后台窗口，并经 `start_weixin_connect_from_saved_settings` 恢复连接。用户主动打开管理器时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
 - `weixin-qr-polling.ts` 是扫码轮询的唯一调度入口，复用 `createVisibleRefresh`，但不绑定窗口可见性。等待和已扫码每次响应完成后隔 1 秒补查；确认、过期、业务失败或请求异常均停止，异常只提示一次，不自动重试。新二维码或取消会销毁旧任务，未返回结果与错误都不再提交。
 - 扫码确认后先补读设置和连接状态，再提交二维码终态，避免 effect 清理使补读失效。每次异步返回均检查当前任务；补读期间编辑过的设置草稿不被覆盖。验证见 `weixin-qr-polling.test.ts` 的慢请求、销毁、重新登录和终态测试。
 - 浏览器验证使用真实 React 页面配合 Tauri 官方 IPC mock，覆盖供应商切换、复制、删除、拖拽排序，以及扫码确认、重新扫码和过期提示；mock 数据不代表真实微信登录或原生文件写入已实测。后端命令由 Rust 集成测试验证。日常界面验证优先使用浏览器，不通过 Windows 桌面自动化占用用户输入。
@@ -55,6 +56,8 @@
 两个逃生开关都默认关闭，只在注入脚本无法通过校验时临时使用，放行会写诊断日志：`CODEX_PLUS_HELPER_BIND` 配 `CODEX_PLUS_HELPER_ALLOW_REMOTE=1` 放开非回环绑定与对端；`CODEX_PLUS_HELPER_ALLOW_WEB_ORIGIN=1` 放行任意网页来源。同步上游时不得把闸门删回无条件 `Access-Control-Allow-Origin: *`。真机排查：在诊断日志里搜 `helper.rejected_web_origin`，其中 `origin` 字段就是被拒的真实来源；若出现预期外的值，先临时放行恢复功能，再改成共享令牌方案。验证：`launcher.rs` 的 `helper_*` 单测，以及 `tests/launcher.rs` 的 `default_helper_rejects_web_origin_requests` / `default_helper_omits_wildcard_cors_for_requests_without_origin`。
 
 ## 注入脚本分片
+
+上游 Taskboard 是 `apps/codex-taskboard` 的独立应用，使用自己的注入脚本和构建流程；它不属于个人版 `assets.rs` 的管理器注入拼装入口，不要把其运行时代码复制到渲染分片。
 
 - 注入脚本按子系统拆成 `assets/inject/renderer/**` 分片，唯一拼装入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`；悬浮球的 `assets/inject/floating-panel/**` 是上游既有分片，规则相同。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。
 - 分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。新增分片只能插到正确位置，不能调整已有顺序。粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
