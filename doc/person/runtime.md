@@ -2,6 +2,8 @@
 
 记录管理器生命周期、配置安装和注入拼装的当前入口。上游同步与发布步骤见[维护流程](maintenance.md)。
 
+管理器路由副标题从 `App.tsx` 经 `route-subtitle.ts` 提供；外链命令从 `commands.rs` 经 `commands/external_url.rs` 注册。两处沿用原入口，不增加独立监听或重复命令。
+
 ## 管理器加载和后台刷新
 
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描、环境检查和远端插件状态进入对应页面才加载。

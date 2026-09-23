@@ -15,12 +15,13 @@ test("同家族数字降序、同版本文字升序，不优先指定型号", ()
   assert.equal(sort(models, nameOf), false);
 });
 
-test("官方已有顺序优先，额外模型再按通用规则排序", () => {
+test("官方已有条目和新增型号统一按版本排序", () => {
   const official = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5"];
-  const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "custom-2", "custom-10"];
-  assert.equal(sort(models, nameOf, official), true);
-  assert.deepEqual(models, [...official, "custom-10", "custom-2"]);
-  assert.equal(sort(models, nameOf, official), false);
+  const models = [...official, "custom-2", "custom-10"];
+  models.push("gpt-6-luna", "gpt-6-sol");
+  assert.equal(sort(models, nameOf), true);
+  assert.deepEqual(models, ["custom-10", "custom-2", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5"]);
+  assert.equal(sort(models, nameOf), false);
 });
 
 test("不同家族统一按名称排序，不把 GPT 固定置顶", () => {

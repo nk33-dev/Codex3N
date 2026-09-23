@@ -280,7 +280,7 @@ export function WeixinConnectScreen({
           </CardHeader>
           <CardContent>
             {qr.qrSvg ? (
-              <div className="weixin-qr-image" dangerouslySetInnerHTML={{ __html: qr.qrSvg }} />
+              <img className="weixin-qr-image" src={`data:image/svg+xml,${encodeURIComponent(qr.qrSvg)}`} alt={t("微信扫码登录")} />
             ) : null}
             <div className="weixin-qr-content">{qr.qrContent}</div>
             <div className="toolbar">

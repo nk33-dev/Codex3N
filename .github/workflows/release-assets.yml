@@ -62,7 +62,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -76,6 +76,10 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run check
 
+      - name: npm dependency audit
+        working-directory: apps/codex-plus-manager
+        run: npm audit --audit-level=high --registry=https://registry.npmjs.org
+
       # codex-plus-manager 里的 tauri::generate_context! 会在编译期检查
       # tauri.conf.json 的 frontendDist（"../dist"）是否存在，缺目录会直接
       # proc macro panic；所以 cargo test 之前必须先产出前端产物。
@@ -85,6 +89,15 @@ jobs:
 
       - name: Rust formatting
         run: cargo fmt --all --check
+
+      - name: Relay Clippy gate
+        run: cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings
+
+      - name: Install Rust security audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Rust dependency audit
+        run: cargo audit
 
       # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
       - name: Rust tests

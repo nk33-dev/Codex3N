@@ -3,17 +3,24 @@ use std::env;
 use std::net::SocketAddr;
 use std::str;
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use futures_util::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
-use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::accept_hdr_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+
+const TOKEN_LIFETIME: Duration = Duration::from_secs(600);
+const MAX_MESSAGE_SIZE: usize = 64 * 1024;
+const MAX_MESSAGES_PER_SECOND: u32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
@@ -43,6 +50,8 @@ struct Registration {
     role: Role,
     room: String,
     token: String,
+    expires_at: u64,
+    nonce: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -52,11 +61,15 @@ struct RegisterMessage {
     role: String,
     room: String,
     token: String,
+    #[serde(rename = "expiresAt")]
+    expires_at: u64,
+    nonce: String,
 }
 
 #[derive(Default)]
 struct RelayState {
     rooms: HashMap<String, RoomState>,
+    used_nonces: HashMap<String, HashMap<String, u64>>,
     started_at: Option<Instant>,
     total_connections: u64,
     active_connections: u64,
@@ -66,17 +79,19 @@ struct RelayState {
 
 struct RoomState {
     token: String,
-    host: Option<mpsc::UnboundedSender<Message>>,
-    client: Option<mpsc::UnboundedSender<Message>>,
+    expires_at: u64,
+    host: Option<mpsc::Sender<Message>>,
+    client: Option<mpsc::Sender<Message>>,
     connected_at: Instant,
     forwarded_messages: u64,
     forwarded_bytes: u64,
 }
 
 impl RoomState {
-    fn new(token: String) -> Self {
+    fn new(token: String, expires_at: u64) -> Self {
         Self {
             token,
+            expires_at,
             host: None,
             client: None,
             connected_at: Instant::now(),
@@ -85,20 +100,20 @@ impl RoomState {
         }
     }
 
-    fn sender_for(&self, role: Role) -> Option<mpsc::UnboundedSender<Message>> {
+    fn sender_for(&self, role: Role) -> Option<mpsc::Sender<Message>> {
         match role {
             Role::Host => self.host.clone(),
             Role::Client => self.client.clone(),
         }
     }
 
-    fn set_sender(&mut self, role: Role, sender: mpsc::UnboundedSender<Message>) {
+    fn set_sender(&mut self, role: Role, sender: mpsc::Sender<Message>) {
         let slot = match role {
             Role::Host => &mut self.host,
             Role::Client => &mut self.client,
         };
         if let Some(previous) = slot.replace(sender) {
-            let _ = previous.send(Message::Close(None));
+            let _ = previous.try_send(Message::Close(None));
         }
     }
 
@@ -145,22 +160,42 @@ struct RoomStatus {
 struct RegisteredPeer {
     room: String,
     role: Role,
-    sender: mpsc::UnboundedSender<Message>,
+    expires_at: u64,
+    sender: mpsc::Sender<Message>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let secret = Arc::new(relay_secret()?);
+    let args = env::args().collect::<Vec<_>>();
+    if args.get(1).is_some_and(|arg| arg == "--issue-token") {
+        let room = args
+            .get(2)
+            .context("usage: codex-plus-mobile-relay --issue-token <room>")?;
+        if args.len() != 3 || room.is_empty() || room.len() > 128 {
+            bail!("usage: codex-plus-mobile-relay --issue-token <room>");
+        }
+        let expires_at = unix_seconds() + TOKEN_LIFETIME.as_secs();
+        println!(
+            "{}",
+            serde_json::json!({ "room": room, "token": issue_token(&secret, room, expires_at), "expiresAt": expires_at })
+        );
+        return Ok(());
+    }
     let bind = env::var("CODEX_PLUS_MOBILE_RELAY_BIND")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "0.0.0.0:57323".to_string());
+        .unwrap_or_else(|| "127.0.0.1:57323".to_string());
     let listener = TcpListener::bind(&bind)
         .await
         .with_context(|| format!("failed to bind mobile relay server on {bind}"))?;
     let local_addr = listener.local_addr()?;
     println!("Codex++ mobile relay listening on ws://{local_addr}");
+    if !local_addr.ip().is_loopback() {
+        eprintln!("非环回监听：必须在 relay 前配置 TLS 终止或安全反向代理，勿直接暴露 ws://");
+    }
     println!(
-        "Clients must send first message: {{\"type\":\"register\",\"role\":\"host|client\",\"room\":\"...\",\"token\":\"...\"}}"
+        "Clients must send first message: {{\"type\":\"register\",\"role\":\"host|client\",\"room\":\"...\",\"token\":\"...\",\"expiresAt\":0,\"nonce\":\"...\"}}"
     );
 
     let state = Arc::new(Mutex::new(RelayState {
@@ -172,8 +207,9 @@ async fn main() -> anyhow::Result<()> {
             accepted = listener.accept() => {
                 let (stream, addr) = accepted?;
                 let state = Arc::clone(&state);
+                let secret = Arc::clone(&secret);
                 tokio::spawn(async move {
-                    if let Err(error) = handle_tcp_connection(stream, addr, state).await {
+                    if let Err(error) = handle_tcp_connection(stream, addr, state, secret).await {
                         eprintln!("relay connection {addr} closed: {error:#}");
                     }
                 });
@@ -191,52 +227,54 @@ async fn handle_tcp_connection(
     stream: TcpStream,
     addr: SocketAddr,
     state: Arc<Mutex<RelayState>>,
+    secret: Arc<Vec<u8>>,
 ) -> anyhow::Result<()> {
     if !looks_like_websocket(&stream).await? {
         return handle_http_connection(stream, state).await;
     }
-    handle_websocket_connection(stream, addr, state).await
+    handle_websocket_connection(stream, addr, state, secret).await
 }
 
+#[allow(clippy::result_large_err)]
 async fn handle_websocket_connection(
     stream: TcpStream,
     addr: SocketAddr,
     state: Arc<Mutex<RelayState>>,
+    secret: Arc<Vec<u8>>,
 ) -> anyhow::Result<()> {
-    let url_registration = Arc::new(StdMutex::new(None::<Registration>));
-    let callback_registration = Arc::clone(&url_registration);
-    let websocket = accept_hdr_async(
+    let websocket = accept_hdr_async_with_config(
         stream,
         move |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
-            if let Some(registration) =
-                registration_from_uri(request.uri().path(), request.uri().query())
-            {
-                if let Ok(mut slot) = callback_registration.lock() {
-                    *slot = Some(registration);
-                }
+            if request.uri().query().is_some() {
+                return Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                    .status(400)
+                    .body(Some("URL query is not allowed".to_string()))
+                    .expect("valid rejection"));
             }
             Ok(response)
         },
+        Some(
+            WebSocketConfig::default()
+                .write_buffer_size(4096)
+                .max_message_size(Some(MAX_MESSAGE_SIZE))
+                .max_frame_size(Some(MAX_MESSAGE_SIZE))
+                .max_write_buffer_size(2 * MAX_MESSAGE_SIZE),
+        ),
     )
     .await
     .context("failed to accept websocket")?;
     let (mut outgoing, mut incoming) = websocket.split();
 
-    let registration = match url_registration.lock().ok().and_then(|slot| slot.clone()) {
-        Some(registration) => registration,
-        None => {
-            let first = tokio::time::timeout(Duration::from_secs(10), incoming.next())
-                .await
-                .context("registration timed out")?
-                .transpose()
-                .context("failed to read registration")?
-                .context("connection closed before registration")?;
-            parse_registration(first)?
-        }
-    };
+    let first = tokio::time::timeout(Duration::from_secs(10), incoming.next())
+        .await
+        .context("registration timed out")?
+        .transpose()
+        .context("failed to read registration")?
+        .context("connection closed before registration")?;
+    let registration = parse_registration(first)?;
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    let peer = register_peer(&state, registration, tx).await?;
+    let (tx, mut rx) = mpsc::channel::<Message>(64);
+    let peer = register_peer(&state, registration, tx, &secret).await?;
     let writer = tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
             if outgoing.send(message).await.is_err() {
@@ -252,9 +290,26 @@ async fn handle_websocket_connection(
         addr
     );
 
-    while let Some(message) = incoming.next().await {
-        let message = message.context("failed to read websocket message")?;
+    let mut window_started = Instant::now();
+    let mut messages_in_window = 0;
+    while let Ok(Some(message)) = tokio::time::timeout(
+        Duration::from_secs(peer.expires_at.saturating_sub(unix_seconds())),
+        incoming.next(),
+    )
+    .await
+    {
+        let Ok(message) = message else {
+            break;
+        };
         if message.is_close() {
+            break;
+        }
+        if window_started.elapsed() >= Duration::from_secs(1) {
+            window_started = Instant::now();
+            messages_in_window = 0;
+        }
+        messages_in_window += 1;
+        if messages_in_window > MAX_MESSAGES_PER_SECOND || unix_seconds() >= peer.expires_at {
             break;
         }
         forward_message(&state, &peer, message).await;
@@ -364,89 +419,125 @@ fn parse_registration(message: Message) -> anyhow::Result<Registration> {
     if registration.message_type != "register" {
         bail!("registration type must be register");
     }
-    if registration.room.trim().is_empty() {
-        bail!("room is required");
+    if registration.room.trim().is_empty() || registration.room.len() > 128 {
+        bail!("room must be 1-128 bytes");
     }
     if registration.token.trim().is_empty() {
         bail!("token is required");
+    }
+    if registration.token.len() != 64
+        || !registration
+            .token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || registration.nonce.len() != 32
+        || !registration
+            .nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        bail!("token or nonce is too short or too long");
+    }
+    let now = unix_seconds();
+    if registration.expires_at <= now || registration.expires_at > now + TOKEN_LIFETIME.as_secs() {
+        bail!("registration expired or exceeds maximum lifetime");
     }
     let role = Role::from_str(&registration.role).context("role must be host or client")?;
     Ok(Registration {
         role,
         room: registration.room,
         token: registration.token,
+        expires_at: registration.expires_at,
+        nonce: registration.nonce,
     })
 }
 
-fn registration_from_uri(path: &str, query: Option<&str>) -> Option<Registration> {
-    let query = query?;
-    let role = match path {
-        "/host" => Some(Role::Host),
-        "/client" => Some(Role::Client),
-        "/ws" => query_value(query, "role").and_then(|role| Role::from_str(&role)),
-        _ => None,
-    }?;
-    let room = query_value(query, "room")?;
-    let token = query_value(query, "token")?;
-    if room.trim().is_empty() || token.trim().is_empty() {
-        return None;
-    }
-    Some(Registration { role, room, token })
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
-fn query_value(query: &str, key: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (name, value) = pair.split_once('=')?;
-        (name == key).then(|| percent_decode(value))
-    })
+fn relay_secret() -> anyhow::Result<Vec<u8>> {
+    let value = env::var("CODEX_PLUS_MOBILE_RELAY_SECRET")
+        .context("CODEX_PLUS_MOBILE_RELAY_SECRET must be 64 random hex characters")?;
+    if value.len() != 64 {
+        bail!("CODEX_PLUS_MOBILE_RELAY_SECRET must be 64 random hex characters");
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            u8::from_str_radix(str::from_utf8(pair)?, 16).context("invalid relay secret hex")
+        })
+        .collect()
 }
 
-fn percent_decode(value: &str) -> String {
-    let mut output = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'+' => {
-                output.push(b' ');
-                index += 1;
-            }
-            b'%' if index + 2 < bytes.len() => {
-                let hex = &value[index + 1..index + 3];
-                if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                    output.push(byte);
-                    index += 3;
-                } else {
-                    output.push(bytes[index]);
-                    index += 1;
-                }
-            }
-            byte => {
-                output.push(byte);
-                index += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&output).to_string()
+fn issue_token(secret: &[u8], room: &str, expires_at: u64) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("HMAC accepts a 32-byte key");
+    mac.update(room.as_bytes());
+    mac.update(&expires_at.to_be_bytes());
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 async fn register_peer(
     state: &Arc<Mutex<RelayState>>,
     registration: Registration,
-    sender: mpsc::UnboundedSender<Message>,
+    sender: mpsc::Sender<Message>,
+    secret: &[u8],
 ) -> anyhow::Result<RegisteredPeer> {
+    // 服务端重新签发同一房间与期限的凭据，客户端无法延长旧令牌的有效期。
+    let expected = issue_token(secret, &registration.room, registration.expires_at);
+    if !bool::from(expected.as_bytes().ct_eq(registration.token.as_bytes())) {
+        bail!("invalid room token");
+    }
     let mut state = state.lock().await;
-    state.total_connections = state.total_connections.saturating_add(1);
-    state.active_connections = state.active_connections.saturating_add(1);
+    let now = unix_seconds();
+    state.used_nonces.retain(|_, nonces| {
+        nonces.retain(|_, expiry| *expiry > now);
+        !nonces.is_empty()
+    });
+    if state
+        .used_nonces
+        .get(&registration.room)
+        .is_some_and(|nonces| nonces.contains_key(&registration.nonce))
+    {
+        bail!("registration replayed");
+    }
+    if state.used_nonces.len() >= 4096 && !state.used_nonces.contains_key(&registration.room) {
+        bail!("too many rooms");
+    }
+    if state
+        .used_nonces
+        .get(&registration.room)
+        .is_some_and(|nonces| nonces.len() >= 1024)
+    {
+        bail!("too many registrations in room");
+    }
     let room = state
         .rooms
         .entry(registration.room.clone())
-        .or_insert_with(|| RoomState::new(registration.token.clone()));
-    if room.token != registration.token {
+        .or_insert_with(|| RoomState::new(registration.token.clone(), registration.expires_at));
+    if room.expires_at <= now
+        || room.expires_at != registration.expires_at
+        || !bool::from(room.token.as_bytes().ct_eq(registration.token.as_bytes()))
+    {
         bail!("room token mismatch");
     }
     room.set_sender(registration.role, sender.clone());
-    let _ = sender.send(Message::Text(
+    state
+        .used_nonces
+        .entry(registration.room.clone())
+        .or_default()
+        .insert(registration.nonce, registration.expires_at);
+    state.total_connections = state.total_connections.saturating_add(1);
+    state.active_connections = state.active_connections.saturating_add(1);
+    let _ = sender.try_send(Message::Text(
         serde_json::json!({
             "type": "registered",
             "role": registration.role.as_str(),
@@ -458,6 +549,7 @@ async fn register_peer(
     Ok(RegisteredPeer {
         room: registration.room,
         role: registration.role,
+        expires_at: registration.expires_at,
         sender,
     })
 }
@@ -480,7 +572,7 @@ async fn forward_message(state: &Arc<Mutex<RelayState>>, peer: &RegisteredPeer, 
         room.sender_for(target_role)
     };
     if let Some(target) = target {
-        let _ = target.send(message);
+        let _ = target.try_send(message);
     }
 }
 
@@ -590,7 +682,10 @@ fn relay_test_page() -> String {
         <input id="room" value="test">
       </label>
       <label>令牌
-        <input id="token" value="123456">
+        <input id="token" type="password" placeholder="--issue-token 输出" autocomplete="off">
+      </label>
+      <label>到期时间（Unix 秒）
+        <input id="expiresAt" placeholder="--issue-token 输出" autocomplete="off">
       </label>
     </div>
     <div class="actions">
@@ -625,12 +720,9 @@ function wsBase() {
 }
 $("connect").onclick = () => {
   if (socket && socket.readyState === WebSocket.OPEN) return;
-  const role = encodeURIComponent($("role").value);
-  const room = encodeURIComponent($("room").value);
-  const token = encodeURIComponent($("token").value);
-  const path = role === "host" ? "host" : "client";
-  socket = new WebSocket(`${wsBase()}/${path}?room=${room}&token=${token}`);
-  socket.onopen = () => log("已连接");
+  const role = $("role").value;
+  socket = new WebSocket(`${wsBase()}/ws`);
+  socket.onopen = () => socket.send(JSON.stringify({ type: "register", role, room: $("room").value, token: $("token").value, expiresAt: Number($("expiresAt").value), nonce: Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('') }));
   socket.onclose = () => log("已断开");
   socket.onerror = () => log("连接错误");
   socket.onmessage = (event) => log(`收到: ${event.data}`);
@@ -740,7 +832,9 @@ fn mobile_relay_page() -> String {
       <div class="connect">
         <div class="connect-row">
           <input id="room" placeholder="房间 ID" autocomplete="off">
-          <input id="key" placeholder="Key" type="password" autocomplete="off">
+          <input id="key" placeholder="加密 Key" type="password" autocomplete="off">
+          <input id="token" placeholder="短期 relay 令牌" type="password" autocomplete="off">
+          <input id="expiresAt" placeholder="到期时间（Unix 秒）" inputmode="numeric" autocomplete="off">
           <button id="connect" class="primary">连接</button>
         </div>
       </div>
@@ -815,18 +909,18 @@ async function decrypt(envelope) {
   return JSON.parse(new TextDecoder().decode(plain));
 }
 async function connect() {
-  const room = encodeURIComponent($("room").value.trim());
-  if (!room || !$("key").value) { setStatus("需要房间 ID 和 Key", true); return; }
+  const room = $("room").value.trim();
+  if (!room || !$("key").value || !$("token").value || !$("expiresAt").value) { setStatus("需要房间 ID、Key 和短期令牌", true); return; }
   const scheme = location.protocol === "https:" ? "wss" : "ws";
   if (socket) try { socket.close(); } catch {}
-  socket = new WebSocket(`${scheme}://${location.host}/client?room=${room}&token=${room}`);
-  socket.onopen = async () => { setStatus("已连接 relay，正在读取会话..."); try { await loadSessions(); } catch (e) { setStatus(e.message, true); } };
+  socket = new WebSocket(`${scheme}://${location.host}/ws`);
+  socket.onopen = () => socket.send(JSON.stringify({ type: "register", role: "client", room, token: $("token").value, expiresAt: Number($("expiresAt").value), nonce: Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join("") }));
   socket.onclose = () => { appServerConnected = false; setStatus("已断开"); };
   socket.onerror = () => setStatus("连接错误", true);
   socket.onmessage = async (event) => {
     try {
       const message = JSON.parse(event.data);
-      if (message.type === "registered") return;
+      if (message.type === "registered") { setStatus("已连接 relay，正在读取会话..."); await loadSessions(); return; }
       const response = await decrypt(message);
       if (response.type === "appServerConnected") {
         appServerConnected = true;
@@ -1274,10 +1368,99 @@ $("composer").onsubmit = async (event) => {
   }
 };
 if (params.get("room")) $("room").value = params.get("room");
-if (params.get("key")) $("key").value = params.get("key");
-if (params.get("auto") === "1" && $("room").value && $("key").value) connect();
 </script>
 </body>
 </html>"#
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn registration(token: &str, nonce: &str, expires_at: u64) -> Message {
+        Message::Text(
+            serde_json::json!({
+                "type": "register", "role": "host", "room": "test",
+                "token": token, "nonce": nonce, "expiresAt": expires_at
+            })
+            .to_string()
+            .into(),
+        )
+    }
+
+    #[test]
+    fn registration_requires_fresh_short_lived_credentials() {
+        let token = "a".repeat(64);
+        assert!(
+            parse_registration(registration(&token, &"b".repeat(32), unix_seconds() + 60)).is_ok()
+        );
+        assert!(
+            parse_registration(registration("short", &"b".repeat(32), unix_seconds() + 60))
+                .is_err()
+        );
+        assert!(
+            parse_registration(registration(&token, &"b".repeat(32), unix_seconds() + 601))
+                .is_err()
+        );
+        assert!(parse_registration(registration(&token, &"b".repeat(32), unix_seconds())).is_err());
+    }
+
+    #[tokio::test]
+    async fn room_rejects_replays_and_wrong_token() {
+        let state = Arc::new(Mutex::new(RelayState::default()));
+        let secret = [42_u8; 32];
+        let expiry = unix_seconds() + 60;
+        let (sender, _) = mpsc::channel(4);
+        let token = issue_token(&secret, "test", expiry);
+        let first = parse_registration(registration(&token, &"b".repeat(32), expiry)).unwrap();
+        register_peer(&state, first.clone(), sender.clone(), &secret)
+            .await
+            .unwrap();
+        assert!(
+            register_peer(&state, first.clone(), sender.clone(), &secret)
+                .await
+                .is_err()
+        );
+        let mut wrong = first.clone();
+        wrong.nonce = "c".repeat(32);
+        wrong.token = "d".repeat(64);
+        assert!(
+            register_peer(&state, wrong, sender.clone(), &secret)
+                .await
+                .is_err()
+        );
+        let mut next = first;
+        next.nonce = "e".repeat(32);
+        assert!(
+            register_peer(&state, next.clone(), sender.clone(), &secret)
+                .await
+                .is_ok()
+        );
+        next.expires_at += 60;
+        next.nonce = "f".repeat(32);
+        assert!(register_peer(&state, next, sender, &secret).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn websocket_rejects_query_credentials() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.unwrap();
+            handle_websocket_connection(
+                stream,
+                peer,
+                Arc::new(Mutex::new(RelayState::default())),
+                Arc::new(vec![42; 32]),
+            )
+            .await
+        });
+        let result =
+            tokio_tungstenite::connect_async(format!("ws://{address}/ws?token=secret")).await;
+        assert!(
+            matches!(result, Err(tokio_tungstenite::tungstenite::Error::Http(response)) if response.status() == 400)
+        );
+        assert!(server.await.unwrap().is_err());
+    }
 }

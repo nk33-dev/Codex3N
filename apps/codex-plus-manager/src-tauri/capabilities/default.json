@@ -1,9 +1,10 @@
 {
   "identifier": "default",
-  "description": "Default permissions for the Codex++ Manager main window. Grants the dialog plugin's default permission set so the file/folder picker can be opened from settings (fixes #345).",
+  "description": "主窗口仅允许设置页调用文件打开与保存对话框。",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:default"
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

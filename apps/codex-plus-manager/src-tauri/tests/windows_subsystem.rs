@@ -150,7 +150,7 @@ fn manager_launch_button_spawns_silent_launcher_binary() {
             .expect("read manager commands.rs");
 
     assert!(commands_rs.contains("SILENT_BINARY"));
-    assert!(commands_rs.contains("std::process::Command::new"));
+    assert!(commands_rs.contains("spawn_companion(SILENT_BINARY, &args)"));
     assert!(!commands_rs.contains("launch_and_inject_with_hooks(options"));
 }
 

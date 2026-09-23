@@ -40,9 +40,22 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run check
 
+      - name: npm dependency audit
+        working-directory: apps/codex-plus-manager
+        run: npm audit --audit-level=high --registry=https://registry.npmjs.org
+
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      - name: Relay Clippy gate
+        run: cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings
+
+      - name: Install Rust security audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Rust dependency audit
+        run: cargo audit
 
       # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
       - name: Rust tests
