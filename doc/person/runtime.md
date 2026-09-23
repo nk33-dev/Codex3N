@@ -57,8 +57,6 @@
 
 ## 注入脚本分片
 
-上游 Taskboard 是 `apps/codex-taskboard` 的独立应用，使用自己的注入脚本和构建流程；它不属于个人版 `assets.rs` 的管理器注入拼装入口，不要把其运行时代码复制到渲染分片。
-
 - 注入脚本按子系统拆成 `assets/inject/renderer/**` 分片，唯一拼装入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`；悬浮球的 `assets/inject/floating-panel/**` 是上游既有分片，规则相同。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。
 - 分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。新增分片只能插到正确位置，不能调整已有顺序。粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
 - `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；分片被 `include_str!` 内联，换行变化会改变注入内容。
