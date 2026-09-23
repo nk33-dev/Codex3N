@@ -467,7 +467,7 @@ fn relay_secret() -> anyhow::Result<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .chunks(2)
         .map(|pair| {
             u8::from_str_radix(str::from_utf8(pair)?, 16).context("invalid relay secret hex")
         })
