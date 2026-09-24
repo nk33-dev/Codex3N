@@ -10,6 +10,12 @@
 
 验证：`storage/session_paging/tests.rs` 覆盖深分页、重复 ID、排序边界、WAL 更新、缓存期限、库替换及部分失败；Tauri 会话列表测试验证命令响应。删除、导入、恢复后继续复核总数和页面是否同步更新。
 
+## 升级后项目与会话关联
+
+- 新版 Codex 的侧栏项目存于 `~/.codex/.codex-global-state.json` 的 `local-projects`、`project-order`、`thread-project-assignments` 和宿主项目 ID 映射；数据库 `state_5.sqlite` 的 `projects`、`project_roots`、`threads.project_id` 存另一份关联。项目消失时先检查两处，不要清空用户目录。
+- `codex_app_state.rs` 分别保存旧工作区路径快照与新版项目快照，恢复时不把旧路径当新版项目 ID；新版快照保留此前的项目、ID 映射和会话关联，切换供应商后合并到当前状态，当前项目同 ID 的字段优先。
+- 若已升级且当前侧栏只剩少量项目，先运行 `python scripts/restore_codex_projects.py` 只读预览。确认项目数据库仍在、完全退出 Codex 桌面版和管理器后，在独立终端运行 `python scripts/restore_codex_projects.py --apply`。脚本先备份原全局状态与一致性 SQLite 副本到 `~/.codex/backups_state/project-recovery/`，再恢复可明确匹配的项目和会话；显式无项目、已归档、路径不匹配或有歧义的会话不自动归类。重新启动 Codex 后核对侧栏和会话数。
+
 ## 隐藏失效会话
 
 Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显示，不删数据。后端找不到 rollout、归档或备份恢复来源后，还须本机 `thread/read` 明确确认；接口缺失、超时、权限错误不能视为失效。
