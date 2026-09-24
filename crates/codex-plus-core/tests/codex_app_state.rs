@@ -233,3 +233,177 @@ fn app_state_sync_normalizes_current_state_and_writes_backup_before_change() {
         json!(["C:/work/app", "C:\\work\\app\\"])
     );
 }
+
+#[test]
+fn modern_project_snapshot_restores_projects_without_importing_legacy_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let state_path = home.join(".codex-global-state.json");
+    std::fs::write(
+        &state_path,
+        json!({
+            "electron-saved-workspace-roots": ["C:/old/work"],
+            "project-order": ["C:/old/work"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let legacy_snapshot = capture_app_state_snapshot(home).unwrap().unwrap();
+
+    let first_project = "11111111-1111-1111-1111-111111111111";
+    let second_project = "22222222-2222-2222-2222-222222222222";
+    let first_thread = "33333333-3333-3333-3333-333333333333";
+    std::fs::write(
+        &state_path,
+        json!({
+            "local-projects": {
+                first_project: {"id": first_project, "name": "First", "rootPaths": ["C:/new/first"]},
+                second_project: {"id": second_project, "name": "Second", "rootPaths": ["D:/new/second"]}
+            },
+            "project-order": [first_project, second_project],
+            "thread-project-assignments": {
+                first_thread: {"projectKind": "local", "projectId": second_project}
+            },
+            "thread-project-membership-host-ids": {first_thread: "local"},
+            "app-server-project-id-by-legacy-project-id-by-host": {
+                "local:C:/home": {first_project: "db-first", second_project: "db-second"}
+            },
+            "selected-project": {"type": "local", "projectId": second_project}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let modern_snapshot = capture_app_state_snapshot(home).unwrap().unwrap();
+    assert_ne!(modern_snapshot, legacy_snapshot);
+
+    std::fs::write(
+        &state_path,
+        json!({
+            "local-projects": {
+                first_project: {"id": first_project, "name": "Renamed", "rootPaths": ["C:/new/first"]}
+            },
+            "project-order": [first_project],
+            "app-server-project-id-by-legacy-project-id-by-host": {
+                "local:C:/home": {first_project: "db-first-new"}
+            },
+            "app-server-projects-migration-by-host": {"local": {"version": 1}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = sync_app_state_after_provider_switch(home).unwrap();
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert!(result.changed);
+    assert_eq!(state["local-projects"][first_project]["name"], "Renamed");
+    assert_eq!(state["local-projects"][second_project]["name"], "Second");
+    assert_eq!(
+        state["project-order"],
+        json!([first_project, second_project])
+    );
+    assert_eq!(
+        state["thread-project-assignments"][first_thread]["projectId"],
+        second_project
+    );
+    assert_eq!(state["selected-project"]["projectId"], second_project);
+    assert_eq!(
+        state["app-server-project-id-by-legacy-project-id-by-host"]["local:C:/home"][first_project],
+        "db-first-new"
+    );
+    assert_eq!(
+        state["app-server-project-id-by-legacy-project-id-by-host"]["local:C:/home"]
+            [second_project],
+        "db-second"
+    );
+    assert!(state.get("electron-saved-workspace-roots").is_none());
+    assert_eq!(
+        serde_json::from_str::<Value>(&std::fs::read_to_string(legacy_snapshot).unwrap()).unwrap()
+            ["state"]["project-order"],
+        json!(["C:\\old\\work"])
+    );
+}
+
+#[test]
+fn modern_capture_keeps_previous_projects_when_current_state_is_incomplete() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let state_path = home.join(".codex-global-state.json");
+    std::fs::write(&state_path, json!({
+        "local-projects": {"first": {"name": "First"}, "second": {"name": "Second"}},
+        "project-order": ["first", "second"],
+        "thread-project-assignments": {"thread": {"projectKind": "local", "projectId": "second"}},
+        "app-server-project-id-by-legacy-project-id-by-host": {
+            "local:C:/home": {"first": "db-first", "second": "db-second"}
+        }
+    }).to_string()).unwrap();
+    let snapshot_path = capture_app_state_snapshot(home).unwrap().unwrap();
+
+    std::fs::write(
+        &state_path,
+        json!({
+            "local-projects": {"first": {"name": "Renamed"}},
+            "project-order": ["first"],
+            "app-server-project-id-by-legacy-project-id-by-host": {
+                "local:C:/home": {"first": "db-first-new"}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    capture_app_state_snapshot(home).unwrap();
+
+    let snapshot: Value =
+        serde_json::from_str(&std::fs::read_to_string(snapshot_path).unwrap()).unwrap();
+    assert_eq!(
+        snapshot["state"]["local-projects"]["second"]["name"],
+        "Second"
+    );
+    assert_eq!(
+        snapshot["state"]["local-projects"]["first"]["name"],
+        "Renamed"
+    );
+    assert_eq!(
+        snapshot["state"]["project-order"],
+        json!(["first", "second"])
+    );
+    assert_eq!(
+        snapshot["state"]["thread-project-assignments"]["thread"]["projectId"],
+        "second"
+    );
+    assert_eq!(
+        snapshot["state"]["app-server-project-id-by-legacy-project-id-by-host"]["local:C:/home"]["second"],
+        "db-second"
+    );
+}
+
+#[test]
+fn modern_project_state_does_not_merge_legacy_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path();
+    let state_path = home.join(".codex-global-state.json");
+    std::fs::write(
+        &state_path,
+        json!({"project-order": ["C:/old/work"]}).to_string(),
+    )
+    .unwrap();
+    capture_app_state_snapshot(home).unwrap();
+    std::fs::write(
+        &state_path,
+        json!({
+            "local-projects": {},
+            "project-order": ["11111111-1111-1111-1111-111111111111"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let result = sync_app_state_after_provider_switch(home).unwrap();
+    let state: Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert!(!result.changed);
+    assert_eq!(
+        state["project-order"],
+        json!(["11111111-1111-1111-1111-111111111111"])
+    );
+}

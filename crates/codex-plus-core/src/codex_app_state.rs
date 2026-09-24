@@ -10,7 +10,16 @@ const GLOBAL_STATE_FILE: &str = ".codex-global-state.json";
 const GLOBAL_STATE_BACKUP_FILE: &str = ".codex-global-state.json.bak";
 const BACKUP_ROOT: &str = "backups_state/app-state-sync";
 const SNAPSHOT_FILE: &str = "latest-safe-state.json";
+const MODERN_SNAPSHOT_FILE: &str = "latest-safe-project-state.json";
 const SNAPSHOT_VERSION: u64 = 1;
+const MODERN_PROJECT_MAP_KEYS: &[&str] = &[
+    "local-projects",
+    "project-appearances",
+    "thread-project-assignments",
+    "thread-project-membership-host-ids",
+    "sidebar-project-thread-orders",
+];
+const MODERN_PROJECT_ID_MAP_KEY: &str = "app-server-project-id-by-legacy-project-id-by-host";
 
 const WORKSPACE_PATH_ARRAY_KEYS: &[&str] = &["electron-saved-workspace-roots", "project-order"];
 
@@ -64,7 +73,46 @@ pub fn capture_app_state_snapshot(home: &Path) -> anyhow::Result<Option<PathBuf>
     let Some(state) = load_global_state(home)? else {
         return Ok(None);
     };
-    let snapshot = safe_snapshot_from_state(&state);
+    let modern = is_modern_project_state(&state);
+    let mut snapshot = safe_snapshot_from_state(&state);
+    if modern
+        && let Some(previous) = load_snapshot(home, true)?
+        && let Some(current) = snapshot.get_mut("state").and_then(Value::as_object_mut)
+    {
+        for key in MODERN_PROJECT_MAP_KEYS {
+            let merged = merge_string_keyed_maps(
+                previous.get(*key).and_then(Value::as_object),
+                current.get(*key).and_then(Value::as_object),
+            );
+            if !merged.is_empty() {
+                current.insert((*key).to_string(), Value::Object(merged));
+            }
+        }
+        let merged = merge_host_project_id_maps(
+            previous
+                .get(MODERN_PROJECT_ID_MAP_KEY)
+                .and_then(Value::as_object),
+            current
+                .get(MODERN_PROJECT_ID_MAP_KEY)
+                .and_then(Value::as_object),
+        );
+        if !merged.is_empty() {
+            current.insert(MODERN_PROJECT_ID_MAP_KEY.to_string(), Value::Object(merged));
+        }
+        let mut order = current
+            .get("project-order")
+            .map(string_array)
+            .unwrap_or_default();
+        order.extend(
+            previous
+                .get("project-order")
+                .map(string_array)
+                .unwrap_or_default(),
+        );
+        if !order.is_empty() {
+            current.insert("project-order".to_string(), json!(dedupe_strings(order)));
+        }
+    }
     let snapshot_state = snapshot
         .get("state")
         .and_then(Value::as_object)
@@ -73,7 +121,7 @@ pub fn capture_app_state_snapshot(home: &Path) -> anyhow::Result<Option<PathBuf>
     if snapshot_state.is_empty() {
         return Ok(None);
     }
-    let path = snapshot_path(home);
+    let path = snapshot_path(home, modern);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -104,10 +152,11 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
     };
     let original = Value::Object(state.clone());
     let mut changed_keys = BTreeSet::new();
+    let modern = is_modern_project_state(&state);
 
-    normalize_current_state(&mut state, &mut changed_keys);
-    if let Some(snapshot) = load_snapshot(home)? {
-        merge_safe_snapshot(&mut state, &snapshot, &mut changed_keys);
+    normalize_current_state(&mut state, &mut changed_keys, modern);
+    if let Some(snapshot) = load_snapshot(home, modern)? {
+        merge_safe_snapshot(&mut state, &snapshot, &mut changed_keys, modern);
     }
 
     let next = Value::Object(state);
@@ -182,8 +231,8 @@ fn load_global_state(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> 
         .ok_or_else(|| anyhow::anyhow!("{} must be a JSON object", path.display()))
 }
 
-fn load_snapshot(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
-    let path = snapshot_path(home);
+fn load_snapshot(home: &Path, modern: bool) -> anyhow::Result<Option<Map<String, Value>>> {
+    let path = snapshot_path(home, modern);
     if !path.exists() {
         return Ok(None);
     }
@@ -202,9 +251,34 @@ fn load_snapshot(home: &Path) -> anyhow::Result<Option<Map<String, Value>>> {
 
 fn safe_snapshot_from_state(state: &Map<String, Value>) -> Value {
     let mut safe = Map::new();
+    let modern = is_modern_project_state(state);
     for key in WORKSPACE_PATH_ARRAY_KEYS {
         if let Some(value) = state.get(*key) {
-            safe.insert((*key).to_string(), json!(dedupe_paths(path_array(value))));
+            let entries = if modern && *key == "project-order" {
+                json!(dedupe_strings(string_array(value)))
+            } else {
+                json!(dedupe_paths(path_array(value)))
+            };
+            safe.insert((*key).to_string(), entries);
+        }
+    }
+    if modern {
+        for key in MODERN_PROJECT_MAP_KEYS {
+            if let Some(value) = state.get(*key).and_then(Value::as_object) {
+                safe.insert((*key).to_string(), Value::Object(value.clone()));
+            }
+        }
+        if let Some(value) = state
+            .get(MODERN_PROJECT_ID_MAP_KEY)
+            .and_then(Value::as_object)
+        {
+            safe.insert(
+                MODERN_PROJECT_ID_MAP_KEY.to_string(),
+                Value::Object(value.clone()),
+            );
+        }
+        if let Some(value) = state.get("selected-project") {
+            safe.insert("selected-project".to_string(), value.clone());
         }
     }
     if let Some(value) = state.get(ACTIVE_WORKSPACE_ROOTS_KEY) {
@@ -260,10 +334,18 @@ fn safe_snapshot_from_state(state: &Map<String, Value>) -> Value {
     })
 }
 
-fn normalize_current_state(state: &mut Map<String, Value>, changed: &mut BTreeSet<String>) {
+fn normalize_current_state(
+    state: &mut Map<String, Value>,
+    changed: &mut BTreeSet<String>,
+    modern: bool,
+) {
     for key in WORKSPACE_PATH_ARRAY_KEYS {
         if let Some(value) = state.get(*key).cloned() {
-            let next = json!(dedupe_paths(path_array(&value)));
+            let next = if modern && *key == "project-order" {
+                json!(dedupe_strings(string_array(&value)))
+            } else {
+                json!(dedupe_paths(path_array(&value)))
+            };
             replace_if_changed(state, key, next, changed);
         }
     }
@@ -313,12 +395,58 @@ fn merge_safe_snapshot(
     target: &mut Map<String, Value>,
     snapshot: &Map<String, Value>,
     changed: &mut BTreeSet<String>,
+    modern: bool,
 ) {
+    if modern {
+        for key in MODERN_PROJECT_MAP_KEYS {
+            let merged = merge_string_keyed_maps(
+                snapshot.get(*key).and_then(Value::as_object),
+                target.get(*key).and_then(Value::as_object),
+            );
+            if !merged.is_empty() {
+                replace_if_changed(target, key, Value::Object(merged), changed);
+            }
+        }
+        let merged = merge_host_project_id_maps(
+            snapshot
+                .get(MODERN_PROJECT_ID_MAP_KEY)
+                .and_then(Value::as_object),
+            target
+                .get(MODERN_PROJECT_ID_MAP_KEY)
+                .and_then(Value::as_object),
+        );
+        if !merged.is_empty() {
+            replace_if_changed(
+                target,
+                MODERN_PROJECT_ID_MAP_KEY,
+                Value::Object(merged),
+                changed,
+            );
+        }
+        if !target.contains_key("selected-project") {
+            if let Some(value) = snapshot.get("selected-project") {
+                replace_if_changed(target, "selected-project", value.clone(), changed);
+            }
+        }
+    }
     for key in WORKSPACE_PATH_ARRAY_KEYS {
-        let mut paths = target.get(*key).map(path_array).unwrap_or_default();
-        paths.extend(snapshot.get(*key).map(path_array).unwrap_or_default());
-        if !paths.is_empty() {
-            replace_if_changed(target, key, json!(dedupe_paths(paths)), changed);
+        let mut entries = if modern && *key == "project-order" {
+            target.get(*key).map(string_array).unwrap_or_default()
+        } else {
+            target.get(*key).map(path_array).unwrap_or_default()
+        };
+        entries.extend(if modern && *key == "project-order" {
+            snapshot.get(*key).map(string_array).unwrap_or_default()
+        } else {
+            snapshot.get(*key).map(path_array).unwrap_or_default()
+        });
+        if !entries.is_empty() {
+            let entries = if modern && *key == "project-order" {
+                dedupe_strings(entries)
+            } else {
+                dedupe_paths(entries)
+            };
+            replace_if_changed(target, key, json!(entries), changed);
         }
     }
     let mut active_paths = target
@@ -595,8 +723,39 @@ fn state_path(home: &Path) -> PathBuf {
     home.join(GLOBAL_STATE_FILE)
 }
 
-fn snapshot_path(home: &Path) -> PathBuf {
-    home.join(BACKUP_ROOT).join(SNAPSHOT_FILE)
+fn snapshot_path(home: &Path, modern: bool) -> PathBuf {
+    home.join(BACKUP_ROOT).join(if modern {
+        MODERN_SNAPSHOT_FILE
+    } else {
+        SNAPSHOT_FILE
+    })
+}
+
+fn merge_host_project_id_maps(
+    snapshot: Option<&Map<String, Value>>,
+    current: Option<&Map<String, Value>>,
+) -> Map<String, Value> {
+    let mut merged = snapshot.cloned().unwrap_or_default();
+    if let Some(current) = current {
+        for (host, mappings) in current {
+            let mut ids = merged
+                .get(host)
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(mappings) = mappings.as_object() {
+                ids.extend(mappings.clone());
+                merged.insert(host.clone(), Value::Object(ids));
+            }
+        }
+    }
+    merged
+}
+
+fn is_modern_project_state(state: &Map<String, Value>) -> bool {
+    state.contains_key("local-projects")
+        || state.contains_key("app-server-projects-migration-by-host")
+        || state.contains_key("thread-project-assignments")
 }
 
 fn now_ms() -> u128 {
