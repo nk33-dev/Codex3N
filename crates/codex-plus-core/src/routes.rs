@@ -114,7 +114,11 @@ pub trait BridgeRuntimeService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeDataService: Send + Sync {
-    async fn scan_session_health(&self, _observed_ids: Vec<String>) -> anyhow::Result<Value> {
+    async fn scan_session_health(
+        &self,
+        _observed_ids: Vec<String>,
+        _observed_only: bool,
+    ) -> anyhow::Result<Value> {
         anyhow::bail!("当前后端不支持检查失效会话，请重启新版 Codex3N")
     }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
@@ -142,16 +146,20 @@ pub async fn handle_bridge_request(
     payload: Value,
 ) -> serde_json::Value {
     let started = Instant::now();
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "bridge.request",
-        json!({
-            "path": path,
-            "payload_keys": payload
-                .as_object()
-                .map(|object| object.keys().cloned().collect::<Vec<_>>())
-                .unwrap_or_default()
-        }),
-    );
+    // 高频心跳和诊断上报已有独立事件，只在失败时补路由级记录。
+    let trace_request = !matches!(path, "/backend/status" | "/diagnostics/log");
+    if trace_request {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.request",
+            json!({
+                "path": path,
+                "payload_keys": payload
+                    .as_object()
+                    .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default()
+            }),
+        );
+    }
     let result = match path {
         "/settings/get" => settings_value(&ctx, ctx.settings.get_settings().await).await,
         "/settings/set" => {
@@ -269,7 +277,11 @@ pub async fn handle_bridge_request(
                         .collect()
                 })
                 .unwrap_or_default();
-            ctx.data.scan_session_health(ids).await
+            let observed_only = payload
+                .get("observedOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            ctx.data.scan_session_health(ids, observed_only).await
         }
         "/delete" => result_value(ctx.data.delete(session_from_payload(&payload)).await),
         "/undo" => {
@@ -329,14 +341,16 @@ pub async fn handle_bridge_request(
     };
 
     let response = result.unwrap_or_else(|error| failed_from_error(&payload, error));
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "bridge.response",
-        json!({
-            "path": path,
-            "elapsed_ms": started.elapsed().as_millis() as u64,
-            "status": response.get("status").and_then(Value::as_str).unwrap_or("")
-        }),
-    );
+    if trace_request || response.get("status").and_then(Value::as_str) != Some("ok") {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "bridge.response",
+            json!({
+                "path": path,
+                "elapsed_ms": started.elapsed().as_millis() as u64,
+                "status": response.get("status").and_then(Value::as_str).unwrap_or("")
+            }),
+        );
+    }
     response
 }
 

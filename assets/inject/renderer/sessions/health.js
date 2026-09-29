@@ -4,7 +4,8 @@
   let verifiedInvalidSessionIds = new Set();
   let sessionHealthBusy = false;
   let sessionHealthGeneration = 0;
-  let sessionHealthCheckedAt = 0;
+  let sessionHealthCheckedAt = Date.now();
+  const sessionHealthAutoRecheckMs = 5 * 60 * 1000;
   try {
     const saved = JSON.parse(localStorage.getItem(invalidSessionStorageKey) || "[]");
     if (Array.isArray(saved)) invalidSessionIds = new Set(saved.map(normalizedCodexThreadUuid).filter(Boolean));
@@ -89,7 +90,10 @@
     if (!automatic) updateSessionHealthStatus("正在检查会话文件和恢复备份…");
     try {
       const observedIds = automatic ? [...invalidSessionIds] : sessionRows(true).map(localSessionHealthRowId).filter(Boolean);
-      const result = await sessionHealthRequest(() => postJson("/session/health", { threadIds: observedIds }), 60000);
+      const result = await sessionHealthRequest(() => postJson("/session/health", {
+        threadIds: observedIds,
+        observedOnly: automatic,
+      }), 60000);
       if (result.status !== "ok" || !Array.isArray(result.missingIds)) throw new Error(result.message || "检查失效会话失败");
       const missingIds = result.missingIds.filter((id) => !automatic || invalidSessionIds.has(id));
       const clients = missingIds.length ? (await sessionHealthRequest(loadAppServerRequestCandidates)).candidates.filter((client) => typeof client?.sendRequest === "function") : [];
@@ -102,7 +106,10 @@
       }
       // 读取原生接口期间可能发生撤销删除或恢复；隐藏前重新检查恢复来源。
       if (confirmed.size) {
-        const latest = await sessionHealthRequest(() => postJson("/session/health", { threadIds: [...confirmed] }), 60000);
+        const latest = await sessionHealthRequest(() => postJson("/session/health", {
+          threadIds: [...confirmed],
+          observedOnly: true,
+        }), 60000);
         if (latest.status !== "ok" || !Array.isArray(latest.missingIds)) throw new Error(latest.message || "无法复核恢复来源");
         const stillMissing = new Set(latest.missingIds);
         for (const id of confirmed) if (!stillMissing.has(id)) confirmed.delete(id);
@@ -127,9 +134,9 @@
 
   function refreshInvalidSessionVisibility() {
     applyInvalidSessionVisibility();
-    if (invalidSessionIds.size && !sessionHealthBusy && Date.now() - sessionHealthCheckedAt > 60000
+    if (invalidSessionIds.size && !sessionHealthBusy && document.visibilityState !== "hidden"
+        && Date.now() - sessionHealthCheckedAt > sessionHealthAutoRecheckMs
         && codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false) {
       void checkAndHideInvalidSessions(true);
     }
   }
-

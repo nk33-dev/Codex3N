@@ -50,7 +50,13 @@ type PendingBridgeCall = Pin<Box<dyn Future<Output = CompletedBridgeCall> + Send
 struct CompletedBridgeCall {
     request_id: String,
     generation: Option<BridgeGeneration>,
+    path: Option<String>,
     response: Result<Value, String>,
+}
+
+// 高频心跳和诊断上报已有自己的事件，成功时不再重复写两条 CDP 回执日志。
+fn should_trace_bridge_success(path: Option<&str>) -> bool {
+    !matches!(path, Some("/backend/status" | "/diagnostics/log"))
 }
 
 fn next_bridge_generation(target: &str) -> BridgeGeneration {
@@ -1055,11 +1061,13 @@ where
             .to_string();
         let payload = parsed.get("payload").cloned().unwrap_or_else(|| json!({}));
         let generation = self.generation.clone();
+        let response_path = path.clone();
 
         pending_calls.push(Box::pin(async move {
             CompletedBridgeCall {
                 request_id,
                 generation,
+                path: Some(response_path),
                 response: handler(path, payload)
                     .await
                     .map_err(|error| error.to_string()),
@@ -1078,6 +1086,7 @@ where
             CompletedBridgeCall {
                 request_id,
                 generation,
+                path: None,
                 response,
             }
         }));
@@ -1099,9 +1108,10 @@ where
             return Ok(());
         }
 
+        let trace_success = should_trace_bridge_success(completed.path.as_deref());
         match completed.response {
             Ok(result) => {
-                self.resolve_bridge_request(&completed.request_id, &result)
+                self.resolve_bridge_request(&completed.request_id, &result, trace_success)
                     .await
             }
             Err(message) => {
@@ -1115,17 +1125,20 @@ where
         &mut self,
         request_id: &str,
         result: &Value,
+        trace_success: bool,
     ) -> anyhow::Result<()> {
         let expression = resolve_bridge_expression(request_id, result)?;
         let message_id = next_message_id();
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "bridge.resolve_start",
-            json!({
-                "request_id": request_id,
-                "message_id": message_id,
-                "result_status": result.get("status").and_then(Value::as_str).unwrap_or("")
-            }),
-        );
+        if trace_success {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.resolve_start",
+                json!({
+                    "request_id": request_id,
+                    "message_id": message_id,
+                    "result_status": result.get("status").and_then(Value::as_str).unwrap_or("")
+                }),
+            );
+        }
         let sent = self
             .send_command_without_wait(
                 message_id,
@@ -1134,7 +1147,7 @@ where
             )
             .await;
         match &sent {
-            Ok(_) => {
+            Ok(_) if trace_success => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "bridge.resolve_ok",
                     json!({
@@ -1143,6 +1156,7 @@ where
                     }),
                 );
             }
+            Ok(_) => {}
             Err(error) => {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "bridge.resolve_failed",
