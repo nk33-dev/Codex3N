@@ -174,6 +174,24 @@ DMG_CONVERTED=false
 MOUNT_POINT=""
 MOUNT_DEVICE=""
 
+release_dmg_holders() {
+  local target="$1"
+  local pids=""
+
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -t -- "$target" 2>/dev/null || true)"
+  fi
+  # GitHub 的 macOS runner 上，hdiutil -force 失败后 diskimages-helper 仍会占着
+  # 设备，直到 job 收尾才被当成孤儿杀掉。那时 convert 已经来不及跑。
+  if [ -z "$pids" ] && [ "${GITHUB_ACTIONS:-}" = "true" ] && command -v pgrep >/dev/null 2>&1; then
+    pids="$(pgrep -x diskimages-helper || true)"
+  fi
+  if [ -n "$pids" ]; then
+    # shellcheck disable=SC2086
+    kill -KILL $pids >/dev/null 2>&1 || true
+  fi
+}
+
 detach_dmg() {
   local target="$1"
   local attempt
@@ -208,6 +226,8 @@ detach_dmg() {
     if target_is_gone; then
       return 0
     fi
+
+    release_dmg_holders "$target"
 
     sleep "$attempt"
   done
@@ -322,9 +342,12 @@ detach_volume() {
     if [ -n "$MOUNT_POINT" ]; then
       output="$(hdiutil detach "$MOUNT_POINT" -force 2>&1)" || true
     fi
-    # 持有镜像的后台进程不退，-force 也可能被它顶回来；退避一次后再踢掉它。
+    # 持有镜像的后台进程不退，-force 也可能被它顶回来；退避一次后释放持有者。
+    # 用 `release_dmg_holders` 而不是 `pkill -f diskimages-help`：lsof 按镜像文件
+    # 精确定位，进程名回退带 `-x` 且只在 GitHub runner 上启用，本地打包不会误杀
+    # 真实挂载的 diskimages-helper。
     if [ "$attempt" -ge 2 ]; then
-      pkill -f diskimages-help >/dev/null 2>&1 || true
+      release_dmg_holders "$DMG_WORK_PATH"
     fi
     sleep "$((attempt * 2))"
   done
