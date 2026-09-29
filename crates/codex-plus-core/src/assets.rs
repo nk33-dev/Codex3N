@@ -7,45 +7,16 @@ use crate::settings::BackendSettings;
 
 /// 注入到 Codex 渲染端的增强脚本。
 ///
-/// 分片顺序**有意义**：整个脚本是一个共享作用域的 IIFE，`const` / `let` 存在
-/// TDZ，函数声明在 IIFE 内整体提升。分片只是把同一段脚本按子系统切开，拼接
-/// 结果必须与拆分前的单文件逐字节一致。新增分片时只能追加到正确位置，不能
-/// 调整已有顺序。粘贴修复块位于 IIFE 之外，必须留在 `"})();\n"` 之后。
-const RENDERER_SCRIPT: &str = concat!(
-    "(() => {\n",
-    include_str!("../../../assets/inject/renderer/shell/guard.js"),
-    include_str!("../../../assets/inject/renderer/shell/chinese-locale.js"),
-    include_str!("../../../assets/inject/renderer/shell/constants.js"),
-    include_str!("../../../assets/inject/renderer/shell/image-overlay.js"),
-    include_str!("../../../assets/inject/renderer/shell/styles.js"),
-    include_str!("../../../assets/inject/renderer/shell/settings.js"),
-    include_str!("../../../assets/inject/renderer/skins/dream-skin.js"),
-    include_str!("../../../assets/inject/renderer/shell/settings-menu.js"),
-    include_str!("../../../assets/inject/renderer/models/service-tier.js"),
-    include_str!("../../../assets/inject/renderer/models/remote-session.js"),
-    include_str!("../../../assets/inject/renderer/shell/backend-status.js"),
-    include_str!("../../../assets/inject/renderer/shell/page-menu.js"),
-    include_str!("../../../assets/inject/renderer/marketplace/plugin-bridge.js"),
-    include_str!("../../../assets/inject/renderer/sessions/health.js"),
-    include_str!("../../../assets/inject/renderer/sessions/rows-badge.js"),
-    include_str!("../../../assets/inject/renderer/sessions/thread-scroll.js"),
-    include_str!("../../../assets/inject/renderer/shell/markdown-export.js"),
-    include_str!("../../../assets/inject/renderer/models/catalog-patch.js"),
-    include_str!("../../../assets/inject/renderer/sessions/keys-share.js"),
-    include_str!("../../../assets/inject/renderer/shell/upstream-worktree.js"),
-    include_str!("../../../assets/inject/renderer/sessions/delete.js"),
-    include_str!("../../../assets/inject/renderer/shell/conversation-targets.js"),
-    include_str!("../../../assets/inject/renderer/models/service-tier-badge.js"),
-    include_str!("../../../assets/inject/renderer/shell/conversation-view.js"),
-    include_str!("../../../assets/inject/renderer/shell/scan-lightweight.js"),
-    include_str!("../../../assets/inject/renderer/shell/usage-policy.js"),
-    include_str!("../../../assets/inject/renderer/shell/zed-remote.js"),
-    include_str!("../../../assets/inject/renderer/sessions/copy-menu.js"),
-    include_str!("../../../assets/inject/renderer/sessions/scan.js"),
-    "})();\n",
-    "\n",
-    include_str!("../../../assets/inject/renderer/shell/paste-fix.js"),
-);
+/// 渲染进程注入脚本，与上游 `assets/inject/renderer-inject.js` 同构的单文件。
+///
+/// 整段脚本是一个共享作用域的 IIFE：`const` / `let` 存在 TDZ，函数声明在 IIFE 内
+/// 整体提升；粘贴修复块位于 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回
+/// 守卫一起被跳过。
+///
+/// 刻意保持单文件：上游近一年改 `renderer-inject.js` 二十余次、平均每次数百行。
+/// 拆成分片会让每次上游改动都变成「上游修改 vs 个人版删除」的冲突，只能手工
+/// 搬运；同构单文件则能走 Git 三方合并。判断依据见 doc/person/maintenance.md。
+const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
 #[cfg(windows)]
 const DREAM_TARGET_CSS: &str =
     include_str!("../../../assets/inject/upstream/dream-skin/windows/dream-skin.css");
@@ -899,10 +870,7 @@ mod tests {
         );
     }
 
-    /// 每个分片都必须真正拼进结果，防止 `concat!` 列表被误删或漏加。
-    ///
-    /// 顺序本身无法在 Rust 侧校验（`concat!` 是编译期字符串拼接），顺序由
-    /// `apps/codex-plus-manager/src/inject-fragments.ts` 的结构测试对齐。
+    /// 每个标记都必须真的在脚本里，防止单文件被误删或整块漏掉。
     #[test]
     fn renderer_script_keeps_every_fragment() {
         let script = renderer_script();
