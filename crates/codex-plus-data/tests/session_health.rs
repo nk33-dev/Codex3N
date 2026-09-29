@@ -1,4 +1,4 @@
-use codex_plus_data::session_health::scan_session_health;
+use codex_plus_data::session_health::{recheck_session_health, scan_session_health};
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -194,6 +194,49 @@ fn observed_ids_are_normalized_and_placeholders_are_ignored() {
     .unwrap();
     assert_eq!(scan.scanned, 1);
     assert_eq!(scan.missing_ids, vec![LOST]);
+}
+
+#[test]
+fn automatic_recheck_only_queries_observed_sessions() {
+    let dir = tempdir().unwrap();
+    let db = database(dir.path());
+    db.execute(
+        "INSERT INTO threads VALUES (?1, 'missing.jsonl', 0)",
+        [LOST],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO threads VALUES (?1, 'also-missing.jsonl', 0)",
+        [KEPT],
+    )
+    .unwrap();
+
+    let scan = recheck_session_health(
+        dir.path(),
+        &dir.path().join("backups"),
+        &[format!("local:{LOST}")],
+    )
+    .unwrap();
+
+    assert_eq!(scan.scanned, 1);
+    assert_eq!(scan.missing_ids, vec![LOST]);
+}
+
+#[test]
+fn automatic_recheck_skips_unrelated_backup_bodies() {
+    let dir = tempdir().unwrap();
+    fs::create_dir(dir.path().join("backups")).unwrap();
+    fs::write(
+        dir.path().join("backups/unrelated.json"),
+        format!(r#"{{"session_id":"{KEPT}","tables":BROKEN}}"#),
+    )
+    .unwrap();
+
+    let scan = recheck_session_health(dir.path(), &dir.path().join("backups"), &[LOST.to_string()])
+        .unwrap();
+
+    assert_eq!(scan.missing_ids, vec![LOST]);
+    assert!(scan_session_health(dir.path(), &dir.path().join("backups"), &[]).is_err());
 }
 
 #[test]

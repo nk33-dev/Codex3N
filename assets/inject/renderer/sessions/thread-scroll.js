@@ -664,6 +664,7 @@
     function bridgeWithBackendTimeout(path, payload) {
       let request;
       try {
+        recordCodexPlusBridgeAttempt();
         request = window.__codexSessionDeleteBridge(path, payload);
       } catch (error) {
         recordCodexPlusBridgeFailure();
@@ -699,6 +700,7 @@
         });
         return fallback;
       }
+      recordCodexPlusBridgeAttempt();
       const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
       recordCodexPlusBridgeSuccess();
       return bridgeResult;

@@ -21,6 +21,7 @@ function row(id = lost, host: string | null = "local") {
 }
 
 type Client = { sendRequest: (method: string, params: { threadId: string; includeTurns: boolean }) => Promise<unknown> };
+type HealthPayload = { threadIds: string[]; observedOnly: boolean };
 const missingClient: Client = {
   async sendRequest(method, params) {
     assert.equal(method, "thread/read");
@@ -33,13 +34,18 @@ function harness(options: {
   rows?: ReturnType<typeof row>[];
   saved?: string[];
   clients?: Client[];
-  backend?: (payload: { threadIds: string[] }) => Promise<unknown>;
+  backend?: (payload: HealthPayload) => Promise<unknown>;
 } = {}) {
   const rows = options.rows ?? [row()];
   const storage = new Map<string, string>();
   if (options.saved) storage.set("codex3n.hiddenInvalidSessions.v1", JSON.stringify(options.saved));
   const status = { textContent: "" };
   const button = { disabled: false };
+  const documentState = {
+    visibilityState: "visible",
+    querySelectorAll: (selector: string) => selector.includes("status") ? [status] : [button],
+  };
+  const requests: HealthPayload[] = [];
   const backend = options.backend ?? (async () => ({ status: "ok", scanned: 2, missingIds: [lost] }));
   const api = new Function("localStorage", "document", "sessionRows", "sessionRefFromRow", "normalizedCodexThreadUuid", "uuidV7TimestampMs", "postJson", "loadAppServerRequestCandidates", `
     let codexPlusBackendSettings = { enhancementsEnabled: true }, codexPlusBackendSettingsLoaded = true;
@@ -47,17 +53,18 @@ function harness(options: {
     return { check: checkAndHideInvalidSessions, reset: resetInvalidSessionVisibility,
       refresh: refreshInvalidSessionVisibility, apply: applyInvalidSessionVisibility,
       nativeMissing: nativeSessionIsMissing, request: sessionHealthRequest,
-      busy: () => sessionHealthBusy, disable: () => { codexPlusBackendSettings.enhancementsEnabled = false; } };
+      busy: () => sessionHealthBusy, due: () => { sessionHealthCheckedAt = 0; },
+      disable: () => { codexPlusBackendSettings.enhancementsEnabled = false; } };
   `)(
     { getItem: (key: string) => storage.get(key), setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
-    { querySelectorAll: (selector: string) => selector.includes("status") ? [status] : [button] },
+    documentState,
     () => rows, (entry: ReturnType<typeof row>) => entry.ref,
     (id: string) => /^[0-9a-f-]{36}$/i.test(id.replace(/^local:/, "")) ? id.replace(/^local:/, "") : "",
     (id: string) => Number.parseInt(id.replaceAll("-", "").slice(0, 12), 16),
-    (path: string, payload: { threadIds: string[] }) => { assert.equal(path, "/session/health"); return backend(payload); },
+    (path: string, payload: HealthPayload) => { assert.equal(path, "/session/health"); requests.push(payload); return backend(payload); },
     async () => ({ candidates: options.clients ?? [missingClient] }),
   );
-  return { api, rows, status, button, storage };
+  return { api, rows, status, button, storage, requests, documentState };
 }
 
 test("检查只隐藏本机明确失效的会话，按钮可以恢复显示", async () => {
@@ -141,11 +148,30 @@ test("重启后先复核再应用隐藏，恢复来源出现后重新显示", as
   h.api.apply();
   assert.equal(h.rows[0].hidden(), false);
   await h.api.check(true);
+  assert.ok(h.requests.every((request) => request.observedOnly));
   assert.equal(h.rows[0].hidden(), true);
   const recovered = harness({ saved: [lost], backend: async () => ({ status: "ok", scanned: 1, missingIds: [] }) });
   await recovered.api.check(true);
   assert.equal(recovered.rows[0].hidden(), false);
   assert.equal(recovered.storage.get("codex3n.hiddenInvalidSessions.v1"), "[]");
+});
+
+test("自动复核启动时不抢占资源，页面隐藏时继续暂停", async () => {
+  const h = harness({ saved: [lost] });
+  h.api.refresh();
+  assert.equal(h.requests.length, 0);
+
+  h.api.due();
+  h.documentState.visibilityState = "hidden";
+  h.api.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.requests.length, 0);
+
+  h.documentState.visibilityState = "visible";
+  h.api.refresh();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(h.requests.length, 2);
+  assert.ok(h.requests.every((request) => request.observedOnly));
 });
 
 test("虚拟列表复用行或关闭增强时，移除旧的隐藏标记", async () => {

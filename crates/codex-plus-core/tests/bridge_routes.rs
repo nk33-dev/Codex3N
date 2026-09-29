@@ -136,11 +136,12 @@ async fn session_health_route_passes_observed_ids_to_data_service() {
     let result = handle_bridge_request(
         test_context(),
         "/session/health",
-        json!({"threadIds": ["local:one", 7, "two"]}),
+        json!({"threadIds": ["local:one", 7, "two"], "observedOnly": true}),
     )
     .await;
     assert_eq!(result["status"], "ok");
     assert_eq!(result["missingIds"], json!(["local:one", "two"]));
+    assert_eq!(result["observedOnly"], true);
 }
 
 #[tokio::test]
@@ -975,7 +976,7 @@ async fn core_runtime_manager_route_attempts_to_open_manager_binary() {
 }
 
 #[tokio::test]
-async fn bridge_backend_status_writes_diagnostic_log() {
+async fn bridge_backend_status_omits_repetitive_success_envelope() {
     let temp = tempfile::tempdir().unwrap();
     let log_path = temp.path().join("codex-plus.log");
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
@@ -988,9 +989,9 @@ async fn bridge_backend_status_writes_diagnostic_log() {
 
     assert_eq!(result["status"], "ok");
     let contents = std::fs::read_to_string(&log_path).unwrap();
-    assert!(contents.contains("bridge.request"));
     assert!(contents.contains("bridge.backend_status_ok"));
-    assert!(contents.contains("/backend/status"));
+    assert!(!contents.contains(r#""event":"bridge.request","detail":{"path":"/backend/status"#));
+    assert!(!contents.contains(r#""event":"bridge.response","detail":{"path":"/backend/status"#));
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
 }
 
@@ -1478,8 +1479,16 @@ impl Default for FakeData {
 
 #[async_trait]
 impl BridgeDataService for FakeData {
-    async fn scan_session_health(&self, observed_ids: Vec<String>) -> anyhow::Result<Value> {
-        Ok(json!({"status": "ok", "missingIds": observed_ids}))
+    async fn scan_session_health(
+        &self,
+        observed_ids: Vec<String>,
+        observed_only: bool,
+    ) -> anyhow::Result<Value> {
+        Ok(json!({
+            "status": "ok",
+            "missingIds": observed_ids,
+            "observedOnly": observed_only
+        }))
     }
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult> {
         Ok(DeleteResult {
