@@ -1019,6 +1019,8 @@ body {
   gap: 10px;
 }
 
+/* 动作按钮行：个人版已覆盖上游 cd452f0「对齐供应商编辑器动作按钮」的诉求，
+   flex 不参与拉伸并右对齐，窄屏时换行。 */
 .relay-editor-actions {
   display: flex;
   flex: 0 0 auto;
@@ -2957,6 +2959,16 @@ body {
 
 .switch-row.compact {
   margin-bottom: 0;
+}
+
+.switch-row.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.switch-row.is-disabled:hover {
+  border-color: hsl(var(--border));
+  background: hsl(var(--background));
 }
 
 .zed-remote-settings {
