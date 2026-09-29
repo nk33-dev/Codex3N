@@ -57,12 +57,12 @@
 
 两个逃生开关都默认关闭，只在注入脚本无法通过校验时临时使用，放行会写诊断日志：`CODEX_PLUS_HELPER_BIND` 配 `CODEX_PLUS_HELPER_ALLOW_REMOTE=1` 放开非回环绑定与对端；`CODEX_PLUS_HELPER_ALLOW_WEB_ORIGIN=1` 放行任意网页来源。同步上游时不得把闸门删回无条件 `Access-Control-Allow-Origin: *`。真机排查：在诊断日志里搜 `helper.rejected_web_origin`，其中 `origin` 字段就是被拒的真实来源；若出现预期外的值，先临时放行恢复功能，再改成共享令牌方案。验证：`launcher.rs` 的 `helper_*` 单测，以及 `tests/launcher.rs` 的 `default_helper_rejects_web_origin_requests` / `default_helper_omits_wildcard_cors_for_requests_without_origin`。
 
-## 注入脚本分片
+## 注入脚本
 
-- 注入脚本按子系统拆成 `assets/inject/renderer/**` 分片，唯一拼装入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`；悬浮球的 `assets/inject/floating-panel/**` 是上游既有分片，规则相同。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。
-- 分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。新增分片只能插到正确位置，不能调整已有顺序。粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
-- `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；分片被 `include_str!` 内联，换行变化会改变注入内容。
-- 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts` 拼回原文；`inject-fragments.test.ts` 校验分片清单与 `assets.rs` 的 `concat!` 顺序一致，Rust 侧 `assets.rs` 的单元测试校验每个分片都真的拼进了结果。
-- 同步上游时，上游把新行为继续写在单文件注入脚本或别处时，迁入对应分片，不能同时保留旧内联实现；合并后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言拼装结果）与前端 `npm test`。
+- **renderer 注入脚本与上游同构，是单个文件** `assets/inject/renderer-inject.js`，由 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT` 用 `include_str!` 内联。刻意不拆成分片：上游近一年改这个文件二十余次、平均每次数百行，分片会让每次上游改动都变成「上游修改 vs 个人版删除」的冲突而只能手工搬运，同构单文件才能走 Git 三方合并。判断依据见[维护流程](maintenance.md)的「结构分叉的代价」。
+- 悬浮球的 `assets/inject/floating-panel/**` 是上游**既有**分片，沿用不变，由 `assets.rs` 的 `STEPWISE_SCRIPT` 用 `concat!` 拼装。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。renderer 的粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
+- `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；这些文件被 `include_str!` 内联，换行变化会改变注入内容。
+- 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts`：`readRendererInjectSource` 直接读单文件，`readStepwiseSource` 按顺序拼回悬浮球分片。`inject-fragments.test.ts` 校验悬浮球分片清单与 `assets.rs` 的 `concat!` 顺序一致，并确认两个脚本都仍是完整合法的单一 IIFE。
+- 改注入脚本后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言注入结果）与前端 `npm test`。
 - 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在 relay 模式下每轮都会调它）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。

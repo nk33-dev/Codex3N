@@ -21,9 +21,9 @@
 
 ## 代码入口与配置
 
-- `assets/inject/renderer/models/catalog-patch.js`：`sortModelChoices`、`patchModelNameArray`、`patchModelArray`、模型目录加载及现有 RPC 适配层；新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
-- `assets/inject/renderer/models/service-tier.js`：作用域 RPC 发现（`codexAppScopeNodes`、`collectScopedAppServerRequestCandidates`）与 fast service tier 控制。
-- 注入脚本的唯一拼装入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`，分片不能各自成为入口。
+- `assets/inject/renderer-inject.js` 的模型目录区段（`sortModelChoices`、`patchModelNameArray`、`patchModelArray`）：模型目录加载及现有 RPC 适配层；新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
+- 同一文件的 service tier 区段（`codexAppScopeNodes`、`collectScopedAppServerRequestCandidates`）：作用域 RPC 发现与 fast service tier 控制。
+- 注入脚本的唯一入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`，它内联与上游同构的单文件 `assets/inject/renderer-inject.js`（不拆分的理由见[runtime.md](runtime.md)的「注入脚本」）。
 - `crates/codex-plus-core/src/model_catalog.rs` / `model_suffix.rs`：目录来源与模型元数据。
 - 关注 `codexAppModelWhitelistUnlock`、`codexAppIncludeNativeModels`、`relayProfilesEnabled`；RPC 对象可能不可写，应使用现有适配器，本机目录不能注入远程主机。
 - 管理器供应商编辑页的家族标签由 `apps/codex-plus-manager/src/model-groups.ts` 负责，是另一处界面，不应和本页描述的原生菜单排序混为一谈。

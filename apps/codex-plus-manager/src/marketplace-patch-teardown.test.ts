@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { readFile } from "node:fs/promises";
 
-import { injectAssetUrl } from "./inject-fragments.ts";
+import { readRendererInjectSource } from "./inject-fragments.ts";
 
 /**
  * 插件市场补丁必须能真正还原。
@@ -13,8 +12,23 @@ import { injectAssetUrl } from "./inject-fragments.ts";
  * 以及被改写的 RPC `sendRequest` 会一直保持被替换的状态：开关看起来关掉了，实际仍在生效。
  */
 
-const FRAGMENT = "renderer/marketplace/plugin-bridge.js";
 const TAIL_MARKER = "  const pluginMarketplaceRequestPatchMaxMisses = ";
+
+/**
+ * renderer 注入脚本是与上游同构的单文件，这里按标记切出 plugin-bridge 那一段：
+ * 该测试会把片段当可执行代码跑，整份喂进去会连带后续分片的半截代码。
+ */
+function pluginBridgeSource(full: string): string {
+  const start = full.indexOf("  const codexPluginRemoteOnlyMarketplaceKinds = new Set([");
+  const end = full.indexOf("  const invalidSessionStorageKey = ", start);
+  assert.ok(start >= 0 && end > start, "plugin-bridge 片段未找到");
+  return full.slice(start, end);
+}
+
+/** 读取并按标记收窄后的 plugin-bridge 源码。 */
+async function readPluginBridgeSource(): Promise<string> {
+  return pluginBridgeSource(await readRendererInjectSource());
+}
 
 function slice(source: string, startMarker: string, endMarker: string, label: string): string {
   const start = source.indexOf(startMarker);
@@ -102,7 +116,7 @@ function marketplacePatchRuntime(source: string) {
 
 describe("插件市场补丁还原", () => {
   it("clearPluginPatchArtifacts 不再是空函数", async () => {
-    const source = await readFile(injectAssetUrl(FRAGMENT), "utf8");
+    const source = await readPluginBridgeSource();
     assert.doesNotMatch(source, /function clearPluginPatchArtifacts\(\)\s*\{\s*\}/);
     const body = slice(
       source,
@@ -121,7 +135,7 @@ describe("插件市场补丁还原", () => {
   });
 
   it("补丁还原依赖的原始值标记与真实实现一致", async () => {
-    const source = await readFile(injectAssetUrl(FRAGMENT), "utf8");
+    const source = await readPluginBridgeSource();
     // 还原函数按这些属性名取回原值，真实打补丁的代码必须写同样的名字。
     assert.ok(source.includes("client.__codexPluginMarketplaceRawSendRequest = client.sendRequest;"));
     assert.ok(source.includes("client.__codexPluginMarketplaceOriginalSendRequest = originalSendRequest;"));
@@ -132,7 +146,7 @@ describe("插件市场补丁还原", () => {
   });
 
   it("关闭插件市场解锁或切到 relay 模式后把宿主对象改回原样", async () => {
-    const source = await readFile(injectAssetUrl(FRAGMENT), "utf8");
+    const source = await readPluginBridgeSource();
     const runtime = marketplacePatchRuntime(source);
     const originalFilter = Array.prototype.filter;
     const bridge = runtime.window.electronBridge as Record<string, unknown>;
@@ -176,7 +190,7 @@ describe("插件市场补丁还原", () => {
   });
 
   it("还原后重新开启仍然能再次装上补丁", async () => {
-    const source = await readFile(injectAssetUrl(FRAGMENT), "utf8");
+    const source = await readPluginBridgeSource();
     const runtime = marketplacePatchRuntime(source);
     const originalFilter = Array.prototype.filter;
 
