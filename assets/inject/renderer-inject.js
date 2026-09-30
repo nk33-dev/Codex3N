@@ -1179,26 +1179,23 @@
       .codex-plus-api-key-section { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 360px); align-items: start; }
       .codex-plus-api-key-copy { min-width: 0; }
       .codex-plus-api-key-list { display: grid; gap: 6px; min-width: 0; }
-      .codex-plus-api-key-button {
-        display: grid;
-        grid-template-columns: 16px minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 8px;
+      .codex-plus-api-key-select {
         width: 100%;
         min-height: 38px;
         border: 1px solid rgba(255,255,255,.18);
         border-radius: 7px;
-        background: #3f3f46;
+        background-color: #3f3f46;
         color: #f3f4f6;
-        padding: 7px 10px;
-        text-align: left;
+        font: 12px system-ui, sans-serif;
+        padding: 7px 30px 7px 10px;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%238a8a8a' stroke-width='1.6' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        background-size: 11px 8px;
       }
-      .codex-plus-api-key-button span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-api-key-button small { color: #a1a1aa; font-size: 11px; }
-      .codex-plus-api-key-button[data-active="true"] { border-color: #10a37f; background: rgba(16,163,127,.16); }
-      .codex-plus-api-key-button:disabled { cursor: not-allowed; opacity: .72; }
-      .codex-plus-api-key-check { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%; }
-      .codex-plus-api-key-button[data-active="true"] .codex-plus-api-key-check { border-color: #10a37f; background: #10a37f; }
+      .codex-plus-api-key-select:disabled { cursor: not-allowed; opacity: .72; }
+      .codex-plus-api-key-select option { background-color: #3f3f46; color: #f3f4f6; }
       .codex-plus-api-key-empty { color: #a1a1aa; font-size: 12px; line-height: 1.45; padding: 8px 0; }
       @media (max-width: 680px) { .codex-plus-api-key-section { grid-template-columns: 1fr; } }
       .codex-plus-action-button,
@@ -1396,13 +1393,11 @@
       .codex-plus-tab-button:hover,
       .codex-plus-tab-button:focus-visible { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       .codex-plus-user-script-item { border-color: var(--codex-plus-border-subtle); border-radius: var(--border-radius-lg, 8px); background: var(--codex-plus-bg-secondary); }
-      .codex-plus-api-key-button { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text); font: inherit; }
-      .codex-plus-api-key-button:hover:not(:disabled),
-      .codex-plus-api-key-button:focus-visible { background: var(--codex-plus-bg-hover); outline: none; }
-      .codex-plus-api-key-button[data-active="true"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); }
-      .codex-plus-api-key-button small,
+      .codex-plus-api-key-select { border-color: var(--codex-plus-border); background-color: var(--codex-plus-bg-secondary); color: var(--codex-plus-text); font: inherit; }
+      .codex-plus-api-key-select:hover:not(:disabled),
+      .codex-plus-api-key-select:focus-visible { background-color: var(--codex-plus-bg-hover); outline: none; }
+      .codex-plus-api-key-select option { background-color: var(--codex-plus-bg-elevated); color: var(--codex-plus-text); }
       .codex-plus-api-key-empty { color: var(--codex-plus-text-tertiary); }
-      .codex-plus-api-key-button[data-active="true"] .codex-plus-api-key-check { border-color: var(--codex-plus-focus); background: var(--codex-plus-focus); }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status,
       .codex-plus-backend-indicator { box-shadow: none; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="ok"],
@@ -1471,6 +1466,16 @@
     return settings;
   }
 
+  // `codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上（滚动时可到显示刷新率），
+  // 每次都 JSON.parse + 两次对象展开会直接掉帧。缓存键是 localStorage 原文、
+  // 后端设置对象、皮肤主题全局三者，任一处变化就重算；热路径只剩一次 getItem 和几次比较。
+  let codexPlusSettingsCache = null;
+
+  /// 原地修改后端设置（对象身份不变）时显式失效，别让缓存读到旧值。
+  function invalidateCodexPlusSettingsCache() {
+    codexPlusSettingsCache = null;
+  }
+
   function codexPlusSettings() {
     const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
@@ -1498,10 +1503,27 @@
       };
     }
     try {
-      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
+      // localStorage 原文也进缓存键：别的注入脚本或用户脚本可能直接写这个键，
+      // 只靠"自己写入时失效"会读到过期设置。真正的开销是 JSON.parse 和两次对象展开，不是这次 getItem。
+      const raw = localStorage.getItem(codexPlusSettingsKey) || "{}";
+      const theme = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || null;
+      const cached = codexPlusSettingsCache;
+      if (cached
+          && cached.raw === raw
+          && cached.backend === codexPlusBackendSettings
+          && cached.theme === theme) {
+        return cached.settings;
+      }
+      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(raw), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
       }
+      codexPlusSettingsCache = {
+        raw,
+        backend: codexPlusBackendSettings,
+        theme,
+        settings,
+      };
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
@@ -2183,7 +2205,10 @@
       attributes: true,
       attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
     });
-    const timer = setInterval(ensure, 4000);
+    // 定时全量检查只在页面可见时跑；不可见时 DOM 观察器仍会在真正变化时触发。
+    const timer = setInterval(() => {
+      if (!document.hidden) ensure();
+    }, 4000);
     const resizeHandler = scheduleEnsure;
     window.addEventListener("resize", resizeHandler, { passive: true });
 
@@ -2246,6 +2271,8 @@
     codexPlusBackendSettings.codexAppDreamSkinEnabled = true;
     codexPlusBackendSettings.codexAppDreamSkinPaused = false;
     codexPlusBackendSettings.codexAppDreamSkinThemeConfig = window.__CODEX_PLUS_DREAM_SKIN_THEME__;
+    // 这里是原地改后端设置，缓存的身份检查抓不到，必须显式失效。
+    invalidateCodexPlusSettingsCache();
     refreshDreamSkin();
     return true;
   }
@@ -2275,6 +2302,7 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
+    invalidateCodexPlusSettingsCache();
     if (key === "threadScrollRestore" && !value) {
       clearTimeout(window.__codexThreadScrollSaveTimer);
       window.__codexThreadScrollSaveTimer = null;
@@ -3964,6 +3992,8 @@
         // 也一并去掉，等于直接改坏宿主 UI 的按钮状态；顺带全量扫描的开销也更大。
         const voiceButtonPattern = /\bmic\b|voice|dictation|microphone/i;
         const enforceVoice = () => {
+          // 页面不可见时没人看按钮，跳过这轮全文档扫描，省掉空转的 CPU 与耗电。
+          if (document.hidden) return;
           document.querySelectorAll("button[disabled]").forEach((btn) => {
             const label = btn.getAttribute("aria-label")
               || btn.getAttribute("title")
@@ -4265,26 +4295,35 @@
       list.textContent = "";
       return;
     }
+    const providerLabel = codexPlusRelayApiKeys.providerName || codexPlusRelayApiKeys.providerId || "未命名";
     summary.textContent = codexPlusRelayApiKeys.enabled
-      ? `当前供应商：${codexPlusRelayApiKeys.providerName || codexPlusRelayApiKeys.providerId || "未命名"}`
-      : "供应商配置切换尚未启用";
+      ? `当前供应商：${providerLabel}`
+      : `当前供应商：${providerLabel}（未启用供应商配置切换）`;
     const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
     if (!keys.length) {
       list.innerHTML = '<div class="codex-plus-api-key-empty">当前供应商没有可切换的命名 Key，请先在管理工具中添加。</div>';
       return;
     }
-    list.innerHTML = keys.map((entry) => {
-      const active = entry.id === codexPlusRelayApiKeys.activeKeyId;
-      return `<button type="button" class="codex-plus-api-key-button" data-codex-relay-api-key-id="${escapeHtml(entry.id)}" data-active="${String(active)}" ${!codexPlusRelayApiKeys.enabled || codexPlusRelayApiKeySwitching ? "disabled" : ""}>
-        <span class="codex-plus-api-key-check" aria-hidden="true"></span>
-        <span>${escapeHtml(entry.name || "未命名 Key")}</span>
-        <small>${active ? "使用中" : "切换"}</small>
-      </button>`;
-    }).join("");
+    const options = keys.map((entry) => `<option value="${escapeHtml(entry.id)}"${entry.id === codexPlusRelayApiKeys.activeKeyId ? " selected" : ""}>${escapeHtml(entry.name || "未命名 Key")}</option>`).join("");
+    // 总开关关闭时后端只改 Key 的落点，所以这里照常可选；只有切换进行中才禁用。
+    const switchingInFlight = codexPlusRelayApiKeySwitching;
+    const switchOffHint = codexPlusRelayApiKeys.enabled ? "" : `
+      <div class="codex-plus-api-key-empty">未启用供应商配置切换：这里只更换当前 Key，模型、上下文等其它配置保持不变。</div>`;
+    // 下拉框的选中项按 live 里的 Key 匹配；匹配不上说明实际在用的 Key 不在命名列表里。
+    const liveMismatchHint = codexPlusRelayApiKeys.liveKeyMatched === false
+      ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
+      : "";
+    list.innerHTML = `
+      <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
+        ${options}
+      </select>${switchOffHint}${liveMismatchHint}`;
     refreshCodexRelayApiKeyBadges();
   }
 
   async function loadRelayApiKeys(force = false) {
+    // 面板每次打开都重建 DOM，重新读取时命中缓存也要重画一次，
+    // 否则界面会一直停在模板里的“正在读取当前供应商…”。
+    renderRelayApiKeys();
     if (codexPlusRelayApiKeysPromise) return codexPlusRelayApiKeysPromise;
     if (!force && codexPlusRelayApiKeys.status === "ok") return codexPlusRelayApiKeys;
     codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, status: "loading" };
@@ -4415,6 +4454,9 @@
       "--codex-plus-border-subtle": palette.borderSubtle,
     };
     Object.entries(variables).forEach(([name, value]) => overlay.style.setProperty(name, value));
+    // 原生 <select> 的弹出列表由浏览器自己渲染，得用 color-scheme 告诉它跟随面板的深浅色，
+    // 否则会白底 + 近白色文字，看着像禁用。
+    overlay.style.setProperty("color-scheme", light ? "light" : "dark");
     overlay.dataset.codexPlusTheme = light ? "light" : "dark";
   }
   function openCodexPlusModal(options = {}) {
@@ -4605,6 +4647,11 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
+      if (apiKeySelect) {
+        void selectRelayApiKey(apiKeySelect.value);
+        return;
+      }
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -4630,11 +4677,6 @@
       }
       if (tabButton) {
         selectCodexPlusTab(tabButton.getAttribute("data-codex-plus-tab"));
-        return;
-      }
-      const relayApiKeyButton = target?.closest("[data-codex-relay-api-key-id]");
-      if (relayApiKeyButton) {
-        void selectRelayApiKey(relayApiKeyButton.getAttribute("data-codex-relay-api-key-id"));
         return;
       }
       if (target?.closest("[data-codex-open-devtools]")) {
@@ -7989,7 +8031,10 @@
       toast.appendChild(undo);
     }
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 10000);
+    // 撤销提示要留足操作时间；普通提示按内容长度给时长，长报错多留几秒，
+    // 短提示不该在屏幕上挂 10 秒。
+    const duration = undoToken ? 10000 : (String(message).length > 40 ? 6000 : 3000);
+    setTimeout(() => toast.remove(), duration);
   }
 
   function shareBase64Url(bytes) {
@@ -10077,7 +10122,8 @@
       return;
     }
     const existing = Array.from(document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`));
-    if (!codexPlusRelayApiKeys.enabled || keys.length < 2) {
+    // 总开关关闭时也能换 Key（只改 Key 的落点），所以快捷入口不再跟开关绑定。
+    if (keys.length < 2) {
       existing.forEach((badge) => badge.remove());
       return;
     }

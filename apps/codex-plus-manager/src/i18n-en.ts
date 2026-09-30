@@ -765,7 +765,7 @@ export const EN_PLAIN: Record<string, string> = {
   "混入 Codex 原生模型": "Include built-in Codex models",
   "对所有供应商生效；取消勾选后仅显示供应商模型。": "Applies to all providers. Uncheck to show only provider models.",
   "当前使用本机 config.toml；开启切换后可选择其他供应商": "Using the local config.toml; enable switching to choose another provider",
-  "开启后可选择供应商；关闭时不修改 Codex 配置。": "Enable to switch providers; when disabled, Codex configuration is left unchanged.",
+  "开启后可整份切换供应商配置；关闭时只在 Codex++ 面板里更换当前 Key，模型与上下文等其它配置不动。": "Enable to switch the whole provider configuration; when disabled, only the current key can be swapped from the Codex++ panel, leaving model and context settings untouched.",
   "默认配置为空，继续使用系统默认设置即可。": "The configuration is empty. Continue using the system defaults.",
   "导入默认 config.toml": "Import default config.toml",
   "正在读取配置…": "Reading configuration…",

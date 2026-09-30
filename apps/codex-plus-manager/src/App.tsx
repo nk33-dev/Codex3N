@@ -3910,7 +3910,7 @@ function RelayScreen({
             />
             <span>
               <strong>{t("启用供应商配置切换")}</strong>
-              <small>{t("开启后可选择供应商；关闭时不修改 Codex 配置。")}</small>
+              <small>{t("开启后可整份切换供应商配置；关闭时只在 Codex++ 面板里更换当前 Key，模型与上下文等其它配置不动。")}</small>
             </span>
             <ToggleVisual />
           </label>

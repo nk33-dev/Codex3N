@@ -14,6 +14,8 @@
 
 增强页与注入面板的功能标题、说明使用中文，例如“用 Zed 打开远程文件”“从上游创建工作树”；产品名、SSH 和 `git worktree add -b branch path upstream/base` 等命令、参数保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。
 
+注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，因此按输入身份缓存（后端设置对象、`__CODEX_PLUS_DREAM_SKIN_THEME__` 全局），缓存命中时不再读 `localStorage` 也不再 `JSON.parse`；本地设置写入与皮肤原地更新处显式调用 `invalidateCodexPlusSettingsCache()`。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
+
 ## 悬浮球
 
 错误态不再绘制双 X，使用温和平静的短眼形；保留微笑、拖拽、展开及建议/大纲能力。表情调整不等于忽略实际错误，状态说明仍须可见。
