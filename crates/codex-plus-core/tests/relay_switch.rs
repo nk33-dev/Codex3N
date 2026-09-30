@@ -1,3 +1,6 @@
+use std::path::Path;
+use std::sync::Mutex;
+
 use codex_plus_core::relay_switch::select_active_relay_api_key_in_home;
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
@@ -878,4 +881,265 @@ base_url = "{base_url}"
         auth_contents: format!(r#"{{"OPENAI_API_KEY":"{key}"}}"#),
         ..RelayProfile::default()
     }
+}
+
+/// 快捷切换 Key 的落点判定会读进程环境变量，同一二进制内并发测试必须串行化。
+static API_KEY_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_api_key_env() -> std::sync::MutexGuard<'static, ()> {
+    let guard = API_KEY_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    clear_api_key_env();
+    guard
+}
+
+fn clear_api_key_env() {
+    // SAFETY: 对环境变量的全部访问都在 API_KEY_ENV_LOCK 之内。
+    for name in [
+        "OPENAI_API_KEY",
+        "CODEX_PLUS_API_KEY",
+        "CODEX_PLUS_OPENAI_API_KEY",
+    ] {
+        unsafe { std::env::remove_var(name) };
+    }
+}
+
+fn set_api_key_env(name: &str, value: &str) {
+    // SAFETY: 同上，调用方持有 API_KEY_ENV_LOCK。
+    unsafe { std::env::set_var(name, value) };
+}
+
+/// 总开关关闭时的只读 Key 场景：关闭它（两个 Key，DeepSeek 使用中），live 用着另一个 Key。
+fn key_only_switch_setup(
+    home: &Path,
+    live_config: &str,
+    live_auth: &str,
+) -> (SettingsStore, String) {
+    std::fs::create_dir_all(home).unwrap();
+    std::fs::write(home.join("config.toml"), live_config).unwrap();
+    std::fs::write(home.join("auth.json"), live_auth).unwrap();
+    let mut profile = pure_profile("a", "https://a.example/v1", "sk-a");
+    profile.active_api_key_id = "default".to_string();
+    profile.api_keys = vec![
+        RelayApiKey {
+            id: "default".to_string(),
+            name: "GPT".to_string(),
+            api_key: "sk-a".to_string(),
+        },
+        RelayApiKey {
+            id: "key-deepseek".to_string(),
+            name: "DeepSeek".to_string(),
+            api_key: "sk-b".to_string(),
+        },
+    ];
+    let settings = BackendSettings {
+        relay_profiles_enabled: false,
+        active_relay_id: "a".to_string(),
+        relay_profiles: vec![profile],
+        ..BackendSettings::default()
+    };
+    let store = SettingsStore::new(home.parent().unwrap().join("settings.json"));
+    store.save(&settings).unwrap();
+    (store, "key-deepseek".to_string())
+}
+
+#[test]
+fn key_only_switch_updates_auth_json_and_leaves_config_untouched() {
+    let _guard = lock_api_key_env();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    let live_config = r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+model_auto_compact_token_limit = 500000
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#;
+    let live_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-live-old"}"#;
+    let (store, key_id) = key_only_switch_setup(&home, live_config, live_auth);
+
+    let result = select_active_relay_api_key_in_home(&store, &home, &key_id).unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(auth["OPENAI_API_KEY"], "sk-b");
+    assert_eq!(auth["auth_mode"], "apikey", "auth.json 其它字段要保留");
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).unwrap(),
+        live_config,
+        "只换 Key 时 config.toml 必须一个字节都不变"
+    );
+    assert_eq!(
+        result.settings.active_relay_profile().active_api_key_id,
+        "key-deepseek"
+    );
+    assert!(result.backup_path.is_some(), "写 live 前要留备份");
+}
+
+#[test]
+fn key_only_switch_writes_config_token_and_leaves_auth_untouched() {
+    let _guard = lock_api_key_env();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    let live_config = r#"model = "gpt-5.6-sol"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+experimental_bearer_token = "sk-live-old"
+base_url = "https://a.example/v1"
+"#;
+    let live_auth = r#"{"auth_mode":"chatgpt"}"#;
+    let (store, key_id) = key_only_switch_setup(&home, live_config, live_auth);
+
+    select_active_relay_api_key_in_home(&store, &home, &key_id).unwrap();
+
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(
+        config.contains(r#"experimental_bearer_token = "sk-b""#),
+        "{config}"
+    );
+    assert!(
+        config.contains(r#"model = "gpt-5.6-sol""#),
+        "其它配置要保留：{config}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        live_auth,
+        "落点是 config.toml 时 auth.json 不能被动"
+    );
+}
+
+#[test]
+fn key_only_switch_refuses_when_key_comes_from_provider_env_key() {
+    let _guard = lock_api_key_env();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    let live_config = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+env_key = "MY_RELAY_KEY"
+base_url = "https://a.example/v1"
+"#;
+    let live_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-live-old"}"#;
+    let (store, key_id) = key_only_switch_setup(&home, live_config, live_auth);
+
+    let error = select_active_relay_api_key_in_home(&store, &home, &key_id)
+        .expect_err("Key 由环境变量提供时必须拒绝");
+
+    assert!(error.to_string().contains("MY_RELAY_KEY"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        live_auth
+    );
+    assert_eq!(
+        store
+            .load()
+            .unwrap()
+            .active_relay_profile()
+            .active_api_key_id,
+        "default"
+    );
+}
+
+#[test]
+fn key_only_switch_refuses_when_api_key_env_var_is_set() {
+    let _guard = lock_api_key_env();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    let live_config = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#;
+    let live_auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-live-old"}"#;
+    let (store, key_id) = key_only_switch_setup(&home, live_config, live_auth);
+    set_api_key_env("OPENAI_API_KEY", "sk-ambient");
+
+    let error = select_active_relay_api_key_in_home(&store, &home, &key_id)
+        .expect_err("环境变量优先时写 auth.json 不会生效，必须拒绝");
+
+    assert!(error.to_string().contains("OPENAI_API_KEY"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        live_auth
+    );
+}
+
+#[test]
+fn key_only_switch_refuses_when_key_location_is_ambiguous_or_unknown() {
+    let _guard = lock_api_key_env();
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    let auth = r#"{"auth_mode":"apikey","OPENAI_API_KEY":"sk-live-old"}"#;
+    let (store, key_id) = key_only_switch_setup(
+        &home,
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#,
+        auth,
+    );
+    // 同时写在两处时无法判断 Codex 用哪个，只能拒绝。
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+experimental_bearer_token = "sk-live-old"
+base_url = "https://a.example/v1"
+"#,
+    )
+    .unwrap();
+    let error = select_active_relay_api_key_in_home(&store, &home, &key_id).unwrap_err();
+    assert!(error.to_string().contains("同时写在"), "{error}");
+
+    // 非标准字段里的字面 Key 同样不接管。
+    std::fs::write(home.join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).unwrap();
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+api_key = "sk-live-old"
+base_url = "https://a.example/v1"
+"#,
+    )
+    .unwrap();
+    let error = select_active_relay_api_key_in_home(&store, &home, &key_id).unwrap_err();
+    assert!(error.to_string().contains("api_key"), "{error}");
+
+    // 两处都没有 Key（官方登录态/免鉴权）时也不猜。
+    std::fs::write(
+        home.join("config.toml"),
+        r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://a.example/v1"
+"#,
+    )
+    .unwrap();
+    let error = select_active_relay_api_key_in_home(&store, &home, &key_id).unwrap_err();
+    assert!(error.to_string().contains("没有可写的 Key"), "{error}");
 }

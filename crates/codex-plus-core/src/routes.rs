@@ -68,6 +68,12 @@ pub trait BridgeSettingsService: Send + Sync {
         anyhow::bail!("当前后端不支持切换 API Key")
     }
 
+    /// live 配置里当前实际生效的 Key。只有知道 Codex home 的实现才会返回，
+    /// 面板据此显示「当前 Key」，避免存档里的 activeApiKeyId 落后于实际配置。
+    async fn live_codex_api_key(&self) -> Option<String> {
+        None
+    }
+
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
     }
@@ -165,7 +171,11 @@ pub async fn handle_bridge_request(
         "/settings/set" => {
             settings_value(&ctx, ctx.settings.set_settings(payload.clone()).await).await
         }
-        "/relay-api-keys" => relay_api_keys_value(ctx.settings.get_settings().await),
+        "/relay-api-keys" => {
+            let settings = ctx.settings.get_settings().await;
+            let live_api_key = ctx.settings.live_codex_api_key().await;
+            relay_api_keys_value(settings, live_api_key)
+        }
         "/relay-api-keys/select" => {
             let key_id = payload
                 .get("keyId")
@@ -386,6 +396,12 @@ impl BridgeSettingsService for CoreSettingsService {
             &key_id,
         )?;
         Ok(result.settings)
+    }
+
+    async fn live_codex_api_key(&self) -> Option<String> {
+        crate::relay_config::live_codex_api_key_in_home(
+            &crate::relay_config::default_codex_home_dir(),
+        )
     }
 
     async fn codex_app_version(&self) -> anyhow::Result<String> {
@@ -749,7 +765,10 @@ async fn settings_value(
     settings_payload_value(settings, codex_app_version)
 }
 
-fn relay_api_keys_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {
+fn relay_api_keys_value(
+    result: anyhow::Result<BackendSettings>,
+    live_api_key: Option<String>,
+) -> anyhow::Result<Value> {
     let settings = result?;
     let profile = settings.active_relay_profile();
     let mut keys = profile
@@ -760,18 +779,58 @@ fn relay_api_keys_value(result: anyhow::Result<BackendSettings>) -> anyhow::Resu
     let active_key_id =
         if keys.is_empty() && !crate::relay_config::relay_profile_api_key(&profile).is_empty() {
             keys.push(json!({ "id": "default", "name": "默认" }));
-            "default"
+            "default".to_string()
         } else {
-            profile.active_api_key_id.as_str()
+            profile.active_api_key_id.clone()
         };
-    Ok(json!({
+    // 总开关关闭时 live 才是事实来源：存档里的 activeApiKeyId 可能停在"最后添加的 Key"，
+    // 而 Codex 实际还在用另一个。能匹配上就显示匹配到的那个。
+    // live 读不到时（后端实现不提供）不算"未匹配"，不要骗前端去报警。
+    let live_match = live_api_key.as_deref().map(|live| {
+        let matched = live_matched_api_key_id(&profile, live, &active_key_id);
+        let id = matched.clone().unwrap_or_else(|| active_key_id.clone());
+        (id, matched.is_some())
+    });
+    let active_key_id = live_match
+        .as_ref()
+        .map(|(id, _)| id.clone())
+        .unwrap_or(active_key_id);
+    let mut value = json!({
         "status": "ok",
         "enabled": settings.relay_profiles_enabled,
         "providerId": profile.id,
         "providerName": profile.name,
         "activeKeyId": active_key_id,
         "keys": keys
-    }))
+    });
+    if let Some((_, matched)) = live_match
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("liveKeyMatched".to_string(), json!(matched));
+    }
+    Ok(value)
+}
+
+/// live 里的 Key 对应哪一个命名 Key；匹配不上返回 None（由调用方回退到存档的目标项）。
+fn live_matched_api_key_id(
+    profile: &crate::settings::RelayProfile,
+    live_api_key: &str,
+    active_key_id: &str,
+) -> Option<String> {
+    let live = live_api_key.trim();
+    if live.is_empty() {
+        return None;
+    }
+    if let Some(entry) = profile
+        .api_keys
+        .iter()
+        .find(|entry| entry.api_key.trim() == live)
+    {
+        return Some(entry.id.clone());
+    }
+    // 没有命名 Key 的旧配置：live 与供应商 Key 一致时，目标项就是它。
+    let single = crate::relay_config::relay_profile_api_key(profile);
+    (profile.api_keys.is_empty() && single.trim() == live).then(|| active_key_id.to_string())
 }
 
 fn relay_api_key_selection_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {

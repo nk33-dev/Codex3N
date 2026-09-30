@@ -281,7 +281,7 @@ async fn relay_api_keys_route_only_exposes_names() {
         ..BackendSettings::default()
     };
     let ctx = BridgeContext::new(
-        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeSettings::with_settings(settings).with_live_codex_api_key("sk-secret")),
         Arc::new(FakeRuntime::default()),
         Arc::new(FakeData::default()),
     );
@@ -290,9 +290,81 @@ async fn relay_api_keys_route_only_exposes_names() {
     let settings = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert_eq!(list["keys"], json!([{"id": "group-a", "name": "分组 A"}]));
+    assert_eq!(list["activeKeyId"], "group-a");
+    assert_eq!(list["liveKeyMatched"], true);
     assert!(!list.to_string().contains("sk-secret"));
     assert!(!settings.to_string().contains("sk-secret"));
     assert!(settings["relayProfiles"][0].get("apiKeys").is_none());
+}
+
+#[tokio::test]
+async fn relay_api_keys_route_reports_the_live_key_not_the_stored_one() {
+    // 总开关关闭时 live 才是事实来源：存档停在"最后添加的 Key"，Codex 实际还在用另一个。
+    let settings = BackendSettings {
+        relay_profiles_enabled: false,
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            id: "relay-a".to_string(),
+            name: "Relay A".to_string(),
+            api_keys: vec![
+                codex_plus_core::settings::RelayApiKey {
+                    id: "key-gpt".to_string(),
+                    name: "GPT".to_string(),
+                    api_key: "sk-gpt".to_string(),
+                },
+                codex_plus_core::settings::RelayApiKey {
+                    id: "key-deepseek".to_string(),
+                    name: "DeepSeek".to_string(),
+                    api_key: "sk-deepseek".to_string(),
+                },
+            ],
+            active_api_key_id: "key-deepseek".to_string(),
+            ..codex_plus_core::settings::RelayProfile::default()
+        }],
+        active_relay_id: "relay-a".to_string(),
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings).with_live_codex_api_key("sk-gpt")),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let list = handle_bridge_request(ctx.clone(), "/relay-api-keys", json!({})).await;
+    assert_eq!(
+        list["activeKeyId"], "key-gpt",
+        "live 里是 GPT 时，面板不能显示存档里最后添加的 DeepSeek"
+    );
+    assert_eq!(list["liveKeyMatched"], true);
+    assert!(!list.to_string().contains("sk-gpt"));
+
+    // live 里的 Key 不在命名列表时，回退到存档目标项并如实标记未匹配。
+    let unmatched_settings = BackendSettings {
+        relay_profiles_enabled: false,
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            id: "relay-a".to_string(),
+            name: "Relay A".to_string(),
+            api_keys: vec![codex_plus_core::settings::RelayApiKey {
+                id: "key-deepseek".to_string(),
+                name: "DeepSeek".to_string(),
+                api_key: "sk-deepseek".to_string(),
+            }],
+            active_api_key_id: "key-deepseek".to_string(),
+            ..codex_plus_core::settings::RelayProfile::default()
+        }],
+        active_relay_id: "relay-a".to_string(),
+        ..BackendSettings::default()
+    };
+    let unmatched = BridgeContext::new(
+        Arc::new(
+            FakeSettings::with_settings(unmatched_settings)
+                .with_live_codex_api_key("sk-somewhere-else"),
+        ),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+    let list = handle_bridge_request(unmatched, "/relay-api-keys", json!({})).await;
+    assert_eq!(list["activeKeyId"], "key-deepseek");
+    assert_eq!(list["liveKeyMatched"], false);
 }
 
 #[tokio::test]
@@ -1208,6 +1280,7 @@ fn test_context() -> BridgeContext {
 struct FakeSettings {
     settings: Mutex<BackendSettings>,
     codex_app_version: Mutex<String>,
+    live_codex_api_key: Mutex<Option<String>>,
 }
 
 impl FakeSettings {
@@ -1215,13 +1288,20 @@ impl FakeSettings {
         Self {
             settings: Mutex::new(settings),
             codex_app_version: Mutex::new(String::new()),
+            live_codex_api_key: Mutex::new(None),
         }
+    }
+
+    fn with_live_codex_api_key(self, live_api_key: &str) -> Self {
+        *self.live_codex_api_key.lock().unwrap() = Some(live_api_key.to_string());
+        self
     }
 
     fn with_codex_app_version(version: &str) -> Self {
         Self {
             settings: Mutex::new(BackendSettings::default()),
             codex_app_version: Mutex::new(version.to_string()),
+            live_codex_api_key: Mutex::new(None),
         }
     }
 }
@@ -1230,6 +1310,10 @@ impl FakeSettings {
 impl BridgeSettingsService for FakeSettings {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
         Ok(self.settings.lock().unwrap().clone())
+    }
+
+    async fn live_codex_api_key(&self) -> Option<String> {
+        self.live_codex_api_key.lock().unwrap().clone()
     }
 
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings> {
