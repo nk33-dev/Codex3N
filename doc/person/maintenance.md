@@ -85,6 +85,7 @@ cargo test --workspace
 ## 6. 发布
 
 - 从 Git 和 `Cargo.toml` 读取实际分支与版本，不在文档固定“当前版本”。版本为“上游版本 + `-3n.N`”，标签为对应的 `v<版本>`，仅发布 `personal` 对应标签。
+- 改完 `Cargo.toml` 版本先跑一次 `cargo check --workspace`（或任意 cargo 构建）让 `Cargo.lock` 跟上工作区成员的新版本号，再把锁文件和版本一起提交；否则发布脚本里的构建会就地改锁文件，标签指向的提交会留下过期锁版本。发布工作流不带 `--locked`，因此只影响版本一致性，不会让安装包构建失败。
 - 准备 UTF-8 说明文件，使用真实换行；统一执行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`，不绕过脚本单独打标签发布。
 - 脚本校验分支、工作区、标签及本地门禁，再通过原子推送同时提交分支与标签到远端并创建 Release。工作流 `.github/workflows/release-assets.yml` 在测试门禁和标签版本校验通过后才构建安装包。
 - 所有 GitHub 操作显式指定 `--repo nk33-dev/Codex3N`。`pushurl = DISABLED` 只限制 Git 推送，不能防止 `gh` 误操作上游。同步时保持个人更新源。
