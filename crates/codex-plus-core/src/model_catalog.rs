@@ -16,11 +16,7 @@ const BASE_URL_ENV_KEYS: &[&str] = &[
     "OPENAI_API_BASE",
     "OPENAI_API_URL",
 ];
-const API_KEY_ENV_KEYS: &[&str] = &[
-    "CODEX_PLUS_OPENAI_API_KEY",
-    "CODEX_PLUS_API_KEY",
-    "OPENAI_API_KEY",
-];
+const API_KEY_ENV_KEYS: &[&str] = crate::relay_config::API_KEY_ENV_KEYS;
 
 #[derive(Debug, Clone)]
 struct ModelSource {
@@ -684,26 +680,14 @@ fn provider_api_key(
     env: &HashMap<String, String>,
     auth_api_key: &str,
 ) -> String {
-    for key in [
-        "experimental_bearer_token",
-        "api_key",
-        "apikey",
-        "bearer_token",
-        "token",
-    ] {
-        let value = string_value(provider_config.get(key));
+    for key in crate::relay_config::PROVIDER_TOKEN_KEYS {
+        let value = string_value(provider_config.get(*key));
         if !value.is_empty() {
             return value;
         }
     }
-    for key in [
-        "env_key",
-        "api_key_env",
-        "api_key_env_var",
-        "key_env",
-        "bearer_token_env",
-    ] {
-        let env_name = string_value(provider_config.get(key));
+    for key in crate::relay_config::PROVIDER_ENV_KEY_KEYS {
+        let env_name = string_value(provider_config.get(*key));
         if !env_name.is_empty() {
             let value = first_env_value(env, &[&env_name]);
             if !value.is_empty() {

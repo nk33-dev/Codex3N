@@ -32,6 +32,31 @@ const RESERVED_MODEL_PROVIDER_IDS: &[&str] = &[
     "oss",
     "ollama-chat",
 ];
+/// Codex 官方配置里的字面 Key 字段。Codex++ 只在它上面写入，其它字段只识别、不猜。
+pub(crate) const CANONICAL_PROVIDER_TOKEN_KEY: &str = "experimental_bearer_token";
+/// 供应商表里可能直接写着 Key 的字段名。顺序即优先级，与 `provider_api_key` 共用一份定义。
+pub(crate) const PROVIDER_TOKEN_KEYS: &[&str] = &[
+    CANONICAL_PROVIDER_TOKEN_KEY,
+    "api_key",
+    "apikey",
+    "bearer_token",
+    "token",
+];
+/// 供应商表里声明“Key 来自哪个环境变量”的字段名。
+pub(crate) const PROVIDER_ENV_KEY_KEYS: &[&str] = &[
+    "env_key",
+    "api_key_env",
+    "api_key_env_var",
+    "key_env",
+    "bearer_token_env",
+];
+/// 通用 API Key 环境变量。Codex 读 Key 时环境变量先于 auth.json，
+/// 所以这几个变量存在时写 auth.json 不会改变实际使用的 Key。
+pub(crate) const API_KEY_ENV_KEYS: &[&str] = &[
+    "CODEX_PLUS_OPENAI_API_KEY",
+    "CODEX_PLUS_API_KEY",
+    "OPENAI_API_KEY",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -270,6 +295,163 @@ fn provider_values_are_configured(
         .get("experimental_bearer_token")
         .is_some_and(|value| !unquote_toml_string(value).trim().is_empty());
     has_base_url && (has_bearer_token || has_auth_api_key)
+}
+
+/// 快捷切换 Key 时 live 配置里唯一可写的落点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveApiKeyTarget {
+    /// `auth.json` 的 `OPENAI_API_KEY`。
+    AuthJson,
+    /// `config.toml` 里的 `experimental_bearer_token`。
+    ConfigBearerToken,
+}
+
+/// 判定当前 live 配置里 Key 落在哪。落点不唯一，或 Key 来自环境变量时返回 Err：
+/// 宁可如实拒绝，也不做「写了但 Codex 根本没读」的假成功。
+pub fn live_api_key_target_in_home(home: &Path) -> anyhow::Result<LiveApiKeyTarget> {
+    let env = std::env::vars().collect::<HashMap<String, String>>();
+    live_api_key_target_in_home_with_env(home, &env)
+}
+
+pub fn live_api_key_target_in_home_with_env(
+    home: &Path,
+    env: &HashMap<String, String>,
+) -> anyhow::Result<LiveApiKeyTarget> {
+    let config = read_optional_text(&home.join("config.toml"))?;
+    let auth = read_optional_text(&home.join("auth.json"))?;
+    if let Some(name) = live_provider_env_key_name(&config) {
+        anyhow::bail!(
+            "当前供应商的 Key 由环境变量 {name} 提供，Codex++ 不会改动系统环境变量；请改用「启用供应商配置切换」整份切换。"
+        );
+    }
+    if let Some(field) = live_provider_token_field(&config) {
+        anyhow::bail!(
+            "当前供应商的 Key 写在 config.toml 的 {field} 字段里（非 Codex++ 写入的写法），Codex++ 不猜它和 auth.json 哪个生效；请先清理其一，或改用「启用供应商配置切换」整份切换。"
+        );
+    }
+    // 没有写在 config.toml 里的 Key 时，环境变量优先于 auth.json（Codex 的读取顺序）。
+    let has_config_token = experimental_bearer_token_from_config(&config)?
+        .is_some_and(|token| !token.trim().is_empty());
+    if !has_config_token && let Some(name) = first_non_empty_env_name(env, API_KEY_ENV_KEYS) {
+        anyhow::bail!(
+            "当前 Key 来自环境变量 {name}，它优先于 auth.json；写 auth.json 不会改变 Codex 实际使用的 Key，Codex++ 不做这种假成功。请清除该变量或改用「启用供应商配置切换」整份切换。"
+        );
+    }
+    let has_auth_key = codex_auth_api_key(&auth).is_some_and(|key| !key.trim().is_empty());
+    match (has_config_token, has_auth_key) {
+        (true, false) => Ok(LiveApiKeyTarget::ConfigBearerToken),
+        (false, true) => Ok(LiveApiKeyTarget::AuthJson),
+        (true, true) => anyhow::bail!(
+            "Key 同时写在 config.toml 和 auth.json 里，无法确定 Codex 实际使用哪一个；请先清理其一，或改用「启用供应商配置切换」整份切换。"
+        ),
+        (false, false) => anyhow::bail!(
+            "当前 Codex 配置里没有可写的 Key（可能是官方登录态或免鉴权供应商）；请改用「启用供应商配置切换」整份切换。"
+        ),
+    }
+}
+
+/// live 配置里当前实际生效的 Key：`auth.json` 的 `OPENAI_API_KEY`，或 config.toml 里的 bearer token。
+/// 总开关关闭时存档的 `activeApiKeyId` 可能落后于 live，轻量页面的「当前 Key」以这里为准。
+pub fn live_codex_api_key_in_home(home: &Path) -> Option<String> {
+    let auth = read_optional_text(&home.join("auth.json")).ok()?;
+    if let Some(key) = codex_auth_api_key(&auth).filter(|key| !key.trim().is_empty()) {
+        return Some(key);
+    }
+    let config = read_optional_text(&home.join("config.toml")).ok()?;
+    experimental_bearer_token_from_config(&config)
+        .ok()
+        .flatten()
+        .filter(|token| !token.trim().is_empty())
+}
+
+/// 只更新 live 里的 Key：改落点那一处，另一个文件一个字不动。
+/// 返回备份目录（与整份应用共用同一套备份逻辑）。
+pub fn set_live_api_key_only_in_home(home: &Path, api_key: &str) -> anyhow::Result<Option<String>> {
+    let api_key = api_key.trim();
+    anyhow::ensure!(!api_key.is_empty(), "所选 API Key 为空");
+    match live_api_key_target_in_home(home)? {
+        LiveApiKeyTarget::AuthJson => {
+            let auth = read_optional_text(&home.join("auth.json"))?;
+            let next_auth = set_openai_api_key_in_auth_contents(&auth, api_key)?;
+            // config 传 None：只写 auth.json，config.toml 保持原样。
+            write_codex_live_atomic(home, None, Some(next_auth.as_bytes()))
+        }
+        LiveApiKeyTarget::ConfigBearerToken => {
+            let config = read_optional_text(&home.join("config.toml"))?;
+            let next_config = set_experimental_bearer_token_in_config(&config, api_key)?;
+            // auth 传 None：只写 config.toml，auth.json 保持原样。
+            write_codex_live_atomic(home, Some(&next_config), None)
+        }
+    }
+}
+
+/// 可能承接 live Key 的供应商表：当前会话供应商，以及 Codex++ 写入中转用的表。
+fn live_credential_provider_ids(doc: &DocumentMut) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    if let Some(active) = active_provider_id(doc) {
+        ids.push(active);
+    }
+    if !ids.iter().any(|id| id == RELAY_PROVIDER) {
+        ids.push(RELAY_PROVIDER.to_string());
+    }
+    ids
+}
+
+fn live_provider_table<'a>(doc: &'a DocumentMut, provider_id: &str) -> Option<&'a Table> {
+    doc.get("model_providers")
+        .and_then(Item::as_table)
+        .and_then(|providers| providers.get(provider_id))
+        .and_then(Item::as_table)
+}
+
+/// 当前 live 供应商声明的 Key 环境变量名（`env_key = "XXX"` 这类写法）。
+fn live_provider_env_key_name(config_contents: &str) -> Option<String> {
+    let doc = parse_toml_document(config_contents).ok()?;
+    live_credential_provider_ids(&doc)
+        .into_iter()
+        .find_map(|id| {
+            let provider = live_provider_table(&doc, &id)?;
+            PROVIDER_ENV_KEY_KEYS.iter().find_map(|key| {
+                provider
+                    .get(key)
+                    .and_then(Item::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            })
+        })
+}
+
+/// 写在非标准字段里的字面 Key（`api_key` / `bearer_token` 等）。这类写法 Codex++ 不接管，
+/// 也不去猜它和 auth.json 的优先级，直接让用户清理。
+fn live_provider_token_field(config_contents: &str) -> Option<String> {
+    let doc = parse_toml_document(config_contents).ok()?;
+    live_credential_provider_ids(&doc)
+        .into_iter()
+        .find_map(|id| {
+            let provider = live_provider_table(&doc, &id)?;
+            PROVIDER_TOKEN_KEYS
+                .iter()
+                .filter(|key| **key != CANONICAL_PROVIDER_TOKEN_KEY)
+                .find_map(|key| {
+                    provider
+                        .get(*key)
+                        .and_then(Item::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(|_| (*key).to_string())
+                })
+        })
+}
+
+fn first_non_empty_env_name(env: &HashMap<String, String>, names: &[&str]) -> Option<String> {
+    names
+        .iter()
+        .find(|name| {
+            env.get(**name)
+                .is_some_and(|value| !value.trim().is_empty())
+        })
+        .map(|name| (*name).to_string())
 }
 
 pub fn responses_proxy_configured_in_home(home: &Path) -> bool {

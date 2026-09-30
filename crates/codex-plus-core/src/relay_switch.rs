@@ -23,30 +23,64 @@ pub fn select_active_relay_api_key_in_home(
     let key_id = key_id.trim();
     anyhow::ensure!(!key_id.is_empty(), "请选择 API Key");
     let mut settings = store.load().context("读取供应商设置失败")?;
-    anyhow::ensure!(
-        settings.relay_profiles_enabled,
-        "供应商配置总开关已关闭，无法切换 API Key。"
-    );
     let active_relay_id = settings.active_relay_id.clone();
-    let profile = settings
+    let (selected_id, selected_key) = {
+        let profile = settings
+            .relay_profiles
+            .iter()
+            .find(|profile| profile.id == active_relay_id)
+            .with_context(|| "当前供应商不存在")?;
+        anyhow::ensure!(
+            profile.relay_mode != RelayMode::Aggregate,
+            "聚合供应商不支持直接切换 API Key。"
+        );
+        let selected = profile
+            .api_keys
+            .iter()
+            .find(|entry| entry.id == key_id)
+            .cloned()
+            .with_context(|| "所选 API Key 不存在，请刷新后重试。")?;
+        anyhow::ensure!(!selected.api_key.trim().is_empty(), "所选 API Key 为空");
+        (selected.id.clone(), selected.api_key.clone())
+    };
+
+    if !settings.relay_profiles_enabled {
+        // 总开关关闭：不接管整套供应商配置，只改 live 里 Key 的落点。
+        // 落点不唯一或在环境变量里时这里会报错返回，设置文件也不会被改动。
+        let backup_path = crate::relay_config::set_live_api_key_only_in_home(home, &selected_key)?;
+        set_active_api_key_in_settings(
+            &mut settings,
+            &active_relay_id,
+            &selected_id,
+            &selected_key,
+        );
+        store.save(&settings).context("保存供应商设置失败")?;
+        let settings = store.load().context("读取供应商设置失败")?;
+        return Ok(RelaySwitchResult {
+            settings,
+            configured: relay_config_status_from_home(home).configured,
+            backup_path,
+        });
+    }
+
+    set_active_api_key_in_settings(&mut settings, &active_relay_id, &selected_id, &selected_key);
+    switch_relay_profile_in_home(store, home, settings, &active_relay_id)
+}
+
+fn set_active_api_key_in_settings(
+    settings: &mut BackendSettings,
+    profile_id: &str,
+    key_id: &str,
+    api_key: &str,
+) {
+    if let Some(profile) = settings
         .relay_profiles
         .iter_mut()
-        .find(|profile| profile.id == active_relay_id)
-        .with_context(|| "当前供应商不存在")?;
-    anyhow::ensure!(
-        profile.relay_mode != RelayMode::Aggregate,
-        "聚合供应商不支持直接切换 API Key。"
-    );
-    let selected = profile
-        .api_keys
-        .iter()
-        .find(|entry| entry.id == key_id)
-        .cloned()
-        .with_context(|| "所选 API Key 不存在，请刷新后重试。")?;
-    anyhow::ensure!(!selected.api_key.trim().is_empty(), "所选 API Key 为空");
-    profile.active_api_key_id = selected.id;
-    profile.api_key = selected.api_key;
-    switch_relay_profile_in_home(store, home, settings, &active_relay_id)
+        .find(|profile| profile.id == profile_id)
+    {
+        profile.active_api_key_id = key_id.to_string();
+        profile.api_key = api_key.to_string();
+    }
 }
 
 pub fn switch_relay_profile_in_home(
