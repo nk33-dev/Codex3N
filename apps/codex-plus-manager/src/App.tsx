@@ -167,6 +167,9 @@ import {
 } from "./dream-skin";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
+import { initializeManager, loadManagerPage, type ManagerPageLoaders, type ManagerRoute as ManagerLoadingRoute } from "./manager-loading";
+import { useManagerLifecycle } from "./use-manager-lifecycle";
+import { isWeixinQrPending, startWeixinQrPolling } from "./weixin-qr-polling";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
 const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
@@ -1250,6 +1253,13 @@ export function App() {
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [removeOwnedData, setRemoveOwnedData] = useState(false);
   const [relaySwitching, setRelaySwitching] = useState(false);
+  const relaySwitchingRef = useRef(false);
+  const settingsSavingRef = useRef(false);
+  const settingsFormRef = useRef(settingsForm);
+  settingsFormRef.current = settingsForm;
+  const navigationRevision = useRef(0);
+  const navigateRef = useRef<((next: Route, skipDreamSkinDraftGuard?: boolean) => Promise<void>) | undefined>(undefined);
+  const [startupReady, setStartupReady] = useState(false);
   const dreamSkinDraftDirty = Boolean(
     savedDreamSkinThemeDraft
       && dreamSkinThemeDraft
@@ -1328,12 +1338,14 @@ export function App() {
     }
   };
 
-  const refreshSettings = async (silent = false) => {
+  const refreshSettings = async (silent = false, shouldApply: () => boolean = () => true) => {
     const result = await run(() => call<SettingsResult>("load_settings"));
     if (result) {
-      setSettings(result);
       const normalized = normalizeSettings(result.settings);
-      setSettingsForm(normalized);
+      if (shouldApply()) {
+        setSettings(result);
+        setSettingsForm(normalized);
+      }
       // 顶栏聚焦的工具以后端存的为准，避免刷新后跳回 codex。
       setActiveTool(normalized.activeTool || "codex");
       setLaunchForm((current) => ({
@@ -1346,10 +1358,10 @@ export function App() {
     return null;
   };
 
-  const refreshWeixinStatus = async (silent = false) => {
+  const refreshWeixinStatus = async (silent = false, isCurrent: () => boolean = () => true) => {
     const result = await run(() => call<WeixinConnectStatusResult>("weixin_connect_status"));
     if (result) {
-      setWeixinStatus(result);
+      if (isCurrent()) setWeixinStatus(result);
       if (!silent) showResultNotice(t("微信连接"), result, { silentSuccess: true });
     }
     return result;
@@ -2141,6 +2153,7 @@ export function App() {
   };
 
   const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
+    navigationRevision.current += 1;
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
       return;
@@ -2202,17 +2215,17 @@ export function App() {
       await refreshWatcher(true);
     }
   };
+  navigateRef.current = navigate;
 
-  const consumePendingManagerNavigation = async (): Promise<boolean> => {
+  const consumePendingManagerNavigation = async (initialLoad = false): Promise<boolean> => {
     try {
+      const revision = navigationRevision.current;
       const navigation = await invoke<ManagerNavigationIntent | null>("consume_pending_manager_navigation");
       if (!navigation) return false;
-      if (navigation.page === "settings") {
-        setPendingSettingsSection(navigation.section ?? null);
-        setRoute("settings");
-        await refreshSettings(true);
-        return true;
-      }
+      if (navigationRevision.current !== revision) return false;
+      if (navigation.page === "settings") setPendingSettingsSection(navigation.section ?? null);
+      await navigateRef.current?.(navigation.page, false);
+      return true;
     } catch (error) {
       logDiagnostic("manager.navigation_failed", { error: stringifyError(error) });
     }
@@ -3004,7 +3017,8 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId) => {
-    if (relaySwitching) {
+    if (settingsSavingRef.current) return;
+    if (relaySwitchingRef.current) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return;
     }
@@ -3031,18 +3045,14 @@ export function App() {
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
       return;
     }
-    switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
-    const selectedAfterSave = activeRelayProfile(switchSettings);
-    const command = relayProfileSwitchCommand(selectedAfterSave);
-
-    logDiagnostic("switchRelayProfile.apply_start", {
-      targetRelayId: selectedAfterSave.id,
-      targetRelayName: selectedAfterSave.name,
-      previousActiveRelayId,
-      command,
-    });
+    relaySwitchingRef.current = true;
     setRelaySwitching(true);
+    const formAtSwitch = settingsFormRef.current;
     try {
+      switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
+      const selectedAfterSave = activeRelayProfile(switchSettings);
+      const command = relayProfileSwitchCommand(selectedAfterSave);
+      logDiagnostic("switchRelayProfile.apply_start", { targetRelayId: selectedAfterSave.id, targetRelayName: selectedAfterSave.name, previousActiveRelayId, command });
       const result = await run(() =>
         call<RelaySwitchResult>("switch_relay_profile", {
           request: { settings: switchSettings, previousActiveRelayId },
@@ -3062,7 +3072,10 @@ export function App() {
         settings_path: result.settingsPath,
         user_scripts: result.user_scripts as UserScriptInventory,
       });
-      setSettingsForm(selectedSettings);
+      if (settingsFormRef.current === formAtSwitch) {
+        settingsFormRef.current = selectedSettings;
+        setSettingsForm(selectedSettings);
+      }
       setRelay({
         status: result.status,
         message: result.message,
@@ -3086,6 +3099,7 @@ export function App() {
         status: result.status,
       });
     } finally {
+      relaySwitchingRef.current = false;
       setRelaySwitching(false);
     }
   };
@@ -3113,6 +3127,7 @@ export function App() {
   const copyText = async (text: string, message: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      showNotice(t("复制"), message, "ok");
     } catch (error) {
       showNotice(t("复制失败"), stringifyError(error), "failed");
     }
@@ -3147,48 +3162,58 @@ export function App() {
   };
 
   useEffect(() => {
+    let disposed = false;
+    const initialForm = settingsFormRef.current;
     void (async () => {
-      const startup = await run(() => call<StartupResult>("startup_options"));
-      const handledNavigation = await consumePendingManagerNavigation();
-      if (!handledNavigation && startup?.showUpdate) {
-        setRoute("about");
-        void checkUpdate(false);
-      } else {
-        void checkUpdate(true);
+      const startup = await initializeManager({
+        startup: () => run(() => call<StartupResult>("startup_options")),
+        settings: () => refreshSettings(true),
+        overview: () => refreshOverview(true),
+        tools: () => refreshTools(true),
+      });
+      if (disposed) return;
+      const untouched = navigationRevision.current === 0;
+      const handledNavigation = untouched && await consumePendingManagerNavigation(true);
+      if (disposed) return;
+      if (!handledNavigation && navigationRevision.current === 0 && settingsFormRef.current === initialForm) {
+        const initialRoute = startup?.showUpdate ? "about" : route;
+        setRoute(initialRoute);
+        void loadManagerPage(initialRoute as ManagerLoadingRoute, {
+          settings: () => refreshSettings(true), overview: () => refreshOverview(true), weixin: () => refreshWeixinStatus(true), relay: () => refreshRelay(true), relayFiles: () => refreshRelayFiles(true), envConflicts: () => refreshEnvConflicts(true), ccsProviders: () => refreshCcsProviders(true), relayEnvironment: () => refreshRelayEnvironment(true), sessions: () => refreshLocalSessions(true), providerSyncTargets: () => refreshProviderSyncTargets(true), zedRemoteProjects: () => refreshZedRemoteProjects(true), liveContextEntries: () => refreshLiveContextEntries(true), dreamSkinStatus: () => refreshDreamSkinStatus(true), dreamSkinLibrary: () => refreshDreamSkinLibrary(true), dreamSkinMarket: () => refreshDreamSkinMarket(true), dreamSkinCommunity: () => refreshDreamSkinCommunity(true), scriptMarket: () => refreshScriptMarket(true), userScriptInventory: () => refreshUserScriptInventory(), logs: () => refreshLogs(true), diagnostics: () => refreshDiagnostics(true), watcher: () => refreshWatcher(true), remotePluginMarketplace: () => refreshRemotePluginMarketplace(true),
+        } as ManagerPageLoaders, new Set(["settings", "overview"]));
       }
-      await refreshOverview(true);
-      // 概览页的赞助商区块要显示真实广告源内容，所以启动就拉一次，
-      // 不要等到用户点进「推荐内容」才加载。
-      await refreshAds(true);
-      await refreshTools(true);
-      if (!handledNavigation) await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshEnvConflicts(true);
-      await refreshProviderSyncTargets(true);
-      await refreshPendingProviderImport(true);
-      await refreshPendingSessionShare(true);
-      await refreshPendingDreamSkinCommunity();
-      await refreshRemotePluginMarketplace(true);
+      void checkUpdate(handledNavigation || !startup?.showUpdate);
+      setStartupReady(true);
     })();
+    return () => { disposed = true; };
   }, []);
 
+  useManagerLifecycle({
+    ready: startupReady,
+    weixinActive: route === "weixin",
+    refreshPending: async () => { await Promise.all([consumePendingManagerNavigation(), refreshPendingProviderImport(true), refreshPendingSessionShare(true), refreshPendingDreamSkinCommunity()]); },
+    refreshWeixin: () => refreshWeixinStatus(true),
+    onError: (error) => logDiagnostic("manager.background_refresh_failed", { error: stringifyError(error) }),
+  });
+
+  const weixinQrPending = !!weixinQr && isWeixinQrPending(weixinQr.qrStatus);
   useEffect(() => {
-    let disposed = false;
-    let stopListening: (() => void) | undefined;
-    void listen(MANAGER_NAVIGATION_EVENT, () => {
-      if (!disposed) void consumePendingManagerNavigation();
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-      } else {
-        stopListening = unlisten;
-      }
+    if (!weixinQrPending) return;
+    return startWeixinQrPolling({
+      read: () => call<WeixinQrResult>("weixin_connect_qr_status"),
+      onConfirmed: async (isCurrent) => {
+        const formAtLoad = settingsFormRef.current;
+        await refreshSettings(true, () => isCurrent() && settingsFormRef.current === formAtLoad);
+        if (isCurrent()) await refreshWeixinStatus(true, isCurrent);
+      },
+      onResult: (result) => {
+        setWeixinQr(result);
+        if (result.qrStatus === "confirmed") showNotice(t("微信扫码登录"), result.message, result.status);
+        else if (!isSuccessStatus(result.status) || result.qrStatus === "expired") showResultNotice(t("微信扫码登录"), result);
+      },
+      onError: (error) => showNotice(t("微信扫码登录"), stringifyError(error), "failed"),
     });
-    return () => {
-      disposed = true;
-      stopListening?.();
-    };
-  }, []);
+  }, [weixinQrPending, weixinQr?.qrContent]);
 
   useEffect(() => {
     if (route !== "sessions") return;
@@ -3564,7 +3589,7 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, zedRemoteProjects, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, relaySwitching],
   );
   const hasUpdate = update?.updateAvailable === true;
 
@@ -4840,6 +4865,11 @@ function RelayScreen({
           </div>
           <RelayProfileList
             form={normalized}
+            onSwitch={(profileId) => {
+              const previousActiveRelayId = normalized.activeRelayId;
+              const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
+              void actions.switchRelayProfile(next, previousActiveRelayId);
+            }}
             onEdit={(profileId) => void editRelayProfile(profileId)}
             onFormChange={saveRelaySettings}
             disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
@@ -7262,12 +7292,14 @@ function RelayProfileList({
   form,
   onFormChange,
   onEdit,
+  onSwitch,
   disabled = false,
   actions,
 }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
+  onSwitch: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
 }) {
@@ -7297,6 +7329,7 @@ function RelayProfileList({
               key={profile.id}
               onEdit={onEdit}
               onFormChange={onFormChange}
+              onSwitch={onSwitch}
               disabled={disabled}
               profile={profile}
             />
@@ -7313,6 +7346,7 @@ function SortableRelayProfileCard({
   index,
   onFormChange,
   onEdit,
+  onSwitch,
   disabled = false,
   actions,
 }: {
@@ -7321,6 +7355,7 @@ function SortableRelayProfileCard({
   index: number;
   onFormChange: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
+  onSwitch: (id: string) => void;
   disabled?: boolean;
   actions: Actions;
 }) {
@@ -7370,9 +7405,7 @@ function SortableRelayProfileCard({
           onClick={(event) => {
             event.stopPropagation();
             if (disabled) return;
-            const previousActiveRelayId = form.activeRelayId;
-            const next = syncLegacyRelayFields({ ...form, activeRelayId: profile.id });
-            void actions.switchRelayProfile(next, previousActiveRelayId);
+            onSwitch(profile.id);
           }}
           size="sm"
           title={disabled ? t("供应商切换不可用") : active ? t("当前正在使用") : t("设为当前")}
@@ -11802,11 +11835,6 @@ function backendSettingsEqual(left: BackendSettings, right: BackendSettings): bo
   return JSON.stringify(normalizeSettings(left)) === JSON.stringify(normalizeSettings(right));
 }
 
-function clampNumber(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
 function normalizeCooldownErrorStatuses(value: number[] | undefined): number[] {
   if (!Array.isArray(value)) return [429, 500];
   return Array.from(
@@ -11841,7 +11869,16 @@ function inputToCodexExtraArgs(value: string) {
   return value === "" ? [] : value.split(/\r?\n/);
 }
 
+function clampNumber(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
 function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = emptyContextSelection()): RelayProfile {
+  const clamp = (value: number, min: number, max: number) => Number.isFinite(value) ? Math.min(max, Math.max(min, Math.round(value))) : min;
+  const normalizeStatuses = (value: number[] | undefined) => Array.isArray(value)
+    ? Array.from(new Set(value.map(Number).filter((status) => Number.isInteger(status) && status >= 100 && status <= 599))).slice(0, 20)
+    : [429, 500];
   const legacyMixedApi = profile.relayMode === "mixedApi";
   if (profile.relayMode === "aggregate" || profile.aggregate) {
     return normalizeAggregateRelayProfile(
@@ -11877,8 +11914,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         standardOpenaiProtocol: false,
         rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
         channelQueueEnabled: profile.channelQueueEnabled === true,
-        channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
-        cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
+        channelRequestsPerMinute: clamp(profile.channelRequestsPerMinute ?? 20, 1, 10000),
+        cooldownErrorStatuses: normalizeStatuses(profile.cooldownErrorStatuses),
       },
       null,
     );
@@ -11897,7 +11934,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     officialMixApiKey,
     hideOfficialUsageAlert: profile.hideOfficialUsageAlert === true,
     testModel: profile.testModel || "",
-    configContents: relayMode === "official" && !officialMixApiKey ? "" : profile.configContents || "",
+    configContents: profile.configContents || "",
     authContents: relayMode === "official" && !officialMixApiKey ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "",
     useCommonConfig: profile.useCommonConfig !== false,
     contextSelection: profile.contextSelectionInitialized
@@ -11918,8 +11955,8 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
     channelQueueEnabled: profile.channelQueueEnabled === true,
-    channelRequestsPerMinute: clampNumber(profile.channelRequestsPerMinute ?? 20, 1, 10000),
-    cooldownErrorStatuses: normalizeCooldownErrorStatuses(profile.cooldownErrorStatuses),
+    channelRequestsPerMinute: clamp(profile.channelRequestsPerMinute ?? 20, 1, 10000),
+    cooldownErrorStatuses: normalizeStatuses(profile.cooldownErrorStatuses),
   };
   return relayProfileUsesLiveFiles(normalized) ? deriveRelayProfileFromFiles(normalized) : normalized;
 }
@@ -12617,7 +12654,9 @@ function relaySettingsWithDraft(
 }
 
 function relayProfileUsesLiveFiles(profile: RelayProfile): boolean {
-  return profile.relayMode !== "official" || profile.officialMixApiKey;
+  return profile.relayMode !== "official"
+    || profile.officialMixApiKey
+    || Boolean(profile.configContents.trim());
 }
 
 function authJsonHasOpenAiApiKey(contents: string): boolean {
