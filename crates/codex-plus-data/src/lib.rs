@@ -2,7 +2,12 @@ pub mod backup;
 pub mod markdown;
 pub mod provider_sync;
 pub mod session_health;
+pub mod session_index_repair;
+mod session_index_scan;
 pub mod storage;
+pub use session_index_repair::{
+    SessionIndexRepairReport, load_session_index_repair_report, repair_session_index,
+};
 
 pub use backup::BackupStore;
 pub use markdown::{MarkdownExportService, export_markdown_from_paths};
