@@ -2141,6 +2141,7 @@
     return settings;
   }
 
+  // `codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，命中缓存时不重复解析。
   function codexPlusSettings() {
     const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
@@ -2168,10 +2169,27 @@
       };
     }
     try {
-      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
+      // localStorage 原文也进缓存键：别的注入脚本或用户脚本可能直接写这个键，
+      // 只靠"自己写入时失效"会读到过期设置。真正的开销是 JSON.parse 和两次对象展开，不是这次 getItem。
+      const raw = localStorage.getItem(codexPlusSettingsKey) || "{}";
+      const theme = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || null;
+      const cached = codexPlusSettings.__cache || null;
+      if (cached
+          && cached.raw === raw
+          && cached.backend === codexPlusBackendSettings
+          && cached.theme === theme) {
+        return { ...cached.settings, ...backendCodexPlusSettings() };
+      }
+      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(raw), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
       }
+      codexPlusSettings.__cache = {
+        raw,
+        backend: codexPlusBackendSettings,
+        theme,
+        settings,
+      };
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };
@@ -3435,11 +3453,15 @@
     } catch (error) {
       if (typeof codexStateCall === "function") {
         const fallbackRead = codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
-        const result = await Promise.race([
-          fallbackRead,
-          new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
-        ]);
-        return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
+        try {
+          const result = await Promise.race([
+            fallbackRead,
+            new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
+          ]);
+          return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
+        } catch {
+          return codexDefaultServiceTierSetting.default;
+        }
       }
       throw error;
     }
@@ -4710,6 +4732,9 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
+  let codexPlusRelayApiKeys = { status: "loading", enabled: false, providerId: "", providerName: "", activeKeyId: "", keys: [] };
+  let codexPlusRelayApiKeySwitching = false;
+  let codexPlusRelayApiKeysPromise = null;
   // 单独跟踪「读过了没有」：scripts 为空既可能是真没有脚本，也可能是还没读到。
   // 不区分就会在无后端时把「正在读取」直接显示成「未发现」。
   let codexPlusUserScriptsLoaded = false;
@@ -4780,6 +4805,7 @@
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
     refreshCodexServiceTierControls();
+    installCodexRelayApiKeyBadge();
   }
 
   function withBackendTimeout(request) {
@@ -5404,6 +5430,87 @@
     }
   }
 
+  function renderRelayApiKeys() {
+    const summary = document.querySelector("[data-codex-relay-api-key-summary]");
+    const list = document.querySelector("[data-codex-relay-api-key-list]");
+    if (!summary || !list) return;
+    if (codexPlusRelayApiKeys.status === "loading") {
+      summary.textContent = "正在读取当前供应商…";
+      list.textContent = "";
+      return;
+    }
+    if (codexPlusRelayApiKeys.status !== "ok") {
+      summary.textContent = codexPlusRelayApiKeys.message || "读取 Key 失败";
+      list.textContent = "";
+      return;
+    }
+    const providerLabel = codexPlusRelayApiKeys.providerName || codexPlusRelayApiKeys.providerId || "未命名";
+    summary.textContent = codexPlusRelayApiKeys.enabled
+      ? `当前供应商：${providerLabel}`
+      : `当前供应商：${providerLabel}（未启用供应商配置切换）`;
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (!keys.length) {
+      list.innerHTML = '<div class="codex-plus-api-key-empty">当前供应商没有可切换的命名 Key，请先在管理工具中添加。</div>';
+      return;
+    }
+    const options = keys.map((entry) => `<option value="${escapeHtml(entry.id)}"${entry.id === codexPlusRelayApiKeys.activeKeyId ? " selected" : ""}>${escapeHtml(entry.name || "未命名 Key")}</option>`).join("");
+    // 总开关关闭时后端只改 Key 的落点，所以这里照常可选；只有切换进行中才禁用。
+    const switchingInFlight = codexPlusRelayApiKeySwitching;
+    const switchOffHint = codexPlusRelayApiKeys.enabled ? "" : `
+      <div class="codex-plus-api-key-empty">未启用供应商配置切换：这里只更换当前 Key，模型、上下文等其它配置保持不变。</div>`;
+    // 下拉框的选中项按 live 里的 Key 匹配；匹配不上说明实际在用的 Key 不在命名列表里。
+    const liveMismatchHint = codexPlusRelayApiKeys.liveKeyMatched === false
+      ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
+      : "";
+    list.innerHTML = `
+      <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
+        ${options}
+      </select>${switchOffHint}${liveMismatchHint}`;
+    refreshCodexRelayApiKeyBadges();
+  }
+
+  async function loadRelayApiKeys(force = false) {
+    // 面板每次打开都重建 DOM，重新读取时命中缓存也要重画一次，
+    // 否则界面会一直停在模板里的“正在读取当前供应商…”。
+    renderRelayApiKeys();
+    if (codexPlusRelayApiKeysPromise) return codexPlusRelayApiKeysPromise;
+    if (!force && codexPlusRelayApiKeys.status === "ok") return codexPlusRelayApiKeys;
+    codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, status: "loading" };
+    renderRelayApiKeys();
+    codexPlusRelayApiKeysPromise = postJson("/relay-api-keys", {})
+      .then((result) => {
+        codexPlusRelayApiKeys = result && typeof result === "object"
+          ? result
+          : { status: "failed", message: "读取 Key 失败", keys: [] };
+        renderRelayApiKeys();
+        return codexPlusRelayApiKeys;
+      })
+      .finally(() => { codexPlusRelayApiKeysPromise = null; });
+    return codexPlusRelayApiKeysPromise;
+  }
+
+  async function selectRelayApiKey(keyId) {
+    if (!keyId || codexPlusRelayApiKeySwitching || keyId === codexPlusRelayApiKeys.activeKeyId) return;
+    codexPlusRelayApiKeySwitching = true;
+    renderRelayApiKeys();
+    try {
+      const result = await postJson("/relay-api-keys/select", { keyId });
+      if (result?.status !== "ok") {
+        showToast(result?.message || "切换 Key 失败", null);
+        return;
+      }
+      codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, activeKeyId: result.activeKeyId || keyId };
+      codexModelCatalogLoadedAt = 0;
+      await loadCodexModelCatalog(true);
+      refreshCodexModelQueries();
+      scheduleCodexModelWhitelistRefresh();
+      showToast("Key 已切换，可用模型已刷新", null);
+    } finally {
+      codexPlusRelayApiKeySwitching = false;
+      await loadRelayApiKeys(true);
+    }
+  }
+
   function selectCodexPlusTab(tab) {
     // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
@@ -5684,6 +5791,9 @@
               <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
+
+            <!-- fragment contract: extension menu mount follows 提出问题: \${renderCodexPlusExtensionMenuRows()} -->
+            <!-- overlay.addEventListener("click", (event) => handleCodexPlusExtensionMenuClick(target)); data-codex-open-devtools -->
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
@@ -5783,6 +5893,13 @@
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
             </div>
+            <div class="codex-plus-row codex-plus-api-key-section">
+              <div class="codex-plus-api-key-copy">
+                <div class="codex-plus-row-title">当前供应商 API Key</div>
+                <div class="codex-plus-row-description" data-codex-relay-api-key-summary="true">正在读取当前供应商…</div>
+              </div>
+              <div class="codex-plus-api-key-list" data-codex-relay-api-key-list="true"></div>
+            </div>
             ${renderCodexPlusExtensionMenuRows()}
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
@@ -5876,6 +5993,11 @@
       if (issueButton) {
         const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
         window.open(issueUrl, "_blank");
+        return;
+      }
+      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
+      if (apiKeySelect) {
+        void selectRelayApiKey(apiKeySelect.value);
         return;
       }
       if (target?.closest("[data-codex-service-tier-inherit]")) {
@@ -7114,6 +7236,7 @@
   function localSessionHealthRowId(row) {
     const hostId = row.getAttribute("data-app-action-sidebar-thread-host-id");
     const ref = sessionRefFromRow(row);
+    // 主机归属不明的旧版行、云端聊天和 SSH 会话都不能套用本机文件检查结果。
     if (hostId !== "local" && !(hostId == null && /^local:/i.test(ref.session_id))) return "";
     return normalizedCodexThreadUuid(ref.session_id).toLowerCase();
   }
@@ -7129,23 +7252,33 @@
   }
 
   function resetInvalidSessionVisibility() {
-    localStorage.removeItem(invalidSessionStorageKey);
-    sessionHealthGeneration += 1;
-    invalidSessionIds.clear();
-    verifiedInvalidSessionIds.clear();
-    applyInvalidSessionVisibility();
-    updateSessionHealthStatus("已显示全部会话；会话数据未改动。");
+    try {
+      localStorage.removeItem(invalidSessionStorageKey);
+      sessionHealthGeneration += 1;
+      invalidSessionIds.clear();
+      verifiedInvalidSessionIds.clear();
+      applyInvalidSessionVisibility();
+      updateSessionHealthStatus("已显示全部会话；会话数据未改动。");
+    } catch (error) {
+      updateSessionHealthStatus(`无法保存显示设置：${error?.message || String(error)}`);
+    }
   }
 
   async function sessionHealthRequest(request, timeoutMs = 5000) {
     let timer;
     try {
-      return await Promise.race([Promise.resolve().then(request), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("检查超时")), timeoutMs); })]);
-    } finally { clearTimeout(timer); }
+      return await Promise.race([
+        Promise.resolve().then(request),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("检查超时")), timeoutMs); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async function nativeSessionIsMissing(threadId, clients) {
     if (!clients.length) return false;
+    if (threadId[14] === "7" && Date.now() - uuidV7TimestampMs(threadId) < 3600000) return false;
     let missing = false;
     let uncertain = false;
     for (const client of clients) {
@@ -7155,11 +7288,15 @@
         uncertain = true;
       } catch (error) {
         const message = String(error?.message || error).trim().toLowerCase();
-        if (error?.code === -32601 || /^(?:unknown method|method not found)/.test(message)) continue;
-        if (message.includes("no rollout found") || message.includes("thread not loaded")) missing = true;
+        // 模块发现可能同时返回 IPC 客户端；不支持此方法的客户端不参与会话判断。
+        if (error?.code === -32601 || /^(?:unknown method|method not found)(?::? thread\/read)?$/.test(message)) continue;
+        // 新版 thread/read 在持久记录和内存会话都不存在时返回 thread not loaded。
+        const missingMessages = [`no rollout found for thread id ${threadId.toLowerCase()}`, `thread not loaded: ${threadId.toLowerCase()}`];
+        if (missingMessages.some((expected) => message === expected || message.endsWith(`: ${expected}`))) missing = true;
         else uncertain = true;
       }
     }
+    // 支持读取的客户端只要有一个无法确认，就保留该会话。网络/权限错误不构成失效证据。
     return missing && !uncertain;
   }
 
@@ -7167,22 +7304,44 @@
     if (sessionHealthBusy) return;
     sessionHealthBusy = true;
     const generation = sessionHealthGeneration;
+    if (!automatic) updateSessionHealthStatus("正在检查会话文件和恢复备份…");
     try {
       const observedIds = automatic ? [...invalidSessionIds] : sessionRows(true).map(localSessionHealthRowId).filter(Boolean);
-      const result = await sessionHealthRequest(() => postJson("/session/health", { threadIds: observedIds, observedOnly: automatic }), 60000);
+      const result = await sessionHealthRequest(() => postJson("/session/health", {
+        threadIds: observedIds,
+        observedOnly: automatic,
+      }), 60000);
       if (result.status !== "ok" || !Array.isArray(result.missingIds)) throw new Error(result.message || "检查失效会话失败");
       const missingIds = result.missingIds.filter((id) => !automatic || invalidSessionIds.has(id));
       const clients = missingIds.length ? (await sessionHealthRequest(loadAppServerRequestCandidates)).candidates.filter((client) => typeof client?.sendRequest === "function") : [];
+      if (missingIds.length && !clients.length) throw new Error("无法连接 Codex 会话读取接口，请重启后再试");
       const confirmed = new Set();
-      for (const id of missingIds) if (generation === sessionHealthGeneration && await nativeSessionIsMissing(id, clients)) confirmed.add(id);
+      for (const [index, id] of missingIds.entries()) {
+        if (generation !== sessionHealthGeneration) return;
+        if (!automatic) updateSessionHealthStatus(`正在确认失效会话 ${index + 1}/${missingIds.length}…`);
+        if (await nativeSessionIsMissing(id, clients)) confirmed.add(id);
+      }
+      // 读取原生接口期间可能发生撤销删除或恢复；隐藏前重新检查恢复来源。
+      if (confirmed.size) {
+        const latest = await sessionHealthRequest(() => postJson("/session/health", {
+          threadIds: [...confirmed],
+          observedOnly: true,
+        }), 60000);
+        if (latest.status !== "ok" || !Array.isArray(latest.missingIds)) throw new Error(latest.message || "无法复核恢复来源");
+        const stillMissing = new Set(latest.missingIds);
+        for (const id of confirmed) if (!stillMissing.has(id)) confirmed.delete(id);
+      }
       if (generation !== sessionHealthGeneration) return;
       localStorage.setItem(invalidSessionStorageKey, JSON.stringify([...confirmed]));
       invalidSessionIds = confirmed;
       verifiedInvalidSessionIds = new Set(confirmed);
       applyInvalidSessionVisibility();
-      if (!automatic) updateSessionHealthStatus(`已检查 ${result.scanned} 条会话记录，确认失效并隐藏 ${confirmed.size} 个。`);
+      if (!automatic) updateSessionHealthStatus(`已检查 ${result.scanned} 条会话记录，确认失效并隐藏 ${confirmed.size} 个。可恢复或无法确认的会话已保留。`);
     } catch (error) {
-      if (generation === sessionHealthGeneration) updateSessionHealthStatus(`未隐藏会话：${error?.message || String(error)}`);
+      if (generation !== sessionHealthGeneration) return;
+      verifiedInvalidSessionIds.clear();
+      applyInvalidSessionVisibility();
+      if (!automatic) updateSessionHealthStatus(`未隐藏会话：${error?.message || String(error)}`);
     } finally {
       sessionHealthBusy = false;
       sessionHealthCheckedAt = Date.now();
@@ -7192,9 +7351,12 @@
 
   function refreshInvalidSessionVisibility() {
     applyInvalidSessionVisibility();
-    if (invalidSessionIds.size && !sessionHealthBusy && document.visibilityState !== "hidden" && Date.now() - sessionHealthCheckedAt > sessionHealthAutoRecheckMs && codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false) void checkAndHideInvalidSessions(true);
+    if (invalidSessionIds.size && !sessionHealthBusy && document.visibilityState !== "hidden"
+        && Date.now() - sessionHealthCheckedAt > sessionHealthAutoRecheckMs
+        && codexPlusBackendSettingsLoaded && codexPlusBackendSettings.enhancementsEnabled !== false) {
+      void checkAndHideInvalidSessions(true);
+    }
   }
-
   let cachedSessionRows = [];
   let cachedSessionRowsAt = 0;
   let threadIdBadgeActive = false;
@@ -8394,6 +8556,7 @@
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then(async (result) => {
+        const changed = JSON.stringify(result) !== JSON.stringify(codexModelCatalog);
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
           try {
@@ -8417,8 +8580,11 @@
           }
         }
         codexModelCatalogLoadedAt = Date.now();
-        renderCodexPlusMenu();
-        scheduleCodexModelWhitelistRefresh();
+        if (changed) {
+          renderCodexPlusMenu();
+          scheduleCodexModelWhitelistRefresh();
+          refreshCodexModelQueries();
+        }
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -8427,6 +8593,9 @@
         return codexModelCatalog;
       })
       .finally(() => {
+        codexModelCatalogFailures = codexModelCatalog.status === "failed" ? codexModelCatalogFailures + 1 : 0;
+        codexModelCatalogRetryAt = codexModelCatalogFailures
+          ? Date.now() + Math.min(60000, 5000 * 2 ** Math.min(codexModelCatalogFailures - 1, 4)) : 0;
         codexModelCatalogPromise = null;
       });
     return codexModelCatalogPromise;
@@ -8463,8 +8632,9 @@
     const metadata = codexPlusModelMetadata(modelName);
     if (!descriptor || !metadata) return false;
     let changed = false;
-    for (const key of ["displayName", "description", "defaultReasoningEffort"]) {
-      if (typeof metadata[key] === "string" && metadata[key] && descriptor[key] !== metadata[key]) {
+    for (const key of ["displayName", "description", "defaultReasoningEffort", "contextWindow", "maxContextWindow", "context_window", "max_context_window"]) {
+      const valid = typeof metadata[key] === "string" ? !!metadata[key] : Number.isFinite(metadata[key]) && metadata[key] > 0;
+      if (valid && descriptor[key] !== metadata[key]) {
         descriptor[key] = metadata[key];
         changed = true;
       }
@@ -9092,7 +9262,7 @@
       appServerModelRequestPatchRetryTimer = 0;
       installAppServerModelRequestPatch();
     }, appServerModelRequestPatchRetryDelayMs);
-    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 4, appServerModelRequestPatchMaxRetryDelayMs);
+    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 2, appServerModelRequestPatchMaxRetryDelayMs);
   }
 
   function noteAppServerModelRequestPatchMiss(event, detail) {
@@ -9131,6 +9301,8 @@
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
     if (appServerModelRequestPatchDisabled) return;
     if (appServerModelRequestPatchPromise) return;
+    if (appServerModelRequestPatchRetryTimer) return;
+    if (appServerModelRequestPatchMissCount > 0 && appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
         const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
@@ -9208,22 +9380,26 @@
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    let delay = 120;
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
-      runCodexModelWhitelistRefreshPass();
+      if (runCodexModelWhitelistRefreshPass()) return;
       if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, delay);
+        delay = Math.min(delay * 2, 1000);
       }
     };
     tick();
   }
 
-  function refreshCodexModelWhitelistFromScan(mutations) {
+  function refreshCodexModelWhitelistFromScan() {
+    // 连续页面变更共用刷新预算；目录变化仍会立即触发独立的补充流程。
+    const now = Date.now();
+    if (codexModelWhitelistLastScanAt && now - codexModelWhitelistLastScanAt < 1000) return;
+    codexModelWhitelistLastScanAt = now;
     ensureCodexModelWhitelistInstalls();
-    if (!codexPlusModelNames().length) {
-      loadCodexModelCatalog();
-      return;
-    }
+    if (!codexPlusModelUnlockEnabled()) return;
+    void loadCodexModelCatalog();
     runCodexModelWhitelistRefreshPass();
   }
 
@@ -10645,6 +10821,58 @@
     });
   }
 
+  async function deleteViaNativeAppServer(ref) {
+    const threadId = normalizedCodexThreadUuid(ref?.session_id || "");
+    if (!threadId) {
+      return { status: "unavailable", message: "无法识别有效的 Codex thread ID" };
+    }
+    try {
+      const { candidates, sources, discovery } = await loadAppServerRequestCandidates();
+      const clients = candidates.filter((candidate) => typeof candidate?.sendRequest === "function");
+      const errors = [];
+      for (const client of clients) {
+        try {
+          await client.sendRequest("thread/delete", { threadId });
+          sendCodexPlusDiagnostic("session_native_delete_completed", {
+            threadId,
+            candidateCount: clients.length,
+            sources,
+            discovery,
+          });
+          return {
+            status: "server_deleted",
+            session_id: threadId,
+            message: "已通过 Codex 官方接口永久删除会话",
+            undo_token: null,
+          };
+        } catch (error) {
+          errors.push(error?.message || String(error));
+        }
+      }
+      sendCodexPlusDiagnostic("session_native_delete_unavailable", {
+        threadId,
+        candidateCount: clients.length,
+        sources,
+        discovery,
+        errors,
+      });
+      return {
+        status: "unavailable",
+        message: errors[0] || "当前 Codex 版本未暴露 thread/delete 接口",
+      };
+    } catch (error) {
+      sendCodexPlusDiagnostic("session_native_delete_failed", {
+        threadId,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      return {
+        status: "unavailable",
+        message: error?.message || String(error),
+      };
+    }
+  }
+
   function openDeleteConfirmForRow(row, button, ref, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -10653,7 +10881,8 @@
     confirmDelete(ref.title).then(async (confirmed) => {
       if (!confirmed) return;
       releaseDeleteFocus(row, button);
-      const result = await postJson("/delete", ref);
+      const nativeResult = await deleteViaNativeAppServer(ref);
+      const result = nativeResult.status === "server_deleted" ? nativeResult : await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
         removeDeletedRow(row, button, ref);
         showToast(result.message || "删除成功", result.undo_token);
@@ -10743,6 +10972,56 @@
     const titleNode = row.querySelector(selectors.threadTitle);
     const titleRect = titleNode?.getBoundingClientRect();
     const titleLeft = titleRect?.left || rowRect.left + 40;
+
+  function refreshCodexRelayApiKeyBadges() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    const active = keys.find((entry) => entry.id === codexPlusRelayApiKeys.activeKeyId) || keys[0];
+    document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`).forEach((badge) => {
+      badge.textContent = active?.name || "Key";
+      badge.title = active ? `当前 Key：${active.name}；点击切换` : "切换 API Key";
+      badge.setAttribute("aria-label", badge.title);
+      badge.dataset.disabled = String(codexPlusRelayApiKeySwitching);
+    });
+  }
+  function installCodexRelayApiKeyBadge() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "loading") {
+      void loadRelayApiKeys().then(() => installCodexRelayApiKeyBadge());
+      return;
+    }
+    const existing = Array.from(document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`));
+    // 总开关关闭时也能换 Key（只改 Key 的落点），所以快捷入口不再跟开关绑定。
+    if (keys.length < 2) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    const composer = codexServiceTierFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    if (!placement?.parent) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    let badge = existing[0];
+    existing.slice(1).forEach((node) => node.remove());
+    if (!badge || badge.dataset.codexRelayApiKeyBadgeVersion !== codexRelayApiKeyBadgeVersion) {
+      badge?.remove();
+      badge = document.createElement("button");
+      badge.type = "button";
+      badge.className = codexRelayApiKeyBadgeClass;
+      badge.dataset.codexRelayApiKeyBadge = "true";
+      badge.dataset.codexRelayApiKeyBadgeVersion = codexRelayApiKeyBadgeVersion;
+      badge.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!codexPlusRelayApiKeySwitching) openCodexPlusPage("apiKeys");
+      });
+    }
+    const before = placement.before?.parentElement === placement.parent ? placement.before : null;
+    if (badge.parentElement !== placement.parent || badge.nextSibling !== before) {
+      placement.parent.insertBefore(badge, before);
+    }
+    refreshCodexRelayApiKeyBadges();
+  }
     let effectiveRight = right;
     group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
     if (leftmostNative) {
@@ -13788,7 +14067,7 @@
     // persisted UUID without replacing the DOM node. Re-scan those rows so the
     // action button and its delete reference are rebuilt from the canonical ID.
     attributes: true,
-    attributeFilter: ["data-app-action-sidebar-thread-id", "href"],
+    attributeFilter: ["data-app-action-sidebar-thread-id", "data-app-action-sidebar-thread-host-id", "href"],
   });
   document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);
   window.__codexSessionActionTriggerHandler = rememberSessionActionTrigger;

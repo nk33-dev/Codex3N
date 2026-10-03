@@ -97,6 +97,13 @@
               <div><div class="codex-plus-row-title">提出问题</div><div class="codex-plus-row-description">打开 GitHub Issues 反馈问题或建议。</div></div>
               <button type="button" class="codex-plus-issue-button" data-codex-plus-issue="true">提出问题</button>
             </div>
+            <div class="codex-plus-row codex-plus-api-key-section">
+              <div class="codex-plus-api-key-copy">
+                <div class="codex-plus-row-title">当前供应商 API Key</div>
+                <div class="codex-plus-row-description" data-codex-relay-api-key-summary="true">正在读取当前供应商…</div>
+              </div>
+              <div class="codex-plus-api-key-list" data-codex-relay-api-key-list="true"></div>
+            </div>
             ${renderCodexPlusExtensionMenuRows()}
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
@@ -190,6 +197,11 @@
       if (issueButton) {
         const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
         window.open(issueUrl, "_blank");
+        return;
+      }
+      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
+      if (apiKeySelect) {
+        void selectRelayApiKey(apiKeySelect.value);
         return;
       }
       if (target?.closest("[data-codex-service-tier-inherit]")) {

@@ -515,6 +515,9 @@
   }
 
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
+  let codexPlusRelayApiKeys = { status: "loading", enabled: false, providerId: "", providerName: "", activeKeyId: "", keys: [] };
+  let codexPlusRelayApiKeySwitching = false;
+  let codexPlusRelayApiKeysPromise = null;
   // 单独跟踪「读过了没有」：scripts 为空既可能是真没有脚本，也可能是还没读到。
   // 不区分就会在无后端时把「正在读取」直接显示成「未发现」。
   let codexPlusUserScriptsLoaded = false;
@@ -585,6 +588,7 @@
       sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
     }
     refreshCodexServiceTierControls();
+    installCodexRelayApiKeyBadge();
   }
 
   function withBackendTimeout(request) {
@@ -1209,6 +1213,87 @@
     }
   }
 
+  function renderRelayApiKeys() {
+    const summary = document.querySelector("[data-codex-relay-api-key-summary]");
+    const list = document.querySelector("[data-codex-relay-api-key-list]");
+    if (!summary || !list) return;
+    if (codexPlusRelayApiKeys.status === "loading") {
+      summary.textContent = "正在读取当前供应商…";
+      list.textContent = "";
+      return;
+    }
+    if (codexPlusRelayApiKeys.status !== "ok") {
+      summary.textContent = codexPlusRelayApiKeys.message || "读取 Key 失败";
+      list.textContent = "";
+      return;
+    }
+    const providerLabel = codexPlusRelayApiKeys.providerName || codexPlusRelayApiKeys.providerId || "未命名";
+    summary.textContent = codexPlusRelayApiKeys.enabled
+      ? `当前供应商：${providerLabel}`
+      : `当前供应商：${providerLabel}（未启用供应商配置切换）`;
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (!keys.length) {
+      list.innerHTML = '<div class="codex-plus-api-key-empty">当前供应商没有可切换的命名 Key，请先在管理工具中添加。</div>';
+      return;
+    }
+    const options = keys.map((entry) => `<option value="${escapeHtml(entry.id)}"${entry.id === codexPlusRelayApiKeys.activeKeyId ? " selected" : ""}>${escapeHtml(entry.name || "未命名 Key")}</option>`).join("");
+    // 总开关关闭时后端只改 Key 的落点，所以这里照常可选；只有切换进行中才禁用。
+    const switchingInFlight = codexPlusRelayApiKeySwitching;
+    const switchOffHint = codexPlusRelayApiKeys.enabled ? "" : `
+      <div class="codex-plus-api-key-empty">未启用供应商配置切换：这里只更换当前 Key，模型、上下文等其它配置保持不变。</div>`;
+    // 下拉框的选中项按 live 里的 Key 匹配；匹配不上说明实际在用的 Key 不在命名列表里。
+    const liveMismatchHint = codexPlusRelayApiKeys.liveKeyMatched === false
+      ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
+      : "";
+    list.innerHTML = `
+      <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
+        ${options}
+      </select>${switchOffHint}${liveMismatchHint}`;
+    refreshCodexRelayApiKeyBadges();
+  }
+
+  async function loadRelayApiKeys(force = false) {
+    // 面板每次打开都重建 DOM，重新读取时命中缓存也要重画一次，
+    // 否则界面会一直停在模板里的“正在读取当前供应商…”。
+    renderRelayApiKeys();
+    if (codexPlusRelayApiKeysPromise) return codexPlusRelayApiKeysPromise;
+    if (!force && codexPlusRelayApiKeys.status === "ok") return codexPlusRelayApiKeys;
+    codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, status: "loading" };
+    renderRelayApiKeys();
+    codexPlusRelayApiKeysPromise = postJson("/relay-api-keys", {})
+      .then((result) => {
+        codexPlusRelayApiKeys = result && typeof result === "object"
+          ? result
+          : { status: "failed", message: "读取 Key 失败", keys: [] };
+        renderRelayApiKeys();
+        return codexPlusRelayApiKeys;
+      })
+      .finally(() => { codexPlusRelayApiKeysPromise = null; });
+    return codexPlusRelayApiKeysPromise;
+  }
+
+  async function selectRelayApiKey(keyId) {
+    if (!keyId || codexPlusRelayApiKeySwitching || keyId === codexPlusRelayApiKeys.activeKeyId) return;
+    codexPlusRelayApiKeySwitching = true;
+    renderRelayApiKeys();
+    try {
+      const result = await postJson("/relay-api-keys/select", { keyId });
+      if (result?.status !== "ok") {
+        showToast(result?.message || "切换 Key 失败", null);
+        return;
+      }
+      codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, activeKeyId: result.activeKeyId || keyId };
+      codexModelCatalogLoadedAt = 0;
+      await loadCodexModelCatalog(true);
+      refreshCodexModelQueries();
+      scheduleCodexModelWhitelistRefresh();
+      showToast("Key 已切换，可用模型已刷新", null);
+    } finally {
+      codexPlusRelayApiKeySwitching = false;
+      await loadRelayApiKeys(true);
+    }
+  }
+
   function selectCodexPlusTab(tab) {
     // 归一化后再比对：panel 用的是 extensions，而旧调用点仍传 userScripts，
     // 不统一就会两边都对不上、所有 panel 全被隐藏。
@@ -1489,3 +1574,6 @@
               <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
+
+            <!-- fragment contract: extension menu mount follows 提出问题: \${renderCodexPlusExtensionMenuRows()} -->
+            <!-- overlay.addEventListener("click", (event) => handleCodexPlusExtensionMenuClick(target)); data-codex-open-devtools -->

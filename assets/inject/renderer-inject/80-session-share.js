@@ -613,7 +613,7 @@
       appServerModelRequestPatchRetryTimer = 0;
       installAppServerModelRequestPatch();
     }, appServerModelRequestPatchRetryDelayMs);
-    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 4, appServerModelRequestPatchMaxRetryDelayMs);
+    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 2, appServerModelRequestPatchMaxRetryDelayMs);
   }
 
   function noteAppServerModelRequestPatchMiss(event, detail) {
@@ -652,6 +652,8 @@
     if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
     if (appServerModelRequestPatchDisabled) return;
     if (appServerModelRequestPatchPromise) return;
+    if (appServerModelRequestPatchRetryTimer) return;
+    if (appServerModelRequestPatchMissCount > 0 && appServerModelRequestPatchDisabled) return;
     const patch = async () => {
       try {
         const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
@@ -729,22 +731,26 @@
     codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
     if (codexModelWhitelistRefreshTimer) return;
     sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    let delay = 120;
     const tick = () => {
       codexModelWhitelistRefreshTimer = 0;
-      runCodexModelWhitelistRefreshPass();
+      if (runCodexModelWhitelistRefreshPass()) return;
       if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, 120);
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, delay);
+        delay = Math.min(delay * 2, 1000);
       }
     };
     tick();
   }
 
-  function refreshCodexModelWhitelistFromScan(mutations) {
+  function refreshCodexModelWhitelistFromScan() {
+    // 连续页面变更共用刷新预算；目录变化仍会立即触发独立的补充流程。
+    const now = Date.now();
+    if (codexModelWhitelistLastScanAt && now - codexModelWhitelistLastScanAt < 1000) return;
+    codexModelWhitelistLastScanAt = now;
     ensureCodexModelWhitelistInstalls();
-    if (!codexPlusModelNames().length) {
-      loadCodexModelCatalog();
-      return;
-    }
+    if (!codexPlusModelUnlockEnabled()) return;
+    void loadCodexModelCatalog();
     runCodexModelWhitelistRefreshPass();
   }
 

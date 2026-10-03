@@ -368,13 +368,13 @@ fi
 # convert 会暂时报 Resource temporarily unavailable——每次重试都再强制卸载一遍。
 # 重试期间还需要设备路径，所以 MOUNT_DEVICE/MOUNT_POINT 留到这里之后再清空。
 if [ "$detached" = true ]; then
-  for attempt in 1 2 3 4 5; do
+  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if hdiutil convert "$DMG_WORK_PATH" -format UDZO -ov -o "$DMG"; then
       DMG_CONVERTED=true
       break
     fi
     detach_volume || true
-    if [ "$attempt" -lt 5 ]; then
+    if [ "$attempt" -lt 12 ]; then
       sleep "$((attempt * 3))"
     fi
   done
@@ -400,7 +400,7 @@ fi
 # 这里必须用独立于 create 的标记：早期版本复用 DMG_CREATED，导致 convert 连续
 # 失败后仍然「成功」退出，CI 只会看到上传步骤缺文件，真正的失败原因被吞掉。
 if [ "$DMG_CONVERTED" != true ]; then
-  echo "error: failed to create DMG after 5 attempts (布局与直接打包都失败)" >&2
+  echo "error: failed to create DMG after 12 attempts (布局与直接打包都失败)" >&2
   exit 1
 fi
 for attempt in 1 2 3 4 5; do

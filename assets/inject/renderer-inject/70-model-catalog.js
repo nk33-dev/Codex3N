@@ -848,6 +848,7 @@
     if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then(async (result) => {
+        const changed = JSON.stringify(result) !== JSON.stringify(codexModelCatalog);
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
           try {
@@ -871,8 +872,11 @@
           }
         }
         codexModelCatalogLoadedAt = Date.now();
-        renderCodexPlusMenu();
-        scheduleCodexModelWhitelistRefresh();
+        if (changed) {
+          renderCodexPlusMenu();
+          scheduleCodexModelWhitelistRefresh();
+          refreshCodexModelQueries();
+        }
         return codexModelCatalog;
       })
       .catch((error) => {
@@ -881,6 +885,9 @@
         return codexModelCatalog;
       })
       .finally(() => {
+        codexModelCatalogFailures = codexModelCatalog.status === "failed" ? codexModelCatalogFailures + 1 : 0;
+        codexModelCatalogRetryAt = codexModelCatalogFailures
+          ? Date.now() + Math.min(60000, 5000 * 2 ** Math.min(codexModelCatalogFailures - 1, 4)) : 0;
         codexModelCatalogPromise = null;
       });
     return codexModelCatalogPromise;
@@ -917,8 +924,9 @@
     const metadata = codexPlusModelMetadata(modelName);
     if (!descriptor || !metadata) return false;
     let changed = false;
-    for (const key of ["displayName", "description", "defaultReasoningEffort"]) {
-      if (typeof metadata[key] === "string" && metadata[key] && descriptor[key] !== metadata[key]) {
+    for (const key of ["displayName", "description", "defaultReasoningEffort", "contextWindow", "maxContextWindow", "context_window", "max_context_window"]) {
+      const valid = typeof metadata[key] === "string" ? !!metadata[key] : Number.isFinite(metadata[key]) && metadata[key] > 0;
+      if (valid && descriptor[key] !== metadata[key]) {
         descriptor[key] = metadata[key];
         changed = true;
       }
