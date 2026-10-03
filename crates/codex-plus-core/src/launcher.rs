@@ -1422,6 +1422,8 @@ async fn handle_helper_connection(
     let raw_path = parts.next().unwrap_or_default();
     let path = raw_path.split('?').next().unwrap_or(raw_path);
     let request_user_agent = header_value_from_headers(&request_headers, "user-agent");
+    let request_beta_features =
+        header_value_from_headers(&request_headers, "x-codex-beta-features");
     let request_content_type = header_value_from_headers(&request_headers, "content-type");
     let request_content_encoding = header_value_from_headers(&request_headers, "content-encoding");
     let remote_addr_text = remote_addr.map(|addr| addr.to_string());
@@ -1575,6 +1577,7 @@ async fn handle_helper_connection(
             &mut stream,
             &request_body,
             request_user_agent.as_deref(),
+            request_beta_features.as_deref(),
             method,
             path,
             remote_addr_text,
@@ -1920,16 +1923,18 @@ async fn handle_protocol_proxy_connection(
     stream: &mut tokio::net::TcpStream,
     request_body: &str,
     request_user_agent: Option<&str>,
+    request_beta_features: Option<&str>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
     cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
-    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path(
+    let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_beta(
         request_body,
         request_user_agent,
         path,
+        request_beta_features,
     )
     .await
     {

@@ -518,6 +518,95 @@ body {
   letter-spacing: 0;
 }
 
+.jojocode-overview {
+  border-color: hsl(var(--border));
+  background: hsl(var(--card));
+}
+
+.light .jojocode-overview {
+  background: hsl(var(--card));
+}
+
+.jojocode-overview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+}
+
+.jojocode-overview-main {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.jojocode-overview-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid hsl(var(--brand-accent) / 0.38);
+  border-radius: 8px;
+  background: hsl(var(--brand-accent) / 0.16);
+  color: hsl(var(--brand-accent));
+}
+
+/* 概览的置顶推荐位。
+   卡片内部沿用 .jojocode-overview-layout 的「左信息 / 右标签区」结构。 */
+.sponsor-board {
+  display: grid;
+  gap: 12px;
+}
+
+.sponsor-board > .panel {
+  min-width: 0;
+}
+
+/* 窄屏时「左信息 / 右标签区」并排会挤，改成上下排。 */
+@media (max-width: 1100px) {
+  .jojocode-overview-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .jojocode-overview-side {
+    justify-items: start;
+  }
+
+  .jojocode-model-tags {
+    justify-content: flex-start;
+    max-width: none;
+  }
+}
+
+/* 赞助商自带 logo 时用它替换默认的 Network 图标，尺寸对齐避免布局跳动。 */
+.sponsor-logo {
+  width: 42px;
+  height: 42px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  object-fit: contain;
+}
+
+.jojocode-overview h2 {
+  margin: 2px 0 4px;
+  font-size: 20px;
+  line-height: 1.25;
+}
+
+.jojocode-overview p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.5;
+}
+
+.jojocode-overview-side {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
 .jojocode-model-tags {
   display: flex;
   flex-wrap: wrap;
@@ -708,7 +797,6 @@ body {
 
 .relay-add-row {
   display: flex;
-  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-bottom: 10px;
@@ -972,6 +1060,9 @@ body {
   display: flex;
   gap: 6px;
   align-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease;
 }
 
 .relay-use-button {
@@ -987,6 +1078,12 @@ body {
 .relay-profile-card.active .relay-card-extra button:focus-visible {
   background: hsl(var(--primary) / 0.18);
   color: hsl(var(--primary));
+}
+
+.relay-profile-card:hover .relay-card-actions,
+.relay-profile-card:focus-within .relay-card-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* 标题栏固定 / 中段滚动 / 底部操作栏固定，参考 cc-switch 的编辑页布局 */
@@ -1011,22 +1108,11 @@ body {
   background: hsl(var(--shell-bg));
 }
 
-.relay-editor-heading {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-
-/* 动作按钮行：个人版已覆盖上游 cd452f0「对齐供应商编辑器动作按钮」的诉求，
-   flex 不参与拉伸并右对齐，窄屏时换行。 */
 .relay-editor-actions {
   display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -1088,6 +1174,14 @@ body {
 .relay-file-head div {
   display: grid;
   gap: 3px;
+  min-width: 0;
+}
+
+.relay-editor-heading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -1581,60 +1675,6 @@ body {
   grid-column: auto;
 }
 
-.relay-field-key {
-  grid-column: 1 / -1;
-}
-
-.relay-api-key-list {
-  display: grid;
-  gap: 8px;
-}
-
-.relay-api-key-row {
-  display: grid;
-  grid-template-columns: 36px minmax(120px, 0.55fr) minmax(220px, 1.45fr) 36px;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 6px;
-  border: 1px solid hsl(var(--border) / 0.8);
-  border-radius: var(--radius-md);
-  background: hsl(var(--surface-raised) / 0.35);
-}
-
-.relay-api-key-row.active {
-  border-color: hsl(var(--brand-accent) / 0.55);
-  background: hsl(var(--brand-accent) / 0.07);
-}
-
-.relay-api-key-select {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-  cursor: pointer;
-}
-
-.relay-api-key-select:hover,
-.relay-api-key-select:focus-visible {
-  background: hsl(var(--surface-raised));
-  color: hsl(var(--foreground));
-  outline: none;
-}
-
-.relay-api-key-row.active .relay-api-key-select {
-  color: hsl(var(--brand-accent));
-}
-
-.relay-api-key-add {
-  justify-self: start;
-}
-
 /* 折叠式高级区：整块描边，标题行自带箭头，收起时用一行提示说明里面有什么 */
 .relay-advanced-block {
   grid-column: 1 / -1;
@@ -1704,6 +1744,65 @@ body {
   background: hsl(var(--surface-raised) / 0.45);
   padding: 14px;
 }
+
+/* 渠道保护默认折叠：details 复用 .relay-config-section 的外观，
+   summary 直接当区块标题用。 */
+details.relay-config-section > summary.relay-config-section-head {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.relay-config-section > summary.relay-config-section-head::-webkit-details-marker {
+  display: none;
+}
+
+details.relay-config-section > summary.relay-config-section-head::after {
+  content: "\25BE";
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+details.relay-config-section[open] > summary.relay-config-section-head::after {
+  transform: rotate(180deg);
+}
+
+/* 通用配置默认折叠为一行文字：summary 复用 .relay-file-head 的排版，
+   展开后才显示提取按钮与编辑器。 */
+details.relay-common-config-panel > summary.relay-common-config-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+details.relay-common-config-panel > summary.relay-common-config-summary::-webkit-details-marker {
+  display: none;
+}
+
+details.relay-common-config-panel > summary.relay-common-config-summary::after {
+  content: "\25BE";
+  flex-shrink: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+details.relay-common-config-panel[open] > summary.relay-common-config-summary::after {
+  transform: rotate(180deg);
+}
+
+/* 折叠态必须显式隐藏：Chrome 现在用 `::details-content` 的 visibility 实现
+   折叠，给子元素设 display/grid 会让它继续占位（实测 details 高 81px、
+   内容仍撑到 285px 并溢出）。展开时才用 grid 排布。 */
+details.relay-common-config-panel:not([open]) > .relay-common-config-body {
+  display: none;
+}
+
+details.relay-common-config-panel[open] > .relay-common-config-body {
+  display: grid;
+  gap: 12px;
+}
+
 
 .relay-config-section-head {
   display: flex;
@@ -3100,16 +3199,6 @@ body {
   padding: 24px;
 }
 
-.confirm-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  padding: 24px;
-}
-
 .modal-card {
   width: min(560px, calc(100vw - 32px));
   border: 1px solid hsl(var(--border));
@@ -3146,7 +3235,6 @@ body {
 }
 
 .confirm-modal {
-  width: min(480px, calc(100vw - 32px));
   max-height: min(760px, calc(100vh - 48px));
   display: flex;
   flex-direction: column;
@@ -3301,6 +3389,109 @@ body {
   flex: 0 0 auto;
   margin-top: 1px;
   color: hsl(var(--primary));
+}
+
+.recommend-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.recommend-hero strong,
+.recommend-hero span {
+  display: block;
+}
+
+.recommend-hero span {
+  margin-top: 3px;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.45;
+}
+
+.ad-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+
+.ad-card {
+  display: grid;
+  grid-template-rows: auto auto auto auto;
+  gap: 10px;
+  /* 不再用固定 min-height + space-between：内容多的卡片会被压扁，
+     内容少的则留一大片空白。让每张卡按自己的内容撑开。 */
+  width: 100%;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  padding: 12px;
+  text-decoration: none;
+  text-align: left;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.ad-card:hover {
+  border-color: hsl(var(--ring));
+  background: hsl(var(--accent));
+  box-shadow: 0 12px 26px hsl(var(--foreground) / 0.08);
+  transform: translateY(-1px);
+}
+
+.ad-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 5;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: #080808;
+  object-fit: cover;
+}
+
+.ad-card strong {
+  display: block;
+  margin-bottom: 5px;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.ad-card p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  line-height: 1.5;
+}
+
+.ad-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ad-tags span {
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.ad-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: end;
+  gap: 6px;
+  color: hsl(var(--foreground));
+  font-weight: 700;
 }
 
 .toolbar {
@@ -3693,14 +3884,18 @@ body {
 
 .weixin-qr-image {
   width: min(320px, 100%);
-  height: auto;
-  display: block;
   margin-bottom: 14px;
   overflow: hidden;
   border: 1px solid hsl(var(--border));
   border-radius: 6px;
   background: #fff;
   padding: 10px;
+}
+
+.weixin-qr-image svg {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 @media (max-width: 760px) {
@@ -3892,6 +4087,31 @@ input[type="range"]:disabled {
   opacity: 0.5;
 }
 
+/* cb3c7fa7 改版时误删了这两条：JSX 一直在用 .inline-check，但样式没了，
+   复选框退化成浏览器原生小方块（13×13），与同页 .switch-row 的开关形态
+   不一致。恢复为带描边的 40px 行内控件。 */
+.inline-check {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-raised));
+  padding: 0 12px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  font-weight: 650;
+  transition:
+    border-color var(--motion-fast) var(--motion-ease),
+    background-color var(--motion-fast) var(--motion-ease);
+}
+
+.inline-check input {
+  width: 16px;
+  height: 16px;
+}
+
 .check-row {
   display: flex;
   align-items: center;
@@ -3978,11 +4198,6 @@ input[type="range"]:disabled {
   grid-template-columns: minmax(120px, 1.4fr) 110px 80px minmax(90px, 1fr) auto;
 }
 
-.table-row > span {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
 .script-row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3992,7 +4207,7 @@ input[type="range"]:disabled {
 
 .script-market-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
 }
 
@@ -4073,7 +4288,6 @@ input[type="range"]:disabled {
 
 .script-market-toolbar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -4083,7 +4297,7 @@ input[type="range"]:disabled {
 .script-market-search {
   position: relative;
   flex: 1 1 320px;
-  min-width: min(220px, 100%);
+  min-width: 220px;
 }
 
 .script-market-search svg {
@@ -4234,8 +4448,6 @@ input[type="range"]:disabled {
 
 .script-market-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  min-width: 0;
   gap: 10px;
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
@@ -4249,15 +4461,19 @@ input[type="range"]:disabled {
 }
 
 .script-market-card[data-view="list"] {
-  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.3fr) minmax(0, 0.8fr) auto;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(260px, 1.3fr) minmax(180px, 0.8fr) auto;
   align-items: center;
   gap: 12px;
   padding: 12px;
 }
 
-/* 多余高度由描述所在行承接，标题与描述保持固定间距，标签和操作区靠底。 */
+/* 卡片被同行最高的那张拉伸时，多余高度默认会分摊进每一行；描述框跟着变高，
+ * 但 line-clamp 只渲染 3 行，overflow:hidden 下面就露出第 4 行的一小截。
+ * 实测触发条件是行内出现空容器（标签为空时溢出 2.8px），当前 .script-market-tags
+ * 总会渲染 v{version} 所以碰不到，这里是防御性收口。
+ * 顺带把多余空间集中到行间，操作按钮在同一行的卡片间底部对齐。 */
 .script-market-card[data-view="grid"] {
-  grid-template-rows: auto 1fr auto auto;
+  align-content: space-between;
 }
 
 .script-market-card:hover {
@@ -4268,8 +4484,6 @@ input[type="range"]:disabled {
 
 .script-market-title {
   display: flex;
-  flex-wrap: wrap;
-  min-width: 0;
   justify-content: space-between;
   gap: 10px;
   align-items: flex-start;
@@ -4279,19 +4493,10 @@ input[type="range"]:disabled {
   align-items: center;
 }
 
-.script-market-title-copy {
+.script-market-title > div {
   display: grid;
-  flex: 1 1 140px;
   gap: 3px;
   min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.script-market-title > .badge {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .script-market-title strong {
@@ -4313,16 +4518,12 @@ input[type="range"]:disabled {
 }
 
 .script-market-description {
-  min-width: 0;
   margin: 0;
   line-height: 1.5;
-  overflow-wrap: anywhere;
 }
 
 .script-market-card[data-view="grid"] .script-market-description {
   display: -webkit-box;
-  /* 描述自身不随行高拉伸，避免三行截断后露出下一行文字。 */
-  align-self: start;
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -4351,9 +4552,6 @@ input[type="range"]:disabled {
 }
 
 .script-market-tag {
-  min-width: 0;
-  max-width: 100%;
-  overflow-wrap: anywhere;
   border: 1px solid hsl(var(--border));
   border-radius: 999px;
   color: hsl(var(--muted-foreground));
@@ -4371,8 +4569,9 @@ input[type="range"]:disabled {
 
 .toast-wrap {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 50;
   width: min(420px, calc(100vw - 32px));
 }
@@ -5042,6 +5241,42 @@ input[type="range"]:disabled {
   background: hsl(var(--warning) / 0.12);
 }
 
+.relay-model-source-badge {
+  flex-shrink: 0;
+  border-radius: 9999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  border: 1px solid hsl(var(--muted-foreground) / 0.55);
+  color: hsl(var(--muted-foreground));
+  background: hsl(var(--surface-sunken));
+}
+
+.relay-model-source-builtin {
+  color: hsl(var(--success-foreground, var(--foreground)));
+  border-color: hsl(var(--success, 160 84% 39%) / 0.9);
+}
+
+.relay-model-source-custom {
+  color: hsl(var(--primary-foreground, var(--foreground)));
+  border-color: hsl(var(--primary) / 0.9);
+}
+
+.relay-model-source-fallback {
+  color: hsl(var(--muted-foreground));
+}
+
+/* 行内导入按钮的元数据状态色：命中=绿、自定义=蓝、回退=默认无色 */
+.relay-model-import-button.relay-model-import-builtin {
+  border: 1px solid hsl(var(--success, 160 84% 39%) / 0.9);
+}
+
+.relay-model-import-button.relay-model-import-custom {
+  border: 1px solid hsl(var(--primary) / 0.9);
+}
+
+
 .relay-model-metadata-import-actions {
   display: flex;
   align-items: center;
@@ -5049,15 +5284,22 @@ input[type="range"]:disabled {
   gap: 12px;
 }
 
+/* 徽标与 slug 同行横排（c00177e 的既定设计）；c8ed14b 整文件覆盖时曾回退成
+   grid 单列导致竖排。flex-wrap 允许窄窗口下徽标整体折行而不挤压 slug。 */
 .relay-model-import-copy {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
 }
 
-.relay-model-import-copy span {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
+/* 省略号只作用于 slug 本身（strong）；不能再用 span 通配——那会把徽标的
+   10px 字号和三色 tone 覆盖成 muted 灰。 */
+.relay-model-import-copy strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .relay-model-metadata-import-flow {
@@ -5648,7 +5890,8 @@ select {
   padding: 18px;
 }
 
-.hero-layout h2 {
+.hero-layout h2,
+.jojocode-overview h2 {
   font-size: 19px;
   font-weight: 620;
   letter-spacing: -0.02em;
@@ -5662,6 +5905,8 @@ select {
   text-transform: uppercase;
 }
 
+/* 赞助位：极淡的品牌色渐变，与普通面板区分 */
+.jojocode-overview,
 .hero-panel {
   border-color: hsl(var(--brand-accent) / 0.24);
   background:
@@ -5674,7 +5919,16 @@ select {
     hsl(var(--card));
 }
 
+.jojocode-overview-mark {
+  border-color: transparent;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(140deg, hsl(var(--brand-accent)), hsl(var(--brand-accent-2)));
+  box-shadow: 0 4px 14px hsl(var(--brand-accent) / 0.3);
+  color: #fff;
+}
+
 .jojocode-model-tags span,
+.ad-tags span,
 .script-market-tag {
   border-color: hsl(var(--border) / 0.9);
   border-radius: 999px;
@@ -5759,6 +6013,7 @@ select {
 .mobile-server-card,
 .session-row,
 .script-market-card,
+.ad-card,
 .health-item,
 .feature-item,
 .feature-toggle,
@@ -5791,6 +6046,7 @@ select {
 .relay-profile-card:focus-visible,
 .session-row:hover,
 .script-market-card:hover,
+.ad-card:hover,
 .mobile-server-card:hover,
 .health-item:hover,
 .feature-item:hover,
@@ -6052,8 +6308,14 @@ select {
   background: hsl(var(--status-error));
 }
 
+.ad-card,
 .script-market-card {
   padding: 12px;
+}
+
+.ad-image {
+  border-color: hsl(var(--border));
+  border-radius: var(--radius-lg);
 }
 
 /* ── 代码 / 日志 ─────────────────────────────────────────────── */
@@ -6103,30 +6365,7 @@ select {
   box-shadow: var(--shadow-lg);
 }
 
-@media (max-width: 1200px) {
-  .script-market-card[data-view="list"] {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .script-market-card[data-view="list"] > :not(.script-market-actions) {
-    grid-column: 1;
-  }
-
-  .script-market-card[data-view="list"] .script-market-actions {
-    grid-column: 2;
-    grid-row: 1 / span 3;
-  }
-}
-
 @media (max-width: 1080px) {
-  .table-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .script-row-actions {
-    justify-content: flex-start;
-  }
-
   .shell {
     grid-template-columns: 68px minmax(0, 1fr);
   }
@@ -6209,18 +6448,6 @@ select {
     padding-inline: 16px;
   }
 
-  .relay-detail-header {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    padding-block: 10px;
-  }
-
-  .relay-editor-actions {
-    flex-basis: 100%;
-    justify-content: flex-start;
-    padding-left: 42px;
-  }
-
   .relay-config-section-head,
   .provider-doctor {
     grid-template-columns: 1fr;
@@ -6229,14 +6456,6 @@ select {
   .relay-config-section-head {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .relay-api-key-row {
-    grid-template-columns: 36px minmax(0, 1fr) 36px;
-  }
-
-  .relay-api-key-row > input[type="password"] {
-    grid-column: 2 / 4;
   }
 
   .relay-model-list-tools {
@@ -6262,8 +6481,15 @@ select {
     display: none;
   }
 
+  .jojocode-overview-layout,
+  .jojocode-overview-main,
+  .ad-grid,
   .mobile-server-grid {
     grid-template-columns: 1fr;
+  }
+
+  .jojocode-overview-side {
+    justify-items: start;
   }
 
   .jojocode-model-tags {
@@ -6289,13 +6515,11 @@ select {
   }
 
   .script-market-card[data-view="list"] {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 1fr;
     align-items: stretch;
   }
 
   .script-market-card[data-view="list"] .script-market-actions {
-    grid-column: 1;
-    grid-row: auto;
     justify-content: flex-start;
   }
 }
@@ -6662,7 +6886,6 @@ select {
 }
 
 .dream-skin-community-preview .badge {
-  display: block;
   position: absolute;
   top: 8px;
   right: 8px;
@@ -6690,7 +6913,6 @@ select {
 
 .dream-skin-community-actions {
   display: flex;
-  flex-wrap: wrap;
   gap: 7px;
   border-top: 1px solid hsl(var(--border));
   padding: 9px 12px 11px;
@@ -6747,7 +6969,6 @@ select {
 }
 
 .dream-skin-market-preview .badge {
-  display: block;
   position: absolute;
   top: 8px;
   right: 8px;
@@ -6774,7 +6995,6 @@ select {
 }
 
 .dream-skin-market-title strong {
-  min-width: 0;
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
@@ -6788,14 +7008,6 @@ select {
   white-space: nowrap;
 }
 
-.dream-skin-market-title > span {
-  flex: 0 0 auto;
-  min-width: 0;
-  max-width: 50%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .dream-skin-market-copy small {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6806,7 +7018,6 @@ select {
   min-height: 35px;
   margin: 0;
   overflow: hidden;
-  overflow-wrap: anywhere;
   color: hsl(var(--foreground) / 0.78);
   font-size: 12px;
   line-height: 1.45;
@@ -6822,9 +7033,6 @@ select {
 }
 
 .dream-skin-market-tags span {
-  min-width: 0;
-  max-width: 100%;
-  overflow-wrap: anywhere;
   border-radius: 4px;
   background: hsl(var(--accent));
   padding: 3px 6px;
@@ -6835,7 +7043,6 @@ select {
 
 .dream-skin-market-actions {
   display: flex;
-  flex-wrap: wrap;
   gap: 7px;
   border-top: 1px solid hsl(var(--border));
   padding: 9px 12px 11px;
@@ -8008,6 +8215,43 @@ select {
 .settings-content .settings-block {
   border-top: 1px solid hsl(var(--border));
   padding-top: 14px;
+}
+
+.settings-content .check-row > span {
+  display: grid;
+  gap: 4px;
+}
+
+.settings-content .check-row > span small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.channel-status-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.channel-status-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.channel-status-chip {
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  cursor: pointer;
+  font: inherit;
+  padding: 3px 8px;
+}
+
+.channel-status-chip:hover {
+  border-color: hsl(var(--primary));
 }
 
 .settings-content .stepwise-settings-block {
