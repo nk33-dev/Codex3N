@@ -708,6 +708,58 @@
     });
   }
 
+  async function deleteViaNativeAppServer(ref) {
+    const threadId = normalizedCodexThreadUuid(ref?.session_id || "");
+    if (!threadId) {
+      return { status: "unavailable", message: "无法识别有效的 Codex thread ID" };
+    }
+    try {
+      const { candidates, sources, discovery } = await loadAppServerRequestCandidates();
+      const clients = candidates.filter((candidate) => typeof candidate?.sendRequest === "function");
+      const errors = [];
+      for (const client of clients) {
+        try {
+          await client.sendRequest("thread/delete", { threadId });
+          sendCodexPlusDiagnostic("session_native_delete_completed", {
+            threadId,
+            candidateCount: clients.length,
+            sources,
+            discovery,
+          });
+          return {
+            status: "server_deleted",
+            session_id: threadId,
+            message: "已通过 Codex 官方接口永久删除会话",
+            undo_token: null,
+          };
+        } catch (error) {
+          errors.push(error?.message || String(error));
+        }
+      }
+      sendCodexPlusDiagnostic("session_native_delete_unavailable", {
+        threadId,
+        candidateCount: clients.length,
+        sources,
+        discovery,
+        errors,
+      });
+      return {
+        status: "unavailable",
+        message: errors[0] || "当前 Codex 版本未暴露 thread/delete 接口",
+      };
+    } catch (error) {
+      sendCodexPlusDiagnostic("session_native_delete_failed", {
+        threadId,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      return {
+        status: "unavailable",
+        message: error?.message || String(error),
+      };
+    }
+  }
+
   function openDeleteConfirmForRow(row, button, ref, event) {
     event.preventDefault();
     event.stopPropagation();
@@ -716,7 +768,8 @@
     confirmDelete(ref.title).then(async (confirmed) => {
       if (!confirmed) return;
       releaseDeleteFocus(row, button);
-      const result = await postJson("/delete", ref);
+      const nativeResult = await deleteViaNativeAppServer(ref);
+      const result = nativeResult.status === "server_deleted" ? nativeResult : await postJson("/delete", ref);
       if (result.status === "server_deleted" || result.status === "local_deleted") {
         removeDeletedRow(row, button, ref);
         showToast(result.message || "删除成功", result.undo_token);
@@ -806,3 +859,53 @@
     const titleNode = row.querySelector(selectors.threadTitle);
     const titleRect = titleNode?.getBoundingClientRect();
     const titleLeft = titleRect?.left || rowRect.left + 40;
+
+  function refreshCodexRelayApiKeyBadges() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    const active = keys.find((entry) => entry.id === codexPlusRelayApiKeys.activeKeyId) || keys[0];
+    document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`).forEach((badge) => {
+      badge.textContent = active?.name || "Key";
+      badge.title = active ? `当前 Key：${active.name}；点击切换` : "切换 API Key";
+      badge.setAttribute("aria-label", badge.title);
+      badge.dataset.disabled = String(codexPlusRelayApiKeySwitching);
+    });
+  }
+  function installCodexRelayApiKeyBadge() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "loading") {
+      void loadRelayApiKeys().then(() => installCodexRelayApiKeyBadge());
+      return;
+    }
+    const existing = Array.from(document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`));
+    // 总开关关闭时也能换 Key（只改 Key 的落点），所以快捷入口不再跟开关绑定。
+    if (keys.length < 2) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    const composer = codexServiceTierFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    if (!placement?.parent) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    let badge = existing[0];
+    existing.slice(1).forEach((node) => node.remove());
+    if (!badge || badge.dataset.codexRelayApiKeyBadgeVersion !== codexRelayApiKeyBadgeVersion) {
+      badge?.remove();
+      badge = document.createElement("button");
+      badge.type = "button";
+      badge.className = codexRelayApiKeyBadgeClass;
+      badge.dataset.codexRelayApiKeyBadge = "true";
+      badge.dataset.codexRelayApiKeyBadgeVersion = codexRelayApiKeyBadgeVersion;
+      badge.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!codexPlusRelayApiKeySwitching) openCodexPlusPage("apiKeys");
+      });
+    }
+    const before = placement.before?.parentElement === placement.parent ? placement.before : null;
+    if (badge.parentElement !== placement.parent || badge.nextSibling !== before) {
+      placement.parent.insertBefore(badge, before);
+    }
+    refreshCodexRelayApiKeyBadges();
+  }

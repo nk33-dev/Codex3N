@@ -324,11 +324,15 @@
     } catch (error) {
       if (typeof codexStateCall === "function") {
         const fallbackRead = codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
-        const result = await Promise.race([
-          fallbackRead,
-          new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
-        ]);
-        return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
+        try {
+          const result = await Promise.race([
+            fallbackRead,
+            new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
+          ]);
+          return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
+        } catch {
+          return codexDefaultServiceTierSetting.default;
+        }
       }
       throw error;
     }

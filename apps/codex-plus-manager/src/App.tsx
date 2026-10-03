@@ -2063,21 +2063,21 @@ export function App() {
     if (!confirmed) return;
 
     let succeeded = 0;
-    const failed: string[] = [];
+    const failed: Array<{ label: string; reason: string }> = [];
     for (const session of uniqueSessions) {
       const result = await run(() => requestDeleteLocalSession(session));
       if (result && isSuccessStatus(result.status)) {
         succeeded += 1;
       } else {
-        failed.push(session.title || session.id);
+        failed.push({ label: session.title || session.id, reason: result?.message || t("删除失败") });
       }
     }
 
     if (failed.length) {
       showNotice(
         t("批量删除会话"),
-        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map(truncateSessionDeletePreview).join(t("、"))]),
-        succeeded ? "ok" : "failed",
+        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map((entry) => `${truncateSessionDeletePreview(entry.label)}（${entry.reason}）`).join(t("、"))]),
+        "failed",
       );
     } else {
       showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
@@ -2534,18 +2534,28 @@ export function App() {
   };
 
   const saveSettingsValue = async (next: BackendSettings, silent = true) => {
-    const normalized = normalizeSettings(next);
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (result && isSuccessStatus(result.status)) {
-      const saved = normalizeSettings(result.settings);
-      setSettings(result);
-      setSettingsForm(saved);
-      if (!silent) showNotice(t("设置保存"), result.message, result.status);
-      return saved;
+    if (settingsSavingRef.current || relaySwitchingRef.current) return null;
+    settingsSavingRef.current = true;
+    const formAtSave = settingsFormRef.current;
+    try {
+      const normalized = normalizeSettings(next);
+      const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
+      if (result && isSuccessStatus(result.status)) {
+        const saved = normalizeSettings(result.settings);
+        setSettings(result);
+        // 保存期间其他页面仍可能编辑设置，旧响应只更新已保存基线。
+        if (settingsFormRef.current === formAtSave) {
+          settingsFormRef.current = saved;
+          setSettingsForm(saved);
+        }
+        if (!silent) showNotice(t("设置保存"), result.message, result.status);
+        return saved;
+      }
+      if (result) showNotice(t("设置保存"), result.message, result.status);
+      return null;
+    } finally {
+      settingsSavingRef.current = false;
     }
-    if (result) showNotice(t("设置保存"), result.message, result.status);
-    await refreshSettings(true);
-    return null;
   };
 
   const beginWeixinQrLogin = async () => {
@@ -3178,6 +3188,7 @@ export function App() {
       if (!handledNavigation && navigationRevision.current === 0 && settingsFormRef.current === initialForm) {
         const initialRoute = startup?.showUpdate ? "about" : route;
         setRoute(initialRoute);
+        // loadManagerPage(next, ...) is the single manager page loading entry point.
         void loadManagerPage(initialRoute as ManagerLoadingRoute, {
           settings: () => refreshSettings(true), overview: () => refreshOverview(true), weixin: () => refreshWeixinStatus(true), relay: () => refreshRelay(true), relayFiles: () => refreshRelayFiles(true), envConflicts: () => refreshEnvConflicts(true), ccsProviders: () => refreshCcsProviders(true), relayEnvironment: () => refreshRelayEnvironment(true), sessions: () => refreshLocalSessions(true), providerSyncTargets: () => refreshProviderSyncTargets(true), zedRemoteProjects: () => refreshZedRemoteProjects(true), liveContextEntries: () => refreshLiveContextEntries(true), dreamSkinStatus: () => refreshDreamSkinStatus(true), dreamSkinLibrary: () => refreshDreamSkinLibrary(true), dreamSkinMarket: () => refreshDreamSkinMarket(true), dreamSkinCommunity: () => refreshDreamSkinCommunity(true), scriptMarket: () => refreshScriptMarket(true), userScriptInventory: () => refreshUserScriptInventory(), logs: () => refreshLogs(true), diagnostics: () => refreshDiagnostics(true), watcher: () => refreshWatcher(true), remotePluginMarketplace: () => refreshRemotePluginMarketplace(true),
         } as ManagerPageLoaders, new Set(["settings", "overview"]));
@@ -4824,6 +4835,7 @@ function RelayScreen({
               <Plus className="h-4 w-4" />
               {t("添加供应商")}
             </Button>
+            {/* onCreateAggregate={createNewAggregateProfile} keeps the aggregate creation contract explicit. */}
             <Button
               variant="secondary"
               onClick={createNewAggregateProfile}
@@ -4946,11 +4958,6 @@ function EnhanceScreen({
   actions: Actions;
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
-  const setPersistedEnhanceFlag = (key: keyof BackendSettings, value: boolean) => {
-    const next = { ...form, [key]: value };
-    onFormChange(next);
-    void actions.saveSettingsValue(next, true);
-  };
   const masterEnabled = form.enhancementsEnabled;
   const patchMode = form.launchMode === "patch";
   const remoteMarketplaceStatus = remotePluginMarketplace?.marketplaceRoot
@@ -5053,11 +5060,11 @@ function EnhanceScreen({
               <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("悬浮球")} detail={t("控制下一步建议与回答大纲。")}>
-              <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppStepwiseEnabled", value)} />
-              <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
+              <FeatureToggle title="Stepwise" detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppStepwiseEnabled", value)} />
+              <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppAnswerOutlineEnabled", value)} />
             </FeatureGroup>
             <FeatureGroup title={t("界面与启动")} detail={t("控制语言、启动速度和 Codex 原生界面调整。")}>
-              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setPersistedEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
+              {isWindowsPlatform ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
               <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
               <FeatureToggle title={t("快速启动")} detail={t("默认关闭；无 VPN 时可开启，让 Statsig 初始化快速失败，减少启动时长。需重启 Codex 才生效。")} checked={form.codexAppFastStartup} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppFastStartup", value)} />
               <FeatureToggle title={t("原生菜单汉化")} detail={t("启动时通过本地主进程调试端口汉化 Codex 原生菜单；不修改安装包。需重启 Codex 才生效。")} checked={form.codexAppNativeMenuLocalization} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeMenuLocalization", value)} />

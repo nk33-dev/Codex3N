@@ -1539,6 +1539,7 @@
     return settings;
   }
 
+  // `codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，命中缓存时不重复解析。
   function codexPlusSettings() {
     const relayPatchDisabled = codexPlusBackendSettings.launchMode === "relay";
     if (codexPlusBackendSettings.enhancementsEnabled === false) {
@@ -1566,10 +1567,27 @@
       };
     }
     try {
-      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}"), ...backendCodexPlusSettings() };
+      // localStorage 原文也进缓存键：别的注入脚本或用户脚本可能直接写这个键，
+      // 只靠"自己写入时失效"会读到过期设置。真正的开销是 JSON.parse 和两次对象展开，不是这次 getItem。
+      const raw = localStorage.getItem(codexPlusSettingsKey) || "{}";
+      const theme = window.__CODEX_PLUS_DREAM_SKIN_THEME__ || null;
+      const cached = codexPlusSettings.__cache || null;
+      if (cached
+          && cached.raw === raw
+          && cached.backend === codexPlusBackendSettings
+          && cached.theme === theme) {
+        return { ...cached.settings, ...backendCodexPlusSettings() };
+      }
+      const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(raw), ...backendCodexPlusSettings() };
       if (relayPatchDisabled) {
         settings.pluginMarketplaceUnlock = false;
       }
+      codexPlusSettings.__cache = {
+        raw,
+        backend: codexPlusBackendSettings,
+        theme,
+        settings,
+      };
       return settings;
     } catch {
       const settings = { ...defaultCodexPlusSettings(), ...backendCodexPlusSettings() };

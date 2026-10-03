@@ -745,11 +745,6 @@
       .csw-popover[data-open="false"][data-morphing="false"] .csw-panel {
         clip-path: inset(100% round ${PANEL_RADIUS}px);
       }
-      .csw-popover[data-morphing="true"] .csw-panel {
-        opacity: 1;
-        pointer-events: none;
-        visibility: visible;
-      }
       .csw-head {
         align-items: center;
         cursor: grab;
