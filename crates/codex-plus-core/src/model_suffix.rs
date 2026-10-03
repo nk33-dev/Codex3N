@@ -577,7 +577,13 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
     // 生成的 catalog 一旦落盘就会顶掉 codex 自带的模型目录，
     // 所以始终把自带条目并进来，避免用户侧"模型只剩一个"。
     let mut merged = entries.to_vec();
-    extend_with_bundled_entries(&mut merged);
+    // 单个已知官方模型已经带有完整元数据；保留用户明确选择的单项目录，
+    // 多模型或自定义条目仍补入 Codex 内置模型，避免覆盖后只剩一项。
+    let single_builtin_model = entries.len() == 1
+        && resolve_builtin_metadata(&entries[0].slug).is_some();
+    if !single_builtin_model {
+        extend_with_bundled_entries(&mut merged);
+    }
     let models: Vec<Value> = merged
         .iter()
         .enumerate()
