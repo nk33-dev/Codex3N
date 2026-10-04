@@ -110,7 +110,7 @@ test("Key 快捷入口及其子节点不会触发宿主页面扫描", () => {
 });
 
 /** 用注入脚本里真实的 Key 面板渲染与加载逻辑搭建一个最小运行环境。 */
-function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?: unknown[]; switching?: boolean; liveKeyMatched?: boolean }) {
+function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?: unknown[]; switching?: boolean; liveKeyMatched?: boolean; requestError?: string }) {
   const summary = { textContent: "正在读取当前供应商…" };
   const list = { textContent: "", innerHTML: "" };
   let requests = 0;
@@ -130,7 +130,11 @@ function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?
     return loadRelayApiKeys;
   `)(
     { querySelector: (selector: string) => (selector.includes("summary") ? summary : selector.includes("list") ? list : null) },
-    async () => { requests += 1; return { status: "ok" }; },
+    async () => {
+      requests += 1;
+      if (state.requestError) throw new Error(state.requestError);
+      return { status: "ok" };
+    },
     serialize,
     () => {},
   );
@@ -195,6 +199,15 @@ test("live 里的 Key 不在列表里时如实提示，不假装匹配", async (
   await load();
   assert.match(list.innerHTML, /实际在用的 Key 不在这个列表里/);
   assert.match(list.innerHTML, /<option value="key-deepseek" selected>DeepSeek<\/option>/);
+});
+
+test("读取 Key 失败后显示失败状态，不在每次刷新时重复请求", async () => {
+  const { summary, load, requestCount } = relayKeysRuntime({ enabled: true, requestError: "桥接不可用" });
+  await load(true);
+  assert.equal(requestCount(), 1);
+  assert.equal(summary.textContent, "桥接不可用");
+  await load();
+  assert.equal(requestCount(), 1);
 });
 
 test("设置对象按输入身份缓存，热路径不再重复解析", () => {

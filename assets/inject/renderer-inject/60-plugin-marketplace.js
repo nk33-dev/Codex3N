@@ -49,6 +49,9 @@
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
+    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "failed") {
+      void loadRelayApiKeys(true);
+    }
     void loadCodexServiceTierState();
     loadUserScripts();
   }
