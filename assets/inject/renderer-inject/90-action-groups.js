@@ -841,25 +841,6 @@
       });
   }
 
-  function syncActionGroupLayout(row, group) {
-    if (!row || !group) return;
-    if (group.dataset.codexActionLayoutStable === "true") return;
-    const rowRect = row.getBoundingClientRect();
-    const nativeButtons = nativeActionButtonsFromRow(row);
-    const leftmostNative = nativeButtons
-      .map((button) => button.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .sort((a, b) => a.left - b.left)[0];
-    const gap = 8;
-    const fallbackRight = 28;
-    const right = leftmostNative
-      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
-      : fallbackRight;
-    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
-    const titleNode = row.querySelector(selectors.threadTitle);
-    const titleRect = titleNode?.getBoundingClientRect();
-    const titleLeft = titleRect?.left || rowRect.left + 40;
-
   function refreshCodexRelayApiKeyBadges() {
     const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
     const active = keys.find((entry) => entry.id === codexPlusRelayApiKeys.activeKeyId) || keys[0];
@@ -909,3 +890,21 @@
     }
     refreshCodexRelayApiKeyBadges();
   }
+  function syncActionGroupLayout(row, group) {
+    if (!row || !group) return;
+    if (group.dataset.codexActionLayoutStable === "true") return;
+    const rowRect = row.getBoundingClientRect();
+    const nativeButtons = nativeActionButtonsFromRow(row);
+    const leftmostNative = nativeButtons
+      .map((button) => button.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((a, b) => a.left - b.left)[0];
+    const gap = 8;
+    const fallbackRight = 28;
+    const right = leftmostNative
+      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
+      : fallbackRight;
+    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
+    const titleNode = row.querySelector(selectors.threadTitle);
+    const titleRect = titleNode?.getBoundingClientRect();
+    const titleLeft = titleRect?.left || rowRect.left + 40;

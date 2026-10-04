@@ -50,7 +50,7 @@ test("会话列表与设置并行，供应商默认选择等待设置完成", as
   assert.deepEqual(calls, ["settings", "sessions"]);
   settings.resolve();
   await loading;
-  assert.deepEqual(calls, ["settings", "sessions", "providerSyncTargets"]);
+  assert.deepEqual(calls, ["settings", "sessions", "providerSyncTargets", "sessionIndexRepairReport"]);
 });
 
 test("脚本市场保留写入顺序，避免库存被旧设置覆盖", async () => {
@@ -96,4 +96,10 @@ test("微信页面的状态交给可见性调度，页面加载不重复查询",
   const calls: string[] = [];
   await loadManagerPage("weixin", pageLoaders(calls));
   assert.deepEqual(calls, ["settings", "sessions"]);
+});
+
+test("推荐内容页面读取广告列表", async () => {
+  const calls: string[] = [];
+  await loadManagerPage("recommendations", pageLoaders(calls));
+  assert.deepEqual(calls, ["ads"]);
 });

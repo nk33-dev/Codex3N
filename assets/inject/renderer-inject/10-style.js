@@ -1197,6 +1197,25 @@
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
+      .${codexRelayApiKeyBadgeClass} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 1 auto;
+        max-width: 132px;
+        height: 24px;
+        border: 1px solid rgba(148,163,184,.28);
+        border-radius: 7px;
+        background: rgba(148,163,184,.12);
+        color: #d4d4d8;
+        font: 600 12px/1 system-ui, sans-serif;
+        padding: 0 8px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .${codexRelayApiKeyBadgeClass}:hover { border-color: rgba(16,163,127,.44); background: rgba(16,163,127,.13); }
+      .${codexRelayApiKeyBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .65; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -1471,6 +1490,9 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
+      .${codexRelayApiKeyBadgeClass} { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text-secondary); font-family: inherit; }
+      .${codexRelayApiKeyBadgeClass}:hover,
+      .${codexRelayApiKeyBadgeClass}:focus-visible { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       .codex-plus-ad-card { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-secondary); }
       .codex-plus-ad-card:hover,
       .codex-plus-ad-card:focus-visible { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-hover); }

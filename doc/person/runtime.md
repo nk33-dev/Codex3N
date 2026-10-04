@@ -8,6 +8,7 @@
 
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描、环境检查和远端插件状态进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
+- `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告；推荐页通过同一入口读取广告列表。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
 - 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入、会话分享和皮肤链接。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
@@ -59,10 +60,11 @@
 
 ## 注入脚本
 
-- **renderer 注入脚本与上游同构，是单个文件** `assets/inject/renderer-inject.js`，由 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT` 用 `include_str!` 内联。刻意不拆成分片：上游近一年改这个文件二十余次、平均每次数百行，分片会让每次上游改动都变成「上游修改 vs 个人版删除」的冲突而只能手工搬运，同构单文件才能走 Git 三方合并。判断依据见[维护流程](maintenance.md)的「结构分叉的代价」。
+- renderer 的源码入口是 `assets/inject/renderer-inject/manifest.json` 所列分片，沿用上游结构；`node scripts/assemble-renderer-inject.mjs` 生成 `assets/inject/renderer-inject.js`，`--check` 校验漂移。`crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT` 用 `include_str!` 内联该产物，修改分片后须重新生成并一起提交。
 - 悬浮球的 `assets/inject/floating-panel/**` 是上游**既有**分片，沿用不变，由 `assets.rs` 的 `STEPWISE_SCRIPT` 用 `concat!` 拼装。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。renderer 的粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
 - `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；这些文件被 `include_str!` 内联，换行变化会改变注入内容。
-- 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts`：`readRendererInjectSource` 直接读单文件，`readStepwiseSource` 按顺序拼回悬浮球分片。`inject-fragments.test.ts` 校验悬浮球分片清单与 `assets.rs` 的 `concat!` 顺序一致，并确认两个脚本都仍是完整合法的单一 IIFE。
+- 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts`：`readRendererInjectSource` 读取生成产物，`readStepwiseSource` 按顺序拼回悬浮球分片。`renderer-inject.test.ts` 校验 renderer 分片与产物逐字节一致；`inject-fragments.test.ts` 校验悬浮球清单与 `assets.rs` 顺序及完整语法。
+- 分片共享主 IIFE 作用域，边界可能落在函数或模板中间。`renderer-model-runtime.test.ts` 用 TypeScript AST 从完整产物提取主作用域的函数和状态声明再执行，覆盖目录刷新、白名单扫描和命名 Key 快捷入口，防止局部切片测试掩盖声明缺失或函数嵌套。
 - 改注入脚本后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言注入结果）与前端 `npm test`。
 - 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在 relay 模式下每轮都会调它）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。

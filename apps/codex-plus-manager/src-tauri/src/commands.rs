@@ -6169,6 +6169,7 @@ base_url = "https://example.invalid/v1"
         );
     }
 
+    #[test]
     fn failed_active_relay_sync_does_not_spawn_or_change_live_files() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("config.toml"), "model = \"old\"\n").unwrap();

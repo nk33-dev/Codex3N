@@ -1,9 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import ts from "typescript";
 
 import { readRendererInjectSource } from "./inject-fragments.ts";
 
 const renderer = await readRendererInjectSource();
+const syntax = ts.createSourceFile("renderer-inject.js", renderer, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+const entry = syntax.statements[0];
+assert.ok(ts.isExpressionStatement(entry) && ts.isCallExpression(entry.expression));
+const wrapper = entry.expression.expression;
+assert.ok(ts.isParenthesizedExpression(wrapper) && ts.isArrowFunction(wrapper.expression));
+assert.ok(ts.isBlock(wrapper.expression.body));
+const declarations = wrapper.expression.body.statements;
+
+function runtimeSource(...names: string[]) {
+  return names.map((name) => {
+    const declaration = declarations.find((statement) =>
+      (ts.isFunctionDeclaration(statement) && statement.name?.text === name)
+      || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some((entry) => ts.isIdentifier(entry.name) && entry.name.text === name)),
+    );
+    assert.ok(declaration, `${name} 必须声明在主注入作用域`);
+    return declaration.getText(syntax);
+  }).join("\n");
+}
 
 function section(start: string, end: string) {
   const offset = renderer.indexOf(start);
@@ -39,6 +58,42 @@ test("模型切换区提供命名 Key 快捷入口", () => {
   assert.match(renderer, /data-codex-relay-api-key-badge/);
   assert.match(renderer, /openCodexPlusPage\("apiKeys"\)/);
   assert.match(renderer, /\/relay-api-keys\/select/);
+});
+
+test("命名 Key 快捷入口在主作用域可调用，重复安装复用按钮", () => {
+  const keys = { status: "ok", activeKeyId: "main", keys: [{ id: "backup", name: "备用" }, { id: "main", name: "主 Key" }] };
+  let route = "";
+  let click: () => void = () => {};
+  let badges: typeof button[] = [];
+  const button = {
+    dataset: {} as Record<string, string>, textContent: "", title: "", className: "", type: "",
+    parentElement: null as unknown, nextSibling: null as unknown,
+    setAttribute() {},
+    addEventListener(_type: string, handler: (event: unknown) => void) {
+      click = () => handler({ preventDefault() {}, stopPropagation() {} });
+    },
+    remove() { badges = badges.filter((badge) => badge !== button); },
+  };
+  const parent = { insertBefore(badge: typeof button) { badge.parentElement = parent; badges.push(badge); } };
+  const install = new Function("document", "codexPlusRelayApiKeys", "codexServiceTierFindComposerEl", "codexServiceTierBadgePlacement", "openCodexPlusPage", `
+    const codexPlusBackendStatus = { status: "ok" }, codexPlusRelayApiKeySwitching = false;
+    ${runtimeSource("codexRelayApiKeyBadgeClass", "codexRelayApiKeyBadgeVersion", "refreshCodexRelayApiKeyBadges", "installCodexRelayApiKeyBadge")}
+    return installCodexRelayApiKeyBadge;
+  `)(
+    { querySelectorAll: () => badges, createElement: () => button }, keys,
+    () => ({}), () => ({ parent, before: null }), (next: string) => { route = next; },
+  );
+  install();
+  install();
+  assert.equal(badges.length, 1);
+  assert.equal(button.textContent, "主 Key");
+  assert.equal(button.className, "codex-relay-api-key-badge");
+  assert.ok(renderer.includes(".${codexRelayApiKeyBadgeClass} {"), "快捷入口须有对应样式");
+  click();
+  assert.equal(route, "apiKeys");
+  keys.keys = [];
+  install();
+  assert.equal(badges.length, 0);
 });
 
 /** 用注入脚本里真实的 Key 面板渲染与加载逻辑搭建一个最小运行环境。 */
@@ -175,8 +230,7 @@ test("相同目录刷新不重绘菜单，也不重启白名单补扫", async ()
   let requests = 0;
   let models = ["custom"];
   const load = new Function("postJson", "Date", "renderCodexPlusMenu", "scheduleCodexModelWhitelistRefresh", `
-    let codexModelCatalog = {}, codexModelCatalogLoadedAt = 0, codexModelCatalogPromise = null;
-    let codexModelCatalogRetryAt = 0, codexModelCatalogFailures = 0;
+    ${runtimeSource("codexModelCatalog", "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRetryAt", "codexModelCatalogFailures")}
     const refreshCodexModelQueries = () => {};
     ${section("  async function loadCodexModelCatalog(", "  function codexPlusModelMetadata(")}
     return loadCodexModelCatalog;
@@ -192,6 +246,35 @@ test("相同目录刷新不重绘菜单，也不重启白名单补扫", async ()
   await load(true);
   assert.equal(renders, 2);
   assert.equal(schedules, 2);
+});
+
+test("目录请求失败后退避，扫描复用进行中的请求", async () => {
+  let now = 1000;
+  let requests = 0;
+  let resolveRequest: (value: unknown) => void = () => {};
+  const load = new Function("postJson", "Date", `
+    ${runtimeSource("codexModelCatalog", "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRetryAt", "codexModelCatalogFailures", "loadCodexModelCatalog")}
+    const renderCodexPlusMenu = () => {}, scheduleCodexModelWhitelistRefresh = () => {}, refreshCodexModelQueries = () => {};
+    return loadCodexModelCatalog;
+  `)(() => {
+    requests += 1;
+    if (requests === 1) return Promise.reject(new Error("offline"));
+    return new Promise((resolve) => { resolveRequest = resolve; });
+  }, { now: () => now });
+  assert.equal((await load()).status, "failed");
+  now += 4999;
+  await load();
+  assert.equal(requests, 1);
+  now += 1;
+  const retry = load();
+  const concurrent = load();
+  assert.equal(requests, 2);
+  resolveRequest({ status: "ok", models: ["custom"] });
+  assert.equal((await retry).status, "ok");
+  await concurrent;
+  now += 1000;
+  await load();
+  assert.equal(requests, 2);
 });
 
 function refreshRuntime(ready: () => boolean) {
@@ -241,7 +324,7 @@ test("连续页面变化每秒最多触发一次模型扫描", () => {
   let loads = 0;
   let passes = 0;
   const scan = new Function("Date", "loadCodexModelCatalog", "runCodexModelWhitelistRefreshPass", `
-    let codexModelWhitelistLastScanAt = 0;
+    ${runtimeSource("codexModelWhitelistLastScanAt")}
     const ensureCodexModelWhitelistInstalls = () => {}, codexPlusModelUnlockEnabled = () => true;
     ${section("  function refreshCodexModelWhitelistFromScan(", "  function threadIdVariants(")}
     return refreshCodexModelWhitelistFromScan;

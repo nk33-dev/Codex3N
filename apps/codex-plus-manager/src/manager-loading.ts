@@ -1,6 +1,6 @@
-export type ManagerRoute = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "maintenance" | "about" | "settings";
+export type ManagerRoute = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
 
-type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "zedRemoteProjects" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "logs" | "diagnostics" | "watcher" | "remotePluginMarketplace";
+type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "zedRemoteProjects" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "ads" | "logs" | "diagnostics" | "watcher" | "remotePluginMarketplace";
 export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
 
 /** 同一批任务互不依赖；不同批次保留设置、脚本库存等数据的写入顺序。 */
@@ -9,7 +9,7 @@ const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
   relay: [["settings", "weixin", "relay", "relayFiles", "envConflicts", "ccsProviders"]],
   grok: [["settings"]],
   relayEnvironment: [["relayEnvironment"]],
-  sessions: [["settings", "sessions"], ["providerSyncTargets"]],
+  sessions: [["settings", "sessions"], ["providerSyncTargets"], ["sessionIndexRepairReport"]],
   context: [["settings", "relayFiles", "liveContextEntries"]],
   skills: [],
   // 微信页面的状态由可见性调度立即刷新，避免切页时重复请求。
@@ -18,6 +18,7 @@ const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
   dreamSkin: [["settings", "overview", "dreamSkinLibrary", "dreamSkinMarket", "dreamSkinCommunity", "dreamSkinStatus"]],
   zedRemote: [["settings", "zedRemoteProjects"]],
   userScripts: [["settings"], ["scriptMarket"], ["userScriptInventory"]],
+  recommendations: [["ads"]],
   maintenance: [["overview", "watcher"]],
   about: [["overview", "logs", "diagnostics"]],
   settings: [["settings"]],

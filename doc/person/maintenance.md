@@ -33,14 +33,14 @@
 | 上游文件 | 近一年改动 | 平均规模 | 个人版现状 |
 | --- | --- | --- | --- |
 | `apps/codex-plus-manager/src/App.tsx` | 217 次（约每 1.7 天一次） | — | 部分拆分（screens、components/providers、provider-types） |
-| `assets/inject/renderer-inject.js` | 22 次 | 543 行/次 | 已收敛回同构单文件 |
+| `assets/inject/renderer-inject.js` | 22 次 | 543 行/次 | 沿用上游 manifest 分片，生成单文件产物 |
 | `assets/inject/floating-panel/**` | 上游本就是分片 | — | 沿用上游分片，结构一致 |
 
 由此得出的边界：
 
 - **不要再拆 `App.tsx`**。它是上游改动最频繁的文件，拆走哪一块，上游改那一块时就要手工迁移。已有拆分中划算的是上游低频区（`screens/*`、`commands/dream_skin.rs`、`commands/provider_import.rs`），不划算的是高频区（编辑器、类型定义）。
 - `RelayProfile`、`BackendSettings` 等类型已从 `App.tsx` 移到 `provider-types.ts`（上游原始定义在 `App.tsx` 内），上游再改这些定义就会冲突。这是既成成本，不要再扩大外移范围。
-- renderer 注入脚本此前拆成 30 个分片，上游每次改动都要手工搬进分片（历史上 `c8bf760` 一次就搬了 15 个文件、618 行）。已收敛回单文件；**不要再按子系统拆分它**。
+- renderer 注入脚本按上游 `assets/inject/renderer-inject/manifest.json` 维护分片，`scripts/assemble-renderer-inject.mjs` 生成单文件产物。同步时沿用这份清单与边界；分片可能跨函数或模板，须按完整产物判断作用域。
 - 上游高频改动区的个人行为，优先写进上游同一文件，让它随三方合并走，而不是搬到新文件。
 
 旧入口作为迁移依据，不列为当前实现。合并未提交时可用 `git merge --abort` 放弃；合回 `personal` 时保留上游合并祖先，不 squash 整次同步，也不强制重置共享历史。
@@ -71,6 +71,25 @@ cargo test --workspace
 - 核对实际运行的构建、注入产物、宿主版本和个人更新源，避免缓存或旧进程掩盖结果。打包变化还需检查产物来源和升级路径。
 - 记录既有失败、新失败及未验证范围。检查未完成不标记为完整通过；同步分支验证完成后才合回 `personal`。官方发布大版本不等于个人版已兼容。
 
+### Windows 与跨平台门禁
+
+`pr-build.yml` 的 Windows job 执行完整前端、Rust 和安全门禁，并构建 NSIS 安装包；macOS、Linux job 执行共享前端测试，macOS x64/arm64 job 另做原生 DMG 打包。job 所在系统只表示测试宿主：Windows 上的 `macos-dmg.test.ts` 是磁盘命令模拟，不能据此认定 Windows 安装包或真实 macOS 挂载已验证。
+
+- 本地使用 PowerShell 7、CI 同一主版本的 Node 22（直接运行 TypeScript 测试要求至少 22.18）及 Git for Windows Bash。用 `node --version`、`where.exe node.exe`、`where.exe bash.exe` 核对实际程序；测试选取 Git 目录内的 Bash，系统的 WSL `bash.exe` 不能代替它。非默认 Git 安装路径可在当前进程将其 `usr/bin` 加入 `PATH`。
+- 先 `npm ci`，再执行测试、类型检查、安全审计和 `npm run vite:build`；Tauri 编译依赖前端产物，完成后才运行 Rust 门禁。保留完整输出，并在每条原生命令后立即记录 `$LASTEXITCODE`；只看到局部 `test result: ok` 不能证明整个 workspace 通过。
+- 排查时记录 run URL、提交 SHA、job、失败 step 和失败测试名。修复后验证同一提交的所有必需 job，区分测试失败、编译失败、打包失败和安装运行问题。
+
+| 表现 | 检查与维护方式 |
+| --- | --- |
+| Bash 退出 0，但无最终路径、trace 停在 attach/detach | 将待执行脚本写成 LF 文件，作为 Bash 参数传入，并隔离 stdin；子命令可能读取标准输入，吞掉余下脚本。 |
+| 模拟卸载后仍显示挂载，或重试计数不变 | 命令替换在子 shell 运行，模拟状态用临时文件跨调用保存；同时覆盖真实流程的直接打包回退与最终输出大小。 |
+| 源码断言通过，宿主却报未定义变量或函数 | 校验完整注入产物的主作用域，并执行真实函数；测试使用真实状态声明，不自行补出生产代码缺失的变量，也不在注释中复制断言字符串。 |
+| 脚本在不同 checkout 中行为不同 | 按 `.gitattributes` 保持 `.sh`、注入 JS 和 workflow 为 LF，`.bat`、`.cmd`、`.ps1` 为 CRLF；路径作为独立参数传递，回归覆盖空格和中文目录。 |
+| 模型元数据断言与混合目录冲突 | 按 slug 找目标条目，同时验证原生模型仍在目录；先核对业务契约，再调整测试定位。 |
+| 上游供应商切换用例报总开关关闭 | 个人版默认关闭 `relayProfilesEnabled`；测试真实切换时显式开启，关闭场景则断言拒绝及 live 文件保持原样。 |
+
+新增平台功能或同步重叠模块时，把实际入口、环境约束和回归用例一起更新到对应业务文档。跨平台模拟通过仍不能代替各平台的安装、升级及宿主运行实测。
+
 ## 5. 同步记录与文档
 
 同步提交说明或 PR 记录四项，长期事实更新对应业务文档：
@@ -82,11 +101,14 @@ cargo test --workspace
 
 文档按业务归类，修改功能时更新入口和契约，删除过时说明；导航页不堆积历史日志。这套规则依赖审查与测试落实，不是自动化语义冲突检测。
 
+管理器文案或模块移动后，同步 `src/i18n-en.ts` 与 `tools/i18n-verify.mjs` 的 `SRC_FILES`；`npm test` 在行为测试后检查真实翻译调用，二者都成功才算完成。模板翻译保留占位参数，移除失效词条。
+
 ## 6. 发布
 
 - 从 Git 和 `Cargo.toml` 读取实际分支与版本，不在文档固定“当前版本”。版本为“上游版本 + `-3n.N`”，标签为对应的 `v<版本>`，仅发布 `personal` 对应标签。
 - 改完 `Cargo.toml` 版本先跑一次 `cargo check --workspace`（或任意 cargo 构建）让 `Cargo.lock` 跟上工作区成员的新版本号，再把锁文件和版本一起提交；否则发布脚本里的构建会就地改锁文件，标签指向的提交会留下过期锁版本。发布工作流不带 `--locked`，因此只影响版本一致性，不会让安装包构建失败。
-- 准备 UTF-8 说明文件，使用真实换行；统一执行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`，不绕过脚本单独打标签发布。
-- 脚本校验分支、工作区、标签及本地门禁，再通过原子推送同时提交分支与标签到远端并创建 Release。工作流 `.github/workflows/release-assets.yml` 在测试门禁和标签版本校验通过后才构建安装包。
+- 提交并推送 `personal`，等待该 SHA 的 `Codex3N CI artifacts` 所有 job 成功。准备 UTF-8 说明文件，使用真实换行；统一执行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`。
+- 脚本校验分支、工作区、标签，查询个人仓库中该 SHA 最新一次 push CI，并运行本地门禁；检查后再次确认工作区干净，再原子推送分支与标签并创建 Release。CI 缺失、运行中、失败或查询异常都会在打标签前停止。`.github/workflows/release-assets.yml` 仍保留独立测试门禁和标签版本校验。
+- 同一 SHA 已通过完整 CI 时，可以添加 `-SkipChecks` 复用结果，省去重复本地检查。该参数仍须通过远端 CI 校验；有任何新提交就重新验证。
 - 所有 GitHub 操作显式指定 `--repo nk33-dev/Codex3N`。`pushurl = DISABLED` 只限制 Git 推送，不能防止 `gh` 误操作上游。同步时保持个人更新源。
 - 失败不得继续发布。Release 创建成功后默认结束，不轮询构建；“Release 已创建”“安装包构建成功”“安装运行已验证”分别报告。

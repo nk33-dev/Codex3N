@@ -1574,6 +1574,3 @@
               <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
-
-            <!-- fragment contract: extension menu mount follows 提出问题: \${renderCodexPlusExtensionMenuRows()} -->
-            <!-- overlay.addEventListener("click", (event) => handleCodexPlusExtensionMenuClick(target)); data-codex-open-devtools -->
