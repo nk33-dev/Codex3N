@@ -1170,6 +1170,7 @@ base_url = "https://a.example/v1"
     std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-a"}"#).unwrap();
 
     let mut settings = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "a".to_string(),
         relay_profiles: vec![
             pure_profile("a", "https://a.example/v1", "sk-a"),

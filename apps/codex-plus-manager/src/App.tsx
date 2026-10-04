@@ -169,6 +169,7 @@ import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import { vlmTestTranslation } from "./vlm-test-translation";
 import { initializeManager, loadManagerPage, type ManagerPageLoaders, type ManagerRoute as ManagerLoadingRoute } from "./manager-loading";
 import { useManagerLifecycle } from "./use-manager-lifecycle";
+import { routeSubtitle } from "./route-subtitle";
 import { isWeixinQrPending, startWeixinQrPolling } from "./weixin-qr-polling";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
@@ -2152,68 +2153,41 @@ export function App() {
     }
   };
 
+  const managerPageLoaders: ManagerPageLoaders = {
+    settings: () => refreshSettings(true),
+    overview: () => refreshOverview(true),
+    weixin: () => refreshWeixinStatus(true),
+    relay: () => refreshRelay(true),
+    relayFiles: () => refreshRelayFiles(true),
+    envConflicts: () => refreshEnvConflicts(true),
+    ccsProviders: () => refreshCcsProviders(true),
+    relayEnvironment: () => refreshRelayEnvironment(true),
+    sessions: () => refreshLocalSessions(true),
+    providerSyncTargets: () => refreshProviderSyncTargets(true),
+    zedRemoteProjects: () => refreshZedRemoteProjects(true),
+    liveContextEntries: () => refreshLiveContextEntries(true),
+    dreamSkinStatus: () => refreshDreamSkinStatus(true),
+    dreamSkinLibrary: () => refreshDreamSkinLibrary(true),
+    dreamSkinMarket: () => refreshDreamSkinMarket(true),
+    dreamSkinCommunity: () => refreshDreamSkinCommunity(true),
+    scriptMarket: () => refreshScriptMarket(true),
+    userScriptInventory: () => refreshUserScriptInventory(),
+    logs: () => refreshLogs(true),
+    diagnostics: () => refreshDiagnostics(true),
+    watcher: () => refreshWatcher(true),
+    remotePluginMarketplace: () => refreshRemotePluginMarketplace(true),
+    sessionIndexRepairReport: () => refreshSessionIndexRepairReport(),
+    ads: () => refreshAds(true),
+  };
+
   const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
-    navigationRevision.current += 1;
+    const revision = ++navigationRevision.current;
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
       return;
     }
     setRoute(next);
-    if (next === "overview") await refreshOverview(true);
-    if (next === "relay") {
-      await refreshSettings(true);
-      await refreshWeixinStatus(true);
-      await refreshRelay(true);
-      await refreshRelayFiles(true);
-      await refreshEnvConflicts(true);
-      await refreshCcsProviders(true);
-    }
-    if (next === "relayEnvironment") await refreshRelayEnvironment(true);
-    if (next === "grok") await refreshSettings(true);
-    if (next === "sessions") {
-      await refreshSettings(true);
-      await refreshLocalSessions(true);
-      await refreshProviderSyncTargets(true);
-      await refreshSessionIndexRepairReport();
-    }
-    if (next === "zedRemote") {
-      await refreshSettings(true);
-      await refreshZedRemoteProjects(true);
-    }
-    if (next === "context") {
-      await refreshSettings(true);
-      await refreshRelayFiles(true);
-      await refreshLiveContextEntries(true);
-    }
-    if (next === "weixin") {
-      await refreshSettings(true);
-      await refreshWeixinStatus(true);
-      await refreshLocalSessions(true);
-    }
-    if (next === "dreamSkin") {
-      await refreshSettings(true);
-      await refreshOverview(true);
-      await refreshDreamSkinStatus(true);
-      await refreshDreamSkinLibrary(true);
-      await refreshDreamSkinMarket(true);
-      await refreshDreamSkinCommunity(true);
-    }
-    if (next === "settings") await refreshSettings(true);
-    if (next === "userScripts") {
-      await refreshSettings(true);
-      await refreshScriptMarket(true);
-      await refreshUserScriptInventory();
-    }
-    if (next === "recommendations") await refreshAds(true);
-    if (next === "about") {
-      await refreshOverview(true);
-      await refreshLogs(true);
-      await refreshDiagnostics(true);
-    }
-    if (next === "maintenance") {
-      await refreshOverview(true);
-      await refreshWatcher(true);
-    }
+    await loadManagerPage(next, managerPageLoaders, undefined, () => revision === navigationRevision.current);
   };
   navigateRef.current = navigate;
 
@@ -3188,10 +3162,7 @@ export function App() {
       if (!handledNavigation && navigationRevision.current === 0 && settingsFormRef.current === initialForm) {
         const initialRoute = startup?.showUpdate ? "about" : route;
         setRoute(initialRoute);
-        // loadManagerPage(next, ...) is the single manager page loading entry point.
-        void loadManagerPage(initialRoute as ManagerLoadingRoute, {
-          settings: () => refreshSettings(true), overview: () => refreshOverview(true), weixin: () => refreshWeixinStatus(true), relay: () => refreshRelay(true), relayFiles: () => refreshRelayFiles(true), envConflicts: () => refreshEnvConflicts(true), ccsProviders: () => refreshCcsProviders(true), relayEnvironment: () => refreshRelayEnvironment(true), sessions: () => refreshLocalSessions(true), providerSyncTargets: () => refreshProviderSyncTargets(true), zedRemoteProjects: () => refreshZedRemoteProjects(true), liveContextEntries: () => refreshLiveContextEntries(true), dreamSkinStatus: () => refreshDreamSkinStatus(true), dreamSkinLibrary: () => refreshDreamSkinLibrary(true), dreamSkinMarket: () => refreshDreamSkinMarket(true), dreamSkinCommunity: () => refreshDreamSkinCommunity(true), scriptMarket: () => refreshScriptMarket(true), userScriptInventory: () => refreshUserScriptInventory(), logs: () => refreshLogs(true), diagnostics: () => refreshDiagnostics(true), watcher: () => refreshWatcher(true), remotePluginMarketplace: () => refreshRemotePluginMarketplace(true),
-        } as ManagerPageLoaders, new Set(["settings", "overview"]));
+        void loadManagerPage(initialRoute as ManagerLoadingRoute, managerPageLoaders, new Set(["settings", "overview"]), () => !disposed && navigationRevision.current === 0);
       }
       void checkUpdate(handledNavigation || !startup?.showUpdate);
       setStartupReady(true);
@@ -4835,7 +4806,6 @@ function RelayScreen({
               <Plus className="h-4 w-4" />
               {t("添加供应商")}
             </Button>
-            {/* onCreateAggregate={createNewAggregateProfile} keeps the aggregate creation contract explicit. */}
             <Button
               variant="secondary"
               onClick={createNewAggregateProfile}
@@ -11073,28 +11043,6 @@ function isExpiredAd(ad: AdItem) {
 
 function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
-}
-
-function routeSubtitle(route: Route) {
-  const subtitles: Record<Route, string> = {
-    overview: t("检查问题、启动与快速修复"),
-    relay: t("管理 API 供应商、协议、Key 与配置文件"),
-    grok: t("管理 Grok CLI 的模型与 API 端点"),
-    relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
-    sessions: t("查看、删除和修复 Codex 本地会话"),
-    context: t("独立管理 MCP 服务器与插件"),
-    skills: t("从 GitHub 仓库安装 Skill 到 Codex"),
-    weixin: t("通过个人微信连接本机 Codex 会话"),
-    enhance: t("会话删除、导出和拓展能力"),
-    dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
-    zedRemote: t("管理 Codex SSH 项目并加入 Zed workspace"),
-    userScripts: t("内置和用户自定义拓展清单"),
-    recommendations: t("普通推荐内容"),
-    maintenance: t("入口安装、修复、Watcher 与手动启动"),
-    about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
-    settings: t("主题和启动参数"),
-  };
-  return subtitles[route];
 }
 
 const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [

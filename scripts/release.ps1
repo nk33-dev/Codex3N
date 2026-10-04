@@ -12,14 +12,13 @@
         版本来自标签（NSIS /DVERSION、DMG CFBundleShortVersionString），而自更新
         的基准版本来自 Cargo.toml（CARGO_PKG_VERSION），两者分叉就会出现
         "装完还提示有新版"或者反过来测不到更新。
-      * release workflow 里有测试门禁，这里在本地先跑同一套检查，避免推送完才发现
-        CI 会红。
+      * 发布前要求当前提交的 CI 构建成功，并在本地运行同一套检查。
 
 .PARAMETER NotesFile
     Release 说明文件（UTF-8，真实换行）。不传则用默认的一段说明。
 
 .PARAMETER SkipChecks
-    跳过本地测试（只在明确知道 CI 会覆盖时使用）。
+    复用当前提交已成功的 CI 结果，省去重复的本地检查。
 
 .PARAMETER DryRun
     只打印将要执行的命令，不做任何写操作。
@@ -93,6 +92,17 @@ if ($NotesFile) {
 
 Write-Host "将发布 $tag（分支 $Branch，仓库 $Repo）" -ForegroundColor Green
 
+$head = (git rev-parse HEAD).Trim()
+Invoke-Step "确认当前提交的 CI 构建通过" {
+    $runJson = gh run list --repo $Repo --workflow pr-build.yml --branch $Branch --commit $head --event push --limit 1 --json headSha,status,conclusion,url
+    Assert-True ($LASTEXITCODE -eq 0) "无法查询 CI，停止发布"
+    $runs = @($runJson | ConvertFrom-Json)
+    Assert-True ($runs.Count -eq 1) "当前提交 $head 没有 CI 记录，先推送 personal 并等待构建通过"
+    $run = $runs[0]
+    Assert-True ($run.headSha -eq $head -and $run.status -eq "completed" -and $run.conclusion -eq "success") "当前提交的 CI 未通过：$($run.status) / $($run.conclusion)，$($run.url)"
+    Write-Host "    已通过：$($run.url)"
+}
+
 if (-not $SkipChecks) {
     Invoke-Step "cargo fmt --all --check" { cargo fmt --all --check }
     Invoke-Step "npm test" { Push-Location $ManagerDir; try { npm test } finally { Pop-Location } }
@@ -104,6 +114,11 @@ if (-not $SkipChecks) {
     Invoke-Step "cargo audit" { cargo audit }
     # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
     Invoke-Step "cargo test --workspace" { cargo test --workspace --no-fail-fast }
+}
+
+Invoke-Step "确认检查后工作区仍干净" {
+    $status = git status --porcelain
+    Assert-True ([string]::IsNullOrWhiteSpace($status)) "检查产生了未提交改动，请提交后重新验证：`n$status"
 }
 
 Invoke-Step "创建标签 $tag" { git tag -a $tag -m "Codex3N $version" }

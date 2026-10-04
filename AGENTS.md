@@ -19,5 +19,5 @@ Codex3N 是 CodexPlusPlus 的个人定制版。只开发用户要求的个人功
 ## 发布
 
 - 版本为“上游版本号 + `-3n.N`”，标签与 `Cargo.toml` 一致；正式包只从 `personal` 对应标签发布。
-- 发布必须先读维护流程中的发布步骤，统一运行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`；检查失败不继续。
+- 发布必须先读维护流程中的发布步骤，当前提交 CI 全部成功后统一运行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`；`-SkipChecks` 只复用同一提交的成功结果，检查失败不继续。
 - Release 创建成功后默认结束，不持续等待安装包构建，除非用户明确要求监控。

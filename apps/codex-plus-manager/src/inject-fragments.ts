@@ -6,9 +6,8 @@ import { readFile } from "node:fs/promises";
  * `assets/inject/floating-panel/**` 是上游既有的分片结构，个人版沿用不变。
  * 分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。
  *
- * renderer 注入脚本则刻意保持单文件（`assets/inject/renderer-inject.js`），与上游
- * 同构，同步时才能走 Git 三方合并而不是手工搬运分片。判断依据见
- * `doc/person/maintenance.md`。
+ * renderer 的分片顺序由上游 manifest 维护，组装后生成 renderer-inject.js；
+ * 回归读取这份产物，跨分片的函数和模板才能保持完整。
  */
 export const STEPWISE_FRAGMENT_PATHS = [
   "floating-panel/runtime/state.js",
@@ -45,7 +44,7 @@ async function readFragments(paths: readonly string[]): Promise<string> {
   return texts.join("");
 }
 
-/** 读取 renderer 注入脚本原文，供按标记断言的回归测试使用（与 `assets.rs` 同一文件）。 */
+/** 读取 renderer 生成产物，供回归使用（与 `assets.rs` 同一文件）。 */
 export async function readRendererInjectSource(): Promise<string> {
   return readFile(injectAssetUrl("renderer-inject.js"), "utf8");
 }

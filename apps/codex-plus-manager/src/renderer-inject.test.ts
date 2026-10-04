@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
+import { readRendererInjectSource } from "./inject-fragments.ts";
 
 const STEPWISE_FRAGMENT_PATHS = [
   "floating-panel/runtime/state.js",
@@ -1469,21 +1470,17 @@ describe("拓展接口层", () => {
  * 委托的分支顺序。
  */
 describe("拓展菜单项", () => {
-  const settingsPath = new URL(
-    "../../../assets/inject/renderer-inject/40-backend-settings.js",
-    import.meta.url,
-  );
   const hostPath = new URL(
     "../../../assets/inject/renderer-inject/92-extension-host.js",
     import.meta.url,
   );
 
   it("内置菜单模板保持原样，只追加一个拓展挂载点", async () => {
-    const source = await readFile(settingsPath, "utf8");
+    const source = await readRendererInjectSource();
     // 挂载点在 home 面板里，且位于「提出问题」之后（即内置项末尾）。
     const openIdx = source.indexOf("overlay.innerHTML = `");
-    const mountIdx = source.indexOf("${renderCodexPlusExtensionMenuRows()}");
-    const issueIdx = source.indexOf("提出问题");
+    const mountIdx = source.indexOf("${renderCodexPlusExtensionMenuRows()}", openIdx);
+    const issueIdx = source.indexOf("提出问题", openIdx);
     assert.ok(mountIdx > 0, "找不到拓展菜单挂载点");
     assert.ok(mountIdx > issueIdx, "挂载点应位于内置项之后");
     // 关键：内置的行仍然是内联模板，没有被拆成数组。
@@ -1498,7 +1495,7 @@ describe("拓展菜单项", () => {
   });
 
   it("点击委托里拓展分支排在内置分支之前", async () => {
-    const source = await readFile(settingsPath, "utf8");
+    const source = await readRendererInjectSource();
     const handler = source.indexOf('overlay.addEventListener("click"');
     assert.ok(handler > 0, "找不到点击委托");
     const body = source.slice(handler, handler + 600);

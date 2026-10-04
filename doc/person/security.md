@@ -13,3 +13,5 @@
 ## CI 与发布
 
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。
+
+push CI 在 Windows 执行完整门禁和安装包构建，macOS/Linux 另跑共享前端回归，macOS x64/arm64 构建原生 DMG。发布脚本要求当前 SHA 最新一次 push CI 已全部成功；`-SkipChecks` 只复用该结果。缺少结果、运行中、失败、查询异常或检查产生未提交改动时，脚本在创建标签前停止。行为回归见 `apps/codex-plus-manager/src/release.test.ts`；环境与日志检查见 [maintenance.md](maintenance.md)。

@@ -753,8 +753,11 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogFailures = 0;
+  let codexModelCatalogRetryAt = 0;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
+  let codexModelWhitelistLastScanAt = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -845,10 +848,11 @@
 
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
-    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
+    if (!force && codexModelCatalogRetryAt && Date.now() < codexModelCatalogRetryAt) return codexModelCatalog;
+    if (!force && codexModelCatalog.status !== "failed" && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then(async (result) => {
-        const changed = JSON.stringify(result) !== JSON.stringify(codexModelCatalog);
+        const previous = JSON.stringify(codexModelCatalog);
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
           try {
@@ -872,7 +876,7 @@
           }
         }
         codexModelCatalogLoadedAt = Date.now();
-        if (changed) {
+        if (JSON.stringify(codexModelCatalog) !== previous) {
           renderCodexPlusMenu();
           scheduleCodexModelWhitelistRefresh();
           refreshCodexModelQueries();

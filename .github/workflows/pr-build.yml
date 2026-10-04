@@ -10,6 +10,34 @@ permissions:
   contents: read
 
 jobs:
+  frontend-platforms:
+    name: Frontend tests (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-14]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Frontend tests
+        working-directory: apps/codex-plus-manager
+        run: npm test
+
+      - name: TypeScript check
+        working-directory: apps/codex-plus-manager
+        run: npm run check
+
   windows-artifacts:
     name: Windows artifacts
     runs-on: windows-latest
@@ -47,6 +75,12 @@ jobs:
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      - name: Rust formatting
+        run: cargo fmt --all --check
+
+      - name: Rust check
+        run: cargo check --workspace
 
       - name: Relay Clippy gate
         run: cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings

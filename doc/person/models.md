@@ -21,9 +21,10 @@
 
 ## 代码入口与配置
 
-- `assets/inject/renderer-inject.js` 的模型目录区段（`sortModelChoices`、`patchModelNameArray`、`patchModelArray`）：模型目录加载及现有 RPC 适配层；新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
-- 同一文件的 service tier 区段（`codexAppScopeNodes`、`collectScopedAppServerRequestCandidates`）：作用域 RPC 发现与 fast service tier 控制。
-- 注入脚本的唯一入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`，它内联与上游同构的单文件 `assets/inject/renderer-inject.js`（不拆分的理由见[runtime.md](runtime.md)的「注入脚本」）。
+- `assets/inject/renderer-inject/70-model-catalog.js`：模型目录状态与加载；`80-session-share.js`：`sortModelChoices`、`patchModelNameArray`、`patchModelArray` 及 RPC 适配。新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
+- `30-service-tier.js` 的 `codexAppScopeNodes`、`collectScopedAppServerRequestCandidates`：作用域 RPC 发现与 fast service tier 控制。
+- 目录状态、失败计数、重试时间和白名单扫描时间均声明在主 IIFE。正常扫描复用进行中的请求，失败后按 5 秒起步、最多 60 秒退避；Key 切换等强制刷新会重新请求，相同结果不重绘菜单，扫描每秒最多一次。
+- 注入脚本的唯一运行入口是 `crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT`，内联按 manifest 生成的 `assets/inject/renderer-inject.js`；拼装与作用域约束见 [runtime.md](runtime.md)。
 - `crates/codex-plus-core/src/model_catalog.rs` / `model_suffix.rs`：目录来源与模型元数据。
 - 关注 `codexAppModelWhitelistUnlock`、`codexAppIncludeNativeModels`、`relayProfilesEnabled`；RPC 对象可能不可写，应使用现有适配器，本机目录不能注入远程主机。
 - 管理器供应商编辑页的家族标签由 `apps/codex-plus-manager/src/model-groups.ts` 负责，是另一处界面，不应和本页描述的原生菜单排序混为一谈。

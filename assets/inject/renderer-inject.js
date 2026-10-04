@@ -412,7 +412,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "23";
+  const codexDeleteStyleVersion = "24";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -441,6 +441,8 @@
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
   const codexServiceTierBadgeVersion = "3";
+  const codexRelayApiKeyBadgeClass = "codex-relay-api-key-badge";
+  const codexRelayApiKeyBadgeVersion = "1";
   const codexMenuLocalizationVersion = "1";
   const codexMenuLocalizationMap = new Map([
     ["Toggle Sidebar", "切换侧边栏"],
@@ -1799,6 +1801,25 @@
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: rgba(248,113,113,.42); background: rgba(248,113,113,.12); color: #fca5a5; }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: rgba(251,191,36,.48); background: rgba(251,191,36,.13); color: #fbbf24; }
       .${codexServiceTierBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .78; }
+      .${codexRelayApiKeyBadgeClass} {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 1 auto;
+        max-width: 132px;
+        height: 24px;
+        border: 1px solid rgba(148,163,184,.28);
+        border-radius: 7px;
+        background: rgba(148,163,184,.12);
+        color: #d4d4d8;
+        font: 600 12px/1 system-ui, sans-serif;
+        padding: 0 8px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .${codexRelayApiKeyBadgeClass}:hover { border-color: rgba(16,163,127,.44); background: rgba(16,163,127,.13); }
+      .${codexRelayApiKeyBadgeClass}[data-disabled="true"] { cursor: not-allowed; opacity: .65; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,
@@ -2073,6 +2094,9 @@
       .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
+      .${codexRelayApiKeyBadgeClass} { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text-secondary); font-family: inherit; }
+      .${codexRelayApiKeyBadgeClass}:hover,
+      .${codexRelayApiKeyBadgeClass}:focus-visible { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); outline: none; }
       .codex-plus-ad-card { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-secondary); }
       .codex-plus-ad-card:hover,
       .codex-plus-ad-card:focus-visible { border-color: var(--codex-plus-border); background: var(--codex-plus-bg-hover); }
@@ -5791,9 +5815,6 @@
               <div><div class="codex-plus-row-title">模型白名单解锁</div><div class="codex-plus-row-description">从环境变量和 Codex config.toml 中的中转站 /v1/models 拉取模型，并补进模型选择列表。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="modelWhitelistUnlock"><span></span></button>
             </div>
-
-            <!-- fragment contract: extension menu mount follows 提出问题: \${renderCodexPlusExtensionMenuRows()} -->
-            <!-- overlay.addEventListener("click", (event) => handleCodexPlusExtensionMenuClick(target)); data-codex-open-devtools -->
             <div class="codex-plus-row">
               <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
               <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
@@ -8461,8 +8482,11 @@
   let codexModelCatalog = { status: "loading", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
   let codexModelCatalogLoadedAt = 0;
   let codexModelCatalogPromise = null;
+  let codexModelCatalogFailures = 0;
+  let codexModelCatalogRetryAt = 0;
   let codexModelWhitelistRefreshTimer = 0;
   let codexModelWhitelistRefreshUntil = 0;
+  let codexModelWhitelistLastScanAt = 0;
   const codexPlusModelListRequestIds = new Set();
 
   if (window.__CODEX_PLUS_TEST_SERVICE_TIER__) {
@@ -8553,10 +8577,11 @@
 
   async function loadCodexModelCatalog(force = false) {
     if (!force && codexModelCatalogPromise) return codexModelCatalogPromise;
-    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
+    if (!force && codexModelCatalogRetryAt && Date.now() < codexModelCatalogRetryAt) return codexModelCatalog;
+    if (!force && codexModelCatalog.status !== "failed" && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return codexModelCatalog;
     codexModelCatalogPromise = postJson("/codex-model-catalog", {})
       .then(async (result) => {
-        const changed = JSON.stringify(result) !== JSON.stringify(codexModelCatalog);
+        const previous = JSON.stringify(codexModelCatalog);
         codexModelCatalog = result && typeof result === "object" ? result : { status: "failed", model: "", default_model: "", model_provider: "", codex_model_provider: "", provider_name: "", models: [], sources: [], responses_api: { status: "unknown", message: "" } };
         if ((!codexModelCatalog.models || codexModelCatalog.models.length === 0) && codexModelCatalog.status === "not_configured") {
           try {
@@ -8580,7 +8605,7 @@
           }
         }
         codexModelCatalogLoadedAt = Date.now();
-        if (changed) {
+        if (JSON.stringify(codexModelCatalog) !== previous) {
           renderCodexPlusMenu();
           scheduleCodexModelWhitelistRefresh();
           refreshCodexModelQueries();
@@ -10954,25 +10979,6 @@
       });
   }
 
-  function syncActionGroupLayout(row, group) {
-    if (!row || !group) return;
-    if (group.dataset.codexActionLayoutStable === "true") return;
-    const rowRect = row.getBoundingClientRect();
-    const nativeButtons = nativeActionButtonsFromRow(row);
-    const leftmostNative = nativeButtons
-      .map((button) => button.getBoundingClientRect())
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .sort((a, b) => a.left - b.left)[0];
-    const gap = 8;
-    const fallbackRight = 28;
-    const right = leftmostNative
-      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
-      : fallbackRight;
-    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
-    const titleNode = row.querySelector(selectors.threadTitle);
-    const titleRect = titleNode?.getBoundingClientRect();
-    const titleLeft = titleRect?.left || rowRect.left + 40;
-
   function refreshCodexRelayApiKeyBadges() {
     const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
     const active = keys.find((entry) => entry.id === codexPlusRelayApiKeys.activeKeyId) || keys[0];
@@ -11022,6 +11028,24 @@
     }
     refreshCodexRelayApiKeyBadges();
   }
+  function syncActionGroupLayout(row, group) {
+    if (!row || !group) return;
+    if (group.dataset.codexActionLayoutStable === "true") return;
+    const rowRect = row.getBoundingClientRect();
+    const nativeButtons = nativeActionButtonsFromRow(row);
+    const leftmostNative = nativeButtons
+      .map((button) => button.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((a, b) => a.left - b.left)[0];
+    const gap = 8;
+    const fallbackRight = 28;
+    const right = leftmostNative
+      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
+      : fallbackRight;
+    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
+    const titleNode = row.querySelector(selectors.threadTitle);
+    const titleRect = titleNode?.getBoundingClientRect();
+    const titleLeft = titleRect?.left || rowRect.left + 40;
     let effectiveRight = right;
     group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
     if (leftmostNative) {

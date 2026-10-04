@@ -7,15 +7,13 @@ use crate::settings::BackendSettings;
 
 /// 注入到 Codex 渲染端的增强脚本。
 ///
-/// 渲染进程注入脚本，与上游 `assets/inject/renderer-inject.js` 同构的单文件。
+/// 按上游 manifest 分片组装的渲染进程注入产物。
 ///
 /// 整段脚本是一个共享作用域的 IIFE：`const` / `let` 存在 TDZ，函数声明在 IIFE 内
 /// 整体提升；粘贴修复块位于 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回
 /// 守卫一起被跳过。
 ///
-/// 刻意保持单文件：上游近一年改 `renderer-inject.js` 二十余次、平均每次数百行。
-/// 拆成分片会让每次上游改动都变成「上游修改 vs 个人版删除」的冲突，只能手工
-/// 搬运；同构单文件则能走 Git 三方合并。判断依据见 doc/person/maintenance.md。
+/// 分片是源码，修改后运行 scripts/assemble-renderer-inject.mjs；此处只内联生成产物。
 const RENDERER_SCRIPT: &str = include_str!("../../../assets/inject/renderer-inject.js");
 #[cfg(windows)]
 const DREAM_TARGET_CSS: &str =
