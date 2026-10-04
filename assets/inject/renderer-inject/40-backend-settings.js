@@ -518,6 +518,7 @@
   let codexPlusRelayApiKeys = { status: "loading", enabled: false, providerId: "", providerName: "", activeKeyId: "", keys: [] };
   let codexPlusRelayApiKeySwitching = false;
   let codexPlusRelayApiKeysPromise = null;
+  const codexPlusRelayApiKeysReadTimeoutMs = 5000;
   // 单独跟踪「读过了没有」：scripts 为空既可能是真没有脚本，也可能是还没读到。
   // 不区分就会在无后端时把「正在读取」直接显示成「未发现」。
   let codexPlusUserScriptsLoaded = false;
@@ -1257,10 +1258,19 @@
     // 否则界面会一直停在模板里的“正在读取当前供应商…”。
     renderRelayApiKeys();
     if (codexPlusRelayApiKeysPromise) return codexPlusRelayApiKeysPromise;
-    if (!force && codexPlusRelayApiKeys.status === "ok") return codexPlusRelayApiKeys;
+    if (!force && (codexPlusRelayApiKeys.status === "ok" || codexPlusRelayApiKeys.status === "failed")) {
+      return codexPlusRelayApiKeys;
+    }
     codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, status: "loading" };
     renderRelayApiKeys();
-    codexPlusRelayApiKeysPromise = postJson("/relay-api-keys", {})
+    const request = postJson("/relay-api-keys", {});
+    let timeoutId;
+    codexPlusRelayApiKeysPromise = Promise.race([
+      request,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("读取当前供应商超时")), codexPlusRelayApiKeysReadTimeoutMs);
+      }),
+    ])
       .then((result) => {
         codexPlusRelayApiKeys = result && typeof result === "object"
           ? result
@@ -1268,7 +1278,20 @@
         renderRelayApiKeys();
         return codexPlusRelayApiKeys;
       })
-      .finally(() => { codexPlusRelayApiKeysPromise = null; });
+      .catch((error) => {
+        codexPlusRelayApiKeys = {
+          ...codexPlusRelayApiKeys,
+          status: "failed",
+          message: error?.message || "读取 Key 失败",
+          keys: [],
+        };
+        renderRelayApiKeys();
+        return codexPlusRelayApiKeys;
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+        codexPlusRelayApiKeysPromise = null;
+      });
     return codexPlusRelayApiKeysPromise;
   }
 
