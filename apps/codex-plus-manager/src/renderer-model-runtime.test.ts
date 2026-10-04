@@ -96,6 +96,19 @@ test("命名 Key 快捷入口在主作用域可调用，重复安装复用按钮
   assert.equal(badges.length, 0);
 });
 
+test("Key 快捷入口及其子节点不会触发宿主页面扫描", () => {
+  const isExtension = new Function(`
+    ${runtimeSource("codexPlusPageClass", "codexPlusSidebarNavId", "codexPlusRailNavId", "codexPlusRailExtensionsId", "codexPlusRailSponsorId", "codexServiceTierBadgeClass", "codexRelayApiKeyBadgeClass", "sessionShareButtonClass", "sessionCopyMenuItemClass", "isExtensionUiNode")}
+    const isCodexPlusExtensionNode = () => false;
+    return isExtensionUiNode;
+  `)();
+  const badge = { className: "codex-relay-api-key-badge" };
+  const closest = (selector: string) => selector.split(",").some((part) => part.trim() === `.${badge.className}`) ? badge : null;
+  assert.equal(isExtension({ closest }), true);
+  assert.equal(isExtension({ parentElement: badge, closest }), true);
+  assert.equal(isExtension({ closest: () => null }), false);
+});
+
 /** 用注入脚本里真实的 Key 面板渲染与加载逻辑搭建一个最小运行环境。 */
 function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?: unknown[]; switching?: boolean; liveKeyMatched?: boolean }) {
   const summary = { textContent: "正在读取当前供应商…" };
