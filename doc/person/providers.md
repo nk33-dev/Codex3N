@@ -7,6 +7,8 @@
 - `providerSyncEnabled` 和 `relayProfilesEnabled` 默认关闭；首次导入不应自动启用代理或接管当前配置。
 - 供应商切换从读取当前配置快照开始即锁定操作，完成或失败后释放，避免重复点击排队执行旧切换请求。
 - 设置保存与供应商切换共用互斥检查，重复保存不会排队；保存失败保留草稿，保存/切换的旧响应不覆盖期间产生的新编辑。供应商详情在保存或切换期间禁用编辑、返回和再次操作，销毁后的保存结果不再触发旧页面回调。
+- “恢复官方登录”复用官方供应商和已有切换入口，遵守供应商总开关及切换锁。管理器回填遇到损坏的 live TOML 返回 `degraded` 并保留原供应商快照；回填成功后才提交工作副本。核心切换仍独立验证 live 配置，失败时保留文件并报告原因。
+- 切换会保留用户插件表；纯 API 供应商使用 OpenAI 会话身份时，合并 live OAuth 登录态，普通纯 API 供应商仍按自身鉴权配置应用。
 - 普通 API 供应商支持多个命名 Key，`apiKeys` 保存条目，`activeApiKeyId` 指向当前项；旧 `apiKey` 配置自动迁移为“默认”条目。Key 内容继续按密钥字段规则加密落盘。
 - Codex++ 轻量页面只读取 Key 的 ID 和名称，不返回密钥正文；配置多个 Key 后，模型选择器旁显示当前 Key 名称作为快捷入口。密钥页用下拉框列出当前供应商的命名 Key，选中项即当前 Key；只有切换请求进行中才禁用。`/relay-api-keys` 的 `activeKeyId` 以 live 配置里实际的 Key 为准（`live_codex_api_key_in_home` 读取 `auth.json` 的 `OPENAI_API_KEY` 或 config.toml 的 bearer token，再匹配命名 Key），匹配不上时回退到存档目标项并返回 `liveKeyMatched: false`，页面据此提示“实际在用的 Key 不在列表里”——总开关关闭时存档的 `activeApiKeyId` 可能停在最后添加的那个 Key。后端读不到 live 时不返回该字段，页面不做匹配提示。切换当前 Key 通过 `/relay-api-keys/select` 更新供应商存档和 live 配置，无需退出或重启 Codex；切换完成后前端强制刷新模型目录。轻量页面每次打开都会重建 DOM，`loadRelayApiKeys` 命中缓存分支时也要重画一次，否则页面会一直停在模板里的“正在读取当前供应商…”；读取异常或桥接超时会显示失败状态并停止自动重试，避免心跳重复请求。
 - 换 Key 分两条路径，由 `relayProfilesEnabled` 决定：开关打开时沿用整份供应商配置应用（`switch_relay_profile_in_home`）；开关关闭时走只改 Key 的窄路径 `set_live_api_key_only_in_home`，只更新 Key 的落点，`config.toml` 与 `auth.json` 另一个文件一个字节都不动，写前同样留 `~/.codex/backups/codex-plus-live-*` 备份。
@@ -18,7 +20,7 @@
 - `crates/codex-plus-core/src/settings.rs`：供应商持久化与工具配置分片。
 - `crates/codex-plus-core/src/relay_config.rs` / `relay_switch.rs`：配置应用与切换。`relay_switch::select_active_relay_api_key_in_home` 按总开关分流；`relay_config::live_api_key_target_in_home` / `set_live_api_key_only_in_home` 是窄路径的落点判定与写入。`API_KEY_ENV_KEYS`、`PROVIDER_TOKEN_KEYS`、`PROVIDER_ENV_KEY_KEYS` 在这里定义，模型目录的 `provider_api_key` 复用同一份清单，不再各写一套。
 - `crates/codex-plus-core/src/routes.rs`：`/relay-api-keys` 提供脱敏列表，`/relay-api-keys/select` 执行当前供应商 Key 切换。
-- `assets/inject/renderer-inject/90-action-groups.js` 的 `installCodexRelayApiKeyBadge`、`refreshCodexRelayApiKeyBadges` 在主 IIFE 提供 Key 快捷入口；类名/版本在 `00-prelude.js`，样式在 `10-style.js`。安装会复用已有按钮；少于两个 Key 时移除，点击打开 `apiKeys` 页面。按钮及其子节点在 `isExtensionUiNode` 排除，文字刷新不会触发宿主扫描。
+- `assets/inject/renderer-inject/80-session-share.js` 的 `installCodexRelayApiKeyBadge`、`refreshCodexRelayApiKeyBadges` 在主 IIFE 提供 Key 快捷入口；类名/版本在 `00-prelude.js`，样式在 `10-style.js`，读取和切换在 `40-backend-settings.js`。安装会复用已有按钮；少于两个 Key 时移除，点击打开 `apiKeys` 页面。按钮及其子节点在 `98-scan-schedule.js` 的 `isExtensionUiNode` 排除，文字刷新不会触发宿主扫描。
 - `apps/codex-plus-manager/src/App.tsx`：供应商页状态、配置保存与切换编排。列表的 `onSwitch` 先调用 `syncLegacyRelayFields` 同步目标配置，再将结果和旧供应商 ID 交给 `switchRelayProfile`，保留切换前快照与锁定流程。
 - `apps/codex-plus-manager/src/provider-types.ts`：`BackendSettings`、`ToolShard`、`RelayProfile` 及其关联类型；不从 `App.tsx` 反向导入。
 - `apps/codex-plus-manager/src/provider-utils.ts`：供应商首字、模式/协议/倍率标签，以及聚合和系统默认判断的唯一实现。涉及配置解析、聚合归一化的摘要仍由 `App.tsx` 生成。

@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -29,11 +29,12 @@ let licenses = notice;
 for (const dependency of [...dependencies].sort()) {
   const dir = path.join(root, "apps/codex-plus-manager/node_modules", dependency);
   const pkg = JSON.parse(await readFile(path.join(dir, "package.json"), "utf8"));
-  let license;
-  for (const name of ["LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE-MIT.txt"]) {
-    license = await readFile(path.join(dir, name), "utf8").catch(() => null);
-    if (license) break;
-  }
+  const licenseNames = (await readdir(dir))
+    .filter((name) => /^license(?:[-_.].*)?$/i.test(name))
+    .sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
+  const license = licenseNames.length
+    ? await readFile(path.join(dir, licenseNames[0]), "utf8").catch(() => null)
+    : null;
   if (!license) throw new Error(`Missing license for ${dependency}`);
   licenses += `\n${dependency} ${pkg.version}\n${license}\n`;
 }
