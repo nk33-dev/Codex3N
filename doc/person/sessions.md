@@ -3,6 +3,7 @@
 ## 列表分页和缓存
 
 - 列表接口保留 `offset`、`limit`、`hasMore`、`totalCount`；按更新时间降序、ID 降序排列，跨库同 ID 取较新的记录，时间相同则保留候选库顺序。子会话过滤规则与原数据适配器共用。
+- 历史会话同步提供只读预览：`preview_provider_sync` 统计目标供应商、rollout 与目录影响范围，并返回执行时的备份根目录；预览不加锁、不写 rollout、不改 SQLite。实际同步会补建缺失的 canonical `threads` 行并保留备份路径，失败时返回可诊断的底层原因。
 - `crates/codex-plus-data/src/storage/session_paging.rs` 的 `LocalSessionPager` 缓存 ID、排序键、来源和去重总数，翻页只读取本页 ID 的详情；不再每页从头加载 `offset + limit` 条完整会话。首次查询、库变化或缓存到期仍需重建轻量索引，缓存内存随会话数增长。
 - 缓存同时检查数据库及 WAL/SHM 的文件信息和头部变化，最多复用 30 秒，避免只观察主数据库文件漏掉 WAL 提交。查询使用短读事务并及时释放连接，不在窗口闲置时占用数据库句柄。跨库没有共同事务快照，外部写入期间不承诺多次翻页结果冻结。
 - Tauri `list_local_sessions` 通过 `spawn_blocking` 执行查询，沿用原返回结构；单库损坏或读取失败仍报告部分失败并保留健康库结果，不能把缓存旧数据当作成功结果。

@@ -10,7 +10,7 @@
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
 - `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告；推荐页通过同一入口读取广告列表。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
-- 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入、会话分享和皮肤链接。失焦不等于隐藏，导航通知也不等于显示成功。
+- 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入、会话分享和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
 - 启动器在已启用且保存微信连接凭据时，以 `--background` 启动管理器；管理器 `lib.rs` 隐藏后台窗口，并经 `start_weixin_connect_from_saved_settings` 恢复连接。用户主动打开管理器时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
 - `weixin-qr-polling.ts` 是扫码轮询的唯一调度入口，复用 `createVisibleRefresh`，但不绑定窗口可见性。等待和已扫码每次响应完成后隔 1 秒补查；确认、过期、业务失败或请求异常均停止，异常只提示一次，不自动重试。新二维码或取消会销毁旧任务，未返回结果与错误都不再提交。
