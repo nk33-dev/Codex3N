@@ -1,120 +1,131 @@
-
-  /** 关闭当前拓展页面并执行其 onCleanup。 */
-  function closeCodexPlusPage() {
-    const cleanup = window.__codexPlusExtensionPageCleanup;
-    window.__codexPlusExtensionPageCleanup = null;
-    if (typeof cleanup === "function") {
-      try {
-        cleanup();
-      } catch {}
+  /**
+   * 这个节点是不是 Codex++ 自己（或拓展）的 UI。
+   *
+   * 内置选择器写在这里；拓展通过注册中心登记的选择器走 isCodexPlusExtensionNode，
+   * 那边已把选择器合并成一个串并在 Set 变化时重建缓存，所以这里每次调用只多一次
+   * closest()，不会因为拓展数量增长而线性变慢。
+   */
+  function isExtensionUiNode(node) {
+    if (!node?.closest) return false;
+    if (node.closest(`.codex-delete-toast, .codex-delete-confirm-overlay, .codex-plus-modal-overlay, .${codexPlusPageClass}, #${codexPlusSidebarNavId}, #${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailNavId} > button, #${codexPlusRailExtensionsId} > button, #${codexPlusRailSponsorId} > button, .${codexServiceTierBadgeClass}, .${codexRelayApiKeyBadgeClass}, .${sessionShareButtonClass}, .codex-zed-remote-button, .codex-zed-remote-toast, .${sessionCopyMenuItemClass}, #codex-plus-menu`)) {
+      return true;
     }
-    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
-    document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
-    setCodexPlusSidebarNavActive(false);
+    return isCodexPlusExtensionNode(node);
   }
 
-  /** 拓展入口的 DOM 标记：用它反查注册表项，dispose 后据此清理。 */
-  const codexPlusExtensionRailAttribute = "data-codex-plus-ext-rail";
-
-  /** 拓展入口的稳定 id。用注册表 id 推导，dispose 与重建都能算回同一个值。 */
-  function codexPlusExtensionRailElementId(entry) {
-    return `codex-plus-ext-rail-${String(entry.id).replace(/[^\w-]/g, "_")}`;
+  function scanRelevantSelector() {
+    return [
+      selectors.sidebarThread,
+      '[data-app-action-sidebar-section-heading="Chats"]',
+      '[data-app-action-sidebar-section-heading="Projects"]',
+      '[data-codex-archive-page-row="true"]',
+      "[data-codex-archive-delete-all]",
+      '[data-message-author-role]',
+      '[data-testid="conversation-turn"]',
+      '[class*="user-message"]',
+      '[class*="UserMessage"]',
+      ".composer-footer",
+      selectors.appHeader,
+      selectors.archiveNav,
+      selectors.pluginNavButton,
+      'aside.app-shell-left-panel nav[role="navigation"]',
+      codexMenuLocalizationScopeSelector(),
+      ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
+    ].join(", ");
   }
 
-  /**
-   * 图标栏上的拓展入口。
-   *
-   * 与内置的三个入口并列插在 primary 锚点之后。内置项由
-   * installCodexPlusRailNavigation 负责，这里只补第三方项，靠 id 幂等。
-   */
-  function refreshCodexPlusRailNavigation() {
-    const rail = document.querySelector(codexPlusRailSelector);
-    if (!rail) return false;
-    const entries = codexPlusExtensionItems(codexPlusRegistry.navEntries);
-    // 注意值域：属性里存的是注册表 id，所以这里也必须用注册表 id 比对。
-    // 若拿元素 id（codex-plus-ext-rail-xxx）去比，两边永远不等，每次刷新都会把
-    // 自己的入口当孤儿删掉，表现为「点了入口高亮立刻消失」。
-    const liveIds = new Set(entries.map((entry) => entry.id));
-    // 先清掉已不在注册表里的入口。dispose 之后没人来删 DOM，必须在这里收口，
-    // 否则用户点一个已经注销的入口会什么都不发生。
-    document.querySelectorAll(`[${codexPlusExtensionRailAttribute}]`).forEach((node) => {
-      if (!liveIds.has(node.getAttribute(codexPlusExtensionRailAttribute) || "")) node.remove();
+  function nodeSelfOrAncestorMatchesScanRelevance(node) {
+    if (node.nodeType !== 1) return false;
+    if (isExtensionUiNode(node)) return false;
+    const relevantSelector = scanRelevantSelector();
+    return !!node.matches?.(relevantSelector) ||
+      !!node.closest?.(relevantSelector) ||
+      nodeOrAncestorLooksLikeCodexUserBubble(node);
+  }
+
+  function isScanRelevantNode(node) {
+    if (node.nodeType !== 1) return false;
+    if (isExtensionUiNode(node)) return false;
+    return nodeSelfOrAncestorMatchesScanRelevance(node) || !!node.querySelector?.(scanRelevantSelector()) || nodeLooksLikeCodexUserBubble(node);
+  }
+
+  function isChatContentMutation(mutation) {
+    const target = mutation.target;
+    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], main .prose')) return false;
+    return !Array.from(mutation.addedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node)) &&
+      !Array.from(mutation.removedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node));
+  }
+
+  function shouldScheduleScan(mutations) {
+    if (!mutations) return true;
+    return mutations.some((mutation) => {
+      if (isChatContentMutation(mutation)) return false;
+      const target = mutation.target;
+      if (isExtensionUiNode(target)) return false;
+      const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
+      const changedElements = changedNodes.filter((node) => node.nodeType === 1);
+      // 我们自己插入的节点挂在 Codex 的容器里，而容器本身是 scan-relevant，
+      // 于是「写入 → 观察到自己的写入 → 200ms 后再 scan → 再写入」形成自喂循环，
+      // 空闲时也每秒全量扫描五次，macOS 上足以吃满一个核（issue #1960）。
+      // 一次变更如果只动了我们自己的 UI，就不该再排一次 scan。
+      if (changedElements.length && changedElements.every(isExtensionUiNode)) return false;
+      if (target?.nodeType === 1 && nodeSelfOrAncestorMatchesScanRelevance(target)) return true;
+      return changedElements.some((node) => isScanRelevantNode(node));
     });
-    if (!entries.length) return false;
-    const anchor = codexPlusRailPrimaryAnchor(rail);
-    const host = anchor?.parentElement || rail;
-    const template = codexPlusRailTemplateButton(rail);
-    let cursor = anchor;
-    // 内置三项先占位，第三方从它们之后开始排。
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
-      const node = document.getElementById(id);
-      if (node) cursor = node;
-    });
-    entries.forEach((entry) => {
-      const elementId = codexPlusExtensionRailElementId(entry);
-      let wrapper = document.getElementById(elementId);
-      if (!wrapper || wrapper.parentElement !== host) {
-        wrapper?.remove();
-        wrapper = createCodexPlusRailButton({
-          id: elementId,
-          template,
-          label: entry.label || entry.id,
-          iconMarkup: codexPlusExtensionIconMarkup(entry),
-          withStatus: false,
-          onActivate: () => {
-            // 注册时若带了 pageId 就打开对应页面；否则交给拓展自己的 onActivate。
-            const navigate = () => {
-              if (entry.pageId && codexPlusRegistry.pages.has(entry.pageId)) {
-                entry.navId = elementId;
-                openCodexPlusExtensionPage(entry.pageId);
-              } else if (typeof entry.onActivate === "function") {
-                runCodexPlusExtensionCallback(entry.scriptKey, "navEntry.onActivate", () => entry.onActivate());
-              }
-            };
-            navigate();
-          },
-        });
-        if (!wrapper) return;
-        // 这个属性是 dispose 后清理 DOM 的唯一线索，必须写。只靠
-        // data-codex-plus-ext 认不出「这是 rail 入口」还是别的什么扩展节点。
-        wrapper.setAttribute(codexPlusExtensionRailAttribute, entry.id);
-        markCodexPlusExtensionNode(wrapper, entry.scriptKey);
-        markCodexPlusExtensionNode(wrapper.firstElementChild || wrapper, entry.scriptKey);
-      }
-      if (cursor?.nextSibling) {
-        if (cursor.nextSibling !== wrapper) host.insertBefore(wrapper, cursor.nextSibling);
-      } else if (cursor) {
-        host.appendChild(wrapper);
-      }
-      cursor = wrapper;
-    });
-    return true;
+  }
+
+  function runScheduledScan() {
+    window.__codexSessionDeleteScanPending = false;
+    clearTimeout(window.__codexSessionDeleteScanTimer);
+    window.__codexSessionDeleteScanTimer = null;
+    scan();
+  }
+
+  function scheduleScan(mutations) {
+    window.__codexSessionDeleteLastMutations = mutations;
+    scheduleZedRemoteMenuRefresh(mutations);
+    if (!shouldScheduleScan(mutations)) return;
+    if (window.__codexSessionDeleteScanPending) return;
+    window.__codexSessionDeleteScanPending = true;
+    window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
   }
 
   /**
-   * 拓展注册的菜单项。
+   * 侧边栏入口的启动补扫。
    *
-   * 接入方式是「在 home 面板末尾追加一块」而不是把内置的一百多行模板拆成数组——
-   * 拆模板动的是内置 UI 主干，出问题会影响所有人；追加只影响新内容，回滚时删掉
-   * 这个调用即可。
+   * 注入永远早于 Codex 把左侧面板渲染出来：注入那一刻 readyState 已是 complete，
+   * 但 aside.app-shell-left-panel 还不存在（实测 anyNav: 0），所以首次 scan 里的
+   * installCodexPlusSidebarNavigation 必然走 `if (!navigation) return`。
    *
-   * 每次 openCodexPlusModal 都会重新调用，所以不需要在别处维护刷新逻辑。
+   * 之后全靠 MutationObserver 观察到侧边栏挂载再补一次，实测要 2.6~3.1 秒。
+   * 但那把入口的出现押在了单次 DOM 变更上——那次变更若被 shouldScheduleScan
+   * 过滤掉，就没有下一次触发，入口会一直缺失到用户手动操作产生新的变更为止。
+   *
+   * 这里加一个不依赖 DOM 事件的有界重试作为兜底：插上就停，超时就放弃，
+   * 不留常驻定时器，也不影响 observer 那条正常路径。
    */
-  function renderCodexPlusExtensionMenuRows() {
-    const items = codexPlusExtensionItems(codexPlusRegistry.menuItems);
-    if (!items.length) return "";
-    const rows = items.map((item) => {
-      const title = escapeHtml(item.label || item.id);
-      const description = escapeHtml(item.description || "");
-      // 有 onChange 的渲染成开关，否则渲染成动作按钮。
-      let control;
-      if (typeof item.onChange === "function") {
-        const enabled = typeof item.toggleValue === "function" ? item.toggleValue() === true : false;
-        control = `<button type="button" class="codex-plus-toggle" data-codex-plus-ext-setting="${escapeHtml(item.id)}" data-enabled="${String(enabled)}" aria-pressed="${String(enabled)}"><span></span></button>`;
-      } else {
-        control = `<button type="button" class="codex-plus-action-button" data-codex-plus-ext-action="${escapeHtml(item.id)}">${escapeHtml(item.buttonLabel || "打开")}</button>`;
+  function scheduleSidebarNavStartupRetry() {
+    clearInterval(window.__codexPlusSidebarNavRetryTimer);
+    let attempts = 0;
+    window.__codexPlusSidebarNavRetryTimer = setInterval(() => {
+      attempts += 1;
+      const installed = document.getElementById(codexPlusSidebarNavId)
+        || document.getElementById(codexPlusRailNavId);
+      if (installed || attempts > 20) {
+        clearInterval(window.__codexPlusSidebarNavRetryTimer);
+        window.__codexPlusSidebarNavRetryTimer = null;
+        return;
       }
-      return `<div class="codex-plus-row" data-codex-plus-ext-row="${escapeHtml(item.id)}">`
-        + `<div><div class="codex-plus-row-title">${title}</div>`
-        + (description ? `<div class="codex-plus-row-description">${description}</div>` : "")
-        + `</div>${control}</div>`;
+      try {
+        installCodexPlusNavigationEntries();
+      } catch {}
+    }, 300);
+  }
+
+  void loadBackendSettingsForStartup();
+  installUpstreamBranchDropdownAdapter();
+  installUpstreamWorktreeNativeAdapter();
+  scan();
+  syncOfficialUsagePolicy();
+  scheduleSidebarNavStartupRetry();
+  window.removeEventListener("resize", window.__codexPlusResizeHandler);

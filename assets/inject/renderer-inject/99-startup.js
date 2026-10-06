@@ -1,30 +1,34 @@
-    }).join("");
-    // 整块包一层：dispose 后能一次性摘掉，测试也好定位。
-    return `<div data-codex-plus-ext-menu="true">${rows}</div>`;
-  }
-
-  /**
-   * 处理拓展菜单项的点击。
-   *
-   * 由 openCodexPlusModal 的委托监听调用；返回 true 表示已处理，调用方应 return。
-   */
-  function handleCodexPlusExtensionMenuClick(target) {
-    const action = target?.closest?.("[data-codex-plus-ext-action]");
-    if (action) {
-      const id = action.getAttribute("data-codex-plus-ext-action") || "";
-      const item = codexPlusRegistry.menuItems.get(id);
-      if (!item) return true;
-      runCodexPlusExtensionCallback(item.scriptKey, "menuItem.onActivate", () =>
-        item.onActivate({ close: () => document.querySelector(".codex-plus-modal-close")?.click() }));
-      return true;
-    }
-    const toggle = target?.closest?.("[data-codex-plus-ext-setting]");
-    if (toggle) {
-      const id = toggle.getAttribute("data-codex-plus-ext-setting") || "";
-      const item = codexPlusRegistry.menuItems.get(id);
-      if (!item) return true;
-      const next = toggle.getAttribute("data-enabled") !== "true";
-      toggle.setAttribute("data-enabled", String(next));
-      toggle.setAttribute("aria-pressed", String(next));
-      runCodexPlusExtensionCallback(item.scriptKey, "menuItem.onChange", () => item.onChange(next));
-      return true;
+  let codexPlusResizeRafId = 0;
+  window.__codexPlusResizeHandler = () => {
+    cancelAnimationFrame(codexPlusResizeRafId);
+    codexPlusResizeRafId = requestAnimationFrame(() => {
+      sessionRows().forEach((row) => {
+        const group = actionGroupFromRow(row);
+        if (group) delete group.dataset.codexActionLayoutStable;
+      });
+      syncActionGroupsLayout();
+      runScanStep(refreshConversationView);
+    });
+  };
+  window.addEventListener("resize", window.__codexPlusResizeHandler);
+  window.__codexSessionDeleteObserver?.disconnect();
+  window.__codexSessionDeleteObserver = new MutationObserver(scheduleScan);
+  window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {
+    childList: true,
+    subtree: true,
+    // Codex may promote a newly-created row from a temporary client ID to its
+    // persisted UUID without replacing the DOM node. Re-scan those rows so the
+    // action button and its delete reference are rebuilt from the canonical ID.
+    attributes: true,
+    attributeFilter: ["data-app-action-sidebar-thread-id", "data-app-action-sidebar-thread-host-id", "href"],
+  });
+  document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);
+  window.__codexSessionActionTriggerHandler = rememberSessionActionTrigger;
+  document.addEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);
+  document.removeEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
+  window.__codexSessionActionTriggerClickHandler = rememberSessionActionTrigger;
+  document.addEventListener("click", window.__codexSessionActionTriggerClickHandler, true);
+  // 对外接口层在此刻挂载：此时所有分片都已执行完毕，闭包里的函数全部就绪。
+  // 放在 99-tail 收尾之前，确保 IIFE 结束前 window.codexPlus 已经可用——
+  // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
+  window.codexPlus = buildCodexPlusExtensionApi();

@@ -36,6 +36,15 @@ pub(super) fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T
     }
 }
 
+/// 回填等可选步骤失败时继续流程，并把降级原因交给调用方提示。
+pub(super) fn degraded<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
+    CommandResult {
+        status: "degraded".to_string(),
+        message: message.to_string(),
+        payload,
+    }
+}
+
 /// 切换/应用中继配置的全局互斥锁：切换过程会写 `~/.codex` 下的真实文件，
 /// 必须串行执行，避免两个命令交叉写入留下半套配置。
 pub(super) fn relay_switch_mutex() -> &'static Mutex<()> {
