@@ -72,6 +72,9 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm test
 
+      - name: Check native browser inspector bundle
+        run: node scripts/assemble-native-browser-inspector.mjs --check
+
       - name: TypeScript check
         working-directory: apps/codex-plus-manager
         run: npm run check

@@ -96,6 +96,7 @@ import {
   metadataSourceTags,
   modelSlugFromRowName,
   suffixWindowString,
+  normalizeTokenCountInput,
   modelMetadataKey,
   parseModelMetadataDocument,
   parseModelMetadataMap,
@@ -127,6 +128,7 @@ import {
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
   serializeModelWindowRows,
+  reorderModelWindowRows,
   type ImageHandling,
   type ModelWindowRowsValidationIssue,
   type ModelWindowRow,
@@ -142,7 +144,7 @@ import {
   type ProviderSyncStreamProgress,
 } from "./provider-sync-flow";
 import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
-import { resolveLaunchStatus } from "./launch-status";
+import { resolveLaunchStatus, launchCompletionNotice } from "./launch-status";
 import {
   defaultDreamSkinTheme,
   defaultDreamSkinColors,
@@ -1223,6 +1225,8 @@ export function App() {
     helperPort: "57321",
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
+  const launchPendingRef = useRef(false);
+  const [launchPending, setLaunchPending] = useState(false);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   // 顶栏工具切换条的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
@@ -2207,39 +2211,55 @@ export function App() {
   };
 
   const launch = async () => {
-    const result = await launchCommand("launch_codex_plus");
-    if (!result) return;
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("启动任务"), result.message, result.status);
-      return;
+    if (launchPendingRef.current) return;
+    launchPendingRef.current = true;
+    setLaunchPending(true);
+    try {
+      const result = await launchCommand("launch_codex_plus");
+      if (!result) return;
+      if (!isSuccessStatus(result.status)) {
+        showNotice(t("启动任务"), result.message, result.status);
+        return;
+      }
+      showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
+      const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("启动任务"), completion, result.launchStartedAtMs);
+    } finally {
+      launchPendingRef.current = false;
+      setLaunchPending(false);
     }
-    showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
-    const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-    showLaunchCompletionNotice(t("启动任务"), completion);
   };
 
   const restart = async (syncActiveRelay = false) => {
-    const result = await launchCommand("restart_codex_plus", syncActiveRelay);
-    if (!result) return false;
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("重启 Codex++"), result.message, result.status);
-      return false;
+    if (launchPendingRef.current) return false;
+    launchPendingRef.current = true;
+    setLaunchPending(true);
+    try {
+      const result = await launchCommand("restart_codex_plus", syncActiveRelay);
+      if (!result) return false;
+      if (!isSuccessStatus(result.status)) {
+        showNotice(t("重启 Codex++"), result.message, result.status);
+        return false;
+      }
+      showNotice(
+        t("重启 Codex++"),
+        result.nativeBrowserRestoreFailed
+          ? t("原生浏览器文件恢复失败，仍会继续启动。")
+          : t("正在等待 Codex 重新启动…"),
+        result.nativeBrowserRestoreFailed ? "failed" : "accepted",
+      );
+      const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("重启 Codex++"), completion, result.launchStartedAtMs);
+      const succeeded = Boolean(
+        completion
+        && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
+      );
+      if (succeeded) setPendingDreamSkinRestart(null);
+      return succeeded;
+    } finally {
+      launchPendingRef.current = false;
+      setLaunchPending(false);
     }
-    showNotice(
-      t("重启 Codex++"),
-      result.nativeBrowserRestoreFailed
-        ? t("原生浏览器文件恢复失败，仍会继续启动。")
-        : t("正在等待 Codex 重新启动…"),
-      result.nativeBrowserRestoreFailed ? "failed" : "accepted",
-    );
-    const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-    showLaunchCompletionNotice(t("重启 Codex++"), completion);
-    const succeeded = Boolean(
-      completion
-      && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
-    );
-    if (succeeded) setPendingDreamSkinRestart(null);
-    return succeeded;
   };
 
   const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus", syncActiveRelay = false) => {
@@ -2275,20 +2295,9 @@ export function App() {
     return null;
   };
 
-  const showLaunchCompletionNotice = (title: string, result: OverviewResult | null) => {
-    const status = result?.latest_launch;
-    if (!status) {
-      showNotice(title, t("启动仍在后台进行，可在概览的“最近启动”中查看状态。"), "accepted");
-      return;
-    }
-    if (["failed", "crashed", "stopped"].includes(status.status)) {
-      showNotice(title, status.message || t("Codex 启动失败。"), "failed");
-      return;
-    }
-    const message = status.status === "running_degraded"
-      ? t("Codex 已启动，增强功能仍在等待页面连接。")
-      : t("Codex 已成功启动。");
-    showNotice(title, message, "ok");
+  const showLaunchCompletionNotice = (title: string, result: OverviewResult | null, requestedAt?: number) => {
+    const notice = launchCompletionNotice(result?.latest_launch ?? null, requestedAt ?? 0, t);
+    showNotice(title, notice.message, notice.status);
   };
 
   const repairPluginMarketplace = async () => {
@@ -3101,6 +3110,13 @@ export function App() {
     );
     if (!result) return next;
     const normalized = normalizeSettings(result.settings);
+    // degraded = 后端跳过了回填（例如 live config.toml 有语法错误，issue #618）。
+    // 切换本身照常继续，只是用原配置走；提示一下原因即可，不能按 failed 处理，
+    // 否则会把用户卡在中转态回不去。
+    if (isDegradedStatus(result.status)) {
+      showNotice(t("供应商切换"), result.message, result.status);
+      return normalized;
+    }
     if (!isSuccessStatus(result.status)) {
       showNotice(t("供应商切换"), result.message, result.status);
       return next;
@@ -3666,7 +3682,7 @@ export function App() {
               {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
             {activeTool === "codex" ? (
-              <Button onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
+              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
                 <Rocket className="h-4 w-4" />
                 {t("重启 Codex++")}
               </Button>
@@ -3680,6 +3696,7 @@ export function App() {
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
+              launchPending={launchPending}
               pluginMarketplaceProgress={pluginMarketplaceProgress}
               ads={ads}
               activeTool={activeTool}
@@ -3759,6 +3776,7 @@ export function App() {
           {route === "dreamSkin" ? (
             <DreamSkinScreen
               form={settingsForm}
+              launchPending={launchPending}
               library={dreamSkinLibrary}
               market={dreamSkinMarket}
               community={dreamSkinCommunity}
@@ -3781,6 +3799,7 @@ export function App() {
           {route === "maintenance" ? (
             <MaintenanceScreen
               overview={overview}
+              launchPending={launchPending}
               watcher={watcher}
               settings={settings}
               launchForm={launchForm}
@@ -4507,6 +4526,7 @@ function SponsorBoard({ ads, actions }: { ads: AdsResult | null; actions: Action
 
 function OverviewScreen({
   overview,
+  launchPending,
   pluginMarketplaceProgress,
   ads,
   activeTool,
@@ -4514,6 +4534,7 @@ function OverviewScreen({
   actions,
 }: {
   overview: OverviewResult | null;
+  launchPending: boolean;
   pluginMarketplaceProgress: TaskProgress;
   ads: AdsResult | null;
   activeTool: ToolId;
@@ -4572,7 +4593,7 @@ function OverviewScreen({
             <CardContent>
               <LatestLaunch status={overview?.latest_launch ?? null} />
               <Toolbar>
-                <Button onClick={() => void actions.launch()}>
+                <Button disabled={launchPending} onClick={() => void actions.launch()}>
                   <Rocket className="h-4 w-4" />
                   {t("启动 Codex++")}
                 </Button>
@@ -4752,6 +4773,28 @@ function RelayScreen({
     setThirdPartyImportOpen((open) => !open);
     if (!ccsProviders) void actions.refreshCcsProviders(true);
   };
+  /// issue #595：切到中转后没有回官方登录态的路。
+  ///
+  /// 直接调 `clear_relay_injection` 会丢掉切换所需的 profile 上下文（它读的是
+  /// 磁盘上 current 的那一份），而且在中转 profile 已经是 active 时不会把
+  /// settings 的 activeRelayId 拨回来。所以这里走既有的供应商切换链路：复用一个
+  /// 「官方登录（不混入 API）」profile，没有就建一个，再设为当前。清理由
+  /// relay_config 的 clear 路径完成，与手动选该 profile 完全一致。
+  const restoreOfficialRelayProfile = async () => {
+    if (actions.relaySwitching) return;
+    const existing = normalized.relayProfiles.find(
+      (profile) => profile.relayMode === "official" && !profile.officialMixApiKey && !isAggregateRelayProfile(profile),
+    );
+    const nextProfile = existing ?? createRelayProfile(normalized);
+    const next = syncLegacyRelayFields({
+      ...normalized,
+      relayProfiles: existing
+        ? normalized.relayProfiles
+        : [...normalized.relayProfiles, nextProfile],
+      activeRelayId: nextProfile.id,
+    });
+    await actions.switchRelayProfile(next, normalized.activeRelayId);
+  };
 
   if (detailProfile) {
     return (
@@ -4812,6 +4855,23 @@ function RelayScreen({
             >
               <Plus className="h-4 w-4" />
               {t("添加聚合供应商")}
+            </Button>
+            {/* issue #595：缺一个「回到官方登录态」的显式入口。当前已经是官方登录
+                （无混入）时置灰，避免无意义的重写。 */}
+            <Button
+              disabled={!normalized.relayProfilesEnabled || actions.relaySwitching || isOfficialLoginActive(normalized)}
+              onClick={() => void restoreOfficialRelayProfile()}
+              title={
+                !normalized.relayProfilesEnabled
+                  ? t("供应商配置总开关已关闭")
+                  : isOfficialLoginActive(normalized)
+                    ? t("当前已是官方登录态")
+                    : t("清除中转 API 配置，切回 ChatGPT 官方登录")
+              }
+              variant="secondary"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {t("恢复官方登录")}
             </Button>
             <div className="third-party-import">
               <Button
@@ -5093,6 +5153,7 @@ function EnhanceScreen({
 
 function DreamSkinScreen({
   form,
+  launchPending,
   library,
   market,
   community,
@@ -5107,6 +5168,7 @@ function DreamSkinScreen({
   actions,
 }: {
   form: BackendSettings;
+  launchPending: boolean;
   library: DreamSkinThemeLibrary | null;
   market: DreamSkinMarketResult | null;
   community: DreamSkinCommunityResult | null;
@@ -5270,7 +5332,7 @@ function DreamSkinScreen({
                   {t("当前运行")}：{pendingRestart.currentThemeName}。{t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}
                 </small>
               </div>
-              <Button onClick={() => void actions.restart()}>
+              <Button disabled={launchPending} onClick={() => void actions.restart()}>
                 <Rocket className="h-4 w-4" />
                 {t("重启并应用")}
               </Button>
@@ -6734,6 +6796,7 @@ function RecommendationsScreen({ ads, actions }: { ads: AdsResult | null; action
 
 function MaintenanceScreen({
   overview,
+  launchPending,
   watcher,
   settings,
   launchForm,
@@ -6743,6 +6806,7 @@ function MaintenanceScreen({
   actions,
 }: {
   overview: OverviewResult | null;
+  launchPending: boolean;
   watcher: WatcherResult | null;
   settings: SettingsResult | null;
   launchForm: { appPath: string; debugPort: string; helperPort: string };
@@ -6840,7 +6904,7 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
+            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               {t("保存为默认路径")}
             </Button>
@@ -7759,6 +7823,29 @@ function ContextScreen({
   );
 }
 
+type SortableModelWindowEntryProps = {
+  id: string;
+  children: (sortable: ReturnType<typeof useSortable>) => ReactNode;
+};
+
+function SortableModelWindowEntry({ id, children }: SortableModelWindowEntryProps) {
+  const sortable = useSortable({ id });
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(sortable.transform),
+    transition: sortable.transition,
+  };
+
+  return (
+    <div
+      className={`relay-model-entry ${sortable.isDragging ? "dragging" : ""}`}
+      ref={sortable.setNodeRef}
+      style={style}
+    >
+      {children(sortable)}
+    </div>
+  );
+}
+
 function RelayProfileEditor({
   profile,
   form,
@@ -7786,6 +7873,14 @@ function RelayProfileEditor({
   const [builtinQueryState, setBuiltinQueryState] = useState<BuiltinMetadataQueryState | null>(null);
   const [importPrefillSource, setImportPrefillSource] = useState<"builtin" | "existing" | null>(null);
   const [builtinIndex, setBuiltinIndex] = useState<Map<string, { source: string; context_window: unknown; auto_compact_token_limit: unknown }>>(new Map());
+  const modelSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 8 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
   // 面板内置查询的请求代数：begin/rematch 是命令式调用（没有 effect cleanup
   // 的 cancelled 通道），响应返回时代数不匹配即丢弃全部 setState——防止迟到
   // 响应把已取消的面板重新打开，或覆盖用户改名后的新查询结果。
@@ -7993,6 +8088,22 @@ function RelayProfileEditor({
     builtinQuerySeqRef.current += 1;
     setActiveImportDraft(null);
     setMetadataImportError("");
+  };
+  const handleModelRowsDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const activeIndex = Number(String(active.id).replace("model-row-", ""));
+    const overIndex = Number(String(over.id).replace("model-row-", ""));
+    if (!Number.isInteger(activeIndex) || !Number.isInteger(overIndex)) return;
+    const nextRows = reorderModelWindowRows(modelWindowRows, activeIndex, overIndex);
+    if (nextRows === modelWindowRows) return;
+    // 导入面板的身份按行索引保存；排序时关闭它，避免面板跟着错误的行移动。
+    if (activeImportDraft) closeModelMetadataImport();
+    const nextOrigins = [...modelSlugOriginsRef.current];
+    const [movedOrigin] = nextOrigins.splice(activeIndex, 1);
+    nextOrigins.splice(overIndex, 0, movedOrigin);
+    modelSlugOriginsRef.current = nextOrigins;
+    setModelWindowRows(nextRows);
   };
   const cancelModelMetadataImport = () => {
     if (activeImportDraft) {
@@ -8329,7 +8440,7 @@ function RelayProfileEditor({
               <Input
                 inputMode="numeric"
                 value={profile.contextWindow}
-                onChange={(event) => updateDraft({ contextWindow: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                onChange={(event) => updateDraft({ contextWindow: normalizeTokenCountInput(event.currentTarget.value) })}
                 placeholder={t("留空不改写，例如 200000")}
               />
             </Field>
@@ -8337,7 +8448,7 @@ function RelayProfileEditor({
               <Input
                 inputMode="numeric"
                 value={profile.autoCompactLimit}
-                onChange={(event) => updateDraft({ autoCompactLimit: event.currentTarget.value.replace(/[^\d]/g, "") })}
+                onChange={(event) => updateDraft({ autoCompactLimit: normalizeTokenCountInput(event.currentTarget.value) })}
                 placeholder={t("留空不改写，例如 160000")}
               />
             </Field>
@@ -8590,6 +8701,7 @@ function RelayProfileEditor({
             </div>
             <div className="relay-model-row-editor">
               <div className="relay-model-row relay-model-row-head">
+                <span aria-hidden="true" />
                 <span>{t("模型名称")}</span>
                 <span>{t("上下文窗口")}</span>
                 <span>{t("自动压缩")}</span>
@@ -8597,37 +8709,58 @@ function RelayProfileEditor({
                 <span>{t("模型配置")}</span>
                 <span aria-hidden="true" />
               </div>
-              {modelWindowRows.map((row, index) => {
-                const slug = row.model.trim();
-                // 面板身份只用 index：slug 双轨（draft 副本 vs 实时输入）曾导致
-                // 改名时面板整体卸载、blur 后重挂抢焦点。
-                const importing = metadataImportTarget?.index === index;
-                // 配置可能还挂在「改名尚未提交」的旧 key 下，按行解析而不是按实时名硬查。
-                const imported = resolveModelMetadataRowKey(importedModelMetadata, {
-                  current: slug,
-                  origin: modelSlugOriginsRef.current[index],
-                }) !== null;
-                // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
-                // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
-                const importControls = importing
-                  ? importPanelControls({
-                      slug,
-                      document: metadataImportDocument,
-                      imported,
-                      // 空文档（清除后）不算解析失败：保存键保持可用，
-                      // 走「放弃自定义回退内置」的保存路径。
-                      parseOk: !metadataImportDocument.trim() || Boolean(metadataImportPreview),
-                      matched: builtinQueryState?.status === "error" ? false : Boolean(builtinMatch?.matched),
-                      // 面板内容与内置条目全字段等价：保存的目标态就是「用内置」。
-                      matchesBuiltin: metadataImportPreview
-                        ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
-                        : false,
-                    })
-                  : null;
+              <DndContext
+                sensors={modelSensors}
+                collisionDetection={closestCenter}
+                onDragEnd={handleModelRowsDragEnd}
+              >
+                <SortableContext
+                  items={modelWindowRows.map((_, index) => `model-row-${index}`)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {modelWindowRows.map((row, index) => {
+                    const slug = row.model.trim();
+                    // 面板身份只用 index：slug 双轨（draft 副本 vs 实时输入）曾导致
+                    // 改名时面板整体卸载、blur 后重挂抢焦点。
+                    const importing = metadataImportTarget?.index === index;
+                    // 配置可能还挂在「改名尚未提交」的旧 key 下，按行解析而不是按实时名硬查。
+                    const imported = resolveModelMetadataRowKey(importedModelMetadata, {
+                      current: slug,
+                      origin: modelSlugOriginsRef.current[index],
+                    }) !== null;
+                    // 按钮可用性与状态行都从这一个纯函数出（见 model-metadata.ts）。
+                    // 面板关闭时不创建导入控件，避免用一个面板级状态为所有行派生按钮状态。
+                    const importControls = importing
+                      ? importPanelControls({
+                          slug,
+                          document: metadataImportDocument,
+                          imported,
+                          // 空文档（清除后）不算解析失败：保存键保持可用，
+                          // 走「放弃自定义回退内置」的保存路径。
+                          parseOk: !metadataImportDocument.trim() || Boolean(metadataImportPreview),
+                          matched: builtinQueryState?.status === "error" ? false : Boolean(builtinMatch?.matched),
+                          // 面板内容与内置条目全字段等价：保存的目标态就是「用内置」。
+                          matchesBuiltin: metadataImportPreview
+                            ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
+                            : false,
+                        })
+                      : null;
 
-                return (
-                  <div className="relay-model-entry" key={index}>
+                    return (
+                  <SortableModelWindowEntry id={`model-row-${index}`} key={index}>
+                    {(sortable) => (
+                      <>
                     <div className="relay-model-row">
+                      <button
+                        aria-label={t("拖动排序")}
+                        className="relay-model-drag"
+                        title={t("拖动排序")}
+                        type="button"
+                        {...sortable.attributes}
+                        {...sortable.listeners}
+                      >
+                        <GripVertical className="h-4 w-4" />
+                      </button>
                       <Input
                         value={row.model}
                         onChange={(event) => updateModelWindowRow(index, { model: event.currentTarget.value })}
@@ -8835,9 +8968,13 @@ function RelayProfileEditor({
                         </div>
                       </section>
                     ) : null}
-                  </div>
-                );
-              })}
+                      </>
+                    )}
+                  </SortableModelWindowEntry>
+                    );
+                  })}
+                </SortableContext>
+              </DndContext>
             </div>
             {modelRowsError ? <div className="relay-model-metadata-import-error" role="alert">{modelRowsError}</div> : null}
             <p className="field-hint">
@@ -11642,6 +11779,7 @@ function statusLabel(status: string) {
     ok: t("正常"),
     running: t("运行中"),
     running_degraded: t("运行中（增强等待中）"),
+    degraded: t("已降级"),
     starting: t("启动中"),
     failed: t("失败"),
     archived: t("已归档"),
@@ -11662,6 +11800,12 @@ function statusClass(status: string) {
 
 function isSuccessStatus(status?: Status) {
   return status === "ok" || status === "accepted";
+}
+
+/// 后端「降级但流程可继续」的状态。目前用于回填跳过（live config.toml 语法
+/// 错误，issue #618）：要在提示用户的同时继续执行，不能当成失败中断。
+function isDegradedStatus(status?: Status) {
+  return status === "degraded";
 }
 
 function truncateSessionDeletePreview(value: string) {
@@ -11944,6 +12088,13 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
 
 function relayProtocolLabel(protocol: RelayProtocol): string {
   return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
+}
+
+/// 当前 active 供应商是否就是「纯官方登录」（官方模式且不混入 API Key）。
+/// 用于给「恢复官方登录」按钮置灰（issue #595）。
+function isOfficialLoginActive(settings: BackendSettings): boolean {
+  const active = activeRelayProfile(settings);
+  return active.relayMode === "official" && !active.officialMixApiKey && !isAggregateRelayProfile(active);
 }
 
 function ccsProviderSummary(result: CcsProvidersResult | null): string {

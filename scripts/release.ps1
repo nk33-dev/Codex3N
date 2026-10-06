@@ -106,6 +106,7 @@ Invoke-Step "确认当前提交的 CI 构建通过" {
 if (-not $SkipChecks) {
     Invoke-Step "cargo fmt --all --check" { cargo fmt --all --check }
     Invoke-Step "npm test" { Push-Location $ManagerDir; try { npm test } finally { Pop-Location } }
+    Invoke-Step "native browser inspector bundle" { node scripts/assemble-native-browser-inspector.mjs --check }
     Invoke-Step "npm run check" { Push-Location $ManagerDir; try { npm run check } finally { Pop-Location } }
     Invoke-Step "npm audit" { Push-Location $ManagerDir; try { npm audit --audit-level=high --registry=https://registry.npmjs.org } finally { Pop-Location } }
     Invoke-Step "npm run vite:build" { Push-Location $ManagerDir; try { npm run vite:build } finally { Pop-Location } }

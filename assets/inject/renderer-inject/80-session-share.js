@@ -1,779 +1,3 @@
-  }
-
-  function codexPlusModelDescriptor(modelName) {
-    const metadata = codexPlusModelMetadata(modelName);
-    return {
-      model: modelName,
-      id: modelName,
-      slug: modelName,
-      name: modelName,
-      displayName: metadata?.displayName || modelName,
-      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
-      hidden: false,
-      isDefault: false,
-      defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
-      supportedReasoningEfforts: modelReasoningEfforts(modelName),
-    };
-  }
-
-  function sortModelChoices(models, nameOf) {
-    const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
-    const entries = models.map((model) => ({ model, parts: nameOf(model).trim().replace(/[._\s]+/g, "-").match(/\d+|\D+/g) || [] }));
-    entries.sort((left, right) => {
-      const length = Math.min(left.parts.length, right.parts.length);
-      for (let index = 0; index < length; index += 1) {
-        const leftPart = left.parts[index];
-        const rightPart = right.parts[index];
-        const order = /^\d+$/.test(leftPart) && /^\d+$/.test(rightPart) ? compare(rightPart, leftPart) : compare(leftPart, rightPart);
-        if (order) return order;
-      }
-      return right.parts.length - left.parts.length;
-    });
-    const changed = entries.some((entry, index) => entry.model !== models[index]);
-    if (changed) models.splice(0, models.length, ...entries.map((entry) => entry.model));
-    return changed;
-  }
-
-  function modelArrayLooksPatchable(value, allowEmpty = false) {
-    return Array.isArray(value)
-      && (allowEmpty || value.length > 0)
-      && value.every((item) => item && typeof item === "object" && typeof item.model === "string");
-  }
-
-  function stringArrayLooksPatchable(value) {
-    return Array.isArray(value) && value.every((item) => typeof item === "string");
-  }
-
-  function patchModelNameArray(models) {
-    if (!stringArrayLooksPatchable(models)) return false;
-    const customModels = codexPlusModelNames();
-    if (!customModels.length) return false;
-    let changed = false;
-    customModels.forEach((modelName) => {
-      if (!models.includes(modelName)) {
-        models.push(modelName);
-        changed = true;
-      }
-    });
-    return sortModelChoices(models, (name) => name) || changed;
-  }
-
-  function patchModelArray(models, allowEmpty = false) {
-    if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
-    const customModels = codexPlusModelNames();
-    if (!customModels.length) return false;
-    let changed = false;
-    const sourceModels = new Set(customModels);
-    const authoritative = codexPlusSettings().includeNativeModels === false
-      && codexModelCatalog.status === "ok"
-      && codexModelCatalog.model_provider && codexModelCatalog.model_provider !== "openai"
-      && codexModelCatalog.sources?.some((source) => source.status === "ok" && source.models > 0 && ["config", "relay_profile_model_list"].includes(source.type));
-    for (let index = models.length - 1; index >= 0; index -= 1) {
-      if ((authoritative || models[index].__codexPlusInjected) && !sourceModels.has(models[index].model)) {
-        models.splice(index, 1);
-        changed = true;
-      }
-    }
-    const existing = new Map(models.map((item) => [item.model, item]));
-    models.forEach((item) => {
-      if (customModels.includes(item.model)) {
-        if (item.hidden !== false) {
-          item.hidden = false;
-          changed = true;
-        }
-        if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
-      }
-    });
-    customModels.forEach((modelName) => {
-      if (!existing.has(modelName)) {
-        models.push(codexPlusModelDescriptor(modelName));
-        changed = true;
-      }
-    });
-    if (customModels.length && codexModelCatalog.status === "ok") {
-      if (sortModelChoices(models, (item) => item.model)) changed = true;
-      models.forEach((item, index) => {
-        if (item.priority !== index) {
-          item.priority = index;
-          changed = true;
-        }
-      });
-    }
-    return changed;
-  }
-
-  function patchModelContainer(value) {
-    if (!value || typeof value !== "object") return false;
-    let changed = false;
-    if (patchModelArray(value.models, "defaultModel" in value || "availableModels" in value)) changed = true;
-    if (patchModelNameArray(value.models)) changed = true;
-    if (patchModelArray(value.data)) changed = true;
-    if (patchModelArray(value.result)) changed = true;
-    if (patchModelArray(value.pages?.[0]?.data)) changed = true;
-    if (patchModelArray(value.result?.data)) changed = true;
-    if (patchModelArray(value.result?.models)) changed = true;
-    if (patchModelArray(value.message?.result?.data)) changed = true;
-    if (patchModelArray(value.message?.result?.models)) changed = true;
-    const names = codexPlusModelNames();
-    if (value.availableModels instanceof Set) {
-      names.forEach((name) => {
-        if (!value.availableModels.has(name)) {
-          value.availableModels.add(name);
-          changed = true;
-        }
-      });
-    }
-    if (value.available_models instanceof Set) {
-      names.forEach((name) => {
-        if (!value.available_models.has(name)) {
-          value.available_models.add(name);
-          changed = true;
-        }
-      });
-    }
-    if (Array.isArray(value.availableModels)) {
-      names.forEach((name) => {
-        if (!value.availableModels.includes(name)) {
-          value.availableModels.push(name);
-          changed = true;
-        }
-      });
-    }
-    if (Array.isArray(value.available_models)) {
-      names.forEach((name) => {
-        if (!value.available_models.includes(name)) {
-          value.available_models.push(name);
-          changed = true;
-        }
-      });
-    }
-    if (Array.isArray(value.hiddenModels)) {
-      const before = value.hiddenModels.length;
-      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name));
-      if (value.hiddenModels.length !== before) changed = true;
-    }
-    if (Array.isArray(value.hidden_models)) {
-      const before = value.hidden_models.length;
-      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
-      if (value.hidden_models.length !== before) changed = true;
-    }
-    return changed;
-  }
-
-  function modelJsonResponseLooksPatchable(payload) {
-    if (!payload || typeof payload !== "object") return false;
-    const descriptorArrays = [
-      payload.models,
-      payload.data,
-      payload.result,
-      payload.pages?.[0]?.data,
-      payload.result?.data,
-      payload.result?.models,
-      payload.message?.result?.data,
-      payload.message?.result?.models,
-    ];
-    if (descriptorArrays.some((value) => modelArrayLooksPatchable(value))) return true;
-    const hasModelContainerSignal = "defaultModel" in payload
-      || "default_model" in payload
-      || "availableModels" in payload
-      || "available_models" in payload
-      || "hiddenModels" in payload
-      || "hidden_models" in payload
-      || "modelMetadata" in payload
-      || "model_metadata" in payload;
-    return hasModelContainerSignal && Array.isArray(payload.models)
-      && payload.models.every((value) => typeof value === "string");
-  }
-
-  async function patchModelJsonResponse(payload) {
-    if (!codexPlusModelUnlockEnabled()) return payload;
-    if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-    if (!modelJsonResponseLooksPatchable(payload)) return payload;
-    try {
-      patchModelContainer(payload);
-    } catch (error) {
-      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-    }
-    return payload;
-  }
-
-  function installModelJsonResponsePatch() {
-    if (window.__codexPlusModelJsonResponsePatchInstalled === "1") return;
-    window.__codexPlusModelJsonResponsePatchInstalled = "1";
-    window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
-    const originals = window.__codexPlusModelJsonResponseOriginals;
-    originals.responseJson = originals.responseJson || Response.prototype.json;
-    if (typeof originals.responseJson !== "function") return;
-    Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
-      const payload = await originals.responseJson.apply(this, args);
-      return await patchModelJsonResponse(payload);
-    };
-  }
-
-  function patchStatsigModelDynamicConfig(config) {
-    const names = codexPlusModelNames();
-    const value = config?.value;
-    if (!names.length || !value || typeof value !== "object") return config;
-    const availableModels = Array.isArray(value.available_models) ? [...value.available_models] : [];
-    let changed = false;
-    names.forEach((name) => {
-      if (!availableModels.includes(name)) {
-        availableModels.push(name);
-        changed = true;
-      }
-    });
-    if (!changed) return config;
-    const nextValue = { ...value, available_models: availableModels };
-    try {
-      config.value = nextValue;
-    } catch {
-      return { ...config, value: nextValue };
-    }
-    return config;
-  }
-
-  function statsigClients() {
-    const root = window.__STATSIG__ || globalThis.__STATSIG__;
-    if (!root || typeof root !== "object") return [];
-    const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
-    if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
-    return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
-  }
-
-  function patchStatsigModelWhitelist() {
-    statsigClients().forEach((client) => {
-      if (typeof client.getDynamicConfig !== "function") return;
-      if (!client.__codexPlusModelWhitelistPatched) {
-        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
-        client.getDynamicConfig = (name, options) => {
-          const result = originalGetDynamicConfig(name, options);
-          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
-        };
-        client.__codexPlusModelWhitelistPatched = true;
-      }
-      try {
-        patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
-      } catch {
-      }
-    });
-  }
-
-  function patchAppServerModelMessages() {
-    if (window.__codexPlusModelMessagePatchInstalled) return;
-    window.__codexPlusModelMessagePatchInstalled = true;
-    window.addEventListener("codex-message-from-view", (event) => {
-      try {
-        const detail = event?.detail;
-        const request = detail?.request;
-        if (detail?.type === "mcp-request" && request?.method === "model/list") {
-          request.params = { ...(request.params || {}), includeHidden: true };
-          if (request.id != null) {
-            const requestId = String(request.id);
-            codexPlusModelListRequestIds.add(requestId);
-            if (codexPlusModelListRequestIds.size > 64) {
-              codexPlusModelListRequestIds.delete(codexPlusModelListRequestIds.values().next().value);
-            }
-            window.setTimeout(() => codexPlusModelListRequestIds.delete(requestId), 30_000);
-          }
-        }
-      } catch (error) {
-        window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-        window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-      }
-    }, true);
-
-    window.addEventListener("message", (event) => {
-      try {
-        patchMcpModelResponseData(event?.data);
-      } catch (error) {
-        window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-        window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-      }
-    }, true);
-  }
-
-  function patchMcpModelResponseData(data) {
-    if (!codexPlusModelUnlockEnabled()) return false;
-    if (data?.type !== "mcp-response") return false;
-    const message = data.message || data.response;
-    const requestId = message?.id != null ? String(message.id) : "";
-    if (codexPlusModelListRequestIds.size === 0 || !codexPlusModelListRequestIds.has(requestId)) return false;
-    codexPlusModelListRequestIds.delete(requestId);
-    let changed = false;
-    if (patchModelArray(message?.result?.data, true)) changed = true;
-    if (patchModelArray(message?.result?.models, true)) changed = true;
-    return changed;
-  }
-
-  function appServerModelRequestMethod(method, params) {
-    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
-    if (method === "vscode://codex/list-plugins") return "list-plugins";
-    if (method === "vscode://codex/plugin/install") return "install-plugin";
-    if (method === "vscode://codex/plugin/uninstall") return "uninstall-plugin";
-    if (method === "plugin/list") return "list-plugins";
-    if (method === "plugin/install") return "install-plugin";
-    if (method === "plugin/uninstall") return "uninstall-plugin";
-    return String(method || "");
-  }
-
-  function patchAppServerModelResult(method, result) {
-    if (method !== "list-models-for-host" && method !== "model/list") return result;
-    try {
-      if (Array.isArray(result)) patchModelArray(result, true);
-      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
-      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
-      sendCodexPlusDiagnostic("model_app_server_result_patched", {
-        method,
-        modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
-      });
-    } catch (error) {
-      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-    }
-    return result;
-  }
-
-  function codexPerModelContextEnabled() {
-    const profile = codexRemoteSessionActiveProfile();
-    if (!profile) return false;
-    return [profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata]
-      .some((value) => typeof value === "string" && value.trim() && value.trim() !== "{}");
-  }
-
-  function codexThreadModelRequestState(method, params, result) {
-    const requestMethod = String(method || "");
-    const threadId = String(
-      params?.threadId
-      || params?.conversationId
-      || result?.thread?.id
-      || result?.threadId
-      || ""
-    ).trim();
-    const model = String(params?.model || result?.thread?.model || "").trim();
-    return { requestMethod, threadId, model };
-  }
-
-  async function refreshCodexThreadModelBeforeTurn(client, originalSendRequest, method, params, options) {
-    if (String(method || "") !== "turn/start" || !codexPerModelContextEnabled()) return null;
-    const { threadId, model } = codexThreadModelRequestState(method, params);
-    if (!threadId || !model) return null;
-    const previousModel = client.__codexPlusThreadModels?.get(threadId) || "";
-    if (!previousModel || previousModel === model) return null;
-    let resumeParams = { threadId, model };
-    resumeParams = applyCodexRemoteSessionProviderOverride("thread/resume", resumeParams);
-    try {
-      await originalSendRequest("thread/resume", resumeParams, options);
-      client.__codexPlusThreadModels.set(threadId, model);
-      sendCodexPlusDiagnostic("thread_model_context_refreshed", {
-        threadId,
-        from: previousModel,
-        to: model,
-      });
-      return true;
-    } catch (error) {
-      sendCodexPlusDiagnostic("thread_model_context_refresh_failed", {
-        threadId,
-        from: previousModel,
-        to: model,
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-      return false;
-    }
-  }
-
-  function patchAppServerModelRequestClient(client) {
-    if (!client || typeof client.sendRequest !== "function") return false;
-    try {
-      if (!Object.isExtensible(client)) return false;
-      for (const key of [
-        "__codexPlusModelRequestPatch",
-        "__codexPlusModelOriginalSendRequest",
-        "__codexPlusThreadModels",
-        "__codexPlusServiceTierOriginalPrewarmThreadStart",
-        "sendRequest",
-        "prewarmThreadStart",
-      ]) {
-        const descriptor = Object.getOwnPropertyDescriptor(client, key);
-        if (descriptor && descriptor.writable === false && typeof descriptor.set !== "function") return false;
-      }
-    } catch {
-      return false;
-    }
-    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
-    const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
-    client.__codexPlusModelOriginalSendRequest = originalSendRequest;
-    client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
-    client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      let providerRefreshFailed = false;
-      if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderPatchEnabled()
-          && window.__codexSessionDeleteBridge) {
-        const settingsLoaded = await loadBackendSettingsState();
-        providerRefreshFailed = !settingsLoaded;
-        if (providerRefreshFailed) {
-          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
-        }
-      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderOverrideEnabled()
-          && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
-      }
-      const providerParams = providerRefreshFailed
-        ? params
-        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
-      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
-        client,
-        originalSendRequest,
-        method,
-        nextParams,
-        options
-      );
-      const result = await originalSendRequest(method, nextParams, options);
-      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
-      if (modelContextRefresh !== false && threadState.threadId && threadState.model
-          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
-        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
-      }
-      if (!codexPlusModelUnlockEnabled()
-          || !["list-models-for-host", "model/list"].includes(requestMethod)
-          || (client.__codexPlusHostId && client.__codexPlusHostId !== "local")) return result;
-      await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result);
-    };
-    if (typeof client.prewarmThreadStart === "function"
-        && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
-      const originalPrewarmThreadStart = client.prewarmThreadStart.bind(client);
-      client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
-      client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
-        return originalPrewarmThreadStart(nextParams, options);
-      };
-    }
-    client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
-    return true;
-  }
-
-  // issue #2177：Codex 26.908 把 AppServerRequestClient 类藏进模块闭包且不再导出，
-  // 渲染层扫描在新版上永远 not_found，直接改写 dispatcher 又会撞上不可写的 RPC stub。
-  // 改为两段式接管：这里先用纯文本定位算出 sendRequest 的断点坐标（按 UTF-16 计数，
-  // 与 V8 断点坐标语义一致），launcher 侧 bridge.rs 再用 CDP Debugger 按坐标下条件断点，
-  // 命中时把类构造器挂到 window.__codexPlusAppServerClientClass，随后对原型套用与
-  // 实例版完全一致的请求补丁。断点条件 `!window.__codexPlusAppServerClientClass`
-  // 保证页面重载后自动重新捕获，且每次页面生命周期内只暂停一次。
-    function locateCodexAppServerClientBreakpoint(text) {
-    if (typeof text !== "string" || !text) return null;
-    const markerIdx = text.indexOf(codexAppServerClientCaptureMarker);
-    if (markerIdx < 0) return null;
-    const anchorIdx = text.lastIndexOf(codexAppServerClientCaptureAnchor, markerIdx);
-    if (anchorIdx < 0 || markerIdx - anchorIdx > 220) return null;
-    const braceIdx = text.indexOf("{", anchorIdx);
-    if (braceIdx < 0) return null;
-    let lineNumber = 0;
-    let lastNewline = -1;
-    for (let i = 0; i < braceIdx; i++) {
-      if (text.charCodeAt(i) === 10) {
-        lineNumber += 1;
-        lastNewline = i;
-      }
-    }
-    return { lineNumber, columnNumber: braceIdx - lastNewline - 1 };
-  }
-
-    let codexAppServerClientCaptureStarted = false;
-  async function installCodexAppServerClientCapture() {
-    if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
-    codexAppServerClientCaptureStarted = true;
-    try {
-      if (typeof fetch !== "function") return;
-      const url = codexAppAssetUrl("app-initial-") || await codexAppAssetUrlFromScriptText("app-initial-");
-      if (!url) {
-        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "asset_url_missing" });
-        return;
-      }
-      const response = await fetch(url);
-      const text = response.ok ? await response.text() : "";
-      const location = locateCodexAppServerClientBreakpoint(text);
-      if (!location) {
-        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
-        return;
-      }
-      const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      window.__codexPlusAppServerClientCapture = { urlRegex, ...location };
-      sendCodexPlusDiagnostic("app_server_client_capture_located", {
-        lineNumber: location.lineNumber,
-        columnNumber: location.columnNumber,
-      });
-    } catch (error) {
-      codexAppServerClientCaptureStarted = false;
-      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-    }
-  }
-
-    function installCodexAppServerClientPrototypePatch() {
-    if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
-    const wanted = codexPlusModelUnlockEnabled()
-      || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-      || codexPlusSettings().serviceTierControls;
-    if (!wanted) return false;
-    const klass = window.__codexPlusAppServerClientClass;
-    if (!klass || typeof klass !== "function" || !klass.prototype) return false;
-    const proto = klass.prototype;
-    if (proto.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
-      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
-      return true;
-    }
-    try {
-      const descriptor = Object.getOwnPropertyDescriptor(proto, "sendRequest");
-      if (!descriptor || descriptor.writable === false) {
-        sendCodexPlusDiagnostic("app_server_client_prototype_patch_skipped", {});
-        window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
-        return false;
-      }
-    } catch {
-      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
-      return false;
-    }
-    const originalSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
-    proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
-    proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
-    proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
-      const client = this;
-      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
-      let providerRefreshFailed = false;
-      if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderPatchEnabled()
-          && window.__codexSessionDeleteBridge) {
-        const settingsLoaded = await loadBackendSettingsState();
-        providerRefreshFailed = !settingsLoaded;
-        if (providerRefreshFailed) {
-          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
-        }
-      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
-          && codexRemoteSessionProviderOverrideEnabled()
-          && !codexRemoteSessionTargetProvider()) {
-        await loadCodexModelCatalog();
-      }
-      const providerParams = providerRefreshFailed
-        ? params
-        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
-      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
-      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
-        client,
-        originalSendRequest.bind(client),
-        method,
-        nextParams,
-        options
-      );
-      const result = await originalSendRequest.call(client, method, nextParams, options);
-      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
-      if (modelContextRefresh !== false && threadState.threadId && threadState.model
-          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
-        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
-      }
-      if (!codexPlusModelUnlockEnabled()) return result;
-      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
-      return patchAppServerModelResult(requestMethod, result);
-    };
-    if (typeof proto.prewarmThreadStart === "function"
-        && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {
-      const originalPrewarmThreadStart = proto.prewarmThreadStart;
-      proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
-      proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
-        const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
-        return originalPrewarmThreadStart.call(this, nextParams, options);
-      };
-    }
-    proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
-    window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
-    sendCodexPlusDiagnostic("app_server_client_prototype_patch_installed", {});
-    return true;
-  }
-
-  const appServerModelRequestPatchMaxMisses = 8;
-  const appServerModelRequestPatchMaxRetryDelayMs = 30000;
-  let appServerModelRequestPatchMissCount = 0;
-  let appServerModelRequestPatchDisabled = false;
-  let appServerModelRequestPatchPromise = null;
-  let appServerModelRequestPatchRetryTimer = 0;
-  let appServerModelRequestPatchRetryDelayMs = 250;
-
-  function scheduleAppServerModelRequestPatchRetry() {
-    if (!codexRemoteSessionProviderPatchEnabled()) return;
-    if (appServerModelRequestPatchRetryTimer) return;
-    // issue #2256/#2255：固定 250ms 重试在 Codex 改 asset 命名后变成每秒 4 轮的全量
-    // rescan（每轮 fetch 全部 app asset）。改为指数退避， miss 计满后由熔断停掉。
-    appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
-      appServerModelRequestPatchRetryTimer = 0;
-      installAppServerModelRequestPatch();
-    }, appServerModelRequestPatchRetryDelayMs);
-    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 2, appServerModelRequestPatchMaxRetryDelayMs);
-  }
-
-  function noteAppServerModelRequestPatchMiss(event, detail) {
-    appServerModelRequestPatchMissCount += 1;
-    // installAppServerModelRequestPatch() runs on every model-whitelist
-    // refresh tick (~120ms). On Codex builds where the app-server module was
-    // renamed/removed (e.g. 26.623+, issue #1324) this layer never succeeds
-    // and would otherwise emit the same diagnostic on every tick forever.
-    // Report the first miss so telemetry still captures the cause, then stay
-    // quiet, and finally disable this layer once it is clearly unavailable.
-    // This is a graceful fallback: the remaining whitelist layers (Statsig
-    // config / React state / response JSON patch) keep injecting the custom
-    // models on their own.
-    if (appServerModelRequestPatchMissCount === 1) {
-      sendCodexPlusDiagnostic(event, detail);
-    }
-    // issue #2256：provider 重试路径以前在这里提前 return，绕过下面的 maxMisses
-    // 熔断，失败变成 250ms 无限重试（每轮全量 rescan 全部 app assets）。
-    // 现在两个路径统一计数：先按 maxMisses 熔断，未熔断时再走指数退避重试。
-    if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
-      appServerModelRequestPatchDisabled = true;
-      clearTimeout(appServerModelRequestPatchRetryTimer);
-      appServerModelRequestPatchRetryTimer = 0;
-      sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
-        misses: appServerModelRequestPatchMissCount,
-        lastEvent: event,
-      });
-      return;
-    }
-    if (!appServerModelRequestPatchDisabled) {
-      scheduleAppServerModelRequestPatchRetry();
-    }
-  }
-
-  function installAppServerModelRequestPatch() {
-    if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
-    if (appServerModelRequestPatchDisabled) return;
-    if (appServerModelRequestPatchPromise) return;
-    if (appServerModelRequestPatchRetryTimer) return;
-    if (appServerModelRequestPatchMissCount > 0 && appServerModelRequestPatchDisabled) return;
-    const patch = async () => {
-      try {
-        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
-        if (modules.length === 0) {
-          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_skipped", {
-            reason: "app_server_request_assets_missing",
-          });
-          return;
-        }
-        let patchedCount = 0;
-        for (const candidate of candidates) {
-          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
-        }
-        if (patchedCount > 0) {
-          clearTimeout(appServerModelRequestPatchRetryTimer);
-          appServerModelRequestPatchRetryTimer = 0;
-          appServerModelRequestPatchMissCount = 0;
-          appServerModelRequestPatchRetryDelayMs = 250;
-          window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
-          sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
-            moduleCount: modules.length,
-            candidateCount: candidates.length,
-            patchedCount,
-            sources,
-            discovery,
-          });
-        } else {
-          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
-            moduleCount: modules.length,
-            candidateCount: candidates.length,
-            sources,
-            discovery,
-          });
-        }
-      } catch (error) {
-        noteAppServerModelRequestPatchMiss("model_app_server_request_patch_failed", {
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
-      }
-    };
-    appServerModelRequestPatchPromise = patch().finally(() => {
-      appServerModelRequestPatchPromise = null;
-    });
-    void appServerModelRequestPatchPromise;
-  }
-
-  function ensureCodexModelWhitelistInstalls() {
-    if (codexPlusModelUnlockEnabled()
-        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
-        || codexPlusSettings().serviceTierControls) {
-      installAppServerModelRequestPatch();
-      void installCodexAppServerClientCapture().catch(() => {});
-    }
-    void installDictationSupportPatch();
-    if (!codexPlusModelUnlockEnabled()) return;
-    installModelJsonResponsePatch();
-    patchAppServerModelMessages();
-  }
-
-  function runCodexModelWhitelistRefreshPass() {
-    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
-    try {
-      patchStatsigModelWhitelist();
-      installAppServerModelRequestPatch();
-    } catch (error) {
-      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
-      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
-    }
-    return false;
-  }
-
-  function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
-    if (!codexPlusModelUnlockEnabled()) return;
-    codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
-    if (codexModelWhitelistRefreshTimer) return;
-    sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
-    let delay = 120;
-    const tick = () => {
-      codexModelWhitelistRefreshTimer = 0;
-      if (runCodexModelWhitelistRefreshPass()) return;
-      if (Date.now() < codexModelWhitelistRefreshUntil) {
-        codexModelWhitelistRefreshTimer = window.setTimeout(tick, delay);
-        delay = Math.min(delay * 2, 1000);
-      }
-    };
-    tick();
-  }
-
-  function refreshCodexModelWhitelistFromScan() {
-    // 连续页面变更共用刷新预算；目录变化仍会立即触发独立的补充流程。
-    const now = Date.now();
-    if (codexModelWhitelistLastScanAt && now - codexModelWhitelistLastScanAt < 1000) return;
-    codexModelWhitelistLastScanAt = now;
-    ensureCodexModelWhitelistInstalls();
-    if (!codexPlusModelUnlockEnabled()) return;
-    void loadCodexModelCatalog();
-    runCodexModelWhitelistRefreshPass();
-  }
-
-  function threadIdVariants(sessionId) {
-    if (typeof sessionId !== "string" || !sessionId.trim()) return [];
-    const id = sessionId.trim();
-    const bareId = id.startsWith("local:") ? id.slice("local:".length) : id;
-    return uniqueValues([id, bareId, `local:${bareId}`]);
-  }
-
-  function sessionKey(sessionId) {
-    const variants = threadIdVariants(sessionId);
-    const bareId = variants.find((id) => !id.startsWith("local:"));
-    return bareId || variants[0] || "";
-  }
-
-  function uuidV7TimestampMs(sessionId) {
-    const id = sessionKey(sessionId).replaceAll("-", "");
-    if (!/^[0-9a-fA-F]{12}/.test(id)) return 0;
-    const timestamp = Number.parseInt(id.slice(0, 12), 16);
-    return Number.isFinite(timestamp) ? timestamp : 0;
-  }
-
   function normalizeWorkspacePath(path) {
     const normalized = String(path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
     return normalized || String(path || "").trim();
@@ -1462,3 +686,935 @@
     const leading = original.match(/^\s*/)?.[0] || "";
     const trailing = original.match(/\s*$/)?.[0] || "";
     const normalized = original.replace(/\s+/g, " ").trim();
+    const localized = codexMenuLocalizationMap.get(normalized);
+    if (!localized) return false;
+    const next = `${leading}${localized}${trailing}`;
+    if (next === original) return false;
+    node.nodeValue = next;
+    return true;
+  }
+
+  function localizeCodexMenuAttributes(root) {
+    if (!root?.querySelectorAll) return false;
+    let changed = false;
+    const selector = "button[aria-label], [role='menuitem'][aria-label], [title], [placeholder]";
+    root.querySelectorAll(selector).forEach((element) => {
+      if (isExtensionUiNode(element)) return;
+      if (element.closest?.("textarea, input, [contenteditable='true'], [data-message-author-role], [data-testid='conversation-turn'], main .prose")) return;
+      if (!element.closest?.(codexMenuLocalizationScopeSelector())) return;
+      for (const attribute of ["aria-label", "title", "placeholder"]) {
+        const value = element.getAttribute(attribute);
+        const localized = codexMenuLocalizationMap.get((value || "").replace(/\s+/g, " ").trim());
+        if (localized && localized !== value) {
+          element.setAttribute(attribute, localized);
+          changed = true;
+        }
+      }
+    });
+    if (customModels.length && codexModelCatalog.status === "ok") {
+      if (sortModelChoices(models, (item) => item.model)) changed = true;
+      models.forEach((item, index) => {
+        if (item.priority !== index) {
+          item.priority = index;
+          changed = true;
+        }
+      });
+    }
+    return changed;
+  }
+
+  function localizeCodexMenus(root = codexMenuLocalizationRoot()) {
+    if (!root) return false;
+    let changed = false;
+    const scopes = [];
+    if (root.nodeType === 1 && root.matches?.(codexMenuLocalizationScopeSelector())) scopes.push(root);
+    root.querySelectorAll?.(codexMenuLocalizationScopeSelector()).forEach((scope) => scopes.push(scope));
+    for (const scope of scopes.slice(0, 80)) {
+      if (!(scope instanceof HTMLElement) || isExtensionUiNode(scope)) continue;
+      const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+      let node;
+      while ((node = walker.nextNode())) {
+        if (localizeCodexMenuTextNode(node)) changed = true;
+      }
+      if (localizeCodexMenuAttributes(scope)) changed = true;
+      scope.dataset.codexMenuLocalizationVersion = codexMenuLocalizationVersion;
+    }
+    return changed;
+  }
+
+  async function loadUpstreamBranchDefaults(context) {
+    const repoPath = typeof context === "string" ? context : context?.repoPath || "";
+    const projectId = typeof context === "string" ? "" : context?.projectId || "";
+    if (!repoPath && !projectId) return null;
+    const cacheKey = projectId ? `project:${projectId}` : `repo:${repoPath}`;
+    const cacheTtlMs = projectId ? upstreamRemoteBranchDefaultsCacheTtlMs : upstreamBranchDefaultsCacheTtlMs;
+    const cached = upstreamBranchDefaultsCache.get(cacheKey);
+    if (cached && Date.now() - cached.loadedAt < cacheTtlMs) return cached;
+    const inflight = upstreamBranchDefaultsInflight.get(cacheKey);
+    if (inflight) return inflight;
+    const request = postJson("/upstream-worktree/defaults", { repoPath, projectId })
+      .then((result) => {
+        const entry = { repoPath, projectId, result, loadedAt: Date.now() };
+        if (result?.status === "ok") upstreamBranchDefaultsCache.set(cacheKey, entry);
+        return entry;
+      })
+      .finally(() => upstreamBranchDefaultsInflight.delete(cacheKey));
+    upstreamBranchDefaultsInflight.set(cacheKey, request);
+    return request;
+  }
+
+  function renderUpstreamBranchOption(menu, context, ref) {
+    const repoPath = context?.repoPath || "";
+    const label = ref.label || `${ref.remote || "upstream"}/${ref.branch || "main"}`;
+    const item = document.createElement("div");
+    item.setAttribute("role", "menuitem");
+    item.setAttribute("aria-checked", "false");
+    item.setAttribute(upstreamBranchOptionAttribute, "true");
+    item.setAttribute("data-repo-path", repoPath);
+    item.setAttribute("data-project-id", context?.projectId || "");
+    item.setAttribute("data-remote", ref.remote || "upstream");
+    item.setAttribute("data-base-branch", ref.branch || "main");
+    item.setAttribute("data-label", label);
+    item.className = "codex-upstream-branch-option cursor-interaction flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-token-foreground hover:bg-token-list-hover-background";
+    item.innerHTML = `${branchIconSvg()}<span class="min-w-0 flex-1 truncate">${escapeHtml(label)}</span>${checkmarkSvg()}`;
+    menu.appendChild(item);
+  }
+
+  function branchIconSvg() {
+    return '<svg aria-hidden="true" data-codex-upstream-branch-icon="true" viewBox="0 0 24 24" class="h-4 w-4 shrink-0 text-token-text-tertiary" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+  }
+
+  function checkmarkSvg() {
+    return '<svg hidden aria-hidden="true" data-codex-upstream-branch-check="true" viewBox="0 0 24 24" class="h-4 w-4 shrink-0 text-token-text-secondary" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>';
+  }
+
+  function branchMenuItems(menu) {
+    return [...menu.querySelectorAll('[role="menuitem"], [data-radix-collection-item]')]
+      .filter((item) => !item.closest?.(`[${upstreamBranchOptionAttribute}]`));
+  }
+
+  function branchMenuItemLabel(menuItem) {
+    return normalizedElementText(menuItem);
+  }
+
+  function upstreamBranchOptionLabel(option) {
+    return option?.getAttribute?.("data-label") || normalizedElementText(option);
+  }
+
+  function worktreeBranchMap(defaultsResult) {
+    const repoRoot = defaultsResult?.repoRoot || "";
+    const entries = Array.isArray(defaultsResult?.worktreeBranches) ? defaultsResult.worktreeBranches : [];
+    return new Map(entries
+      .filter((entry) => entry?.branch && entry?.path && entry.path !== repoRoot)
+      .map((entry) => [entry.branch, entry.path]));
+  }
+
+  function annotateBranchMenuWorktreeUsage(menu, defaultsResult) {
+    const usedBranches = worktreeBranchMap(defaultsResult);
+    for (const item of branchMenuItems(menu)) {
+      item.removeAttribute(branchWorktreePathAttribute);
+      item.removeAttribute("title");
+      const worktreePath = usedBranches.get(branchMenuItemLabel(item));
+      if (!worktreePath) continue;
+      item.setAttribute(branchWorktreePathAttribute, worktreePath);
+      item.setAttribute("title", `该分支已在另一个 worktree 使用：${worktreePath}`);
+    }
+  }
+
+  function branchWorktreePathFromMenuItem(menuItem) {
+    const annotatedPath = menuItem?.getAttribute?.(branchWorktreePathAttribute) || "";
+    if (annotatedPath) return annotatedPath;
+    const menu = menuItem?.closest?.('[role="menu"], [data-radix-menu-content]');
+    const context = currentProjectContextForBranchMenu(menu);
+    const cacheKey = context?.projectId ? `project:${context.projectId}` : `repo:${context?.repoPath || ""}`;
+    const usedBranches = worktreeBranchMap(upstreamBranchDefaultsCache.get(cacheKey)?.result);
+    return usedBranches.get(branchMenuItemLabel(menuItem)) || "";
+  }
+
+  function upstreamBranchOptionsMatchRefs(menu, context, refs) {
+    const repoPath = context?.repoPath || "";
+    const projectId = context?.projectId || "";
+    const options = [...menu.querySelectorAll(`[${upstreamBranchOptionAttribute}]`)];
+    if (options.length !== refs.length) return false;
+    return options.every((option, index) => {
+      const ref = refs[index];
+      return option.getAttribute("data-repo-path") === repoPath
+        && option.getAttribute("data-project-id") === projectId
+        && option.getAttribute("data-remote") === (ref.remote || "upstream")
+        && option.getAttribute("data-base-branch") === (ref.branch || "main")
+        && upstreamBranchOptionLabel(option) === (ref.label || `${ref.remote || "upstream"}/${ref.branch || "main"}`);
+    });
+  }
+
+  function syncUpstreamBranchMenuSelection(menu) {
+    if (!menu) return;
+    const selection = readUpstreamBranchSelection();
+    for (const option of menu.querySelectorAll(`[${upstreamBranchOptionAttribute}]`)) {
+      const selected = !!selection
+        && option.getAttribute("data-repo-path") === (selection.repoPath || "")
+        && option.getAttribute("data-project-id") === (selection.projectId || "")
+        && option.getAttribute("data-remote") === (selection.remote || "upstream")
+        && option.getAttribute("data-base-branch") === (selection.baseBranch || "main");
+      option.setAttribute("aria-checked", selected ? "true" : "false");
+      option.toggleAttribute("data-selected", selected);
+      const check = option.querySelector('[data-codex-upstream-branch-check="true"]');
+      if (check && selected) check.removeAttribute("hidden");
+      if (check && !selected) check.setAttribute("hidden", "");
+    }
+  }
+
+  function removeUpstreamBranchOptions(scope = document) {
+    scope.querySelectorAll(`[${upstreamBranchOptionAttribute}], .codex-upstream-branch-group`)
+      .forEach((node) => node.remove());
+  }
+
+  function cleanupInvalidUpstreamBranchOptions() {
+    for (const menu of nativeBranchMenuCandidates()) {
+      if (!menu.querySelector(`[${upstreamBranchOptionAttribute}], .codex-upstream-branch-group`)) continue;
+      const trigger = branchMenuTriggerFromMenu(menu);
+      if (!looksLikeBranchMenu(menu, trigger) || !branchMenuInNewWorktreeMode(trigger)) {
+        removeUpstreamBranchOptions(menu);
+      }
+    }
+  }
+
+  function branchMenuTriggerFromMenu(menu) {
+    const labelledBy = menu?.getAttribute?.("aria-labelledby") || "";
+    if (labelledBy) {
+      const trigger = document.getElementById(labelledBy);
+      if (trigger instanceof Element) return trigger;
+    }
+    return [...document.querySelectorAll('.composer-footer button, .composer-footer [role="button"]')]
+      .filter((button) => (button.innerText || button.textContent || "").trim() === "main")
+      .sort((left, right) => right.getBoundingClientRect().x - left.getBoundingClientRect().x)[0] || null;
+  }
+
+  function branchMenuTriggerIsBranchControl(trigger) {
+    const text = normalizedElementText(trigger);
+    if (!text || /^(work locally|new worktree|cloud|no environment)$/i.test(text)) return false;
+    const rect = effectiveElementRect(trigger);
+    const footer = trigger?.closest?.(".composer-footer");
+    if (!rect || !footer) return /branch|main|create branch/i.test(text);
+    const modeTrigger = [...footer.querySelectorAll('button, [role="button"]')]
+      .filter((node) => node !== trigger && visibleElement(node))
+      .filter((node) => node.getBoundingClientRect().x < rect.x)
+      .sort((left, right) => right.getBoundingClientRect().x - left.getBoundingClientRect().x)
+      .find((node) => /^(work locally|new worktree|cloud)$/i.test(normalizedElementText(node)));
+    return !!modeTrigger;
+  }
+
+  function branchMenuInNewWorktreeMode(trigger) {
+    if (!trigger) return newWorktreeModeActive();
+    const footer = trigger.closest?.(".composer-footer");
+    const scope = footer || trigger.parentElement || document;
+    const triggerRect = effectiveElementRect(trigger);
+    if (!triggerRect) return false;
+    const modeTrigger = [...scope.querySelectorAll('button, [role="button"]')]
+      .filter((node) => node !== trigger && visibleElement(node))
+      .filter((node) => node.getBoundingClientRect().x < triggerRect.x)
+      .sort((left, right) => right.getBoundingClientRect().x - left.getBoundingClientRect().x)
+      .find((node) => /worktree|work locally/i.test(normalizedElementText(node)));
+    return normalizedElementText(modeTrigger) === "New worktree";
+  }
+
+  function branchTriggerLabelNode(trigger) {
+    if (!trigger) return null;
+    const nodes = [...trigger.querySelectorAll("span, div")]
+      .filter((node) => (node.innerText || node.textContent || "").trim());
+    return nodes.find((node) => node.classList?.contains("composer-footer__label--sm")) || nodes[0] || trigger;
+  }
+
+  function ensureNativeBranchTriggerLabel(trigger) {
+    if (!trigger || trigger.querySelector?.('[data-codex-upstream-branch-selection-label="true"]')) return;
+    const labelNode = branchTriggerLabelNode(trigger);
+    if (!labelNode) return;
+    trigger.setAttribute("data-codex-upstream-branch-trigger", "true");
+    labelNode.setAttribute("data-codex-native-branch-label", "true");
+    const selectionLabel = document.createElement("span");
+    selectionLabel.setAttribute("data-codex-upstream-branch-selection-label", "true");
+    selectionLabel.className = labelNode.className || "composer-footer__label--sm composer-footer__secondary-label max-w-40 truncate";
+    selectionLabel.hidden = true;
+    labelNode.insertAdjacentElement("afterend", selectionLabel);
+  }
+
+  function clearUpstreamBranchTriggerLabel() {
+    document.querySelectorAll('[data-codex-upstream-branch-trigger="true"]').forEach((trigger) => {
+      const nativeLabel = trigger.querySelector('[data-codex-native-branch-label="true"]');
+      const selectionLabel = trigger.querySelector('[data-codex-upstream-branch-selection-label="true"]');
+      if (nativeLabel) nativeLabel.hidden = false;
+      if (selectionLabel) selectionLabel.hidden = true;
+      trigger.removeAttribute("aria-label");
+      trigger.removeAttribute("title");
+    });
+  }
+
+  function syncUpstreamBranchTriggerLabel() {
+    const selection = readUpstreamBranchSelection();
+    if (!selection?.label) {
+      clearUpstreamBranchTriggerLabel();
+      return;
+    }
+    document.querySelectorAll('[data-codex-upstream-branch-trigger="true"]').forEach((trigger) => {
+      const nativeLabel = trigger.querySelector('[data-codex-native-branch-label="true"]');
+      const selectionLabel = trigger.querySelector('[data-codex-upstream-branch-selection-label="true"]');
+      if (!selectionLabel) return;
+      if (nativeLabel) nativeLabel.hidden = true;
+      selectionLabel.hidden = false;
+      selectionLabel.textContent = selection.label;
+      trigger.setAttribute("aria-label", selection.label);
+      trigger.setAttribute("title", selection.label);
+    });
+  }
+
+  function handleNativeBranchSelection(event) {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const menuItem = target?.closest?.('[role="menuitem"], [data-radix-collection-item]');
+    if (!menuItem || menuItem.closest?.(`[${upstreamBranchOptionAttribute}]`)) return;
+    const menu = menuItem.closest?.('[role="menu"], [data-radix-menu-content]');
+    if (!menu || !looksLikeBranchMenu(menu)) return;
+    const text = (menuItem.innerText || menuItem.textContent || "").replace(/\s+/g, " ").trim();
+    if (!text || /^branches$/i.test(text) || /^upstream$/i.test(text) || text === readUpstreamBranchSelection()?.label) return;
+    const usedWorktreePath = branchWorktreePathFromMenuItem(menuItem);
+    writeUpstreamBranchSelection(null);
+    clearUpstreamBranchTriggerLabel();
+    syncUpstreamBranchMenuSelection(menu);
+    if (usedWorktreePath) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+      showToast(`该分支已在另一个 worktree 使用：${usedWorktreePath}`, null);
+    }
+  }
+
+  async function injectUpstreamBranchOptions() {
+    if (!codexPlusSettings().upstreamWorktreeCreate) {
+      removeUpstreamBranchOptions();
+      return;
+    }
+    cleanupInvalidUpstreamBranchOptions();
+    for (const menu of nativeBranchMenuCandidates()) {
+      const trigger = branchMenuTriggerFromMenu(menu);
+      if (!looksLikeBranchMenu(menu, trigger)) continue;
+      const context = currentProjectContextForBranchMenu(menu, trigger);
+      if (!context?.repoPath && !context?.projectId) {
+        removeUpstreamBranchOptions(menu);
+        continue;
+      }
+      const defaults = await loadUpstreamBranchDefaults(context);
+      const defaultsResult = defaults?.result;
+      const refs = defaults?.result?.upstreamRefs || [];
+      annotateBranchMenuWorktreeUsage(menu, defaultsResult);
+      if (!branchMenuInNewWorktreeMode(trigger)) {
+        removeUpstreamBranchOptions(menu);
+        writeUpstreamBranchSelection(null);
+        clearUpstreamBranchTriggerLabel();
+        continue;
+      }
+      if (!refs.length) {
+        removeUpstreamBranchOptions(menu);
+        continue;
+      }
+      const resolvedContext = {
+        repoPath: defaults?.repoPath || context.repoPath || defaultsResult?.repoRoot || "",
+        projectId: defaults?.projectId || context.projectId || "",
+      };
+      if (upstreamBranchOptionsMatchRefs(menu, resolvedContext, refs)) {
+        syncUpstreamBranchTriggerLabel();
+        syncUpstreamBranchMenuSelection(menu);
+        continue;
+      }
+      removeUpstreamBranchOptions(menu);
+      ensureNativeBranchTriggerLabel(trigger);
+      const group = document.createElement("div");
+      group.className = "codex-upstream-branch-group px-2 py-1 text-xs text-token-text-tertiary";
+      group.textContent = "Upstream";
+      menu.appendChild(group);
+      refs.forEach((ref) => renderUpstreamBranchOption(menu, resolvedContext, ref));
+      syncUpstreamBranchTriggerLabel();
+      syncUpstreamBranchMenuSelection(menu);
+    }
+  }
+
+  function installUpstreamBranchDropdownAdapter() {
+    const adapterVersion = "actual-upstream-refs-v17";
+    window.__codexUpstreamBranchDropdownAdapterVersion = adapterVersion;
+    if (window.__codexUpstreamBranchDropdownAdapterInstalled === adapterVersion) return;
+    window.__codexUpstreamBranchDropdownObserver?.disconnect?.();
+    window.__codexUpstreamBranchDropdownAdapterInstalled = adapterVersion;
+    let upstreamBranchInjectTimer = null;
+    const schedule = () => {
+      clearTimeout(upstreamBranchInjectTimer);
+      upstreamBranchInjectTimer = setTimeout(() => {
+        injectUpstreamBranchOptions().catch((error) => reportDiagnostic("upstream_branch_inject_failed", { error: error?.message || String(error) }));
+      }, 80);
+    };
+    document.addEventListener("click", (event) => {
+      rememberStartNewChatProjectContext(event);
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const control = target?.closest?.('button, [role="button"]');
+      if (control && branchMenuTriggerIsBranchControl(control)) schedule();
+      const option = target?.closest?.(`[${upstreamBranchOptionAttribute}]`);
+      if (!option) {
+        handleNativeBranchSelection(event);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const selection = {
+        repoPath: option.getAttribute("data-repo-path") || "",
+        projectId: option.getAttribute("data-project-id") || "",
+        remote: option.getAttribute("data-remote") || "upstream",
+        baseBranch: option.getAttribute("data-base-branch") || "main",
+        label: upstreamBranchOptionLabel(option) || "upstream/main",
+      };
+      writeUpstreamBranchSelection(selection);
+      prepareUpstreamBranchSelection(selection);
+      syncUpstreamBranchTriggerLabel();
+      syncUpstreamBranchMenuSelection(option.closest?.('[role="menu"], [data-radix-menu-content], [cmdk-list]'));
+      showToast(`将从 ${upstreamBranchOptionLabel(option) || "upstream/main"} 创建新 worktree`, null);
+    }, true);
+    const branchMenuSelector = '[role="menu"], [data-radix-menu-content], [cmdk-list]';
+    const addedNodeContainsBranchMenu = (node) => {
+      if (!(node instanceof Element)) return false;
+      return node.matches(branchMenuSelector) || !!node.querySelector(branchMenuSelector);
+    };
+    const observer = new MutationObserver((records) => {
+      if (records.some((record) => [...record.addedNodes].some(addedNodeContainsBranchMenu))) schedule();
+    });
+    observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    window.__codexUpstreamBranchDropdownObserver = observer;
+    schedule();
+  }
+
+  function upstreamQualifiedSourceRef(selection) {
+    if (selection?.qualifiedSourceRef) return selection.qualifiedSourceRef;
+    const remote = (selection?.remote || "upstream").trim();
+    const baseBranch = (selection?.baseBranch || "main").trim();
+    return remote && baseBranch ? `refs/remotes/${remote}/${baseBranch}` : "";
+  }
+
+  function prepareUpstreamBranchSelection(selection) {
+    if ((!selection?.repoPath && !selection?.projectId) || !selection.remote || !selection.baseBranch) return;
+    void postJson("/upstream-worktree/prepare", {
+      repoPath: selection.repoPath || "",
+      projectId: selection.projectId || "",
+      remote: selection.remote,
+      baseBranch: selection.baseBranch,
+      fetch: true,
+    }).then((result) => {
+      if (result?.status !== "ok") throw new Error(result?.message || "prepare failed");
+      writePreparedUpstreamBranchSelection(selection, result);
+    }).catch((error) => {
+      sendCodexPlusDiagnostic("upstream_branch_prepare_failed", {
+        label: selection.label || "",
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    });
+  }
+
+  function writePreparedUpstreamBranchSelection(selection, result) {
+    const current = readUpstreamBranchSelection();
+    if (!upstreamSelectionMatches(current, selection)) return;
+    writeUpstreamBranchSelection({
+      ...current,
+      qualifiedSourceRef: result.qualifiedSourceRef || upstreamQualifiedSourceRef(selection),
+      sourceHead: result.sourceHead || "",
+      preparedAt: Date.now(),
+    });
+  }
+
+  function upstreamSelectionMatches(left, right) {
+    return !!left && !!right
+      && (left.repoPath || "") === (right.repoPath || "")
+      && (left.projectId || "") === (right.projectId || "")
+      && (left.remote || "upstream") === (right.remote || "upstream")
+      && (left.baseBranch || "main") === (right.baseBranch || "main");
+  }
+
+  function upstreamWorktreeNativePayloadFromElement(element) {
+    const trigger = element?.closest?.("[data-codex-worktree-create], [data-worktree-create]") || element;
+    const scopes = [
+      trigger,
+      trigger?.closest?.("form"),
+      trigger?.closest?.("dialog, [role='dialog']"),
+    ].filter((scope, index, all) => scope?.querySelector && all.indexOf(scope) === index);
+    if (!scopes.length) return null;
+    const valueFrom = (selectors) => {
+      for (const scope of scopes) {
+        for (const selector of selectors) {
+          const node = scope.matches?.(selector) ? scope : scope.querySelector(selector);
+          const dataAttribute = selector.match(/^\[([a-z0-9-]+)\]$/i)?.[1] || "";
+          const value = node?.value || node?.getAttribute?.(dataAttribute) || node?.getAttribute?.("data-value") || node?.textContent || "";
+          if (String(value).trim()) return String(value).trim();
+        }
+      }
+      return "";
+    };
+    const repoPath = valueFrom(["[data-repo-path]", "[name='repoPath']", "[name='repo']"]);
+    const branchName = valueFrom(["[data-branch-name]", "[name='branchName']", "[name='branch']"]);
+    const worktreePath = valueFrom(["[data-worktree-path]", "[name='worktreePath']", "[name='path']"]);
+    const remote = valueFrom(["[data-remote]", "[name='remote']"]) || "upstream";
+    const baseBranch = valueFrom(["[data-base-branch]", "[name='baseBranch']", "[name='base']"]) || "main";
+    if (!repoPath || !branchName || !worktreePath || !remote || !baseBranch) return null;
+    return { repoPath, branchName, worktreePath, remote, baseBranch, fetch: true };
+  }
+
+  function upstreamWorktreePayloadFromSelection(trigger) {
+    const selection = readUpstreamBranchSelection();
+    if ((!selection?.repoPath && !selection?.projectId) || !selection?.remote || !selection?.baseBranch) return null;
+    const nativePayload = upstreamWorktreeNativePayloadFromElement(trigger);
+    if (!nativePayload?.branchName || !nativePayload?.worktreePath) return null;
+    return {
+      ...nativePayload,
+      repoPath: selection.repoPath,
+      projectId: selection.projectId || "",
+      remote: selection.remote,
+      baseBranch: selection.baseBranch,
+      fetch: true,
+    };
+  }
+
+  async function handleUpstreamWorktreeNativeCreate(event) {
+    if (!codexPlusSettings().upstreamWorktreeCreate) return false;
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const trigger = target?.closest?.("[data-codex-worktree-create], [data-worktree-create]");
+    if (!trigger) return false;
+    const payload = upstreamWorktreePayloadFromSelection(trigger) || upstreamWorktreeNativePayloadFromElement(trigger);
+    if (!payload) {
+      showToast("无法安全识别 Codex 原生 worktree 表单，请使用 Codex++ 菜单创建。", null);
+      return false;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const result = await postJson("/upstream-worktree/create", payload);
+      if (result?.status === "ok") {
+        writeUpstreamBranchSelection(null);
+        syncUpstreamBranchTriggerLabel();
+        showToast(`已从 ${result.sourceRef} 创建 worktree`, null);
+      } else {
+        showToast(result?.message || "创建 upstream worktree 失败", null);
+      }
+    } catch (error) {
+      showToast(error?.message || "创建 upstream worktree 失败", null);
+    }
+    return true;
+  }
+
+  function installUpstreamWorktreeNativeAdapter() {
+    const adapterVersion = "2";
+    if (window.__codexUpstreamWorktreeNativeAdapterInstalled === adapterVersion) return;
+    window.__codexUpstreamWorktreeNativeAdapterInstalled = adapterVersion;
+    document.addEventListener("click", (event) => {
+      handleUpstreamWorktreeNativeCreate(event);
+    }, true);
+  }
+
+  function setUpstreamWorktreeMessage(dialog, message, status = "idle") {
+    const messageNode = dialog.querySelector("[data-codex-upstream-worktree-message]");
+    if (!messageNode) return;
+    messageNode.dataset.status = status;
+    messageNode.textContent = message || "";
+  }
+
+  async function loadUpstreamWorktreeDefaults(dialog) {
+    const repoPath = upstreamWorktreeField(dialog, "repoPath")?.value?.trim() || "";
+    if (!repoPath) {
+      setUpstreamWorktreeMessage(dialog, "填写仓库路径后会自动读取 remote 和当前分支。", "idle");
+      return;
+    }
+    setUpstreamWorktreeMessage(dialog, "正在读取仓库默认值…", "loading");
+    try {
+      const result = await postJson("/upstream-worktree/defaults", { repoPath });
+      if (result?.status !== "ok") {
+        setUpstreamWorktreeMessage(dialog, result?.message || "读取仓库默认值失败", "failed");
+        return;
+      }
+      const remote = upstreamWorktreeField(dialog, "remote");
+      const baseBranch = upstreamWorktreeField(dialog, "baseBranch");
+      if (remote && !remote.value) remote.value = result.defaultRemote || "upstream";
+      if (baseBranch && (!baseBranch.value || baseBranch.value === "main")) baseBranch.value = result.defaultBaseBranch || "main";
+      setUpstreamWorktreeMessage(dialog, `将从 ${remote?.value || "upstream"}/${baseBranch?.value || "main"} 创建 worktree。`, "ok");
+    } catch (error) {
+      setUpstreamWorktreeMessage(dialog, error?.message || "读取仓库默认值失败", "failed");
+    }
+  }
+
+  async function submitUpstreamWorktree(dialog) {
+    const payload = upstreamWorktreePayload(dialog);
+    if (!payload.repoPath || !payload.branchName || !payload.worktreePath || !payload.remote || !payload.baseBranch) {
+      setUpstreamWorktreeMessage(dialog, "仓库路径、分支名、worktree 路径、remote 和 base branch 都必须填写。", "failed");
+      return;
+    }
+    setUpstreamWorktreeMessage(dialog, "正在 fetch 并创建 worktree…", "loading");
+    try {
+      const result = await postJson("/upstream-worktree/create", payload);
+      if (result?.status === "ok") {
+        setUpstreamWorktreeMessage(dialog, `已从 ${result.sourceRef} 创建：${result.worktreePath}`, "ok");
+        showToast(`已创建 upstream worktree：${result.branchName}`, null);
+      } else {
+        setUpstreamWorktreeMessage(dialog, result?.message || "创建 upstream worktree 失败", "failed");
+      }
+    } catch (error) {
+      setUpstreamWorktreeMessage(dialog, error?.message || "创建 upstream worktree 失败", "failed");
+    }
+  }
+
+  function openUpstreamWorktreeDialog() {
+    document.querySelectorAll(`.${upstreamWorktreeDialogClass}`).forEach((node) => node.remove());
+    const overlay = document.createElement("div");
+    overlay.className = `codex-delete-confirm-overlay ${upstreamWorktreeDialogClass}`;
+    overlay.innerHTML = `
+      <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="Create upstream worktree">
+        <div class="codex-delete-confirm-title">Create from upstream</div>
+        <div class="codex-delete-confirm-message">等价于 git worktree add -b branch path upstream/base。创建前会先 fetch 远端分支。</div>
+        <label class="codex-plus-form-field">仓库路径<input data-codex-upstream-worktree-field="repoPath" type="text" placeholder="/path/to/repo"></label>
+        <label class="codex-plus-form-field">新分支名<input data-codex-upstream-worktree-field="branchName" type="text" placeholder="feature/my-task"></label>
+        <label class="codex-plus-form-field">Worktree 路径<input data-codex-upstream-worktree-field="worktreePath" type="text" placeholder="/path/to/worktrees/my-task"></label>
+        <label class="codex-plus-form-field">Remote<input data-codex-upstream-worktree-field="remote" type="text" value="upstream"></label>
+        <label class="codex-plus-form-field">Base branch<input data-codex-upstream-worktree-field="baseBranch" type="text" value="main"></label>
+        <div class="codex-plus-form-message" data-codex-upstream-worktree-message>填写仓库路径后会自动读取 remote 和当前分支。</div>
+        <div class="codex-delete-confirm-actions">
+          <button type="button" data-codex-upstream-worktree-cancel="true">取消</button>
+          <button type="button" data-codex-upstream-worktree-defaults="true">读取默认值</button>
+          <button type="button" data-codex-upstream-worktree-submit="true">Create from upstream</button>
+        </div>
+      </div>
+    `;
+    overlay.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (event.target === overlay || target?.closest("[data-codex-upstream-worktree-cancel]")) {
+        overlay.remove();
+        return;
+      }
+      if (target?.closest("[data-codex-upstream-worktree-defaults]")) {
+        loadUpstreamWorktreeDefaults(overlay);
+        return;
+      }
+      if (target?.closest("[data-codex-upstream-worktree-submit]")) {
+        submitUpstreamWorktree(overlay);
+      }
+    }, true);
+    upstreamWorktreeField(overlay, "repoPath")?.addEventListener("change", () => loadUpstreamWorktreeDefaults(overlay));
+    document.body.appendChild(overlay);
+    upstreamWorktreeField(overlay, "repoPath")?.focus();
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function confirmDelete(title) {
+    document.querySelectorAll(".codex-delete-confirm-overlay").forEach((node) => node.remove());
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "codex-delete-confirm-overlay";
+      overlay.innerHTML = `
+        <div class="codex-delete-confirm-content" role="dialog" aria-modal="true" aria-label="删除会话">
+          <div class="codex-delete-confirm-title">删除会话</div>
+          <div class="codex-delete-confirm-message">删除“${escapeHtml(title)}”？</div>
+          <div class="codex-delete-confirm-actions">
+            <button type="button" data-codex-delete-cancel="true">取消</button>
+            <button type="button" data-codex-delete-confirm="true">删除</button>
+          </div>
+        </div>
+      `;
+      const finish = (value, event) => {
+        event?.preventDefault();
+        event?.stopPropagation();
+        event?.target?.blur?.();
+        overlay.remove();
+        resolve(value);
+      };
+      overlay.addEventListener("click", (event) => {
+        if (event.target === overlay || event.target.closest("[data-codex-delete-cancel]")) {
+          finish(false, event);
+          return;
+        }
+        if (event.target.closest("[data-codex-delete-confirm]")) {
+          finish(true, event);
+        }
+      }, true);
+      overlay.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") finish(false, event);
+      }, true);
+      document.body.appendChild(overlay);
+      overlay.querySelector("[data-codex-delete-cancel]")?.focus();
+    });
+  }
+
+  function rowHref(row) {
+    return row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
+  }
+
+  function isCurrentSessionRow(row, ref) {
+    if (row.getAttribute("aria-current") === "page" || row.getAttribute("aria-current") === "true") return true;
+    const href = rowHref(row);
+    if (href) {
+      try {
+        const url = new URL(href, window.location.href);
+        if (url.href === window.location.href || url.pathname === window.location.pathname) return true;
+      } catch {
+        if (window.location.href.includes(href)) return true;
+      }
+    }
+    return !!ref.session_id && window.location.href.includes(ref.session_id);
+  }
+
+  function releaseDeleteFocus(row, button) {
+    button.blur();
+    if (row.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
+  }
+
+  function removeDeletedRow(row, button, ref) {
+    releaseDeleteFocus(row, button);
+    const shouldReload = isCurrentSessionRow(row, ref);
+    row.remove();
+    if (shouldReload) {
+      setTimeout(() => window.location.reload(), 10000);
+    }
+  }
+
+  function updateDeleteButtonOffsets() {
+    sessionRows().forEach((row) => {
+      const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
+        const rect = button.getBoundingClientRect();
+        const label = button.getAttribute("aria-label") || "";
+        const text = (button.textContent || "").trim();
+        if (button.classList.contains(buttonClass) || button.classList.contains(exportButtonClass) || label === "归档对话" || label === "置顶对话") return false;
+        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+      });
+      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+    });
+  }
+
+  async function deleteViaNativeAppServer(ref) {
+    const threadId = normalizedCodexThreadUuid(ref?.session_id || "");
+    if (!threadId) {
+      return { status: "unavailable", message: "无法识别有效的 Codex thread ID" };
+    }
+    try {
+      const { candidates, sources, discovery } = await loadAppServerRequestCandidates();
+      const clients = candidates.filter((candidate) => typeof candidate?.sendRequest === "function");
+      const errors = [];
+      for (const client of clients) {
+        try {
+          await client.sendRequest("thread/delete", { threadId });
+          sendCodexPlusDiagnostic("session_native_delete_completed", {
+            threadId,
+            candidateCount: clients.length,
+            sources,
+            discovery,
+          });
+          return {
+            status: "server_deleted",
+            session_id: threadId,
+            message: "已通过 Codex 官方接口永久删除会话",
+            undo_token: null,
+          };
+        } catch (error) {
+          errors.push(error?.message || String(error));
+        }
+      }
+      sendCodexPlusDiagnostic("session_native_delete_unavailable", {
+        threadId,
+        candidateCount: clients.length,
+        sources,
+        discovery,
+        errors,
+      });
+      return {
+        status: "unavailable",
+        message: errors[0] || "当前 Codex 版本未暴露 thread/delete 接口",
+      };
+    } catch (error) {
+      sendCodexPlusDiagnostic("session_native_delete_failed", {
+        threadId,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      return {
+        status: "unavailable",
+        message: error?.message || String(error),
+      };
+    }
+  }
+
+  function openDeleteConfirmForRow(row, button, ref, event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation?.();
+    releaseDeleteFocus(row, button);
+    confirmDelete(ref.title).then(async (confirmed) => {
+      if (!confirmed) return;
+      releaseDeleteFocus(row, button);
+      const nativeResult = await deleteViaNativeAppServer(ref);
+      const result = nativeResult.status === "server_deleted" ? nativeResult : await postJson("/delete", ref);
+      if (result.status === "server_deleted" || result.status === "local_deleted") {
+        removeDeletedRow(row, button, ref);
+        showToast(result.message || "删除成功", result.undo_token);
+      } else {
+        showToast(result.message || "删除失败", null);
+      }
+    });
+  }
+
+  async function exportMarkdown(ref) {
+    const result = await postJson("/export-markdown", ref);
+    if (result.status === "exported" && result.filename && typeof result.markdown === "string") {
+      const saveResult = await saveMarkdown(result.filename, result.markdown);
+      if (saveResult?.status === "cancelled") {
+        showToast(saveResult.message || "导出已取消", null);
+      } else {
+        showToast(result.message || "导出成功", null);
+      }
+      return;
+    }
+    showToast(result.message || "导出失败", null);
+  }
+
+  function installDeleteButtonEventDelegation() {
+    document.removeEventListener("click", window.__codexSessionDeleteDocumentDeleteHandler, true);
+    const handler = (event) => {
+      const button = event.target?.closest?.(`.${buttonClass}`);
+      const row = button?.closest?.("[data-app-action-sidebar-thread-id]");
+      if (!button || !row) return;
+      const ref = sessionRefFromRow(row);
+      if (!ref.session_id) {
+        const placeholderId = row.getAttribute("data-app-action-sidebar-thread-id");
+        if (isClientNewThreadId(placeholderId)) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation?.();
+          showToast("会话仍在同步，请稍后重试", null);
+        }
+        return;
+      }
+      openDeleteConfirmForRow(row, button, ref, event);
+    };
+    window.__codexSessionDeleteDocumentDeleteHandler = handler;
+    document.addEventListener("click", handler, true);
+  }
+
+  function actionGroupFromRow(row) {
+    return row.querySelector(`.${actionGroupClass}`);
+  }
+
+  function nativeActionButtonsFromRow(row) {
+    return [...row.querySelectorAll('button,[role="button"],a')]
+      .filter((node) => !node.closest(`.${actionGroupClass}`))
+      .filter((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.width < 12 || rect.height < 12) return false;
+        const label = [
+          node.getAttribute("aria-label"),
+          node.getAttribute("title"),
+          node.dataset?.state,
+          node.textContent,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (/(pin|archive|置顶|归档)/i.test(label)) return true;
+        const rowRect = row.getBoundingClientRect();
+        return rect.left > rowRect.left + rowRect.width * 0.68;
+      });
+  }
+
+  function refreshCodexRelayApiKeyBadges() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    const active = keys.find((entry) => entry.id === codexPlusRelayApiKeys.activeKeyId) || keys[0];
+    document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`).forEach((badge) => {
+      badge.textContent = active?.name || "Key";
+      badge.title = active ? `当前 Key：${active.name}；点击切换` : "切换 API Key";
+      badge.setAttribute("aria-label", badge.title);
+      badge.dataset.disabled = String(codexPlusRelayApiKeySwitching);
+    });
+  }
+  function installCodexRelayApiKeyBadge() {
+    const keys = Array.isArray(codexPlusRelayApiKeys.keys) ? codexPlusRelayApiKeys.keys : [];
+    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "loading") {
+      void loadRelayApiKeys().then(() => installCodexRelayApiKeyBadge());
+      return;
+    }
+    const existing = Array.from(document.querySelectorAll(`[data-codex-relay-api-key-badge="true"]`));
+    // 总开关关闭时也能换 Key（只改 Key 的落点），所以快捷入口不再跟开关绑定。
+    if (keys.length < 2) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    const composer = codexServiceTierFindComposerEl();
+    const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
+    if (!placement?.parent) {
+      existing.forEach((badge) => badge.remove());
+      return;
+    }
+    let badge = existing[0];
+    existing.slice(1).forEach((node) => node.remove());
+    if (!badge || badge.dataset.codexRelayApiKeyBadgeVersion !== codexRelayApiKeyBadgeVersion) {
+      badge?.remove();
+      badge = document.createElement("button");
+      badge.type = "button";
+      badge.className = codexRelayApiKeyBadgeClass;
+      badge.dataset.codexRelayApiKeyBadge = "true";
+      badge.dataset.codexRelayApiKeyBadgeVersion = codexRelayApiKeyBadgeVersion;
+      badge.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!codexPlusRelayApiKeySwitching) openCodexPlusPage("apiKeys");
+      });
+    }
+    const before = placement.before?.parentElement === placement.parent ? placement.before : null;
+    if (badge.parentElement !== placement.parent || badge.nextSibling !== before) {
+      placement.parent.insertBefore(badge, before);
+    }
+    refreshCodexRelayApiKeyBadges();
+  }
+  function syncActionGroupLayout(row, group) {
+    if (!row || !group) return;
+    if (group.dataset.codexActionLayoutStable === "true") return;
+    const rowRect = row.getBoundingClientRect();
+    const nativeButtons = nativeActionButtonsFromRow(row);
+    const leftmostNative = nativeButtons
+      .map((button) => button.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((a, b) => a.left - b.left)[0];
+    const gap = 8;
+    const fallbackRight = 28;
+    const right = leftmostNative
+      ? Math.max(fallbackRight, Math.round(rowRect.right - leftmostNative.left + gap))
+      : fallbackRight;
+    const groupWidth = Math.ceil(group.getBoundingClientRect().width || 96);
+    const titleNode = row.querySelector(selectors.threadTitle);
+    const titleRect = titleNode?.getBoundingClientRect();
+    const titleLeft = titleRect?.left || rowRect.left + 40;
+    let effectiveRight = right;
+    group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
+    if (leftmostNative) {
+      const nativeStyle = getComputedStyle(nativeButtons.find((button) => button.getBoundingClientRect().left === leftmostNative.left) || nativeButtons[0]);
+      group.style.setProperty("--codex-session-action-color", nativeStyle.color);
+      group.style.setProperty("--codex-session-action-hover-color", nativeStyle.color);
+      group.style.setProperty("--codex-session-action-hover-background", nativeStyle.backgroundColor);
+      const groupRight = group.getBoundingClientRect().right;
+      const targetRight = leftmostNative.left - 2;
+      if (Number.isFinite(groupRight) && Number.isFinite(targetRight)) {
+        const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
+        effectiveRight = Math.max(0, right + (groupRight - targetRight) / Math.max(0.1, renderScale));
+        group.style.setProperty("--codex-session-actions-right", `${effectiveRight}px`);
+      }
+    }
+    const renderScale = row.offsetWidth > 0 ? rowRect.width / row.offsetWidth : 1;
+    const finalGroupLeft = group.getBoundingClientRect().left;
+    const titleMaxWidth = Math.max(24, (finalGroupLeft - titleLeft - 8) / Math.max(0.1, renderScale));
+    row.style.setProperty("--codex-session-title-mask", `${effectiveRight + groupWidth + 12}px`);
+    row.style.setProperty("--codex-session-title-max-width", `${titleMaxWidth}px`);
+    group.dataset.codexActionLayoutStable = "true";
+  }
