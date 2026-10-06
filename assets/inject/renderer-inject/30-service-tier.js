@@ -1,456 +1,3 @@
-  const codexServiceTierFallbackFastValue = "priority";
-  const codexServiceTierReadTimeoutMs = 5000;
-  const codexServiceTierModulePromises = new Map();
-  // namePart -> { at, attempts, error }，见 loadCodexAppModule 里的说明。
-  const codexAppModuleFailures = new Map();
-  const codexAppModuleRetryCooldownMs = 30000;
-  const codexAppModuleMaxAttempts = 8;
-  const codexServiceTierSupportedFastModels = new Set(["gpt-5.4", "gpt-5.5"]);
-  const codexThreadServiceTierModes = new Set(["inherit", "standard", "fast"]);
-  const codexServiceTierControlModes = new Set(["inherit", "global-standard", "global-fast", "custom"]);
-  // 这里只放确认支持 priority service tier 的官方模型——这个集合同时用于生成
-  // 「Fast 仅支持 …」的提示文案，塞进没验证过的模型等于对用户做出错误承诺。
-  // 第三方模型（deepseek 等）走下面 codexServiceTierFastSupportedForModel 里的
-  // 模型元数据判定：上游自己声明了 priority 才认。
-  ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].forEach((model) => codexServiceTierSupportedFastModels.add(model));
-
-  function uniqueCodexAppAssetUrls(urls) {
-    return Array.from(new Set((urls || []).filter((url) => typeof url === "string" && url.includes("/assets/") && url.split("?")[0].endsWith(".js"))));
-  }
-
-  function codexAppAssetCandidateUrls() {
-    return uniqueCodexAppAssetUrls([
-      ...Array.from(document.scripts || []).map((script) => script.src),
-      ...Array.from(document.querySelectorAll("link[href]") || []).map((link) => link.href),
-      ...performance.getEntriesByType("resource").map((entry) => entry.name),
-    ]);
-  }
-
-  function codexAppAssetUrl(namePart) {
-    if (!namePart) return "";
-    return codexAppAssetCandidateUrls().find((url) => url.includes(namePart)) || "";
-  }
-
-  async function codexAppAssetUrlFromScriptText(namePart) {
-    if (!namePart) return "";
-    const scripts = codexAppAssetCandidateUrls();
-    const escaped = String(namePart).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const patterns = [
-      new RegExp(`["'](\\./(?:assets/)?${escaped}[^"']+\\.js)["']`),
-      new RegExp(`["'](\\.?/assets/${escaped}[^"']+\\.js)["']`),
-      new RegExp(`["']([^"']*/assets/${escaped}[^"']+\\.js)["']`),
-    ];
-    for (const src of scripts) {
-      try {
-        const text = await fetch(src).then((response) => response.ok ? response.text() : "");
-        if (!text) continue;
-        for (const pattern of patterns) {
-          const match = text.match(pattern);
-          if (!match) continue;
-          return new URL(match[1], src).href;
-        }
-      } catch {
-      }
-    }
-    return "";
-  }
-
-  // issue #1960：失败必须被记住。之前失败只是把 promise 从 map 里删掉，
-  // 于是任何调用方下一次重试都会重新走 codexAppAssetUrlFromScriptText()，
-  // 把全部 app asset（实测 121 个）重新 fetch 一遍再跑三条正则。
-  // 这个 loader 有四个调用方，其中 installCodexServiceTierDispatcherPatch()
-  // 挂在 scanLightweight() 里、每轮 scan 都试三个前缀，Codex 侧改名后就成了永不停止的重扫：
-  // 实测空闲时 301 次请求/秒，主线程 TaskOtherDuration 占满一半 CPU，JS 堆每秒涨约 1MB，
-  // Sentry 又给每个请求记一条 breadcrumb 并回同步一次 scope，把量再翻一倍推给 browser 进程。
-  // 记住失败 + 冷却重试，让下游即便还在轮询也只会周期性地试一次。
-  async function loadCodexAppModule(namePart) {
-    if (!codexServiceTierModulePromises.has(namePart)) {
-      const failure = codexAppModuleFailures.get(namePart);
-      if (failure
-          && (failure.attempts >= codexAppModuleMaxAttempts
-            || Date.now() - failure.at < codexAppModuleRetryCooldownMs)) {
-        throw failure.error;
-      }
-      const promise = Promise.resolve().then(async () => {
-        const url = codexAppAssetUrl(namePart) || await codexAppAssetUrlFromScriptText(namePart);
-        if (!url) throw new Error(`未找到 Codex App asset: ${namePart}`);
-        return await import(url);
-      }).then((module) => {
-        // Codex 更新后 asset 可能又出现，成功时把失败记录清掉，冷却计数重新开始。
-        codexAppModuleFailures.delete(namePart);
-        return module;
-      }).catch((error) => {
-        codexServiceTierModulePromises.delete(namePart);
-        codexAppModuleFailures.set(namePart, {
-          at: Date.now(),
-          attempts: (codexAppModuleFailures.get(namePart)?.attempts || 0) + 1,
-          error,
-        });
-        throw error;
-      });
-      codexServiceTierModulePromises.set(namePart, promise);
-    }
-    return await codexServiceTierModulePromises.get(namePart);
-  }
-
-  async function loadOptionalCodexAppModule(namePart) {
-    try {
-      return await loadCodexAppModule(namePart);
-    } catch (error) {
-      const message = String(error?.message || error);
-      if (message.includes(`未找到 Codex App asset: ${namePart}`)) return null;
-      throw error;
-    }
-  }
-
-  function appServerFallbackAssetUrls() {
-    const urls = codexAppAssetCandidateUrls();
-    const preferred = urls.filter((url) => {
-      const name = (url.split("/").pop() || "").toLowerCase();
-      return /use-host-config|app-server-manager-signals|app-initial|app-main|page-|chatg|signals|server-manager/.test(name);
-    });
-    // Prefer known request-client modules, then the larger application bundles.
-    preferred.sort((left, right) => {
-      const score = (url) => {
-        const name = (url.split("/").pop() || "").toLowerCase();
-        if (name.includes("use-host-config")) return 0;
-        if (name.includes("app-server-manager-signals")) return 1;
-        if (name.includes("app-initial") && name.includes("app-main")) return 3;
-        if (name.includes("app-main")) return 4;
-        return 5;
-      };
-      return score(left) - score(right) || right.length - left.length;
-    });
-    return preferred.slice(0, 16);
-  }
-
-  function collectAppServerRequestCandidatesFromModule(module) {
-    const candidates = [];
-    const seen = new Set();
-    const push = (value) => {
-      if (!value || typeof value !== "object" || seen.has(value)) return;
-      seen.add(value);
-      candidates.push(value);
-    };
-    for (const value of Object.values(module || {})) {
-      push(value);
-      if (!value || typeof value !== "object") continue;
-      if (typeof value.get === "function") {
-        try { push(value.get()); } catch {}
-        try { push(value.get("local")); } catch {}
-      }
-      try {
-        for (const nested of Object.values(value).slice(0, 100)) push(nested);
-      } catch {}
-    }
-    return candidates;
-  }
-
-  const codexAppServerRpcRoots = new WeakSet();
-  const codexModelQueryClients = new Set();
-  function refreshCodexModelQueries() {
-    if (!codexPlusModelUnlockEnabled()) return;
-    for (const client of codexModelQueryClients) Promise.resolve(client.invalidateQueries({ queryKey: ["models", "list", "local"] })).catch(() => {});
-  }
-  function codexAppScopeNodes() {
-    const root = window.__codexRoot?._internalRoot?.current;
-    if (!root) return [];
-    const pending = [root];
-    const seen = new Set();
-    while (pending.length && seen.size < 512) {
-      const fiber = pending.shift();
-      if (!fiber || seen.has(fiber)) continue;
-      seen.add(fiber);
-      const value = fiber.memoizedProps?.value;
-      if (value instanceof Map) {
-        const nodes = [...value.values()].filter((node) => node?.token?.__scopeBrand === "AppScope" && node.signalBindings instanceof WeakMap && typeof node.store?.get === "function");
-        if (nodes.length) return nodes;
-      }
-      if (fiber.sibling) pending.push(fiber.sibling);
-      if (fiber.child) pending.push(fiber.child);
-    }
-    return [];
-  }
-  function adaptCodexAppServerRpcRoot(root, queryClient) {
-    const forHost = Object.getOwnPropertyDescriptor(root, "forHost")?.value;
-    if (typeof forHost !== "function") return null;
-    if (!codexAppServerRpcRoots.has(root)) {
-      const clients = new WeakMap();
-      root.forHost = function codexPlusForHost(hostId, ...args) {
-        const remote = forHost.call(this, hostId, ...args);
-        if (!remote || !["object", "function"].includes(typeof remote)) return remote;
-        if (!clients.has(remote)) {
-          const local = { __codexPlusHostId: hostId, sendRequest: (...request) => Reflect.apply(remote.sendRequest, remote, request) };
-          patchAppServerModelRequestClient(local);
-          clients.set(remote, new Proxy(local, { get(target, key, receiver) { return Reflect.has(target, key) ? Reflect.get(target, key, receiver) : Reflect.get(remote, key, remote); } }));
-        }
-        return clients.get(remote);
-      };
-      codexAppServerRpcRoots.add(root);
-    }
-    if (typeof queryClient?.invalidateQueries === "function" && !codexModelQueryClients.has(queryClient)) {
-      codexModelQueryClients.add(queryClient);
-      refreshCodexModelQueries();
-    }
-    return root.forHost("local");
-  }
-  function collectScopedAppServerRequestCandidates(modules) {
-    const clients = [];
-    for (const scope of codexAppScopeNodes()) for (const module of modules) for (const signal of Object.values(module || {})) {
-      if (!signal || typeof signal !== "object" || signal.scope !== scope.token) continue;
-      const atom = scope.signalBindings.get(signal);
-      if (!atom) continue;
-      try {
-        const root = scope.store.get(atom);
-        const client = root && adaptCodexAppServerRpcRoot(root, scope.queryClient);
-        if (client) clients.push(client);
-      } catch {}
-    }
-    return clients;
-  }
-
-  async function loadAppServerRequestModules() {
-    const modules = [];
-    const sources = [];
-    const seenModules = new Set();
-    const seenUrls = new Set();
-    const pushModule = (module, source) => {
-      if (!module || typeof module !== "object" || seenModules.has(module)) return;
-      seenModules.add(module);
-      modules.push(module);
-      sources.push(source);
-    };
-    const namedPrefixes = codexAppScopeNodes().length ? [] : ["use-host-config-", "app-server-manager-signals-"];
-    for (const assetPrefix of namedPrefixes) {
-      try {
-        const module = await loadOptionalCodexAppModule(assetPrefix);
-        if (module) pushModule(module, assetPrefix);
-      } catch {
-      }
-    }
-    for (const url of appServerFallbackAssetUrls()) {
-      if (seenUrls.has(url)) continue;
-      seenUrls.add(url);
-      try {
-        pushModule(await import(url), url);
-      } catch {
-      }
-    }
-    return { modules, sources };
-  }
-
-  async function loadAppServerRequestCandidates() {
-    const { modules, sources } = await loadAppServerRequestModules();
-    const candidates = [];
-    const seen = new Set();
-    for (const module of modules) {
-      for (const candidate of collectAppServerRequestCandidatesFromModule(module)) {
-        if (seen.has(candidate)) continue;
-        seen.add(candidate);
-        candidates.push(candidate);
-      }
-    }
-    const scopedCandidates = collectScopedAppServerRequestCandidates(modules);
-    for (const candidate of scopedCandidates) {
-      if (!seen.has(candidate)) {
-        seen.add(candidate);
-        candidates.push(candidate);
-      }
-    }
-    const usedFallback = sources.some((source) => !source.endsWith("-"));
-    return { modules, candidates, sources, discovery: scopedCandidates.length ? "scoped-rpc" : usedFallback ? "fallback" : "named-assets" };
-  }
-
-  function codexSettingStorageFromModule(module, assetPrefix = "") {
-    const values = module && typeof module === "object" ? Object.values(module) : [];
-    const functionSource = (candidate) => {
-      if (typeof candidate !== "function") return "";
-      try {
-        return String(candidate);
-      } catch (_) {
-        return "";
-      }
-    };
-    const getSettingByCapability = () => values.find((candidate) => {
-      const source = functionSource(candidate);
-      return source.includes("get-setting") && source.includes("params") && source.includes("key");
-    });
-    const setSettingByCapability = () => values.find((candidate) => {
-      const source = functionSource(candidate);
-      return source.includes("set-setting") && source.includes("params") && source.includes("key");
-    });
-    let getSetting = null;
-    let setSetting = null;
-    if (assetPrefix.startsWith("setting-storage-")) {
-      getSetting = typeof module?.n === "function" ? module.n : getSettingByCapability();
-      setSetting = typeof module?.s === "function" ? module.s : setSettingByCapability();
-    } else if (assetPrefix.startsWith("app-initial-")) {
-      getSetting = typeof module?.jut === "function" ? module.jut : getSettingByCapability();
-      setSetting = typeof module?.Put === "function" ? module.Put : setSettingByCapability();
-    } else {
-      getSetting = getSettingByCapability();
-      setSetting = setSettingByCapability();
-    }
-    return typeof getSetting === "function" && typeof setSetting === "function"
-      ? { n: getSetting, s: setSetting, assetPrefix }
-      : null;
-  }
-
-  async function codexSettingStorageModule() {
-    const errors = [];
-    for (const assetPrefix of ["setting-storage-", "app-initial-"]) {
-      try {
-        const module = await loadCodexAppModule(assetPrefix);
-        const settingStorage = codexSettingStorageFromModule(module, assetPrefix);
-        if (settingStorage) return settingStorage;
-        errors.push(`${assetPrefix}: setting exports unavailable`);
-      } catch (error) {
-        errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
-      }
-    }
-    throw new Error(`Codex setting-storage 接口不可用 (${errors.join("; ")})`);
-  }
-
-  async function getCodexServiceTierSetting() {
-    try {
-      const read = (async () => {
-        const settingStorage = await codexSettingStorageModule();
-        return await settingStorage.n(codexDefaultServiceTierSetting);
-      })();
-      return await Promise.race([
-        read,
-        new Promise((_, reject) => setTimeout(() => reject(new Error("Codex 应用设置读取超时")), codexServiceTierReadTimeoutMs)),
-      ]);
-    } catch (error) {
-      if (typeof codexStateCall === "function") {
-        const fallbackRead = codexStateCall("get-setting", { params: { key: codexDefaultServiceTierSetting.key } });
-        try {
-          const result = await Promise.race([
-            fallbackRead,
-            new Promise((_, reject) => setTimeout(() => reject(error), codexServiceTierReadTimeoutMs)),
-          ]);
-          return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : codexDefaultServiceTierSetting.default;
-        } catch {
-          return codexDefaultServiceTierSetting.default;
-        }
-      }
-      throw error;
-    }
-  }
-
-  function isFastServiceTierValue(value) {
-    const normalized = String(value || "").trim().toLowerCase();
-    return normalized === "fast" || normalized === "priority";
-  }
-
-  function codexFastServiceTierValue() {
-    return codexServiceTierState.fastTierValue || codexServiceTierFallbackFastValue;
-  }
-
-  function codexServiceTierFastModelListLabel() {
-    return Array.from(codexServiceTierSupportedFastModels).join(" / ");
-  }
-
-  function normalizeCodexServiceTierModelName(model) {
-    return String(model || "").trim().toLowerCase();
-  }
-
-  function codexServiceTierModelFromValue(value, visited = new WeakSet(), depth = 0) {
-    if (typeof value === "string") return value.trim();
-    if (!value || typeof value !== "object" || visited.has(value) || depth > 3) return "";
-    visited.add(value);
-    for (const key of ["model", "modelId", "model_id", "selectedModel", "selected_model", "defaultModel", "default_model"]) {
-      const model = codexServiceTierModelFromValue(value[key], visited, depth + 1);
-      if (model) return model;
-    }
-    for (const key of ["params", "request", "payload", "body", "config", "options"]) {
-      const model = codexServiceTierModelFromValue(value[key], visited, depth + 1);
-      if (model) return model;
-    }
-    return "";
-  }
-
-  function codexServiceTierCurrentModelName() {
-    return codexServiceTierModelFromValue(codexModelCatalog.model) || codexServiceTierModelFromValue(codexModelCatalog.default_model);
-  }
-
-  function codexServiceTierModelForRequest(params, modelHint = "") {
-    return codexServiceTierModelFromValue(params) || codexServiceTierModelFromValue(modelHint) || codexServiceTierCurrentModelName();
-  }
-
-  function codexServiceTierFastSupportedForModel(modelName) {
-    const normalized = normalizeCodexServiceTierModelName(modelName);
-    if (!normalized) return false;
-    if (codexServiceTierSupportedFastModels.has(normalized)) return true;
-    // 不按名字猜：模型叫 deepseek 不代表它的中转站支持 priority tier。
-    // 只认上游模型元数据里明确声明的 priority。
-    try {
-      const metadata = typeof codexPlusModelMetadata === "function" ? codexPlusModelMetadata(modelName) : null;
-      if (metadata && Array.isArray(metadata.serviceTiers) && metadata.serviceTiers.some((t) => String(t.id || t).toLowerCase() === "priority")) return true;
-    } catch {}
-    // removed blanket apikey fallback to keep test contract (FAST only for known models)
-    return false;
-  }
-
-  function codexServiceTierFastUnsupportedMessage(modelName = codexServiceTierCurrentModelName()) {
-    const modelText = modelName ? `当前模型 ${modelName} 不支持` : "当前模型未读取";
-    return `Fast 仅支持 ${codexServiceTierFastModelListLabel()}，${modelText}`;
-  }
-
-  function codexServiceTierMaybeLoadModelCatalog(force = false) {
-    if (codexModelCatalogPromise) return;
-    if (!force && codexModelCatalog.status === "failed") return;
-    if (!force && codexModelCatalogLoadedAt && Date.now() - codexModelCatalogLoadedAt < 10000) return;
-    loadCodexModelCatalog(force).then(() => {
-      refreshCodexServiceTierControls();
-    }).catch(() => {
-      refreshCodexServiceTierControls();
-    });
-  }
-
-  function codexServiceTierFastAvailability(modelName = codexServiceTierCurrentModelName()) {
-    const normalizedModel = normalizeCodexServiceTierModelName(modelName);
-    return {
-      modelName: modelName || "",
-      supported: !!normalizedModel && codexServiceTierSupportedFastModels.has(normalizedModel),
-    };
-  }
-
-  function codexServiceTierInheritedValue() {
-    if (codexServiceTierState.serviceTier != null) return codexServiceTierState.serviceTier;
-    return codexServiceTierState.configServiceTier ?? null;
-  }
-
-  function codexServiceTierValueForMode(mode) {
-    if (mode === "fast") return codexFastServiceTierValue();
-    if (mode === "standard") return null;
-    return codexServiceTierInheritedValue();
-  }
-
-  function codexServiceTierDefaultModeForControlMode(controlMode, fallback = "inherit") {
-    if (controlMode === "global-fast") return "fast";
-    if (controlMode === "global-standard") return "standard";
-    if (controlMode === "inherit") return "inherit";
-    return normalizeCodexThreadServiceTierMode(fallback);
-  }
-
-  function codexServiceTierEffectiveThreadMode(threadMode = "inherit", defaultMode = "inherit") {
-    const normalizedThreadMode = normalizeCodexThreadServiceTierMode(threadMode);
-    if (normalizedThreadMode !== "inherit") return normalizedThreadMode;
-    return normalizeCodexThreadServiceTierMode(defaultMode);
-  }
-
-  function codexServiceTierValueForControlMode(controlMode, threadMode = "inherit", defaultMode = "inherit") {
-    if (controlMode === "global-fast") return codexFastServiceTierValue();
-    if (controlMode === "global-standard") return null;
-    if (controlMode === "custom") return codexServiceTierValueForMode(codexServiceTierEffectiveThreadMode(threadMode, defaultMode));
-    return codexServiceTierInheritedValue();
-  }
-
-  function codexServiceTierEffectiveMode(value) {
-    return isFastServiceTierValue(value) ? "fast" : "standard";
-  }
-
   function normalizeCodexThreadServiceTierMode(mode) {
     const normalized = String(mode || "").trim().toLowerCase();
     return codexThreadServiceTierModes.has(normalized) ? normalized : "inherit";
@@ -654,7 +201,13 @@
       return;
     }
     const activeThreadId = validThreadScrollSessionKey(currentSessionRef().session_id);
-    if (activeThreadId) bindDraftServiceTierToThread(activeThreadId);
+    if (activeThreadId) {
+      bindDraftServiceTierToThread(activeThreadId);
+      // 界面判 Fast 用「当前线程的模型」，不再回落全局 catalog：线程中途换模型后
+      // 全局值可能是旧的，会让 UI 落后一拍（issue #1463）。
+      const activeModel = codexServiceTierUiModelName(activeThreadId);
+      if (activeModel) codexServiceTierRememberThreadModel(activeThreadId, activeModel);
+    }
     const storedState = readThreadServiceTierState();
     const controlMode = normalizeCodexServiceTierControlMode(storedState.mode);
     const defaultMode = normalizeCodexThreadServiceTierMode(storedState.defaultMode);
@@ -891,6 +444,9 @@
     const threadId = codexServiceTierThreadIdForRequest(method, params, threadIdHint);
     const requestedFast = isFastServiceTierValue(requestedServiceTier);
     const modelName = codexServiceTierModelForRequest(params, modelHint);
+    // 请求路径是唯一能拿到「本 turn 真正用的模型」的地方，顺手记下来供界面判定使用，
+    // 这样线程中途换模型后 UI 下一次刷新就跟得上（issue #1463）。
+    codexServiceTierRememberThreadModel(threadId, modelName);
     const fastSupported = !requestedFast || codexServiceTierFastSupportedForModel(modelName);
     return {
       threadId,
@@ -1086,3 +642,453 @@
         const thread = candidate.params?.thread || candidate.thread || candidate.payload?.thread;
         const threadId = String(thread?.id || candidate.params?.threadId || candidate.threadId || "").trim();
         if (threadId) return threadId;
+      }
+      if (method === "browser-use-session-route-capture") {
+        const threadId = String(
+          candidate.params?.conversationId
+          || candidate.params?.conversation_id
+          || candidate.conversationId
+          || candidate.conversation_id
+          || ""
+        ).trim();
+        if (threadId) return threadId;
+      }
+      if (method === "browser-sidebar-browser-use-state") {
+        const isActive = candidate.params?.isActive ?? candidate.params?.is_active
+          ?? candidate.isActive ?? candidate.is_active;
+        if (isActive !== true) continue;
+        const threadId = String(
+          candidate.params?.conversationId
+          || candidate.params?.conversation_id
+          || candidate.conversationId
+          || candidate.conversation_id
+          || ""
+        ).trim();
+        if (threadId) return threadId;
+      }
+      if (current.depth >= 4) continue;
+      for (const key of ["message", "response", "detail", "data", "payload", "params", "request"]) {
+        const nested = candidate[key];
+        if (nested && typeof nested === "object") {
+          queue.push({ value: nested, depth: current.depth + 1 });
+        }
+      }
+    }
+    return "";
+  }
+
+  function requestCodexRemoteSessionRecovery(threadId, attempt) {
+    const payload = { thread_id: threadId };
+    const testHook = window.__CODEX_PLUS_TEST_REMOTE_RECOVERY__;
+    const request = typeof testHook === "function"
+      ? Promise.resolve(testHook(payload, attempt))
+      : postJson("/remote-control-session/recover", payload);
+    return request.then((result) => {
+      if (attempt === 0
+        || result?.message === "Remote Control session recovery complete"
+        || result?.message === "Remote Control session catalog recovery complete") {
+        sendCodexPlusDiagnostic("remote_session_recovery_requested", {
+          threadId,
+          attempt,
+          status: result?.status || "",
+          message: result?.message || "",
+          changedSessionFiles: result?.changed_session_files || 0,
+          catalogRowsInserted: result?.sqlite_catalog_rows_inserted || 0,
+        });
+      }
+      return result;
+    }).catch((error) => {
+      if (attempt === 0) {
+        sendCodexPlusDiagnostic("remote_session_recovery_failed", {
+          threadId,
+          attempt,
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+      }
+      return null;
+    });
+  }
+
+  function scheduleCodexRemoteSessionRecovery(threadId) {
+    if (!codexRemoteSessionProviderNormalizationEnabled()) return false;
+    const normalizedThreadId = String(threadId || "").trim();
+    if (!normalizedThreadId || normalizedThreadId.length > 128) return false;
+    window.__codexPlusRemoteSessionRecoveryPending = window.__codexPlusRemoteSessionRecoveryPending || new Map();
+    const pending = window.__codexPlusRemoteSessionRecoveryPending;
+    if (pending.has(normalizedThreadId)) return false;
+    const retryOffsets = [100, 350, 800, 1600, 3000];
+    const state = { timer: 0 };
+    const finish = () => {
+      if (state.timer) window.clearTimeout(state.timer);
+      state.timer = 0;
+      if (pending.get(normalizedThreadId) === state) pending.delete(normalizedThreadId);
+    };
+    const runAttempt = async (attempt) => {
+      state.timer = 0;
+      if (!codexRemoteSessionProviderNormalizationEnabled()) {
+        finish();
+        return;
+      }
+      const result = await requestCodexRemoteSessionRecovery(normalizedThreadId, attempt);
+      const message = String(result?.message || "");
+      if (message === "Remote Control session recovery complete"
+        || message === "Remote Control session catalog recovery complete"
+        || message === "Remote Control session recovery is disabled for the active profile") {
+        finish();
+        return;
+      }
+      const nextAttempt = attempt + 1;
+      if (nextAttempt >= retryOffsets.length) {
+        finish();
+        return;
+      }
+      const nextDelay = retryOffsets[nextAttempt] - retryOffsets[attempt];
+      state.timer = window.setTimeout(() => void runAttempt(nextAttempt), nextDelay);
+    };
+    state.timer = window.setTimeout(() => void runAttempt(0), retryOffsets[0]);
+    pending.set(normalizedThreadId, state);
+    return true;
+  }
+
+  function observeCodexRemoteSessionNotification(value) {
+    const threadId = codexRemoteSessionStartedThreadId(value);
+    return threadId ? scheduleCodexRemoteSessionRecovery(threadId) : false;
+  }
+
+  function installCodexRemoteSessionRecoveryListener() {
+    if (window.__codexPlusRemoteSessionRecoveryInstalled === codexRemoteSessionRecoveryVersion) return true;
+    if (window.__codexPlusRemoteSessionRecoveryMessageHandler) {
+      window.removeEventListener("message", window.__codexPlusRemoteSessionRecoveryMessageHandler, true);
+    }
+    if (window.__codexPlusRemoteSessionRecoveryViewHandler) {
+      window.removeEventListener("codex-message-from-view", window.__codexPlusRemoteSessionRecoveryViewHandler, true);
+    }
+    const messageHandler = (event) => {
+      if (event?.source !== window) return false;
+      const origin = String(event?.origin || "");
+      if (origin && origin !== "null" && origin !== window.location.origin) return false;
+      return observeCodexRemoteSessionNotification(event?.data);
+    };
+    const viewHandler = (event) => observeCodexRemoteSessionNotification(event?.detail);
+    window.__codexPlusRemoteSessionRecoveryMessageHandler = messageHandler;
+    window.__codexPlusRemoteSessionRecoveryViewHandler = viewHandler;
+    window.addEventListener("message", messageHandler, true);
+    window.addEventListener("codex-message-from-view", viewHandler, true);
+    window.__codexPlusRemoteSessionRecoveryInstalled = codexRemoteSessionRecoveryVersion;
+    sendCodexPlusDiagnostic("remote_session_recovery_listener_installed", {
+      version: codexRemoteSessionRecoveryVersion,
+    });
+    return true;
+  }
+
+  function installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix = "") {
+    if (!dispatcher || typeof dispatcher.subscribe !== "function") return false;
+    if (window.__codexPlusRemoteSessionRecoveryDispatcher === dispatcher
+        && window.__codexPlusRemoteSessionRecoveryDispatcherVersion === codexRemoteSessionRecoveryVersion) {
+      return true;
+    }
+    if (typeof window.__codexPlusRemoteSessionRecoveryDispatcherUnsubscribe === "function") {
+      try {
+        window.__codexPlusRemoteSessionRecoveryDispatcherUnsubscribe();
+      } catch {
+      }
+    }
+    const handler = (payload) => {
+      if (observeCodexRemoteSessionNotification(payload)) return true;
+      const params = payload && typeof payload === "object" ? payload : {};
+      if (observeCodexRemoteSessionNotification({
+        method: "thread/started",
+        params,
+      })) return true;
+      return observeCodexRemoteSessionNotification({
+        method: "thread/started",
+        params: { thread: params },
+      });
+    };
+    const browserUseHandler = (payload) => observeCodexRemoteSessionNotification({
+      type: "browser-sidebar-browser-use-state",
+      params: payload && typeof payload === "object" ? payload : {},
+    });
+    const unsubscribers = [
+      dispatcher.subscribe("thread/started", handler),
+      dispatcher.subscribe("browser-sidebar-browser-use-state", browserUseHandler),
+    ];
+    window.__codexPlusRemoteSessionRecoveryDispatcher = dispatcher;
+    window.__codexPlusRemoteSessionRecoveryDispatcherHandler = handler;
+    window.__codexPlusRemoteSessionRecoveryDispatcherUnsubscribe = () => {
+      for (const unsubscribe of unsubscribers) {
+        if (typeof unsubscribe !== "function") continue;
+        try {
+          unsubscribe();
+        } catch {
+        }
+      }
+    };
+    window.__codexPlusRemoteSessionRecoveryDispatcherVersion = codexRemoteSessionRecoveryVersion;
+    sendCodexPlusDiagnostic("remote_session_dispatcher_subscription_installed", { assetPrefix });
+    return true;
+  }
+
+  function codexServiceTierRequestOverride(message, skipFetchEnvelope = false) {
+    if (!message || typeof message !== "object") return message;
+    if (!skipFetchEnvelope && message.type === "fetch" && typeof message.url === "string") {
+      const urlPrefix = "vscode://codex/";
+      if (!message.url.startsWith(urlPrefix)) return message;
+      const requestType = message.url.slice(urlPrefix.length).split(/[?#]/, 1)[0];
+      let params = null;
+      let bodyWasString = false;
+      if (typeof message.body === "string") {
+        try {
+          params = JSON.parse(message.body);
+          bodyWasString = true;
+        } catch (_) {
+          return message;
+        }
+      } else if (message.body && typeof message.body === "object") {
+        params = message.body;
+      } else {
+        return message;
+      }
+      if (!params || typeof params !== "object" || Array.isArray(params)) return message;
+      const bodyHadType = Object.prototype.hasOwnProperty.call(params, "type");
+      const originalBodyType = params.type;
+      const logicalMessage = { ...params, type: requestType };
+      const patchedMessage = codexServiceTierRequestOverride(logicalMessage, true);
+      if (patchedMessage === logicalMessage) return message;
+      const nextParams = { ...patchedMessage };
+      delete nextParams.type;
+      if (bodyHadType) nextParams.type = originalBodyType;
+      return {
+        ...message,
+        body: bodyWasString ? JSON.stringify(nextParams) : nextParams,
+      };
+    }
+    if (message.type === "send-cli-request-for-host") {
+      const method = String(message.method || "");
+      const params = applyCodexServiceTierRequestOverride(method, message.params);
+      return params === message.params ? message : { ...message, params };
+    }
+    if (message.type === "mcp-request" && message.request && typeof message.request === "object") {
+      const method = String(message.request.method || "");
+      const params = applyCodexServiceTierRequestOverride(method, message.request.params);
+      if (params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params } };
+    }
+    if (message.type === "worker-request" && message.request && typeof message.request === "object") {
+      const method = String(message.request.method || "");
+      const params = applyCodexServiceTierRequestOverride(method, message.request.params);
+      if (params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params } };
+    }
+    if (message.type === "thread-prewarm-start" && message.request && typeof message.request === "object") {
+      const params = applyCodexServiceTierRequestOverride("thread/start", message.request.params);
+      if (params === message.request.params) return message;
+      return { ...message, request: { ...message.request, params } };
+    }
+    if (message.type === "start-conversation") {
+      const nextMessage = applyCodexServiceTierRequestOverride("thread/start", message);
+      return nextMessage === message ? message : nextMessage;
+    }
+    if (message.type === "prewarm-thread-start-for-host" && message.params && typeof message.params === "object") {
+      const params = applyCodexServiceTierRequestOverride("thread/start", message.params);
+      return params === message.params ? message : { ...message, params };
+    }
+    if (message.type === "start-thread-for-host") {
+      const params = applyCodexServiceTierRequestOverride("thread/start", message);
+      return params === message ? message : params;
+    }
+    if (message.type === "start-turn-for-host" && message.params && typeof message.params === "object") {
+      const params = applyCodexServiceTierRequestOverride("turn/start", message.params, message.conversationId);
+      return params === message.params ? message : { ...message, params };
+    }
+    return message;
+  }
+
+  function codexServiceTierDispatcherFromModule(module) {
+    const directSingleton = module?.idt;
+    if (directSingleton
+        && typeof directSingleton === "object"
+        && typeof directSingleton.dispatchMessage === "function"
+        && typeof directSingleton.subscribe === "function") {
+      return directSingleton;
+    }
+    const values = module && typeof module === "object" ? Object.values(module) : [];
+    const singleton = values.find((candidate) => candidate
+      && typeof candidate === "object"
+      && typeof candidate.dispatchMessage === "function"
+      && typeof candidate.subscribe === "function");
+    if (singleton) return singleton;
+    const dispatcherClass = values.find((candidate) => typeof candidate === "function"
+      && typeof candidate.getInstance === "function"
+      && typeof candidate.prototype?.dispatchMessage === "function");
+    return dispatcherClass?.getInstance?.() || null;
+  }
+
+  const serviceTierDispatcherPatchMaxMisses = 8;
+  let serviceTierDispatcherPatchMissCount = 0;
+  let serviceTierDispatcherPatchDisabled = false;
+  let serviceTierDispatcherPatchPromise = null;
+
+  function codexServiceTierDispatcherPatchable(dispatcher) {
+    if (!dispatcher || typeof dispatcher !== "object") return false;
+    try {
+      if (!Object.isExtensible(dispatcher)) return false;
+      for (const key of ["__codexServiceTierOriginalDispatchMessage", "dispatchMessage"]) {
+        const descriptor = Object.getOwnPropertyDescriptor(dispatcher, key);
+        if (descriptor && descriptor.writable === false && typeof descriptor.set !== "function") return false;
+      }
+      return true;
+    } catch {
+      // Codex 26.908 RPC stubs can throw even while being inspected.
+      return false;
+    }
+  }
+
+  // issue #1960：这是 installAppServerModelRequestPatch（#1324）和插件市场那两层的同一个缺陷。
+  // 补丁挂在 scanLightweight() 里每轮都跑，而早退守卫只在装上之后才写入，
+  // Codex 侧 asset 改名后就永远装不上，于是每轮 scan 重新拉一遍全部 app asset，
+  // 而且每轮都发一条相同的诊断。首次失败仍上报以便定位，之后噤声，连续失败够多次就停掉这一层。
+  function installCodexServiceTierDispatcherPatch() {
+    if (window.__codexServiceTierRequestOverrideInstalled === codexServiceTierRequestOverrideVersion) return;
+    if (serviceTierDispatcherPatchDisabled) return;
+    // 上一轮没跑完就不要再起一轮：loadDispatcher() 会依次试三个前缀，
+    // 没有这道去重时 scan 的频率就直接变成并发全量扫描的频率。
+    if (serviceTierDispatcherPatchPromise) return;
+    const loadDispatcher = async () => {
+      const errors = [];
+      for (const assetPrefix of ["setting-storage-", "vscode-api-", "app-initial-"]) {
+        try {
+          const module = await loadCodexAppModule(assetPrefix);
+          const dispatcher = codexServiceTierDispatcherFromModule(module);
+          if (dispatcher) return { dispatcher, assetPrefix };
+          errors.push(`${assetPrefix}: dispatcher export unavailable`);
+        } catch (error) {
+          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+        }
+      }
+      throw new Error(`Codex dispatcher unavailable (${errors.join("; ")})`);
+    };
+    const patch = async () => {
+      try {
+        const { dispatcher, assetPrefix } = await loadDispatcher();
+        if (!codexServiceTierDispatcherPatchable(dispatcher)) {
+          throw new Error(`dispatcher is a non-writable RPC stub (${assetPrefix})`);
+        }
+        if (!dispatcher.__codexServiceTierOriginalDispatchMessage) {
+          dispatcher.__codexServiceTierOriginalDispatchMessage = dispatcher.dispatchMessage.bind(dispatcher);
+        }
+        dispatcher.dispatchMessage = (type, payload) => {
+          return dispatchCodexPlusMessage(dispatcher, type, payload);
+        };
+        installCodexRemoteSessionDispatcherSubscription(dispatcher, assetPrefix);
+        window.__codexServiceTierRequestOverrideInstalled = codexServiceTierRequestOverrideVersion;
+        serviceTierDispatcherPatchMissCount = 0;
+        sendCodexPlusDiagnostic("service_tier_dispatcher_patch_installed", { assetPrefix });
+      } catch (error) {
+        serviceTierDispatcherPatchMissCount += 1;
+        if (serviceTierDispatcherPatchMissCount === 1) {
+          sendCodexPlusDiagnostic("service_tier_dispatcher_patch_failed", {
+            errorName: error?.name || "",
+            errorMessage: error?.message || String(error),
+          });
+        }
+        if (serviceTierDispatcherPatchMissCount >= serviceTierDispatcherPatchMaxMisses
+            && !serviceTierDispatcherPatchDisabled) {
+          serviceTierDispatcherPatchDisabled = true;
+          sendCodexPlusDiagnostic("service_tier_dispatcher_patch_skipped", {
+            misses: serviceTierDispatcherPatchMissCount,
+          });
+        }
+      } finally {
+        serviceTierDispatcherPatchPromise = null;
+      }
+    };
+    serviceTierDispatcherPatchPromise = patch();
+  }
+
+  // --- Dictation / Voice patch for apikey (ported from v1.2.34 preload) ---
+  const codexDictationSupportVersion = "1";
+  function codexDictationSupportModuleCandidates() {
+    const prefixes = ["use-is-dictation-supported-", "use-dictation-", "app-initial-", "setting-storage-", "vscode-api-"];
+    return prefixes;
+  }
+  async function installDictationSupportPatch() {
+    if (window.__codexDictationSupportPatched === codexDictationSupportVersion) return;
+    for (const prefix of codexDictationSupportModuleCandidates()) {
+      try {
+        const module = await loadOptionalCodexAppModule(prefix);
+        if (!module) continue;
+        for (const key of Object.keys(module)) {
+          const fn = module[key];
+          if (typeof fn !== "function") continue;
+          let src = "";
+          try { src = String(fn); } catch {}
+          if (!src.includes("authMethod") || !src.includes("chatgpt")) continue;
+          if (fn.__codexDictationPatched === codexDictationSupportVersion) continue;
+          const original = fn;
+          const wrapped = function(...args) {
+            try {
+              const result = original.apply(this, args);
+              if (result === false) {
+                const hasApikey = args.some(arg => arg && typeof arg === "object" && (arg.authMethod === "apikey" || arg.authMethod === "apiKey"));
+                if (hasApikey) return true;
+                if (typeof codexPlusSettings === "function" && codexPlusSettings().serviceTierControls) return true;
+              }
+              return result;
+            } catch (e) {
+              return original.apply(this, args);
+            }
+          };
+          wrapped.__codexDictationPatched = codexDictationSupportVersion;
+          try { module[key] = wrapped; } catch {}
+          sendCodexPlusDiagnostic("dictation_support_patched", { prefix, key, version: codexDictationSupportVersion });
+          window.__codexDictationSupportPatched = codexDictationSupportVersion;
+          return;
+        }
+      } catch {}
+    }
+    // Fallback: DOM enforcement for voice button when module patch not found
+    try {
+      if (!window.__codexDictationDomPatched) {
+        window.__codexDictationDomPatched = true;
+        const enforceVoice = () => {
+          const selectors = ['button[aria-label*="Voice"]','button[aria-label*="Dictation"]','button[aria-label*="voice"]','[data-testid*="voice"]','[data-testid*="dictation"]','button:has(svg)'];
+          // generic: find buttons with microphone icon
+          document.querySelectorAll('button').forEach(btn => {
+            const label = (btn.getAttribute("aria-label") || btn.textContent || "").toLowerCase();
+            if (label.includes("voice") || label.includes("dictation") || label.includes("microphone") || label.includes("mic")) {
+              if (btn.hasAttribute("disabled")) {
+                btn.removeAttribute("disabled");
+                btn.setAttribute("aria-disabled","false");
+                btn.style.opacity = "";
+                btn.style.pointerEvents = "";
+              }
+            }
+          });
+        };
+        setInterval(enforceVoice, 1500);
+        enforceVoice();
+      }
+    } catch {}
+  }
+
+  async function loadBackendSettingsState() {
+    const seq = codexPlusBackendSettingsSeq;
+    try {
+      const settings = await postJson("/settings/get", {});
+      if (!settings || typeof settings !== "object" || (!("launchMode" in settings) && !("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
+        throw new Error("invalid backend settings response");
+      }
+      if (seq !== codexPlusBackendSettingsSeq) {
+        return false;
+      }
+      const includedNativeModels = codexPlusBackendSettings.codexAppIncludeNativeModels !== false;
+      codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
+      codexPlusBackendSettingsLoaded = true;
+      if (includedNativeModels !== (codexPlusBackendSettings.codexAppIncludeNativeModels !== false)) refreshCodexModelQueries();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }

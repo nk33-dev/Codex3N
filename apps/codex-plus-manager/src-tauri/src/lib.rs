@@ -63,6 +63,7 @@ pub fn run() {
             let main_window = main_window_builder.build()?;
             if startup_is_background() {
                 main_window.hide()?;
+                set_manager_activation_policy(app.handle(), false);
             }
             install_tray(app)?;
             commands::start_weixin_connect_from_saved_settings();
@@ -128,6 +129,7 @@ pub fn run() {
             commands::repair_session_index,
             commands::load_session_index_repair_report,
             commands::preview_session_index_cleanup,
+            commands::preview_provider_sync,
             commands::apply_session_index_cleanup,
             commands::sync_providers_now,
             commands::refresh_script_market,
@@ -186,19 +188,29 @@ pub fn run() {
         ])
         .build(tauri::generate_context!());
     match app_result {
-        Ok(app) => app.run(|_app_handle, event| {
+        Ok(app) => app.run(|app_handle, event| {
             if matches!(&event, tauri::RunEvent::Exit) {
                 APP_EXITING.store(true, Ordering::SeqCst);
             }
             #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Opened { urls } = event {
-                for url in urls {
-                    if handle_session_share_url(url.as_str()) || handle_dream_skin_url(url.as_str())
-                    {
-                        show_main_window(_app_handle);
+            match event {
+                tauri::RunEvent::Opened { urls } => {
+                    for url in urls {
+                        if handle_session_share_url(url.as_str())
+                            || handle_dream_skin_url(url.as_str())
+                        {
+                            show_main_window(app_handle);
+                        }
                     }
                 }
+                tauri::RunEvent::Reopen { .. } => {
+                    show_main_window(app_handle);
+                }
+                _ => {}
             }
+
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app_handle, event);
         }),
         Err(error) => {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
@@ -354,6 +366,7 @@ fn register_main_window_events<R: tauri::Runtime>(
             }
 
             let _ = close_event_window.hide();
+            set_manager_activation_policy(&close_event_app, false);
             emit_manager_visibility(&close_event_window);
         }
         _ => {}
@@ -415,7 +428,9 @@ fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     if APP_EXITING.load(Ordering::SeqCst) {
         return;
     }
+    let app_handle = window.app_handle();
     let _ = window.hide();
+    set_manager_activation_policy(&app_handle, false);
     emit_manager_visibility(&window);
 }
 
@@ -497,6 +512,7 @@ fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
         return;
     }
     if let Some(window) = app_handle.get_webview_window("main") {
+        set_manager_activation_policy(app_handle, true);
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -506,8 +522,27 @@ fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     }
 }
 
-/// 在 Windows 上恢复并聚焦已有管理窗口，其他平台不执行操作。
-/// 已聚焦的窗口可能不再收到焦点事件，此时由前端可见期间的低频刷新补查待处理请求。
+#[cfg(target_os = "macos")]
+fn set_manager_activation_policy<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    main_window_visible: bool,
+) {
+    let policy = if main_window_visible {
+        tauri::ActivationPolicy::Regular
+    } else {
+        tauri::ActivationPolicy::Accessory
+    };
+    let _ = app_handle.set_activation_policy(policy);
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_manager_activation_policy<R: tauri::Runtime>(
+    _app_handle: &tauri::AppHandle<R>,
+    _main_window_visible: bool,
+) {
+}
+
+/// 恢复并聚焦已有桌面管理窗口。
 pub fn focus_existing_manager_window() {
     #[cfg(windows)]
     {
@@ -524,6 +559,13 @@ pub fn focus_existing_manager_window() {
                 break;
             }
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .args(["-b", codex_plus_core::install::MANAGER_BUNDLE_ID])
+            .status();
     }
 }
 

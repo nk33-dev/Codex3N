@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -15,6 +15,8 @@ async function runRelease(scenario: string, skipChecks = true) {
   try {
     await writeFile(join(dir, "release.ps1"), source);
     await writeFile(join(dir, "Cargo.toml"), '[workspace.package]\nversion = "1.2.3-3n.1"\n');
+    await mkdir(join(dir, "scripts"), { recursive: true });
+    await writeFile(join(dir, "scripts/assemble-native-browser-inspector.mjs"), "");
     const runs = scenario === "missing" ? [] : [{
       headSha: scenario === "wrong-head" ? "2222222222222222222222222222222222222222" : head,
       status: scenario === "pending" ? "in_progress" : "completed",

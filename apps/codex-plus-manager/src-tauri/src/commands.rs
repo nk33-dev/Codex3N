@@ -702,14 +702,79 @@ pub async fn load_overview() -> CommandResult<OverviewPayload> {
 }
 
 #[tauri::command]
-pub fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+pub async fn launch_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        let _guard = match try_acquire_launch_guard() {
+            Ok(guard) => guard,
+            Err(message) => return failed(message, json!({})),
+        };
+        spawn_codex_plus_launch(request, "启动任务已在后台开始，可稍后查看概览状态。")
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(&format!("启动后台任务失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
-pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
-    let Ok(_guard) = relay_switch_mutex().lock() else {
-        return failed("供应商切换锁已损坏，请重启管理器后再试。", json!({}));
+pub async fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || restart_codex_plus_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("重启后台任务失败：{error}"), json!({})),
+    }
+}
+
+static LAUNCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+struct LaunchGuard;
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        LAUNCH_IN_PROGRESS.store(false, Ordering::Release);
+    }
+}
+
+fn try_acquire_launch_guard() -> Result<LaunchGuard, &'static str> {
+    LAUNCH_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .map(|_| LaunchGuard)
+        .map_err(|_| "启动或重启正在进行，请等待本次操作完成。")
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RestartDisposition {
+    LaunchOnly,
+    StopAndRestart,
+}
+
+fn restart_disposition(sync_active_relay: bool, app_running: bool) -> RestartDisposition {
+    if !sync_active_relay && !app_running {
+        RestartDisposition::LaunchOnly
+    } else {
+        RestartDisposition::StopAndRestart
+    }
+}
+
+fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
+    let _launch_guard = match try_acquire_launch_guard() {
+        Ok(guard) => guard,
+        Err(message) => return failed(message, json!({})),
+    };
+    let request = normalize_launch_request(request);
+    // macOS scopes by debug port; other platforms detect all Codex desktop processes.
+    let app_running =
+        !codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port)
+            .is_empty();
+    if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly
+    {
+        return spawn_codex_plus_launch(request, "Codex 未运行，已按直接启动方式在后台唤起。");
+    }
+    let Ok(_guard) = relay_switch_mutex().try_lock() else {
+        return failed(
+            "供应商切换正在进行或锁不可用，未执行重启；请稍后重试。",
+            json!({}),
+        );
     };
     let settings = if request.sync_active_relay {
         match SettingsStore::default().load() {
@@ -727,16 +792,10 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     } else {
         None
     };
-    if let Err(message) = ensure_provider_sync_is_idle_before_stop() {
-        return failed(
-            &message,
-            json!({
-                "debugPort": request.debug_port,
-                "helperPort": request.helper_port,
-                "syncActiveRelay": request.sync_active_relay
-            }),
-        );
-    }
+    let provider_guard = match ensure_provider_sync_is_idle_before_stop() {
+        Ok(guard) => guard,
+        Err(message) => return failed(&message, json!({})),
+    };
     #[cfg(windows)]
     let launchers = match codex_plus_core::watcher::LauncherExitSnapshot::capture() {
         Ok(snapshot) => snapshot,
@@ -751,7 +810,13 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
         || {
             codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
                 request.debug_port,
-            )
+            );
+            anyhow::ensure!(
+                codex_plus_core::watcher::find_codex_processes_for_debug_port(request.debug_port)
+                    .is_empty(),
+                "Codex 进程尚未退出；未启动新实例"
+            );
+            Ok(())
         },
         || {
             codex_plus_core::native_browser::wait_for_monitor_shutdown(
@@ -786,7 +851,7 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
     }
     if let Err(error) = prepare_fixed_helper_port_for_restart(settings.as_ref()) {
         return failed(
-            &format!("重启 Codex++ 失败：{error}"),
+            &format!("重启 Codex++ 失败：{error:#}"),
             json!({"debugPort": request.debug_port, "helperPort": request.helper_port}),
         );
     }
@@ -816,7 +881,9 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
             }),
         );
     }
-    match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), spawn_silent_launcher) {
+    match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
+        spawn_after_provider_guard_release(provider_guard, request, spawn_silent_launcher)
+    }) {
         Ok(()) => CommandResult {
             status: "accepted".to_string(),
             message: "Codex 已请求重启，启动任务正在后台运行。".to_string(),
@@ -847,12 +914,12 @@ pub fn restart_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
 }
 
 fn stop_codex_plus_for_restart(
-    stop_codex: impl FnOnce(),
+    stop_codex: impl FnOnce() -> anyhow::Result<()>,
     wait_native: impl FnOnce() -> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown>,
     stop_launcher: impl FnOnce() -> anyhow::Result<()>,
 ) -> Result<codex_plus_core::native_browser::NativeBrowserShutdown, RestartStopError> {
     // The launcher owns native recovery; terminating it first skips that cleanup.
-    stop_codex();
+    stop_codex().map_err(RestartStopError::Codex)?;
     let shutdown = wait_native().map_err(RestartStopError::NativeBrowser)?;
     stop_launcher().map_err(RestartStopError::Launcher)?;
     Ok(shutdown)
@@ -860,12 +927,16 @@ fn stop_codex_plus_for_restart(
 
 #[derive(Debug)]
 enum RestartStopError {
+    Codex(anyhow::Error),
     NativeBrowser(anyhow::Error),
     Launcher(anyhow::Error),
 }
 
 fn restart_stop_failure_message(error: &RestartStopError) -> String {
     match error {
+        RestartStopError::Codex(error) => {
+            format!("Codex 进程尚未确认退出，未清理原生浏览器或启动新实例：{error}")
+        }
         RestartStopError::NativeBrowser(error) => {
             let summary = if error
                 .downcast_ref::<codex_plus_core::native_browser::NativeBrowserCleanupStillRunning>()
@@ -911,6 +982,17 @@ fn prepare_fixed_helper_port_for_restart(settings: Option<&BackendSettings>) -> 
 fn probe_loopback_port(port: u16) -> std::io::Result<()> {
     let _listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
     Ok(())
+}
+
+fn spawn_after_provider_guard_release(
+    guard: codex_plus_data::ProviderSyncLifecycleGuard,
+    request: &LaunchRequest,
+    spawn: impl FnOnce(&LaunchRequest) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    guard
+        .release()
+        .map_err(|error| anyhow::anyhow!("释放历史同步锁失败，未启动新实例：{error}"))?;
+    spawn(request)
 }
 
 fn restart_codex_plus_after_stop<F>(
@@ -1066,10 +1148,7 @@ fn sync_active_relay_to_home(
     )
 }
 
-fn spawn_codex_plus_launch(
-    mut request: LaunchRequest,
-    accepted_message: &str,
-) -> CommandResult<Value> {
+fn normalize_launch_request(mut request: LaunchRequest) -> LaunchRequest {
     // launcher 收到显式 --app-path 时不会回退自动探测（避免静默启动错误目录），
     // 所以这里先把明显无效的路径摘掉，让它走探测而不是永久失败（#1972）。
     let requested_app_path = request.app_path.trim().to_string();
@@ -1083,6 +1162,11 @@ fn spawn_codex_plus_launch(
         );
         request.app_path = String::new();
     }
+    request
+}
+
+fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
+    let request = normalize_launch_request(request);
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
     let launch_started_at_ms = current_timestamp_ms();
@@ -2706,6 +2790,49 @@ pub async fn apply_session_index_cleanup(
 
 const PROVIDER_SYNC_PROGRESS_EVENT: &str = "provider-sync-progress";
 
+/// issue #240：执行前先给「会动到什么、备份在哪」的只读预览。
+///
+/// 用户报「修复历史会话后会话从列表消失」，所以真实执行前要先看影响范围。
+/// 这条命令不写盘：不开锁、不备份、不改 sqlite，只统计。
+#[tauri::command]
+pub async fn preview_provider_sync() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_data::provider_sync::preview_provider_sync(None)
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("provider sync preview task failed: {error}"))
+    .and_then(|result| result);
+    match result {
+        Ok(preview) => {
+            let audit = &preview.audit;
+            let message = if audit.catalog_only_sessions > 0 {
+                format!(
+                    "预览：审计发现 {} 条仅存在于会话目录的记录，其中 {} 条仍有当前 rollout、{} 条只能从历史备份恢复、{} 条没有恢复来源。执行时的备份目录：{}",
+                    audit.catalog_only_sessions,
+                    audit.catalog_only_with_current_rollout,
+                    audit.catalog_only_with_backup_database,
+                    audit.catalog_only_without_recovery_source,
+                    preview.backup_root.to_string_lossy(),
+                )
+            } else {
+                format!(
+                    "预览：未发现仅存在于会话目录的记录。执行时的备份目录：{}",
+                    preview.backup_root.to_string_lossy(),
+                )
+            };
+            ok(
+                &message,
+                json!({
+                    "targetProvider": preview.target_provider,
+                    "repairAudit": preview.audit,
+                    "backupRoot": preview.backup_root,
+                }),
+            )
+        }
+        Err(error) => failed(&format!("预览历史会话修复失败：{error}"), json!({})),
+    }
+}
+
 #[tauri::command]
 pub async fn sync_providers_now(
     window: tauri::WebviewWindow,
@@ -2731,9 +2858,15 @@ pub async fn sync_providers_now(
     };
     let target_for_settings = target_provider.clone();
     let home = codex_plus_core::relay_config::default_codex_home_dir();
-    prepare_codex_app_state_before_provider_switch(&home, "manager.sync_providers_now.before");
     let progress_window = window.clone();
+    let before_home = home.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        // issue #1341：快照要读整份 app state 文件，属阻塞 IO，必须留在阻塞线程里，
+        // 否则同步一跑起来就把 async 运行时的那条工作线程占住，界面卡死。
+        prepare_codex_app_state_before_provider_switch(
+            &before_home,
+            "manager.sync_providers_now.before",
+        );
         codex_plus_data::run_provider_sync_with_target_and_progress(
             None,
             target_provider.as_deref(),
@@ -2816,6 +2949,13 @@ fn provider_sync_command_result(sync: codex_plus_data::ProviderSyncResult) -> Co
             String::new()
         }
     );
+    // issue #240：改动了记录就把备份位置一并告诉用户，出事时能自己找回。
+    let success_message = match sync.backup_dir.as_ref() {
+        Some(path) if sync.changed_session_files > 0 || sync.sqlite_catalog_rows_inserted > 0 => {
+            format!("{success_message} 备份目录：{}", path.to_string_lossy())
+        }
+        _ => success_message,
+    };
     let failure_message = format!("历史会话修复未执行：{}", sync.message);
     let payload = json!({
         "syncStatus": sync.status,
@@ -3667,6 +3807,35 @@ pub fn write_diagnostic_event(event: String, detail: Value) -> CommandResult<Val
     }
 }
 
+/// 预检 live config.toml 能否被回填流程解析（issue #618）。
+///
+/// core 侧的 `backfill_relay_profile_from_home_with_common` 会先做重复表头/重复
+/// 根键的语义归一化（`normalize_duplicate_toml_text`，公开入口是
+/// `normalize_config_text`），再对归一化结果做整份 TOML 解析。所以这里必须走同一
+/// 条归一化路径，否则会对「只是有重复表头」的文件误报语法错误。
+///
+/// 返回 `Some(错误描述)` 表示回填注定失败：要么读文件失败，要么归一化后仍不是合法
+/// TOML。返回 `None` 表示可以继续回填。文件不存在等同于空文件，属可回填。
+fn live_config_backfill_blocking_error(home: &Path) -> Option<String> {
+    let config_path = home.join("config.toml");
+    let contents = match fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        // 不存在按空文件处理，与 core 的 read_optional_text 一致。
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return Some(format!("读取 {} 失败：{error}", config_path.display())),
+    };
+    // 与 core 的 parse_toml_document 一样先剥掉 BOM。
+    let contents = contents.trim_start_matches('\u{feff}');
+    if contents.trim().is_empty() {
+        return None;
+    }
+    let normalized = codex_plus_core::relay_config::normalize_config_text(contents);
+    match normalized.parse::<toml_edit::DocumentMut>() {
+        Ok(_) => None,
+        Err(error) => Some(format!("{error}")),
+    }
+}
+
 #[tauri::command]
 pub fn backfill_relay_profile_from_live(
     request: BackfillRelayProfileRequest,
@@ -3681,10 +3850,10 @@ pub fn backfill_relay_profile_from_live(
             "activeRelayId": settings.active_relay_id
         }),
     );
-    let Some(profile) = settings
+    let Some(profile_index) = settings
         .relay_profiles
-        .iter_mut()
-        .find(|profile| profile.id == request.profile_id)
+        .iter()
+        .position(|profile| profile.id == request.profile_id)
     else {
         log_manager_event(
             "manager.backfill_relay_profile_from_live.missing_profile",
@@ -3698,12 +3867,37 @@ pub fn backfill_relay_profile_from_live(
         );
     };
 
+    // live 的 config.toml 只要有一处手写语法错误，core 的整份 TOML 解析就会失败
+    // （relay_config.rs 的 parse_toml_document），回填因此无法进行。但「回填」只是
+    // 切换前的一次快照采集，不是切换到新供应商的必要条件；让整条切换流程失败会
+    // 把用户卡死在中转态（issue #618）。这里比照同文件 2089 / 2350 两处既有写法，
+    // 在解析失败时降级：保留原 settings 不动、只提示用户先修 config.toml 语法。
+    if let Some(error) = live_config_backfill_blocking_error(&home) {
+        log_manager_event(
+            "manager.backfill_relay_profile_from_live.degraded",
+            json!({
+                "profileId": requested_profile_id,
+                "error": error
+            }),
+        );
+        return degraded(
+            &format!("config.toml 有语法错误，已跳过回填并保留原有配置（切换照常进行）：{error}"),
+            SettingsBackfillPayload { settings },
+        );
+    }
+
+    // 回填会就地改写 profile 与公共配置。先在副本上跑，成功才提交，避免中途
+    // 失败时留下「改了一半」的 profile 被后续切换流程用上。
+    let mut next_profile = settings.relay_profiles[profile_index].clone();
+    let mut next_context = settings.relay_context_config_contents.clone();
     match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
         &home,
-        profile,
-        &mut settings.relay_context_config_contents,
+        &mut next_profile,
+        &mut next_context,
     ) {
         Ok(()) => {
+            settings.relay_profiles[profile_index] = next_profile;
+            settings.relay_context_config_contents = next_context;
             log_manager_event(
                 "manager.backfill_relay_profile_from_live.ok",
                 json!({
@@ -5324,62 +5518,11 @@ pub async fn test_vlm(request: TestVlmRequest) -> CommandResult<TestVlmResult> {
     }
 }
 
-/// provider sync 正在进行时，最多等它这么久再考虑放弃重启。
-const PROVIDER_SYNC_WAIT_TIMEOUT_MS: u64 = 30_000;
-const PROVIDER_SYNC_WAIT_INTERVAL_MS: u64 = 200;
-
-/// 等待正在执行的 provider sync 结束。
-///
-/// launcher 在同步期间持有 `~/.codex/tmp/provider-sync.lock`，而这一步之后调用方会
-/// `TerminateProcess` 强杀 launcher。被强杀的进程来不及 `release_lock()`，会留下残留锁，
-/// 使后续启动全部跳过同步，用户侧表现为历史会话消失或「修复 0 个会话」（issue #1901）。
-/// 因此这里先等同步自然结束；等不到就拒绝本次重启，而不是把它打断。
-fn wait_for_idle_provider_sync(
-    inspect: impl Fn() -> codex_plus_data::ProviderSyncLockState,
-    sleep: impl Fn(u64),
-    timeout_ms: u64,
-) -> Result<(), codex_plus_data::ProviderSyncLockState> {
-    use codex_plus_data::ProviderSyncLockState;
-
-    let mut waited_ms = 0;
-    loop {
-        // Stale 锁的持有者已经退出，下一次 acquire_lock 会自动回收它，不必等。
-        match inspect() {
-            ProviderSyncLockState::Free | ProviderSyncLockState::Stale { .. } => return Ok(()),
-            state => {
-                if waited_ms >= timeout_ms {
-                    return Err(state);
-                }
-            }
-        }
-        sleep(PROVIDER_SYNC_WAIT_INTERVAL_MS);
-        waited_ms += PROVIDER_SYNC_WAIT_INTERVAL_MS;
-    }
-}
-
-/// 在强杀 launcher 前放行或拦截本次重启，并把判定结果写进诊断日志。
-fn ensure_provider_sync_is_idle_before_stop() -> Result<(), String> {
-    let outcome = wait_for_idle_provider_sync(
-        || codex_plus_data::inspect_provider_sync_lock(None),
-        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
-        PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-    );
-    match outcome {
-        Ok(()) => Ok(()),
-        Err(state) => {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "manager.restart_blocked_by_provider_sync",
-                json!({
-                    "state": state,
-                    "waited_ms": PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-                }),
-            );
-            Err(format!(
-                "历史会话同步正在进行中（已等待 {} 秒）。为避免中断同步导致会话丢失，本次重启未执行；请等待同步完成后重试。",
-                PROVIDER_SYNC_WAIT_TIMEOUT_MS / 1000
-            ))
-        }
-    }
+// Hold ownership across stop and config sync, then release before the successor starts.
+fn ensure_provider_sync_is_idle_before_stop()
+-> Result<codex_plus_data::ProviderSyncLifecycleGuard, String> {
+    codex_plus_data::try_acquire_provider_sync_lifecycle_guard(None)
+        .map_err(|error| format!("历史会话同步正在进行或锁不可用，未执行重启；请稍后重试：{error}"))
 }
 
 fn default_debug_port() -> u16 {
@@ -5425,6 +5568,7 @@ mod tests {
                     codex_plus_core::native_browser_connection::ConnectedBrowser {
                         family: "edge".into(),
                         header_enabled: Some(true),
+                        recognized: true,
                     },
                 ],
             },
@@ -5467,6 +5611,75 @@ mod tests {
         let status = requested_launch_status(&request, "starting", "starting", 1);
 
         assert_eq!(status.codex_app, None);
+    }
+
+    /// issue #618：live config.toml 有语法错误时必须被判成「可降级」，而不是让
+    /// 整条供应商切换流程失败。缺失文件等同于空文件，同样不阻断。
+    #[test]
+    fn live_config_backfill_blocking_error_only_flags_unparseable_toml() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+
+        // 文件不存在（全新安装）→ 不阻断。
+        assert_eq!(live_config_backfill_blocking_error(home), None);
+
+        // 空文件 / 只有空白 → 不阻断。
+        std::fs::write(home.join("config.toml"), "  \n").unwrap();
+        assert_eq!(live_config_backfill_blocking_error(home), None);
+
+        // 正常 TOML → 不阻断。
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"https://relay.example/v1\"\n",
+        )
+        .unwrap();
+        assert_eq!(live_config_backfill_blocking_error(home), None);
+
+        // 手写坏掉的 TOML（未闭合数组）→ 必须阻断并带上位置信息。
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\nmodel_list = [\"a\", \n",
+        )
+        .unwrap();
+        let error = live_config_backfill_blocking_error(home)
+            .expect("unparseable live config must be reported as blocking");
+        assert!(!error.is_empty(), "error detail must not be empty");
+    }
+
+    /// 重复表头/重复根键属于 core 归一层能修好的形态，预检不能误报成语法错误——
+    /// 否则 #618 的降级路径会吃掉本来能成功的回填。
+    #[test]
+    fn live_config_backfill_blocking_error_tolerates_duplicate_tables_and_root_keys() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "\
+model = \"a\"
+model = \"b\"
+
+[mcp_servers.node_repl]
+command = \"node\"
+
+[mcp_servers.node_repl]
+cwd = \"/tmp\"
+",
+        )
+        .unwrap();
+
+        assert_eq!(live_config_backfill_blocking_error(temp.path()), None);
+    }
+
+    /// 预检必须与 core 的读取路径同样剥掉 BOM，否则带 BOM 的正常文件会被误判。
+    #[test]
+    fn live_config_backfill_blocking_error_ignores_utf8_bom() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "\u{feff}model_provider = \"openai\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(live_config_backfill_blocking_error(temp.path()), None);
     }
 
     #[test]
@@ -5563,6 +5776,43 @@ mod tests {
     }
 
     #[test]
+    fn provider_sync_success_reports_backup_directory_when_something_changed() {
+        let mut sync = provider_sync_result_for_test(
+            codex_plus_data::ProviderSyncStatus::Synced,
+            "Provider sync complete",
+        );
+        sync.changed_session_files = 3;
+        sync.backup_dir = Some(std::path::PathBuf::from("/tmp/backups/provider-sync/run-1"));
+
+        let result = provider_sync_command_result(sync);
+
+        assert_eq!(result.status, "ok");
+        assert!(
+            result.message.contains("/tmp/backups/provider-sync/run-1"),
+            "有改动时应告知备份目录：{}",
+            result.message
+        );
+    }
+
+    /// 什么都没改的时候不该多出一行备份目录，避免噪音。
+    #[test]
+    fn provider_sync_success_omits_backup_hint_without_changes() {
+        let sync = provider_sync_result_for_test(
+            codex_plus_data::ProviderSyncStatus::Synced,
+            "Provider sync already up to date",
+        );
+
+        let result = provider_sync_command_result(sync);
+
+        assert_eq!(result.status, "ok");
+        assert!(
+            !result.message.contains("备份目录："),
+            "无改动时不该提示备份目录：{}",
+            result.message
+        );
+    }
+
+    #[test]
     fn provider_sync_skipped_is_reported_as_command_failure() {
         let result = provider_sync_command_result(provider_sync_result_for_test(
             codex_plus_data::ProviderSyncStatus::Skipped,
@@ -5635,83 +5885,66 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn restart_does_not_wait_when_no_provider_sync_is_running() {
-        let slept = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || codex_plus_data::ProviderSyncLockState::Free,
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(slept.get(), 0);
-    }
-
-    #[test]
-    fn restart_does_not_wait_on_a_lock_whose_owner_already_exited() {
-        let slept = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || codex_plus_data::ProviderSyncLockState::Stale { pid: Some(4321) },
-            |ms| slept.set(slept.get() + ms),
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(slept.get(), 0);
-    }
-
-    #[test]
-    fn restart_proceeds_once_an_in_flight_provider_sync_releases_the_lock() {
-        let polls = std::cell::Cell::new(0);
-
-        let outcome = wait_for_idle_provider_sync(
-            || {
-                polls.set(polls.get() + 1);
-                if polls.get() < 3 {
-                    codex_plus_data::ProviderSyncLockState::Held {
-                        pid: 4321,
-                        started_at: 1234,
-                    }
-                } else {
-                    codex_plus_data::ProviderSyncLockState::Free
-                }
-            },
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
-        assert!(outcome.is_ok());
-        assert_eq!(polls.get(), 3);
-    }
-
-    /// issue #1901：同步一直不结束时宁可拒绝重启，也不能强杀持锁的 launcher。
-    #[test]
-    fn restart_is_refused_while_a_provider_sync_keeps_holding_the_lock() {
-        let held = codex_plus_data::ProviderSyncLockState::Held {
-            pid: 4321,
-            started_at: 1234,
-        };
-
-        let outcome =
-            wait_for_idle_provider_sync(|| held.clone(), |_| {}, PROVIDER_SYNC_WAIT_TIMEOUT_MS);
-
-        assert_eq!(outcome, Err(held));
-    }
-
-    #[test]
-    fn restart_is_refused_while_the_lock_owner_cannot_be_determined() {
-        let outcome = wait_for_idle_provider_sync(
-            || codex_plus_data::ProviderSyncLockState::Indeterminate,
-            |_| {},
-            PROVIDER_SYNC_WAIT_TIMEOUT_MS,
-        );
-
+    fn restart_absent_app_uses_launch_but_explicit_sync_still_restarts() {
         assert_eq!(
-            outcome,
-            Err(codex_plus_data::ProviderSyncLockState::Indeterminate)
+            restart_disposition(false, false),
+            RestartDisposition::LaunchOnly
         );
+        for (sync, running) in [(true, false), (false, true), (true, true)] {
+            assert_eq!(
+                restart_disposition(sync, running),
+                RestartDisposition::StopAndRestart
+            );
+        }
+    }
+
+    #[test]
+    fn restart_and_launch_share_a_single_flight_guard() {
+        let first = try_acquire_launch_guard().unwrap();
+        assert!(try_acquire_launch_guard().is_err());
+        drop(first);
+        assert!(try_acquire_launch_guard().is_ok());
+    }
+
+    #[test]
+    fn restart_provider_guard_is_held_until_spawn_and_released_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard =
+            codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
+        assert!(
+            codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).is_err()
+        );
+        let spawned = std::cell::Cell::new(false);
+        spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
+            let next =
+                codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path()))?;
+            next.release()?;
+            spawned.set(true);
+            Ok(())
+        })
+        .unwrap();
+        assert!(spawned.get());
+    }
+
+    #[test]
+    fn restart_provider_guard_release_failure_blocks_spawn() {
+        let temp = tempfile::tempdir().unwrap();
+        let guard =
+            codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(temp.path())).unwrap();
+        fs::write(
+            temp.path().join("tmp/provider-sync.lock/owner.json"),
+            json!({"pid": std::process::id(), "startedAt":1, "lockId":"replacement"}).to_string(),
+        )
+        .unwrap();
+        let spawned = std::cell::Cell::new(false);
+        assert!(
+            spawn_after_provider_guard_release(guard, &launch_request(false), |_| {
+                spawned.set(true);
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!spawned.get());
     }
 
     #[test]
@@ -6134,7 +6367,6 @@ base_url = "https://example.invalid/v1"
 
     /// 回归（issue #1604）：用户点「重启 Codex++」走的就是这条同步路径。
     /// 现场遗留的 0 字节 auth.json 必须被修复成合法 JSON，否则仍然停在登录页。
-    #[test]
     fn active_aggregate_sync_repairs_empty_auth_json() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("auth.json"), "").unwrap();
@@ -6214,7 +6446,10 @@ base_url = "https://example.invalid/v1"
     fn restart_stops_codex_then_waits_for_native_cleanup_before_launcher() {
         let events = std::cell::RefCell::new(Vec::new());
         stop_codex_plus_for_restart(
-            || events.borrow_mut().push("codex"),
+            || {
+                events.borrow_mut().push("codex");
+                Ok(())
+            },
             || {
                 events.borrow_mut().push("cleanup");
                 Ok(codex_plus_core::native_browser::NativeBrowserShutdown::Ready)
@@ -6232,7 +6467,7 @@ base_url = "https://example.invalid/v1"
     fn restore_failure_still_stops_the_old_launcher() {
         let stopped_launcher = std::cell::Cell::new(false);
         let shutdown = stop_codex_plus_for_restart(
-            || {},
+            || Ok(()),
             || Ok(codex_plus_core::native_browser::NativeBrowserShutdown::RestoreFailed),
             || {
                 stopped_launcher.set(true);
@@ -6260,6 +6495,12 @@ base_url = "https://example.invalid/v1"
         assert!(launcher.contains("旧启动器尚未退出"));
         assert!(!launcher.contains("原生浏览器文件仍在恢复"));
 
+        let codex = restart_stop_failure_message(&RestartStopError::Codex(anyhow::anyhow!(
+            "app remains running"
+        )));
+        assert!(codex.contains("Codex 进程尚未确认退出"));
+        assert!(!codex.contains("原生浏览器文件恢复失败"));
+
         let failed = restart_stop_failure_message(&RestartStopError::NativeBrowser(
             anyhow::anyhow!("Invalid native cleanup receipt"),
         ));
@@ -6272,7 +6513,10 @@ base_url = "https://example.invalid/v1"
         let stopped = std::cell::Cell::new(false);
         let killed = std::cell::Cell::new(false);
         let result = stop_codex_plus_for_restart(
-            || stopped.set(true),
+            || {
+                stopped.set(true);
+                Ok(())
+            },
             || anyhow::bail!("cleanup still running"),
             || {
                 killed.set(true);
@@ -6282,6 +6526,16 @@ base_url = "https://example.invalid/v1"
         assert!(result.is_err());
         assert!(stopped.get());
         assert!(!killed.get());
+    }
+
+    #[test]
+    fn restart_does_not_cleanup_or_spawn_if_app_stop_fails() {
+        let result = stop_codex_plus_for_restart(
+            || anyhow::bail!("app remains running"),
+            || panic!("must not wait on cleanup"),
+            || panic!("must not stop launcher"),
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -6846,7 +7100,6 @@ enabled = true
     /// 只按 exe 扩展名过滤，拦不住。以前无效路径会原样存进 settings.json，而
     /// launcher 拿到显式无效 --app-path 又不回退自动探测，于是启动永久失败，
     /// 只能手改配置文件才能恢复。
-    #[test]
     fn normalize_settings_before_save_drops_an_invalid_codex_app_path() {
         let codex_plus_own_exe = if cfg!(windows) {
             r"D:\Codex++\codex-plus-plus.exe"
