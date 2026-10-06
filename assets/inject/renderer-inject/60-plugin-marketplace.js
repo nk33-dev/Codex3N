@@ -1,560 +1,16 @@
-      // 左面板点行 = 选中并在右侧显示详情。放在安装/卸载之后，
-      // 免得点了行内的按钮又被当成一次选中。
-      const extensionsSelect = target?.closest("[data-codex-extensions-select]");
-      if (extensionsSelect) {
-        const [kind, ...rest] = extensionsSelect.getAttribute("data-codex-extensions-select").split(":");
-        codexPlusExtensionsSelected = { kind, key: rest.join(":") };
-        refreshCodexPlusExtensionsView();
-        return;
-      }
-      if (target?.closest("[data-codex-upstream-worktree-open]")) {
-        if (!codexPlusSettings().upstreamWorktreeCreate) {
-          showToast("Upstream worktree enhancement is disabled", null);
-          return;
-        }
-        openUpstreamWorktreeDialog();
-        return;
-      }
-      const toggle = target?.closest("[data-codex-plus-setting]");
-      if (toggle) {
-        if (toggle.disabled || toggle.dataset.pending === "true") return;
-        const key = toggle.getAttribute("data-codex-plus-setting");
-        setCodexPlusSetting(key, !codexPlusSettings()[key]);
-        return;
-      }
-      const backendToggle = target?.closest("[data-codex-backend-setting]");
-      if (backendToggle) {
-        const key = backendToggle.getAttribute("data-codex-backend-setting");
-        setBackendSetting(key, !codexPlusBackendSettings[key]);
-        return;
-      }
-    }, true);
-    // 图标加载失败的回退：error 不冒泡，只能捕获阶段委托。
-    overlay.addEventListener("error", handleExtensionIconError, true);
-    document.body.appendChild(overlay);
-    if (pageMode) {
-      positionCodexPlusPage(overlay);
-      // 必须在 selectCodexPlusTab 之前建好两栏，否则刷新左面板时找不到容器。
-      installCodexPlusPageLayout(overlay, initialTab);
-      if (!window.__codexPlusPageResizeHandler) {
-        window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
-        window.addEventListener("resize", window.__codexPlusPageResizeHandler);
-      }
-    }
-    if (!codexPlusAdsLoaded) fetchCodexPlusAds();
-    selectCodexPlusTab(initialTab);
-    // 必须在 selectCodexPlusTab 之后：激活态要靠 data-codex-plus-active-tab
-    // 判断当前是 Codex++ 还是「拓展」，提前调用会永远落到 home 上。
-    if (pageMode) setCodexPlusSidebarNavActive(true, codexPlusActiveEntry() || "home");
-    renderCodexPlusMenu();
-    refreshCodexPlusBackendToggles();
-    renderBackendStatus();
-    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "failed") {
-      void loadRelayApiKeys(true);
-    }
-    void loadCodexServiceTierState();
-    loadUserScripts();
-  }
-  function openCodexPlusPage() {
-    openCodexPlusModal({ page: true });
-  }
-
-  /** 「拓展」页面：从弹窗里拆出来的用户脚本，形态对齐 VSCode 的扩展面板。 */
-  function openCodexPlusExtensions() {
-    openCodexPlusModal({ page: true, tab: codexPlusExtensionsTab });
-  }
-
-  /** 「推荐内容」页面：从弹窗的二级 tab 提出来，成为图标栏上的一级入口。 */
-  function openCodexPlusSponsor() {
-    openCodexPlusModal({ page: true, tab: codexPlusSponsorTab });
-  }
-
-  function closeCodexPlusPage() {
-    document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
-    setCodexPlusSidebarNavActive(false);
-  }
-
-  function closeCodexPlusPageAfterNativeNavigation() {
-    clearTimeout(window.__codexPlusPageNavigationCloseTimer);
-    window.__codexPlusPageNavigationCloseTimer = setTimeout(() => {
-      window.__codexPlusPageNavigationCloseTimer = null;
-      closeCodexPlusPage();
-    }, 0);
-  }
-
-  function installCodexPlusPageNavigationCloseHandler() {
-    document.removeEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
-    window.__codexPlusPageNavigationCloseHandler = (event) => {
-      if (!document.querySelector(`.${codexPlusPageClass}`)) return;
-      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (!target?.closest(selectors.sidebarThread)) return;
-      // Let Codex's own click handler update its route before removing our page.
-      closeCodexPlusPageAfterNativeNavigation();
-    };
-    document.addEventListener("click", window.__codexPlusPageNavigationCloseHandler, true);
-  }
-
-  function installCodexPlusSidebarNavigation() {
-    document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
-    // 旧版的侧边栏会话列表在 aside 里带 role="navigation"。新版把这个 role 挪去了
-    // 缩略图面板/演示目录，所以留一条限定在 aside 内的兜底。
-    // 注意：新版图标栏也是 aside 里的 <nav>，且文档顺序在前，而 querySelector 的选择器
-    // 列表是按文档顺序取首个命中项的——必须显式排除图标栏，否则会挂到它上面。
-    const navigation = document.querySelector('aside.app-shell-left-panel nav[role="navigation"]')
-      || Array.from(document.querySelectorAll("aside.app-shell-left-panel nav"))
-        .find((nav) => !nav.hasAttribute("data-app-navigation-rail"))
-      || null;
-    if (!navigation) return;
-    const navButtons = Array.from(navigation.querySelectorAll("button"));
-    const pluginButton = navButtons.find((button) => {
-      if (button.querySelector(selectors.pluginSvgPath)) return true;
-      const label = (button.getAttribute("aria-label") || button.textContent || "").trim();
-      return /^(插件|Plugins)$/i.test(label);
-    });
-    const insertionButton = pluginButton || navButtons.find((button) => {
-      const label = (button.getAttribute("aria-label") || button.textContent || "").replace(/\s+/g, " ").trim();
-      return /^(已安排|Scheduled|拉取请求|Pull requests|新对话|New chat)$/i.test(label);
-    });
-    if (navigation.dataset.codexPlusSidebarNavigationListener !== "true") {
-      navigation.dataset.codexPlusSidebarNavigationListener = "true";
-      navigation.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusSidebarNavId}`)) return;
-        if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
-      }, true);
-    }
-    let wrapper = document.getElementById(codexPlusSidebarNavId);
-    const parent = insertionButton?.parentElement || navigation;
-    if (!wrapper || wrapper.parentElement !== parent) {
-      wrapper?.remove();
-      wrapper = document.createElement("div");
-      wrapper.id = codexPlusSidebarNavId;
-      wrapper.dataset.codexPlusSidebarNav = "true";
-      const button = (insertionButton || document.createElement("button")).cloneNode(true);
-      if (!(button instanceof HTMLElement)) return;
-      if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
-      button.type = "button";
-      button.removeAttribute("data-state");
-      button.removeAttribute("aria-current");
-      button.removeAttribute("disabled");
-      button.removeAttribute("aria-disabled");
-      button.setAttribute("aria-label", "Codex++");
-      button.textContent = "";
-      button.innerHTML = `<span class="codex-plus-sidebar-nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg></span><span class="truncate">Codex++</span><span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`;
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        openCodexPlusPage();
-      }, true);
-      wrapper.appendChild(button);
-      if (insertionButton?.nextSibling) {
-        parent.insertBefore(wrapper, insertionButton.nextSibling);
-      } else {
-        parent.appendChild(wrapper);
-      }
-    }
-    const status = wrapper.querySelector(".codex-plus-sidebar-nav-status");
-    if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
-    const active = !!document.querySelector(`.${codexPlusPageClass}`);
-    setCodexPlusSidebarNavActive(active);
-  }
-
-  function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => document.getElementById(id)?.remove());
-  }
-
-  function detachCodexPlusSidebarNavigation() {
-    document.getElementById(codexPlusSidebarNavId)?.remove();
-  }
-
-  /**
-   * 挑一个原生 rail 按钮当模板。
-   *
-   * 优先 builtin:projects——它在 primary 区，且不像 builtin:library 那样会走
-   * tooltip/triggerRef 的特殊分支。找不到就退回第一个可见 destination。
-   */
-  function codexPlusRailTemplateButton(rail) {
-    const preferred = rail.querySelector(`${codexPlusRailDestinationSelector}[data-sidebar-destination="builtin:projects"]`);
-    if (preferred) return preferred;
-    const candidates = Array.from(rail.querySelectorAll(codexPlusRailDestinationSelector))
-      .filter((node) => node.closest("nav") === rail);
-    // 优先挑未选中的：clone 会把选中态的属性和配色一起带过来，
-    // 表现为入口在没有任何页面打开时也显示成选中。
-    const isSelected = (node) => node.getAttribute("aria-current") === "page" || node.hasAttribute("data-selected");
-    return candidates.find((node) => !isSelected(node)) || candidates[0] || null;
-  }
-
-  function codexPlusRailPrimaryAnchor(rail) {
-    const fixedIds = [
-      'builtin:home',
-      'builtin:customize',
-    ];
-    const buttons = Array.from(rail.querySelectorAll(codexPlusRailDestinationSelector));
-    return buttons.find((node) => {
-      const id = node.getAttribute("data-sidebar-destination") || "";
-      return id && !fixedIds.includes(id);
-    }) || null;
-  }
-
-  function createCodexPlusRailButton({ id, template, label, iconMarkup, withStatus, onActivate }) {
-    const wrapper = document.createElement("div");
-    wrapper.id = id;
-    wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : "home";
-    // 模板拿不到时不回退到旧模式，而是自建一个按钮：rail 上 destination 可能在
-    // 登录态/接口就绪前还是空的，那只是暂时状态，不该让入口整个消失。
-    const button = template
-      ? template.cloneNode(true)
-      : document.createElement("button");
-    if (!(button instanceof HTMLElement)) return null;
-    button.type = "button";
-    // 留着 data-sidebar-destination 会被 Codex 的自定义/排序逻辑当成真的 destination。
-    button.removeAttribute("data-sidebar-destination");
-    button.removeAttribute("data-state");
-    button.removeAttribute("disabled");
-    button.removeAttribute("aria-disabled");
-    // 选中态由 data-selected 驱动，但它只在没有 data-suppress-active-style 时生效。
-    // 模板若是未选中的按钮，会带着 suppress 过来，压制掉我们的选中样式——
-    // 必须移除，否则按钮永远停在未选中的暗色。
-    button.removeAttribute("data-suppress-active-style");
-    // 起始为未选中；激活态由 setCodexPlusSidebarNavActive 切换 data-selected。
-    button.removeAttribute("data-selected");
-    button.removeAttribute("aria-current");
-    button.setAttribute("aria-label", label);
-    button.textContent = "";
-    // 原生 rail 按钮是纯图标，没有文字标签，所以只放图标 + 状态点。
-    button.innerHTML = `<span class="codex-plus-rail-icon" aria-hidden="true">${iconMarkup}</span>`
-      + (withStatus
-        ? `<span class="codex-plus-sidebar-nav-status" data-status="${codexPlusBackendStatus.status || "checking"}" aria-hidden="true"></span>`
-        : "");
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      onActivate();
-    }, true);
-    wrapper.appendChild(button);
-    return wrapper;
-  }
-
-  /**
-   * 把 Codex++ / 拓展两个入口挂到新版图标栏。
-   *
-   * Codex 的 rail 渲染晚于注入，所以这里每次 scan 都会被调用；靠 id 判存避免重复插入。
-   */
-  function installCodexPlusRailNavigation() {
-    document.querySelectorAll(`#${codexPlusMenuId}, [data-codex-plus-menu="true"]`).forEach((node) => node.remove());
-    const rail = document.querySelector(codexPlusRailSelector);
-    if (!rail) return false;
-    // 注意：模板按钮可能在 rail 还没渲染出 destination 时拿不到（登录态/接口未就绪）。
-    // 那只是暂时状态，不能因此判定"没有 rail"而回退旧模式，否则入口会整个消失。
-    const template = codexPlusRailTemplateButton(rail);
-
-    // 旧逻辑把"点原生导航就关掉 Codex++ 页面"的监听挂在侧边栏的 navigation 上，
-    // 但 rail 模式下那个函数会提前 return，监听压根装不上，所以这里补一份。
-    if (rail.dataset.codexPlusRailNavigationListener !== "true") {
-      rail.dataset.codexPlusRailNavigationListener = "true";
-      rail.addEventListener("click", (event) => {
-        const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
-        // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
-        // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
-        if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
-        if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
-      }, true);
-    }
-
-    const icons = {
-      home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg>',
-      // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
-      // 和页面内部保持同一个符号，不再另画一个近似图形。
-      extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
-      // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
-      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
-    };
-
-    const specs = [
-      { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
-      { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
-      { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
-    ];
-
-    const anchor = codexPlusRailPrimaryAnchor(rail);
-    // 插到锚点所在的父容器里，而不是 nav 顶层：原生按钮可能嵌在 nav 内部的分组 div 中，
-    // 直接插顶层会破坏它的 flex 布局。
-    const host = anchor?.parentElement || rail;
-    let cursor = anchor;
-    specs.forEach((spec) => {
-      let wrapper = document.getElementById(spec.id);
-      if (!wrapper || wrapper.parentElement !== host) {
-        wrapper?.remove();
-        wrapper = createCodexPlusRailButton({ ...spec, template });
-        if (!wrapper) return;
-      }
-      // 顺序：Codex++ 在前，「拓展」在后；紧跟在 primary 区锚点后面。
-      if (cursor?.nextSibling) {
-        host.insertBefore(wrapper, cursor.nextSibling);
-      } else if (cursor) {
-        host.appendChild(wrapper);
-      } else {
-        host.insertBefore(wrapper, host.firstElementChild);
-      }
-      cursor = wrapper;
-    });
-
-    const status = document.getElementById(codexPlusRailNavId)?.querySelector(".codex-plus-sidebar-nav-status");
-    if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
-    return true;
-  }
-
-  /** 图标栏存在时走它，否则回退到旧版宽面板侧边栏入口。两条路径互斥，不会重复出现。 */
-  function installCodexPlusNavigationEntries() {
-    if (installCodexPlusRailNavigation()) {
-      detachCodexPlusSidebarNavigation();
-      return;
-    }
-    removeCodexPlusRailNavigation();
-    installCodexPlusSidebarNavigation();
-  }
-
-  const codexPluginRemoteOnlyMarketplaceKinds = new Set(["created-by-me-remote", "shared-with-me"]);
-
-  function pluginMarketplaceRequestProfile(params) {
-    const marketplaceKinds = Array.isArray(params?.marketplaceKinds)
-      ? Array.from(new Set(params.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))))
-      : [];
-    const hasRemoteOnlyKind = marketplaceKinds.some((kind) => codexPluginRemoteOnlyMarketplaceKinds.has(kind));
-    const hasLocalKind = marketplaceKinds.includes("local");
-    const hasOtherKind = marketplaceKinds.some(
-      (kind) => !codexPluginRemoteOnlyMarketplaceKinds.has(kind) && kind !== "vertical"
-    );
-    return {
-      marketplaceKinds,
-      remoteOnly: hasRemoteOnlyKind && !hasLocalKind && !hasOtherKind,
-    };
-  }
-
-  function patchPluginMarketplaceRequestParams(method, params) {
-    if (method === "list-plugins") {
-      if (!params || typeof params !== "object") return params;
-    } else {
-      return params;
-    }
-    const next = { ...params };
-    const requestProfile = pluginMarketplaceRequestProfile(next);
-    const requestCwds = Array.isArray(next.cwds)
-      ? next.cwds.filter((cwd) => typeof cwd === "string" && cwd.trim())
-      : [];
-    if (requestCwds.length > 0) {
-      window.__codexPluginMarketplaceLastCwds = Array.from(new Set(requestCwds));
-    } else if (!requestProfile.remoteOnly && Array.isArray(window.__codexPluginMarketplaceLastCwds) && window.__codexPluginMarketplaceLastCwds.length > 0) {
-      next.cwds = [...window.__codexPluginMarketplaceLastCwds];
-    }
-    const hadMarketplaceKinds = Object.prototype.hasOwnProperty.call(next, "marketplaceKinds");
-    const broadCatalogRequest = codexPluginUsesBroadCatalogKinds()
-      && (!hadMarketplaceKinds || next.marketplaceKinds == null);
-    const remoteCatalogUnavailable = window.__codexPluginMarketplaceRemoteCatalogUnavailable === true;
-    if (broadCatalogRequest && !remoteCatalogUnavailable) {
-      sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
-        hadMarketplaceKinds,
-        marketplaceKinds: hadMarketplaceKinds ? next.marketplaceKinds : null,
-        broadCatalogPreserved: true,
-        cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
-        cwdRestored: requestCwds.length === 0 && Array.isArray(next.cwds) && next.cwds.length > 0,
-        remoteCatalogUnavailable,
-        remoteOnly: requestProfile.remoteOnly,
-      });
-      return next;
-    }
-    let nextKinds = Array.isArray(next.marketplaceKinds)
-      ? next.marketplaceKinds.map((kind) => restorePluginMarketplaceName(kind))
-      : ["local"];
-    if (!requestProfile.remoteOnly && remoteCatalogUnavailable) {
-      nextKinds = nextKinds.filter((kind) => kind !== "created-by-me-remote" && kind !== "shared-with-me");
-    }
-    if (!requestProfile.remoteOnly) {
-      if (!nextKinds.includes("local")) nextKinds.push("local");
-      if (!nextKinds.includes("vertical")) nextKinds.push("vertical");
-    }
-    next.marketplaceKinds = Array.from(new Set(nextKinds));
-    sendCodexPlusDiagnostic("plugin_marketplace_request_expanded", {
-      hadMarketplaceKinds,
-      marketplaceKinds: next.marketplaceKinds,
-      broadCatalogPreserved: false,
-      cwdCount: Array.isArray(next.cwds) ? next.cwds.length : 0,
-      cwdRestored: requestCwds.length === 0 && Array.isArray(next.cwds) && next.cwds.length > 0,
-      remoteCatalogUnavailable,
-      remoteOnly: requestProfile.remoteOnly,
-    });
-    return next;
-  }
-
-  function displayNameForPluginMarketplaceName(name, fallback) {
-    if (name === "openai-bundled") return "OpenAI插件1(Codex++)";
-    if (name === "openai-curated") return "OpenAI插件2(Codex++)";
-    if (name === "openai-primary-runtime") return "OpenAI插件3(Codex++)";
-    if (name === "openai-api-curated") return "OpenAI插件4(Codex++)";
-    // 内置插件包的注册名。曾经叫 openai-curated-remote，但那是 codex 的保留名，
-    // 注册在它下面会被静默忽略，已改为 codex-plus-curated；旧名保留以兼容
-    // 尚未升级的配置。
-    if (name === "codex-plus-curated" || name === "openai-curated-remote") return "OpenAI插件5(Codex++)";
-    return fallback;
-  }
-
-  function patchPluginMarketplaceObject(marketplace) {
-    if (!marketplace || typeof marketplace !== "object" || marketplace.__codexPlusMarketplaceUnlockPatched) return false;
-    const displayName = displayNameForPluginMarketplaceName(marketplace.name, marketplace.displayName || marketplace.title || marketplace.label || marketplace.name);
-    if (!displayName || displayName === marketplace.name) return false;
-    marketplace.displayName = displayName;
-    marketplace.title = displayName;
-    marketplace.label = displayName;
-    if (marketplace.interface && typeof marketplace.interface === "object") {
-      marketplace.interface = {
-        ...marketplace.interface,
-        displayName,
-        name: displayName,
-        title: displayName,
-        label: displayName,
-      };
-    } else {
-      marketplace.interface = { displayName, name: displayName, title: displayName, label: displayName };
-    }
-    marketplace.__codexPlusMarketplaceUnlockPatched = true;
-    return true;
-  }
-
-  function cloneCodexPluginMarketplace(value) {
-    if (!value || typeof value !== "object") return null;
-    try {
-      return JSON.parse(JSON.stringify(value));
-    } catch {
-      return null;
-    }
-  }
-
-  function pluginMarketplacePluginKey(plugin) {
-    if (!plugin || typeof plugin !== "object") return "";
-    return String(plugin.name || plugin.id || plugin.pluginName || "").trim();
-  }
-
-  function normalizeLocalPluginMarketplacePlugin(plugin, marketplaceName) {
-    const cloned = cloneCodexPluginMarketplace(plugin);
-    if (!cloned || typeof cloned !== "object") return null;
-    const name = String(cloned.name || cloned.id || cloned.pluginName || "").trim();
-    if (!name) return null;
-    if (!cloned.name) cloned.name = name;
-    if (!cloned.id) cloned.id = `${name}@${marketplaceName}`;
-    if (!cloned.marketplaceName) cloned.marketplaceName = marketplaceName;
-    if (!cloned.marketplacePath) cloned.marketplacePath = marketplaceName;
-    if (!cloned.interface || typeof cloned.interface !== "object") cloned.interface = {};
-    if (!cloned.interface.displayName) cloned.interface.displayName = name;
-    if (!Array.isArray(cloned.keywords)) cloned.keywords = [];
-    return cloned;
-  }
-
-  function mergePluginMarketplacePlugins(target, source) {
-    if (!target || !source || !Array.isArray(source.plugins)) return 0;
-    if (!Array.isArray(target.plugins)) target.plugins = [];
-    const marketplaceName = restorePluginMarketplaceName(target.name || source.name || "");
-    const existing = new Set(target.plugins.map(pluginMarketplacePluginKey).filter(Boolean));
-    let added = 0;
-    source.plugins.forEach((plugin) => {
-      const key = pluginMarketplacePluginKey(plugin);
-      if (!key || existing.has(key)) return;
-      const cloned = normalizeLocalPluginMarketplacePlugin(plugin, marketplaceName);
-      if (!cloned) return;
-      target.plugins.push(cloned);
-      existing.add(key);
-      added += 1;
-    });
-    return added;
-  }
-
-  function mergeLocalPluginMarketplaces(result) {
-    if (!result || typeof result !== "object" || !Array.isArray(result.marketplaces)) {
-      return { addedMarketplaces: 0, addedPlugins: 0 };
-    }
-    const localMarketplaces = Array.isArray(window.__CODEX_PLUS_PLUGIN_MARKETPLACES__)
-      ? window.__CODEX_PLUS_PLUGIN_MARKETPLACES__
-      : [];
-    if (!localMarketplaces.length) return { addedMarketplaces: 0, addedPlugins: 0 };
-    const byName = new Map();
-    result.marketplaces.forEach((marketplace) => {
-      const name = restorePluginMarketplaceName(marketplace?.name || "");
-      if (name) byName.set(name, marketplace);
-    });
-    let addedMarketplaces = 0;
-    let addedPlugins = 0;
-    localMarketplaces.forEach((marketplace) => {
-      const name = restorePluginMarketplaceName(marketplace?.name || "");
-      if (!name) return;
-      const existing = byName.get(name);
-      if (existing) {
-        addedPlugins += mergePluginMarketplacePlugins(existing, marketplace);
-        return;
-      }
-      const cloned = cloneCodexPluginMarketplace(marketplace);
-      if (!cloned) return;
-      cloned.plugins = Array.isArray(cloned.plugins)
-        ? cloned.plugins.map((plugin) => normalizeLocalPluginMarketplacePlugin(plugin, name)).filter(Boolean)
-        : [];
-      result.marketplaces.push(cloned);
-      byName.set(name, cloned);
-      addedMarketplaces += 1;
-      addedPlugins += Array.isArray(cloned.plugins) ? cloned.plugins.length : 0;
-    });
-    if (addedMarketplaces > 0 || addedPlugins > 0) {
-      sendCodexPlusDiagnostic("plugin_marketplace_local_merged", { addedMarketplaces, addedPlugins });
-    }
-    return { addedMarketplaces, addedPlugins };
-  }
-
-  function restorePluginMarketplaceName(name) {
-    if (name === "codex-plus-openai-bundled") return "openai-bundled";
-    if (name === "codex-plus-openai-curated") return "openai-curated";
-    if (name === "codex-plus-openai-primary-runtime") return "openai-primary-runtime";
-    if (name === "codex-plus-openai-api-curated") return "openai-api-curated";
-    if (name === "codex-plus-openai-curated-remote") return "openai-curated-remote";
-    return name;
-  }
-
-  function codexPluginOfficialMarketplaceName(name) {
-    const restored = restorePluginMarketplaceName(name);
-    return restored === "openai-bundled" || restored === "openai-curated" || restored === "openai-primary-runtime" || restored === "openai-api-curated" || restored === "openai-curated-remote";
-  }
-
-  const codexPluginFilterSourceCache = new WeakMap();
-
-  function codexPluginFilterCallbackSource(callback) {
-    if (codexPluginFilterSourceCache.has(callback)) {
-      return codexPluginFilterSourceCache.get(callback);
-    }
-    let source = "";
-    try {
-      source = Function.prototype.toString.call(callback);
-    } catch {
-    }
-    codexPluginFilterSourceCache.set(callback, source);
-    return source;
-  }
-
-  function isCodexPluginBuildFlavorFilter(callback, sample, filtered = null) {
-    if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
-    if (!sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName))) return false;
-    const source = codexPluginFilterCallbackSource(callback);
-    if (!source) return false;
-    const isKnownFilterSource = source.includes("!u(e.marketplaceName)||e.marketplaceName===r")
-      || source.includes("!ne(e.marketplaceName)||e.marketplaceName===n")
-      || source.includes("!Eu(e.marketplaceName)||e.marketplaceName===n");
-    if (!isKnownFilterSource) return false;
-    return sample.some((plugin) => codexPluginOfficialMarketplaceName(plugin?.marketplaceName)
-      && (Array.isArray(filtered) ? !filtered.includes(plugin) : !callback(plugin)));
-  }
+  // 结构式匹配 `<arr>.filter(p => !<list>.includes(p.name))`：
+  // list 标识符每版都换名，写死会失效（历史写死过 "!t.includes(e.name)"）。
+  // 必须锚定 filter 箭头形态且箭头参数与 `.name` 的宿主同名，
+  // 否则会误伤 bundle 里 `!w4.includes(t.name)` 这类与插件无关的守卫（实测存在）。
+  const codexPluginHiddenFilterSourcePattern =
+    /filter\s*\(\s*([A-Za-z_$][\w$]*)\s*=>\s*!\s*[A-Za-z_$][\w$]*\s*\.includes\s*\(\s*\1\s*\.name\s*\)/;
 
   function isCodexPluginMarketplaceHiddenFilter(callback, sample, filtered = null) {
     if (!Array.isArray(sample) || sample.length === 0 || typeof callback !== "function") return false;
     if (!sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name))) return false;
     const source = codexPluginFilterCallbackSource(callback);
     if (!source) return false;
-    if (!source.includes("!t.includes(e.name)")) return false;
+    if (!codexPluginHiddenFilterSourcePattern.test(source)) return false;
     return sample.some((marketplace) => codexPluginOfficialMarketplaceName(marketplace?.name)
       && (Array.isArray(filtered) ? !filtered.includes(marketplace) : !callback(marketplace)));
   }
@@ -584,6 +40,10 @@
       }
       if (isCodexPluginMarketplaceHiddenFilter(callback, this, filtered)) {
         sendCodexPlusDiagnostic("plugin_marketplace_hidden_filter_bypassed", { marketplaceCount: this.length });
+        return Array.from(this);
+      }
+      if (isCodexPluginFeaturedFilter(callback, this, filtered)) {
+        sendCodexPlusDiagnostic("plugin_featured_filter_bypassed", { featuredCount: this.length });
         return Array.from(this);
       }
       return filtered;
@@ -1657,4 +1117,733 @@
         try { localStorage.removeItem(codexThreadScrollKey); } catch { /* 放弃持久化，内存副本仍可用 */ }
       }
     }
+  }
+  function currentThreadScroller() {
+    const explicit = document.querySelector(".thread-scroll-container");
+    if (explicit?.isConnected) return explicit;
+    const root = conversationRoot();
+    if (!root?.isConnected) return document.scrollingElement || document.documentElement;
+    const style = getComputedStyle(root);
+    if (/(auto|scroll)/.test(style.overflowY) && root.scrollHeight > root.clientHeight) return root;
+    return nearestScrollableAncestor(root);
+  }
+
+  function threadScrollRuntime() {
+    if (!window.__codexThreadScrollRuntime || typeof window.__codexThreadScrollRuntime !== "object") {
+      window.__codexThreadScrollRuntime = {
+        activeSessionId: "",
+        activeScroller: null,
+        scrollListener: null,
+        scrollListenerUsesWindow: false,
+        lastSavedTop: -1,
+        lastSavedHeight: -1,
+        lastSavedClientHeight: -1,
+        restoreLock: null,
+        applyingRestore: false,
+        pendingNavigation: null,
+        userScrollIntentUntil: 0,
+        userCancelledRestoreSessionId: "",
+      };
+    }
+    return window.__codexThreadScrollRuntime;
+  }
+
+  function clearThreadScrollRestoreTimers() {
+    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollRestoreTimers = [];
+  }
+
+  function clearThreadScrollSyncTimers() {
+    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+    window.__codexThreadScrollSyncTimers = [];
+  }
+
+  function clearThreadScrollRestoreLock() {
+    threadScrollRuntime().restoreLock = null;
+  }
+
+  function cancelThreadScrollRestoreForUserIntent() {
+    const runtime = threadScrollRuntime();
+    const cancelledSessionId = validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
+      || validThreadScrollSessionKey(currentSessionRef().session_id)
+      || validThreadScrollSessionKey(runtime.activeSessionId);
+    runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
+    runtime.userCancelledRestoreSessionId = cancelledSessionId;
+    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    clearThreadScrollRestoreTimers();
+    clearThreadScrollSyncTimers();
+    clearThreadScrollRestoreLock();
+  }
+
+  function userScrollIntentActive() {
+    return finiteNonNegativeNumber(threadScrollRuntime().userScrollIntentUntil) > Date.now();
+  }
+
+  function threadScrollRestoreCancelledForSession(sessionId = threadScrollRuntime().activeSessionId) {
+    const key = validThreadScrollSessionKey(sessionId);
+    return !!key && threadScrollRuntime().userCancelledRestoreSessionId === key;
+  }
+
+  function activeThreadScrollRestoreLock(sessionId = threadScrollRuntime().activeSessionId) {
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    const lock = runtime.restoreLock;
+    if (!lock || !key || lock.sessionId !== key) return null;
+    if (lock.expiresAt <= Date.now()) {
+      clearThreadScrollRestoreLock();
+      return null;
+    }
+    return lock;
+  }
+
+  function currentThreadScrollRestoreLock() {
+    const sessionId = threadScrollRuntime().restoreLock?.sessionId;
+    return sessionId ? activeThreadScrollRestoreLock(sessionId) : null;
+  }
+
+  function threadScrollIsReversed(scroller) {
+    return getComputedStyle(scroller).flexDirection === "column-reverse";
+  }
+
+  function threadScrollRange(scroller) {
+    const extent = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    return threadScrollIsReversed(scroller)
+      ? { min: -extent, max: 0, bottom: 0 }
+      : { min: 0, max: extent, bottom: extent };
+  }
+
+  function startThreadScrollRestoreLock(sessionId, entry) {
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!key || !entry) {
+      clearThreadScrollRestoreLock();
+      return null;
+    }
+    const runtime = threadScrollRuntime();
+    runtime.restoreLock = {
+      sessionId: key,
+      targetTop: finiteScrollNumber(entry.top),
+      expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
+    };
+    return runtime.restoreLock;
+  }
+
+  function prepareThreadScrollRestoreLock(sessionId) {
+    const key = validThreadScrollSessionKey(sessionId);
+    const entry = key ? readThreadScrollEntries()[key] : null;
+    if (entry) startThreadScrollRestoreLock(key, entry);
+  }
+
+  function threadScrollTargetTop(scroller, targetTop) {
+    const range = threadScrollRange(scroller);
+    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
+  }
+
+  function threadScrollNearBottom(scroller, top) {
+    const range = threadScrollRange(scroller);
+    return Math.abs(range.bottom - finiteScrollNumber(top)) <= Math.max(24, scroller.clientHeight * 0.15);
+  }
+
+  function threadScrollGuardScroller(scroller) {
+    if (!scroller) return null;
+    const runtime = threadScrollRuntime();
+    const rootScroller = document.scrollingElement || document.documentElement || document.body;
+    const normalizedScroller = scroller === document.body || scroller === document.documentElement ? rootScroller : scroller;
+    if (normalizedScroller === runtime.activeScroller) return normalizedScroller;
+    const currentScroller = currentThreadScroller();
+    if (normalizedScroller === currentScroller) return normalizedScroller;
+    return null;
+  }
+
+  function shouldBlockThreadScrollAutobottom(scroller, top) {
+    const runtime = threadScrollRuntime();
+    const lock = currentThreadScrollRestoreLock();
+    if (!lock || !codexPlusSettings().threadScrollRestore) return false;
+    const guardScroller = threadScrollGuardScroller(scroller);
+    if (runtime.applyingRestore || !guardScroller) return false;
+    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
+    return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
+  }
+
+  function scrollToRequestedTop(args, scroller) {
+    if (!args.length) return null;
+    const first = args[0];
+    if (typeof first === "object" && first !== null) return first.top == null ? null : finiteScrollNumber(first.top);
+    if (args.length >= 2) return finiteScrollNumber(args[1]);
+    return scroller?.scrollTop ?? null;
+  }
+
+  function scrollByRequestedTop(args, scroller) {
+    if (!args.length || !scroller) return null;
+    const first = args[0];
+    let delta = null;
+    if (typeof first === "object" && first !== null) {
+      delta = first.top == null ? null : Number(first.top);
+    } else if (args.length >= 2) {
+      delta = Number(args[1]);
+    }
+    return Number.isFinite(delta) ? finiteScrollNumber(scroller.scrollTop + delta) : null;
+  }
+
+  function shouldBlockThreadScrollIntoView(element) {
+    const runtime = threadScrollRuntime();
+    const lock = currentThreadScrollRestoreLock();
+    if (runtime.applyingRestore || !lock || !element) return false;
+    const activeScroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (!activeScroller || element === activeScroller || !activeScroller.contains?.(element)) return false;
+    if (threadScrollIsReversed(activeScroller) && shouldBlockThreadScrollAutobottom(activeScroller, 0)) return true;
+    const elementRect = element.getBoundingClientRect?.();
+    if (!elementRect) return false;
+    const elementBottomTop = activeScroller.scrollTop + elementRect.bottom - scrollerViewportTop(activeScroller) - activeScroller.clientHeight;
+    return shouldBlockThreadScrollAutobottom(activeScroller, elementBottomTop);
+  }
+
+  function installThreadScrollProgrammaticScrollGuard() {
+    if (window.__codexThreadScrollProgrammaticGuardInstalled === codexThreadScrollProgrammaticGuardVersion) return;
+    window.__codexThreadScrollProgrammaticGuardInstalled = codexThreadScrollProgrammaticGuardVersion;
+    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
+    const originals = window.__codexThreadScrollOriginals;
+    originals.elementScrollTo = originals.elementScrollTo || Element.prototype.scrollTo;
+    if (typeof originals.elementScrollTo === "function") {
+      Element.prototype.scrollTo = function codexThreadScrollGuardedScrollTo(...args) {
+        const top = scrollToRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originals.elementScrollTo.apply(this, args);
+      };
+    }
+    originals.elementScroll = originals.elementScroll || Element.prototype.scroll;
+    if (typeof originals.elementScroll === "function") {
+      Element.prototype.scroll = function codexThreadScrollGuardedScroll(...args) {
+        const top = scrollToRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originals.elementScroll.apply(this, args);
+      };
+    }
+    originals.elementScrollBy = originals.elementScrollBy || Element.prototype.scrollBy;
+    if (typeof originals.elementScrollBy === "function") {
+      Element.prototype.scrollBy = function codexThreadScrollGuardedScrollBy(...args) {
+        const top = scrollByRequestedTop(args, this);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
+        return originals.elementScrollBy.apply(this, args);
+      };
+    }
+    originals.scrollIntoView = originals.scrollIntoView || Element.prototype.scrollIntoView;
+    if (typeof originals.scrollIntoView === "function") {
+      Element.prototype.scrollIntoView = function codexThreadScrollGuardedScrollIntoView(...args) {
+        if (window.__codexThreadScrollHandlers?.shouldBlockIntoView?.(this)) return;
+        return originals.scrollIntoView.apply(this, args);
+      };
+    }
+    originals.windowScrollTo = originals.windowScrollTo || window.scrollTo;
+    if (typeof originals.windowScrollTo === "function") {
+      window.scrollTo = function codexThreadScrollGuardedWindowScrollTo(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollToRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originals.windowScrollTo.apply(this, args);
+      };
+    }
+    originals.windowScroll = originals.windowScroll || window.scroll;
+    if (typeof originals.windowScroll === "function") {
+      window.scroll = function codexThreadScrollGuardedWindowScroll(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollToRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originals.windowScroll.apply(this, args);
+      };
+    }
+    originals.windowScrollBy = originals.windowScrollBy || window.scrollBy;
+    if (typeof originals.windowScrollBy === "function") {
+      window.scrollBy = function codexThreadScrollGuardedWindowScrollBy(...args) {
+        const scroller = document.scrollingElement || document.documentElement || document.body;
+        const top = scrollByRequestedTop(args, scroller);
+        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
+        return originals.windowScrollBy.apply(this, args);
+      };
+    }
+  }
+
+  function bindThreadScrollListener(scroller) {
+    const runtime = threadScrollRuntime();
+    const currentUsesWindow = !runtime.activeScroller || runtime.activeScroller === document.scrollingElement || runtime.activeScroller === document.documentElement || runtime.activeScroller === document.body;
+    const nextUsesWindow = !scroller || scroller === document.scrollingElement || scroller === document.documentElement || scroller === document.body;
+    let listenerReplaced = false;
+    if (runtime.scrollListener && runtime.scrollListenerVersion !== codexThreadScrollListenerVersion) {
+      const currentTarget = currentUsesWindow ? window : runtime.activeScroller;
+      currentTarget?.removeEventListener?.("scroll", runtime.scrollListener, true);
+      runtime.scrollListener = null;
+      runtime.scrollListenerVersion = "";
+      listenerReplaced = true;
+    }
+    runtime.scrollListener = runtime.scrollListener || (() => scheduleThreadScrollSave());
+    runtime.scrollListenerVersion = codexThreadScrollListenerVersion;
+    if (!listenerReplaced && runtime.activeScroller === scroller && runtime.scrollListenerUsesWindow === nextUsesWindow) return;
+    if (runtime.activeScroller) {
+      const target = currentUsesWindow ? window : runtime.activeScroller;
+      target.removeEventListener("scroll", runtime.scrollListener, true);
+    }
+    runtime.activeScroller = scroller;
+    runtime.scrollListenerUsesWindow = nextUsesWindow;
+    if (!scroller || !codexPlusSettings().threadScrollRestore) return;
+    const target = nextUsesWindow ? window : scroller;
+    target.addEventListener("scroll", runtime.scrollListener, true);
+  }
+
+  function saveThreadScrollPositionNow(sessionId = threadScrollRuntime().activeSessionId, scroller = threadScrollRuntime().activeScroller) {
+    if (!codexPlusSettings().threadScrollRestore) return;
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!key || !scroller) return;
+    if (activeThreadScrollRestoreLock(key)) return;
+    const snapshot = {
+      top: finiteScrollNumber(scroller.scrollTop),
+      scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
+      clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
+      at: Date.now(),
+    };
+    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
+    const entries = readThreadScrollEntries();
+    entries[key] = snapshot;
+    writeThreadScrollEntries(entries);
+    runtime.lastSavedTop = snapshot.top;
+    runtime.lastSavedHeight = snapshot.scrollHeight;
+    runtime.lastSavedClientHeight = snapshot.clientHeight;
+  }
+
+  function scheduleThreadScrollSave() {
+    if (!codexPlusSettings().threadScrollRestore || window.__codexThreadScrollSaveTimer) return;
+    window.__codexThreadScrollSaveTimer = setTimeout(() => {
+      window.__codexThreadScrollSaveTimer = null;
+      saveThreadScrollPositionNow();
+    }, codexThreadScrollSaveThrottleMs);
+  }
+
+  function restoreThreadScrollPosition(sessionId) {
+    const runtime = threadScrollRuntime();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    const lock = activeThreadScrollRestoreLock(key);
+    const entry = lock || readThreadScrollEntries()[key];
+    if (!entry) return;
+    const scroller = currentThreadScroller();
+    if (!scroller) return;
+    bindThreadScrollListener(scroller);
+    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
+    if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
+    runtime.applyingRestore = true;
+    try {
+      if (typeof scroller.scrollTo === "function") {
+        scroller.scrollTo({ top: targetTop, behavior: "auto" });
+      } else {
+        scroller.scrollTop = targetTop;
+      }
+    } finally {
+      runtime.applyingRestore = false;
+    }
+    runtime.lastSavedTop = targetTop;
+    runtime.lastSavedHeight = finiteNonNegativeNumber(scroller.scrollHeight);
+    runtime.lastSavedClientHeight = finiteNonNegativeNumber(scroller.clientHeight);
+  }
+
+  function scheduleThreadScrollRestore(sessionId) {
+    clearThreadScrollRestoreTimers();
+    const key = validThreadScrollSessionKey(sessionId);
+    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
+    const entry = readThreadScrollEntries()[key];
+    if (!entry) {
+      clearThreadScrollRestoreLock();
+      return;
+    }
+    startThreadScrollRestoreLock(key, entry);
+    const restoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+    window.__codexThreadScrollRestoreRevision = restoreRevision;
+    window.__codexThreadScrollRestoreTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
+      if (window.__codexThreadScrollRestoreRevision !== restoreRevision) return;
+      restoreThreadScrollPosition(key);
+    }, delay));
+  }
+
+  function syncThreadScrollState(forceRestore = false) {
+    const runtime = threadScrollRuntime();
+    const currentRef = currentSessionRef();
+    const nextSessionId = validThreadScrollSessionKey(currentRef.session_id);
+    if (!nextSessionId) return;
+    if (!codexPlusSettings().threadScrollRestore) {
+      bindThreadScrollListener(null);
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollRestoreLock();
+      runtime.activeSessionId = nextSessionId;
+      return;
+    }
+    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
+    const nextScroller = currentThreadScroller();
+    bindThreadScrollListener(nextScroller);
+    if (runtime.activeSessionId !== nextSessionId) {
+      runtime.lastSavedTop = -1;
+      runtime.lastSavedHeight = -1;
+      runtime.lastSavedClientHeight = -1;
+      clearThreadScrollRestoreLock();
+      runtime.activeSessionId = nextSessionId;
+      runtime.pendingNavigation = null;
+      runtime.userScrollIntentUntil = 0;
+      if (runtime.userCancelledRestoreSessionId !== nextSessionId) runtime.userCancelledRestoreSessionId = "";
+      scheduleThreadScrollRestore(nextSessionId);
+      return;
+    }
+    runtime.activeSessionId = nextSessionId;
+    if (forceRestore && !userScrollIntentActive() && !threadScrollRestoreCancelledForSession(nextSessionId)) scheduleThreadScrollRestore(nextSessionId);
+  }
+
+  function scheduleThreadScrollSyncAttempts(forceRestore = true) {
+    const currentKey = validThreadScrollSessionKey(currentSessionRef().session_id) || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
+    if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;
+    clearThreadScrollSyncTimers();
+    const syncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+    window.__codexThreadScrollSyncRevision = syncRevision;
+    window.__codexThreadScrollSyncTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
+      if (window.__codexThreadScrollSyncRevision !== syncRevision) return;
+      scheduleThreadScrollSync(forceRestore);
+    }, delay));
+  }
+
+  function captureThreadScrollNavigation(targetSessionId) {
+    if (!codexPlusSettings().threadScrollRestore) return;
+    const runtime = threadScrollRuntime();
+    const targetKey = validThreadScrollSessionKey(targetSessionId);
+    const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId;
+    if (sessionChanged) {
+      runtime.userScrollIntentUntil = 0;
+      runtime.userCancelledRestoreSessionId = "";
+    }
+    const pending = runtime.pendingNavigation;
+    const duplicatePendingTarget = !!targetKey && pending?.targetSessionId === targetKey && Date.now() - finiteNonNegativeNumber(pending.at) < 5000;
+    if (!duplicatePendingTarget) saveThreadScrollPositionNow();
+    if (targetKey) {
+      runtime.pendingNavigation = { fromSessionId: runtime.activeSessionId, targetSessionId: targetKey, at: Date.now() };
+      prepareThreadScrollRestoreLock(targetKey);
+    }
+    scheduleThreadScrollSyncAttempts(true);
+  }
+
+  function editableThreadScrollTarget(element) {
+    return !!element?.closest?.("input, textarea, select, [contenteditable='true'], [contenteditable='']");
+  }
+
+  function eventTargetsActiveThreadScroller(event) {
+    const runtime = threadScrollRuntime();
+    const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (!scroller) return false;
+    const target = event?.target;
+    if (!target || target === document || target === window) return true;
+    return target === scroller || scroller.contains?.(target) || scroller.contains?.(document.activeElement);
+  }
+
+  function markThreadScrollUserIntent(event) {
+    if (!codexPlusSettings().threadScrollRestore || !eventTargetsActiveThreadScroller(event)) return;
+    cancelThreadScrollRestoreForUserIntent();
+  }
+
+  function markThreadScrollKeyboardIntent(event) {
+    if (editableThreadScrollTarget(event.target)) return;
+    if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(event.key)) return;
+    markThreadScrollUserIntent(event);
+  }
+
+  function markThreadScrollPointerIntent(event) {
+    const scroller = threadScrollGuardScroller(threadScrollRuntime().activeScroller) || threadScrollGuardScroller(currentThreadScroller());
+    if (event.target === scroller) markThreadScrollUserIntent(event);
+  }
+
+  function updateThreadScrollHandlers() {
+    window.__codexThreadScrollHandlers = {
+      shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
+      shouldBlockIntoView: shouldBlockThreadScrollIntoView,
+      markUserIntent: markThreadScrollUserIntent,
+      markKeyboardIntent: markThreadScrollKeyboardIntent,
+      markPointerIntent: markThreadScrollPointerIntent,
+      captureNavigation: captureThreadScrollNavigation,
+      saveNow: saveThreadScrollPositionNow,
+      prepareRestoreLock: prepareThreadScrollRestoreLock,
+      scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
+    };
+  }
+
+  function installThreadScrollUserIntentCapture() {
+    if (window.__codexThreadScrollUserIntentInstalled === codexThreadScrollUserIntentVersion) return;
+    document.removeEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, true);
+    document.removeEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, true);
+    document.removeEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
+    document.removeEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
+    window.__codexThreadScrollWheelIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+    window.__codexThreadScrollTouchIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
+    window.__codexThreadScrollKeyIntentHandler = (event) => window.__codexThreadScrollHandlers?.markKeyboardIntent?.(event);
+    window.__codexThreadScrollPointerIntentHandler = (event) => window.__codexThreadScrollHandlers?.markPointerIntent?.(event);
+    document.addEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, { capture: true, passive: true });
+    document.addEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, { capture: true, passive: true });
+    document.addEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
+    document.addEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
+    window.__codexThreadScrollUserIntentInstalled = codexThreadScrollUserIntentVersion;
+  }
+
+  function installThreadScrollNavigationCapture() {
+    document.removeEventListener("pointerdown", window.__codexThreadScrollNavigationHandler, true);
+    document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
+    document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
+    const navigationHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    const clickHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    const keyboardHandler = (event) => {
+      if (!codexPlusSettings().threadScrollRestore) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target?.closest?.(selectors.sidebarThread);
+      if (!row) return;
+      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
+    };
+    window.__codexThreadScrollNavigationHandler = navigationHandler;
+    window.__codexThreadScrollClickNavigationHandler = clickHandler;
+    window.__codexThreadScrollKeyboardHandler = keyboardHandler;
+    document.addEventListener("pointerdown", navigationHandler, true);
+    document.addEventListener("click", clickHandler, true);
+    document.addEventListener("keydown", keyboardHandler, true);
+  }
+
+  function scheduleThreadScrollSync(forceRestore = false) {
+    if (window.__codexThreadScrollSyncPending) return;
+    window.__codexThreadScrollSyncPending = true;
+    setTimeout(() => {
+      window.__codexThreadScrollSyncPending = false;
+      syncThreadScrollState(forceRestore);
+    }, 0);
+  }
+
+  function installThreadScrollRouteHooks() {
+    if (window.__codexThreadScrollRouteHooksInstalled === codexThreadScrollRouteHooksVersion) return;
+    window.__codexThreadScrollRouteHooksInstalled = codexThreadScrollRouteHooksVersion;
+    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
+    const originals = window.__codexThreadScrollOriginals;
+    ["pushState", "replaceState"].forEach((method) => {
+      const currentMethod = history[method];
+      const original = originals[`history_${method}`] || currentMethod;
+      originals[`history_${method}`] = original;
+      if (typeof original !== "function") return;
+      history[method] = function codexThreadScrollPatchedHistory(...args) {
+        window.__codexThreadScrollHandlers?.saveNow?.();
+        const result = original.apply(this, args);
+        window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+        return result;
+      };
+    });
+    window.removeEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
+    window.removeEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
+    document.removeEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+    window.__codexThreadScrollPopStateHandler = () => {
+      window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+    };
+    window.__codexThreadScrollHashChangeHandler = () => {
+      window.__codexThreadScrollHandlers?.saveNow?.();
+      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
+    };
+    window.__codexThreadScrollVisibilityHandler = () => {
+      if (document.visibilityState === "hidden") window.__codexThreadScrollHandlers?.saveNow?.();
+    };
+    window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
+    window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
+    document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
+  }
+
+  async function postJson(path, payload) {
+    async function fetchBackendStatusFromHelper(path, payload) {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timeoutId = setTimeout(() => controller?.abort(), 2000);
+      try {
+        const response = await fetch(`${helperBase}${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload || {}),
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+        return await response.json();
+      } catch (error) {
+        return {
+          status: "failed",
+          message: error?.name === "AbortError" ? "后端检查超时" : "未连接",
+          timeout: error?.name === "AbortError",
+        };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+    if (!window.__codexSessionDeleteBridge) {
+      recordCodexPlusBridgeFailure();
+      if (path === "/backend/status") {
+        return await fetchBackendStatusFromHelper(path, payload);
+      }
+      sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
+      return { status: "failed", message: "桥接不可用，请重启启动器" };
+    }
+    function bridgeWithBackendTimeout(path, payload) {
+      let request;
+      try {
+        request = window.__codexSessionDeleteBridge(path, payload);
+      } catch (error) {
+        recordCodexPlusBridgeFailure();
+        return Promise.resolve({ status: "failed", message: error?.message || "未连接" });
+      }
+      return withBackendTimeout(request);
+    }
+    try {
+      if (path === "/backend/status") {
+        const result = await bridgeWithBackendTimeout(path, payload);
+        if (result?.status === "ok") {
+          recordCodexPlusBridgeSuccess();
+          return result;
+        }
+        recordCodexPlusBridgeFailure();
+        if (result?.timeout) {
+          // 超时也要记 lastAttemptAt：15 秒内的尝试视为桥还活着，
+          // 避免页面忙碌时被看门狗误判为桥已死而重复注入整份脚本（issue #2169 / #2274）。
+          recordCodexPlusBridgeAttempt();
+          sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
+        }
+        const fallback = await fetchBackendStatusFromHelper(path, payload);
+        if (fallback?.status === "ok") {
+          sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
+            path,
+            httpStatus: 200,
+            responseStatus: fallback.status || "",
+          });
+          return fallback;
+        }
+        sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
+          path,
+          errorName: "",
+          errorMessage: "",
+        });
+        return fallback;
+      }
+      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
+      recordCodexPlusBridgeSuccess();
+      return bridgeResult;
+    } catch (error) {
+      recordCodexPlusBridgeFailure();
+      sendCodexPlusDiagnostic("bridge_call_failed", {
+        path,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      if (path === "/backend/status") {
+        const fallback = await fetchBackendStatusFromHelper(path, payload);
+        if (fallback?.status === "ok") {
+          sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
+            path,
+            httpStatus: 200,
+            responseStatus: fallback.status || "",
+          });
+          return fallback;
+        }
+        sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
+          path,
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+        return fallback;
+      }
+      throw error;
+    }
+  }
+
+  function downloadMarkdownFallback(filename, markdown) {
+    if (!filename || typeof markdown !== "string") {
+      throw new Error("导出结果不完整");
+    }
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function saveMarkdown(filename, markdown) {
+    if (!filename || typeof markdown !== "string") {
+      throw new Error("导出结果不完整");
+    }
+    if (typeof window.showSaveFilePicker !== "function") {
+      downloadMarkdownFallback(filename, markdown);
+      return { status: "saved" };
+    }
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: "Markdown",
+          accept: { "text/markdown": [".md", ".markdown"] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(markdown);
+      await writable.close();
+      return { status: "saved" };
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        return { status: "cancelled", message: "导出已取消" };
+      }
+      throw error;
+    }
+  }
+
+  let codexStateApiPromise = null;
+  let chatsSortInFlight = false;
+  let chatsSortSignature = "";
+  let chatsSortLastFetchAt = 0;
+
+  function codexStateApiFromModule(module, assetPrefix = "") {
+    if (assetPrefix.startsWith("vscode-api-")) {
+      return typeof module?.n === "function" ? module.n : null;
+    }
+    if (assetPrefix.startsWith("app-initial-")) {
+      return typeof module?.qut === "function" ? module.qut : null;
+    }
+    return null;
+  }
+
+  async function codexStateApi() {
+    codexStateApiPromise = codexStateApiPromise || (async () => {
+      const errors = [];
+      for (const assetPrefix of ["vscode-api-", "app-initial-"]) {
+        try {
+          const api = await loadCodexAppModule(assetPrefix);
+          const call = codexStateApiFromModule(api, assetPrefix);
+          if (typeof call === "function") return call;
+          errors.push(`${assetPrefix}: state export unavailable`);
+        } catch (error) {
+          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
+        }
+      }
+      throw new Error(`Codex 状态 API 不可用 (${errors.join("; ")})`);
+    })();
+    return await codexStateApiPromise;
+  }
+
+  async function codexStateCall(method, params) {
+    const call = await codexStateApi();
+    return await call(method, params);
+  }
+
+  async function getCodexGlobalState(key) {
+    const result = await codexStateCall("get-global-state", { params: { key } });
+    return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result;
   }

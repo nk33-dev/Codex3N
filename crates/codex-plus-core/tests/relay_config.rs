@@ -588,6 +588,62 @@ model = "gpt-5-mini"
     assert!(updated.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
 }
 
+/// 回归（#890 / #597 / #609）：模板里没有 `[plugins.*]` 时，重写 config.toml
+/// 必须从 live 补回用户的插件条目（含带引号的 dotted key），否则切换供应商
+/// 会把插件表整段丢掉、界面显示为「未安装」。
+#[test]
+fn apply_relay_config_preserves_live_plugin_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"[plugins."figma@openai-curated"]
+enabled = true
+
+[plugins."trello@openai-curated"]
+enabled = false
+"#,
+    )
+    .unwrap();
+
+    apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example.test/v1",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(
+        updated.contains(r#"[plugins."figma@openai-curated"]"#),
+        "带引号的插件条目必须保留，实际：{updated}"
+    );
+    assert!(updated.contains(r#"[plugins."trello@openai-curated"]"#));
+    // 值也要原样保留，不能只留下空表头。
+    assert!(updated.contains("enabled = false"));
+    // 同时不能破坏既有的供应商隔离行为。
+    assert!(updated.contains("[model_providers.custom]"));
+}
+
+/// 上式负例：live 里本来就没有 plugins 时不得凭空注入空段。
+#[test]
+fn apply_relay_config_does_not_invent_empty_plugins_table() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+
+    apply_relay_config_to_home(
+        temp.path(),
+        "https://relay.example.test/v1",
+        "sk-test-redacted",
+    )
+    .unwrap();
+    let updated = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+
+    assert!(
+        !updated.contains("[plugins]"),
+        "live 无 plugins 时不得注入该段，实际：{updated}"
+    );
+}
+
 #[test]
 fn apply_chat_protocol_relay_points_codex_to_local_responses_proxy() {
     let temp = tempfile::tempdir().unwrap();
@@ -1847,6 +1903,60 @@ fn apply_relay_profile_files_for_aggregate_keeps_live_oauth_tokens() {
 }
 
 #[test]
+fn apply_pure_api_profile_with_openai_session_keeps_live_oauth_tokens() {
+    // issue #2173：PureApi 分支过去直接写 profile 快照，而 Aggregate / Official
+    // 都会先读 live auth.json 再合并。会话身份是 openai 的纯 API 供应商每切换一次
+    // 就可能把 live 里的 `tokens` 抹掉，从而静默摧毁「OpenAI 会话身份」这个唯一能让
+    // CUA 浏览器插件可用的前提——用户表现为「本来能用，某天开始报 apikey」且无任何
+    // 配置报错。注意只对 openai 会话身份生效：普通纯 API 供应商本就该清掉官方凭据。
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"access_token":"access-token"},"extra_live_key":"keep-me"}"#,
+    )
+    .unwrap();
+    let profile = RelayProfile {
+        id: "pure".to_string(),
+        name: "纯 API".to_string(),
+        relay_mode: RelayMode::PureApi,
+        // 会话身份是 openai（model_provider = "openai"）时才需要保留登录态。
+        config_contents: r#"model = "gpt-5.5"
+model_provider = "openai"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-pure-api"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, "").unwrap();
+
+    let auth: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap())
+            .expect("纯 API apply 后 auth.json 必须是合法 JSON");
+    assert_eq!(
+        auth.get("tokens")
+            .and_then(|tokens| tokens.get("access_token"))
+            .and_then(|token| token.as_str()),
+        Some("access-token"),
+        "纯 API apply 不能清掉官方 OAuth token"
+    );
+    assert_eq!(
+        auth.get("auth_mode").and_then(|mode| mode.as_str()),
+        Some("chatgpt"),
+        "auth_mode 必须保留，否则 auth_contents_looks_like_chatgpt_auth 判否"
+    );
+    assert_eq!(
+        auth.get("extra_live_key").and_then(|value| value.as_str()),
+        Some("keep-me"),
+        "live 里本 profile 未声明的键也应继承，与 Aggregate / Official 对齐"
+    );
+    assert_eq!(
+        auth.get("OPENAI_API_KEY").and_then(|value| value.as_str()),
+        Some("sk-pure-api"),
+        "本 profile 声明的字段仍以快照为准"
+    );
+}
+
 fn lists_codex_context_entries_from_common_config() {
     let entries = list_context_entries_from_common_config(
         r#"[mcp_servers.context7]
@@ -5498,7 +5608,10 @@ experimental_bearer_token = "sk-new"
 }
 
 #[test]
-fn apply_relay_profile_rejects_external_catalog_with_model_override_without_partial_update() {
+fn apply_relay_profile_degrades_external_catalog_with_model_override() {
+    // issue #2203：外部 model_catalog_json 与每模型覆盖冲突时，过去直接 bail
+    // ——代价是用户**完全切不了供应商**，远比「特性降级」严重。
+    // 现改为：保留外部指针 + 写顶层兜底键 + 正常完成切换。
     let temp = tempfile::tempdir().unwrap();
     let previous_config = "model = \"previous\"\n";
     let previous_auth = r#"{"OPENAI_API_KEY":"old"}"#;
@@ -5531,18 +5644,16 @@ experimental_bearer_token = "sk-new"
         ..RelayProfile::default()
     };
 
-    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
-        .expect_err("外部 catalog 与每模型窗口覆盖冲突时应失败");
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect("外部 catalog 与每模型窗口冲突时应降级完成切换，而不是拒绝");
 
-    assert!(error.to_string().contains("外部 model_catalog_json"));
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
-        previous_config
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    // 用户手写的外部指针必须原样保留，不被本 profile 的托管 catalog 覆盖。
+    assert!(
+        config.contains(r#"model_catalog_json = "/old/catalog.json""#),
+        "外部 catalog 指针应保留：{config}"
     );
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
-        previous_auth
-    );
+    // 降级路径不得顺手改写用户的外部 catalog 文件。
     assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
 }
 
@@ -5932,7 +6043,8 @@ fn apply_model_auto_compact_rejects_invalid_percent_before_writing_files() {
 }
 
 #[test]
-fn apply_model_auto_compact_rejects_external_catalog_without_partial_update() {
+fn apply_model_auto_compact_degrades_external_catalog_without_partial_update() {
+    // 同 issue #2203：每模型自动压缩与外部 catalog 冲突时降级而非拒绝。
     let temp = tempfile::tempdir().unwrap();
     let previous_config = "model = \"previous\"\n";
     let previous_auth = r#"{"OPENAI_API_KEY":"old"}"#;
@@ -5967,18 +6079,15 @@ experimental_bearer_token = "sk-new"
         ..RelayProfile::default()
     };
 
-    let error = apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
-        .expect_err("外部 catalog 与每模型自动压缩覆盖冲突时应失败");
+    apply_relay_profile_files_to_home_with_context(temp.path(), &profile, "")
+        .expect("外部 catalog 与每模型自动压缩冲突时应降级完成切换，而不是拒绝");
 
-    assert!(error.to_string().contains("外部 model_catalog_json"));
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("config.toml")).unwrap(),
-        previous_config
+    let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(
+        config.contains("external-catalog.json"),
+        "外部 catalog 指针应保留：{config}"
     );
-    assert_eq!(
-        std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
-        previous_auth
-    );
+    // 降级路径不得顺手改写用户的外部 catalog 文件。
     assert_eq!(std::fs::read(&catalog_path).unwrap(), previous_catalog);
 }
 

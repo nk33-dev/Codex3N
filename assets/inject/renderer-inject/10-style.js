@@ -1,188 +1,3 @@
-    appHeader: '[class*="ApplicationMenuTopBar"], .app-header-tint',
-    archiveNav: 'button[aria-label="已归档对话"], button[aria-label="Archived conversations"]',
-    disabledInstallButton: 'button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="true"], button[data-disabled], [role="button"][data-disabled], button.cursor-not-allowed, [role="button"].cursor-not-allowed, button.pointer-events-none, [role="button"].pointer-events-none',
-    pluginNavButton: 'nav[role="navigation"] button.h-token-nav-row.w-full',
-    pluginSvgPath: 'svg path[d^="M7.94562 14.0277"]',
-  };
-  const headerContextButtonClass = "border-token-border user-select-none no-drag cursor-interaction flex items-center gap-1 border whitespace-nowrap focus:outline-none disabled:cursor-not-allowed disabled:opacity-40 rounded-lg border-token-border text-token-button-tertiary-foreground bg-token-bg-fog enabled:hover:bg-token-list-hover-background data-[state=open]:bg-token-list-hover-background border h-token-button-composer px-2 py-0 text-base leading-[18px]";
-
-  /**
-   * 拓展注册中心。
-   *
-   * 第三方用户脚本通过挂到 window 上的 `codexPlus` 对象注册 UI 项，注册结果
-   * 落在这里。注册中心只存数据与回调，不做任何渲染——渲染由各消费方在合适的
-   * 时机读表完成。这样「内置项」和「第三方项」不会产生两条代码路径。
-   *
-   * 生命周期约定（很重要）：
-   *   注册表持久，DOM 瞬态。
-   *
-   * Codex++ 的 UI 宿主会被反复重建（overlay 每次打开都清空重建、会话行按钮在
-   * 版本号变化时整组重建），所以任何消费方都不能缓存 DOM 引用，必须每次从注册
-   * 表读数据全量重建。反过来说，第三方脚本不需要关心 DOM 何时被销毁。
-   *
-   * 注意：注册中心本身不持有 DOM，也不在模块顶层读 DOM，因此可以安全地放在
-   * prelude 之后的最前面——此时常量已声明，而所有顶层启动语句都还没执行。
-   */
-  const codexPlusRegistry = {
-    rowActions: new Map(),
-    navEntries: new Map(),
-    pages: new Map(),
-    menuItems: new Map(),
-  };
-
-  /** 每个脚本最多注册多少项、全局最多多少项，防止劣质拓展把扫描拖慢。 */
-  const codexPlusExtensionPerScriptLimit = 16;
-  const codexPlusExtensionGlobalLimit = 64;
-
-  /**
-   * 必须被扫描调度忽略的选择器。
-   *
-   * 这些节点由 Codex++ 自己（或拓展）插入到 Codex 的容器里，而容器本身是
-   * scan-relevant 的。如果不排除，就会形成「写入 → 观察到自己的写入 → 200ms
-   * 后再 scan → 再写入」的自喂循环：空闲时也每秒全量扫描五次，macOS 上足以
-   * 吃满一个核（issue #1960）。
-   *
-   * 内置项在这里，拓展项通过 registerCodexPlusExtensionSelector 动态加入。
-   * 拓展自带的选择器一律是 `[data-codex-plus-ext="<脚本 key>"]`，由接口层在
-   * 注册时自动加上，拓展作者不需要也不应该自己维护这个列表。
-   */
-  const codexPlusExtensionSelectors = new Set();
-  let codexPlusExtensionSelectorCache = null;
-
-  function registerCodexPlusExtensionSelector(selector) {
-    if (typeof selector !== "string" || !selector.trim()) return false;
-    if (codexPlusExtensionSelectors.has(selector)) return true;
-    if (codexPlusExtensionSelectors.size >= codexPlusExtensionGlobalLimit) {
-      return false;
-    }
-    // 提前验证选择器语法：非法选择器会在 closest() 里抛错，而 closest() 跑在
-    // 每次 mutation 上，一个坏选择器能把整个页面卡死。
-    try {
-      document.createDocumentFragment().querySelector(selector);
-    } catch {
-      return false;
-    }
-    codexPlusExtensionSelectors.add(selector);
-    codexPlusExtensionSelectorCache = null;
-    return true;
-  }
-
-  /**
-   * 拼给 closest() 用的选择器串。Set 变化时重建、否则复用——closest() 传一个
-   * 逗号串比逐个调用快得多，而这里每次 DOM 变更都会走一遍。
-   */
-  function codexPlusExtensionSelector() {
-    if (codexPlusExtensionSelectorCache !== null) return codexPlusExtensionSelectorCache;
-    codexPlusExtensionSelectorCache = [...codexPlusExtensionSelectors].join(", ");
-    return codexPlusExtensionSelectorCache;
-  }
-
-  function isCodexPlusExtensionNode(node) {
-    const selector = codexPlusExtensionSelector();
-    if (!selector) return false;
-    return !!node?.closest?.(selector);
-  }
-
-  /**
-   * 注册一项通用扩展数据。返回 dispose 函数。
-   *
-   * 所有类别共用同一套校验与配额，免得每个 register* 各写一遍。`kind` 只用于
-   * 诊断与配额统计，不参与渲染。
-   */
-  function registerCodexPlusExtension(kind, registry, id, definition, scriptKey) {
-    if (typeof id !== "string" || !id.trim()) {
-      throw new Error("拓展项 id 不能为空");
-    }
-    if (registry.has(id)) {
-      throw new Error(`拓展项 id 已被占用：${id}`);
-    }
-    const owned = [...registry.values()].filter((item) => item.scriptKey === scriptKey).length;
-    if (owned >= codexPlusExtensionPerScriptLimit) {
-      throw new Error(`每个脚本最多注册 ${codexPlusExtensionPerScriptLimit} 项`);
-    }
-    if (registry.size >= codexPlusExtensionGlobalLimit) {
-      throw new Error(`拓展项总数已达上限 ${codexPlusExtensionGlobalLimit}`);
-    }
-    // 每个类别至少要有一个可调用的钩子，否则注册进来也渲染不出东西。
-    // 菜单项的开关形态是 onChange，页面/入口是 render，其余是 onActivate。
-    const callbacks = ["render", "onActivate", "onChange", "onCleanup"];
-    if (definition && !callbacks.some((name) => typeof definition[name] === "function")) {
-      throw new Error(`拓展项 ${id} 必须提供 ${callbacks.join(" / ")} 之一`);
-    }
-    const order = Number.isFinite(definition?.order) ? Number(definition.order) : 0;
-    // 内置项占用 0~999，第三方从 1000 起，避免插到内置项前面破坏既有布局。
-    const normalized = { ...definition, kind, id, order: Math.max(1000, order), scriptKey };
-    registry.set(id, normalized);
-    codexPlusRegistryDiagnostics(kind, "register", id, scriptKey);
-    return () => {
-      if (registry.get(id) === normalized) {
-        registry.delete(id);
-        codexPlusRegistryDiagnostics(kind, "dispose", id, scriptKey);
-      }
-    };
-  }
-
-  /** 按 order 排序的注册项快照。消费方每次渲染时取，不要缓存结果。 */
-  function codexPlusExtensionItems(registry) {
-    return [...registry.values()].sort((left, right) => left.order - right.order);
-  }
-
-  function codexPlusRegistryDiagnostics(kind, action, id, scriptKey) {
-    const entry = {
-      kind,
-      action,
-      id,
-      script_key: scriptKey || "",
-      at: Date.now(),
-      // 不抛错：诊断通道本身出问题时不该影响注册。
-    };
-    window.__codexPlusRegistryLog = window.__codexPlusRegistryLog || [];
-    window.__codexPlusRegistryLog.push(entry);
-    if (window.__codexPlusRegistryLog.length > 200) window.__codexPlusRegistryLog.shift();
-    try {
-      window.__codexSessionDeleteBridge?.("/diagnostics/log", {
-        event: "extension_registry",
-        detail: entry,
-      })?.catch?.(() => {});
-    } catch {}
-  }
-
-  /**
-   * 带着归属信息执行拓展提供的回调。
-   *
-   * 拓展代码可能抛错、也可能返回坏数据。这里统一兜住：错误记进该脚本的状态
-   * 通道（和用户脚本自身的失败上报同一个字段），并由调用方决定如何降级展示。
-   * 返回值约定：成功返回 { ok: true, value }，失败返回 { ok: false, error }。
-   */
-  function runCodexPlusExtensionCallback(scriptKey, label, callback) {
-    try {
-      return { ok: true, value: callback() };
-    } catch (error) {
-      const message = String(error?.stack || error?.message || error);
-      codexPlusMarkExtensionFailure(scriptKey, `${label}: ${message}`);
-      return { ok: false, error: message };
-    }
-  }
-
-  /**
-   * 把拓展的失败写进用户脚本运行时状态。
-   *
-   * 复用 wrap_script 已经建立的上报通道：管理页读的就是
-   * window.__codexPlusUserScripts.scripts[key].error。这样拓展的 UI 错误和
-   * 脚本本身抛错在用户看来是同一件事，不需要第二套排查入口。
-   */
-  function codexPlusMarkExtensionFailure(scriptKey, message) {
-    if (!scriptKey) return;
-    const record = window.__codexPlusUserScripts?.scripts?.[scriptKey];
-    if (record) {
-      record.error = message;
-      // 不覆盖 status：脚本本身可能已成功加载，失败的只是它注册的某一项 UI。
-      record.extensionError = message;
-    }
-    window.__codexPlusExtensionFailures = window.__codexPlusExtensionFailures || [];
-    window.__codexPlusExtensionFailures.push({ script_key: scriptKey, message, at: Date.now() });
-    if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
-  }
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
     if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
@@ -213,7 +28,7 @@
         border: 0;
         border-radius: 6px;
         background: transparent;
-        color: var(--codex-session-action-color, var(--token-text-tertiary, rgba(255,255,255,.5)));
+        color: var(--codex-session-action-color, var(--color-token-text-tertiary, var(--codex-plus-text-tertiary, rgba(255,255,255,.5))));
         font: 14px/1 system-ui, sans-serif;
         padding: 0;
         cursor: default;
@@ -227,7 +42,7 @@
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
         background: var(--codex-session-action-hover-background, transparent);
-        color: var(--codex-session-action-hover-color, var(--codex-session-action-color, var(--token-text-default, #f4f4f5)));
+        color: var(--codex-session-action-hover-color, var(--codex-session-action-color, var(--color-token-text-primary, #f4f4f5)));
         outline: none;
       }
       .${moreMenuClass} {
@@ -276,7 +91,7 @@
         align-items: center;
         max-width: 152px;
         margin-right: 8px;
-        color: var(--text-secondary, var(--token-text-secondary, rgba(142,142,160,.95)));
+        color: var(--text-secondary, var(--color-token-text-secondary, var(--codex-plus-text-secondary, rgba(142,142,160,.95))));
         font: 11px/1.1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
         letter-spacing: .01em;
         opacity: .9;
@@ -295,10 +110,10 @@
         min-width: 0;
       }
       .codex-archive-row-button {
-        border: 1px solid var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        border: 1px solid var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         border-radius: var(--border-radius-sm, 6px);
-        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
-        color: var(--color-token-text-secondary, var(--token-text-secondary, inherit));
+        background: var(--color-token-bg-secondary, transparent);
+        color: var(--color-token-text-secondary, inherit);
         font: inherit;
         font-size: 13px;
         line-height: 16px;
@@ -311,15 +126,15 @@
         color: var(--color-text-danger, #dc2626);
       }
       .codex-archive-row-button.${exportButtonClass} {
-        border-color: var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
-        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
-        color: var(--color-token-text-primary, var(--token-text-primary, inherit));
+        border-color: var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
+        background: var(--color-token-bg-secondary, transparent);
+        color: var(--color-token-text-primary, inherit);
       }
       .${zedRemoteButtonClass} {
-        border: 1px solid var(--color-token-border-light, var(--token-border, rgba(0,0,0,.12)));
+        border: 1px solid var(--color-token-border-light, var(--color-token-border-default, rgba(0,0,0,.12)));
         border-radius: var(--border-radius-sm, 6px);
-        background: var(--color-token-bg-secondary, var(--token-bg-fog, transparent));
-        color: var(--color-token-text-primary, var(--token-text-primary, inherit));
+        background: var(--color-token-bg-secondary, transparent);
+        color: var(--color-token-text-primary, inherit);
         font: inherit;
         font-size: 13px;
         line-height: 16px;
@@ -329,7 +144,7 @@
       }
       .${zedRemoteButtonClass}:hover,
       .${zedRemoteButtonClass}:focus-visible {
-        background: var(--color-token-interactive-bg-secondary-hover, var(--token-list-hover-background, rgba(0,0,0,.06)));
+        background: var(--color-token-interactive-bg-secondary-hover, rgba(0,0,0,.06));
         outline: none;
       }
       .${zedRemoteOpenInMenuItemClass} {
@@ -355,8 +170,8 @@
       }
       .${sessionShareButtonClass}:hover,
       .${sessionShareButtonClass}:focus-visible {
-        background: var(--token-list-hover-background, rgba(70,70,70,.96));
-        color: var(--token-text-default, #fff);
+        background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover));
+        color: var(--color-token-text-primary, var(--codex-plus-text));
         outline: none;
       }
       .${sessionShareButtonClass}[aria-busy="true"] {
@@ -414,7 +229,7 @@
         max-width: min(220px, calc(100vw - 32px));
         border: 1px solid var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
-        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
         font: inherit;
         font-size: 13px;
@@ -597,8 +412,8 @@
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="failed"] { background: #ef4444; }
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="checking"] { background: #fbbf24; }
       #${codexPlusSidebarNavId} button[data-active="true"] {
-        background: var(--token-list-hover-background, rgba(255,255,255,.08));
-        color: var(--token-text-primary, inherit);
+        background: var(--codex-plus-bg-selected);
+        color: var(--codex-plus-text);
       }
       /*
        * 新版导航图标栏里的 Codex++ / 拓展 / 推荐内容入口：原生按钮只放图标，
@@ -649,13 +464,13 @@
        * 主题切换时下次同步会重算。
        */
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] {
-        color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
+        color: var(--codex-plus-rail-dim, var(--codex-plus-text-tertiary, currentColor)) !important;
       }
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"]::before {
         opacity: 0 !important;
       }
       html[data-codex-plus-page-open] nav[data-app-navigation-rail] [data-sidebar-destination][aria-current="page"] * {
-        color: var(--codex-plus-rail-dim, rgba(255,255,255,.498)) !important;
+        color: var(--codex-plus-rail-dim, var(--codex-plus-text-tertiary, currentColor)) !important;
       }
       /*
        * 页面 overlay 的 left 由 positionCodexPlusPage 按图标栏右边界算好写进来。
@@ -675,7 +490,7 @@
         height: calc(100vh / var(--codex-plus-zoom, 1));
         z-index: 2147483644;
         display: block;
-        background: var(--token-bg-primary, #212121);
+        background: var(--codex-plus-bg-primary, #fff);
         pointer-events: auto;
         -webkit-app-region: no-drag;
       }
@@ -685,7 +500,7 @@
         max-height: none;
         border: 0;
         border-radius: 0;
-        background: var(--token-bg-primary, #212121);
+        background: var(--codex-plus-bg-primary, #fff);
         box-shadow: none;
       }
       .${codexPlusPageClass} .codex-plus-modal-header {
@@ -964,7 +779,8 @@
         font-size: 13px;
       }
       .codex-plus-extensions-detail-sep { margin: 0 6px; color: var(--codex-plus-text-tertiary); }
-      .codex-plus-extensions-detail-update { margin-top: 5px; color: #fbbf24; font-size: 13px; }
+      /* issue #2359：原 #fbbf24 在浅色主题下对比度仅 1.56:1，改为随主题走的警告色。 */
+      .codex-plus-extensions-detail-update { margin-top: 5px; color: var(--codex-plus-warning); font-size: 13px; }
       .codex-plus-extensions-detail-actions {
         flex: 0 0 auto;
         display: inline-flex;
@@ -1022,13 +838,13 @@
         line-height: 1.7;
       }
       .codex-plus-extensions-detail-link { margin-top: 16px; font-size: 13px; }
-      .codex-plus-extensions-detail-link a { color: #10a37f; word-break: break-all; }
+      .codex-plus-extensions-detail-link a { color: var(--codex-plus-success); word-break: break-all; }
       .codex-plus-extensions-detail-error {
         margin-top: 14px;
         padding: 8px 10px;
         border-radius: 8px;
-        background: rgba(239,68,68,.12);
-        color: #ef4444;
+        background: var(--codex-plus-danger-bg);
+        color: var(--codex-plus-danger);
         font-size: 13px;
       }
       .codex-plus-page-nav-group { margin-bottom: 10px; }
@@ -1230,7 +1046,9 @@
         display: grid;
         gap: 4px;
         margin-top: 10px;
-        color: #d4d4d8;
+        /* issue #2359：原来是写死的 #d4d4d8，浅色主题下对比度只有 1.38:1（≈看不见）。
+           标签文字改跟主题走。 */
+        color: var(--codex-plus-text-secondary);
         font-size: 13px;
         font-family: inherit;
         text-align: left;
@@ -1331,20 +1149,32 @@
         white-space: nowrap;
       }
       .codex-plus-ad-empty { border: 1px dashed rgba(255,255,255,.16); border-radius: 12px; color: #9ca3af; font-size: 13px; padding: 12px; text-align: center; }
-      /* Keep injected surfaces on Codex's own semantic palette in both themes. */
+      /*
+       * 注入面板的语义色板：前景/背景必须取自同一套 token，且都要能被主题切换带走。
+       *
+       * issue #2359（Windows 浅色主题下黑底黑字）：旧写法在中间塞了一整层
+       * --token-* 回退名（--token-bg-primary / --token-text-primary /
+       * --token-border / --token-list-hover-background / --token-text-default /
+       * --token-bg-fog / --token-text-tertiary …）。实测 Codex 客户端（26.9xx）
+       * 的产物里这些名字**一个都不存在**——真正在用的一套是 --color-token-*。
+       * 于是三级回退链的中间那级永远落空，浅色主题下只靠最后一级写死的深色值
+       * 兜底，前景与背景各自独立兜底时明度撞在一起，就成了黑底黑字。
+       * 这里把死名删掉，直接接到确实存在、且**由 Codex 自己按主题重算**的
+       * --color-token-* 上；末级兜底仅作最后保险，不再承担主题判断。
+       */
       :root {
-        --codex-plus-bg-primary: var(--color-token-bg-primary, var(--token-bg-primary, #fff));
-        --codex-plus-bg-secondary: var(--color-token-bg-secondary, var(--token-bg-secondary, #f7f7f7));
-        --codex-plus-bg-elevated: var(--color-token-dropdown-background, var(--color-token-bg-elevated-secondary, var(--codex-plus-bg-primary)));
-        --codex-plus-bg-hover: var(--color-token-interactive-bg-secondary-hover, var(--token-list-hover-background, rgba(0,0,0,.06)));
+        --codex-plus-bg-primary: var(--color-token-bg-primary, var(--color-token-main-surface-primary, #fff));
+        --codex-plus-bg-secondary: var(--color-token-bg-secondary, var(--codex-plus-bg-primary));
+        --codex-plus-bg-elevated: var(--color-token-dropdown-background, var(--color-token-bg-secondary, var(--codex-plus-bg-primary)));
+        --codex-plus-bg-hover: var(--color-token-interactive-bg-secondary-hover, var(--color-token-list-hover-background, rgba(0,0,0,.06)));
         --codex-plus-bg-selected: var(--color-token-interactive-bg-secondary-selected, var(--codex-plus-bg-hover));
-        --codex-plus-text: var(--color-token-text-primary, var(--token-text-primary, #171717));
-        --codex-plus-text-secondary: var(--color-token-text-secondary, var(--token-text-secondary, #5d5d5d));
-        --codex-plus-text-tertiary: var(--color-token-text-tertiary, var(--token-text-tertiary, #8a8a8a));
-        --codex-plus-border: var(--color-token-border-light, var(--color-token-border, var(--token-border, rgba(0,0,0,.12))));
-        --codex-plus-border-subtle: var(--color-token-border-subtle, var(--codex-plus-border));
+        --codex-plus-text: var(--color-token-text-primary, var(--color-token-foreground, #171717));
+        --codex-plus-text-secondary: var(--color-token-text-secondary, var(--codex-plus-text));
+        --codex-plus-text-tertiary: var(--color-token-text-tertiary, var(--codex-plus-text-secondary));
+        --codex-plus-border: var(--color-token-border-light, var(--color-token-border, var(--color-token-border-default, rgba(0,0,0,.12))));
+        --codex-plus-border-subtle: var(--codex-plus-border);
         --codex-plus-focus: var(--color-token-focus-border, var(--color-border-focus, currentColor));
-        --codex-plus-danger: var(--color-text-danger, var(--color-token-text-error, #dc2626));
+        --codex-plus-danger: var(--color-text-danger, #dc2626);
         --codex-plus-danger-bg: var(--color-background-danger-soft, rgba(220,38,38,.1));
         --codex-plus-success: var(--color-text-success, #15803d);
         --codex-plus-warning: var(--color-text-warning, #a16207);
@@ -1383,7 +1213,7 @@
       .${actionTooltipClass} {
         border-color: var(--codex-plus-border);
         border-radius: var(--border-radius-md, 6px);
-        background: var(--color-token-bg-tooltip, var(--codex-plus-bg-elevated));
+        background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
         font-family: inherit;
         font-size: 13px;
@@ -2075,3 +1905,380 @@
 
   function cleanupDreamSkin() {
     window.__CODEX_DREAM_SKIN_DISABLED__ = true;
+    const state = window.__CODEX_DREAM_SKIN_STATE__;
+    if (typeof state?.cleanup === "function" && state.cleanup !== cleanupDreamSkin) {
+      try {
+        state.cleanup();
+      } catch {
+      }
+    }
+    const remainingState = window.__CODEX_DREAM_SKIN_STATE__;
+    remainingState?.observer?.disconnect();
+    if (remainingState?.timer) clearInterval(remainingState.timer);
+    if (remainingState?.scheduler?.timeout) clearTimeout(remainingState.scheduler.timeout);
+    if (remainingState?.resizeHandler) window.removeEventListener("resize", remainingState.resizeHandler);
+    if (remainingState?.mediaHandler && remainingState?.mediaQuery) {
+      try {
+        remainingState.mediaQuery.removeEventListener("change", remainingState.mediaHandler);
+      } catch {
+      }
+    }
+    if (remainingState?.artUrl) URL.revokeObjectURL(remainingState.artUrl);
+    delete window.__CODEX_DREAM_SKIN_STATE__;
+    window.__CODEX_GLASS_VISION_SKIN_DISABLED__ = true;
+    const glassState = window.__CODEX_GLASS_VISION_SKIN_STATE__;
+    try {
+      glassState?.cleanup?.();
+    } catch {
+    }
+    delete window.__CODEX_GLASS_VISION_SKIN_STATE__;
+    clearDreamSkinPresentation();
+  }
+
+  window.__CODEX_PLUS_CLEAR_DREAM_SKIN__ = cleanupDreamSkin;
+
+  function dreamSkinContentSignature(value) {
+    const text = String(value || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `${text.length}-${(hash >>> 0).toString(16)}`;
+  }
+
+  function applyIndependentThemeVariables(root, shell, theme, descriptor, artSource) {
+    const colors = theme.colors || {};
+    const accent = colors.accent || (shell === "light" ? "#d85c6c" : "#76e6cc");
+    const accentAlt = colors.accentAlt || accent;
+    const secondary = colors.secondary || (shell === "light" ? "#e7a3ad" : "#65bde8");
+    const variables = {
+      "--theme-bg": colors.background || (shell === "light" ? "#f6f3f4" : "#071116"),
+      "--theme-panel": colors.panel || (shell === "light" ? "#ffffff" : "#0b1a20"),
+      "--theme-panel-alt": colors.panelAlt || (shell === "light" ? "#fff8f9" : "#10272c"),
+      "--theme-accent": accent,
+      "--theme-accent-alt": accentAlt,
+      "--theme-secondary": secondary,
+      "--theme-highlight": colors.highlight || accentAlt,
+      "--theme-text": colors.text || (shell === "light" ? "#201b1c" : "#edf7f3"),
+      "--theme-muted": colors.muted || (shell === "light" ? "#6c6062" : "#9db7ae"),
+      "--theme-line": colors.line || (shell === "light" ? "rgba(90, 64, 68, .18)" : "rgba(150, 220, 200, .24)"),
+      "--theme-art": artSource,
+      "--dream-art": artSource,
+      "--dream-skin-art": artSource,
+      "--glass-vision-art": artSource,
+      "--dream-accent": accent,
+      "--dream-accent-ink": colors.panel || "#ffffff",
+    };
+    for (const [name, value] of Object.entries(variables)) {
+      if (typeof value === "string" && value) root.style.setProperty(name, value);
+    }
+    root.style.setProperty("--dream-skin-name", dreamSkinCssString(theme.name || "Codex Dream Skin"));
+    root.style.setProperty("--dream-skin-tagline", dreamSkinCssString(theme.tagline || "把喜欢的画面变成可交互的 Codex 工作台。"));
+    root.style.setProperty("--dream-skin-project-prefix", dreamSkinCssString(theme.projectPrefix || "选择项目 · "));
+    root.style.setProperty("--dream-skin-project-label", dreamSkinCssString(theme.projectLabel || "◉  选择项目"));
+    root.classList.toggle("dream-theme-dark", shell === "dark");
+    root.classList.toggle("dream-theme-light", shell === "light");
+    const preset = theme.stylePreset || "dream-original";
+    if (root.getAttribute("data-codex-theme") !== preset) root.setAttribute("data-codex-theme", preset);
+    if (root.getAttribute("data-codex-theme-root") !== descriptor.rootClass) {
+      root.setAttribute("data-codex-theme-root", descriptor.rootClass);
+    }
+  }
+
+  function installDreamSkin(settings) {
+    const theme = dreamSkinThemeConfig(settings.dreamSkinThemeConfig);
+    const styles = window.__CODEX_PLUS_DREAM_SKIN_STYLES__ || {};
+    const descriptor = independentThemeDescriptor(theme.stylePreset);
+    const cssText = String(styles[theme.stylePreset] || styles["dream-original"] || "");
+    const artDataUrl = String(window.__CODEX_PLUS_DREAM_SKIN_ART__ || "");
+    const themeSignature = dreamSkinContentSignature(JSON.stringify(theme));
+    const artSignature = String(window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ || dreamSkinContentSignature(artDataUrl));
+    const version = `codex-plus:independent:${codexPlusDreamSkinPlatform}:r${codexPlusDreamSkinRevision}:${theme.stylePreset}:${themeSignature}:${artSignature}:${cssText.length}`;
+    const existingState = window.__CODEX_DREAM_SKIN_STATE__;
+    if (existingState?.version === version && typeof existingState.ensure === "function") {
+      window.__CODEX_DREAM_SKIN_DISABLED__ = false;
+      existingState.ensure();
+      return;
+    }
+
+    cleanupDreamSkin();
+    window.__CODEX_DREAM_SKIN_DISABLED__ = false;
+    const artUrl = dreamSkinArtBlobUrl(artDataUrl);
+    const artSource = artUrl ? `url("${artUrl}")` : "none";
+
+    const ensureStyle = (root) => {
+      let style = document.getElementById(codexPlusDreamSkinStyleId);
+      if (!style) {
+        style = document.createElement("style");
+        style.id = codexPlusDreamSkinStyleId;
+        (document.head || root).appendChild(style);
+      }
+      if (style.dataset.independentThemeVersion !== version) {
+        style.textContent = cssText;
+        style.dataset.independentThemeVersion = version;
+      }
+    };
+
+    const ensure = () => {
+      if (window.__CODEX_DREAM_SKIN_DISABLED__) return;
+      const root = document.documentElement;
+      if (!root || !document.body) return;
+      const shellMain = ensureDreamSkinMainSurface();
+      if (!shellMain) {
+        clearDreamSkinPresentation();
+        return;
+      }
+
+      root.classList.add(descriptor.rootClass);
+      root.setAttribute("data-codex-plus-dream-skin", "true");
+      const shell = dreamSkinThemeShellMode(theme);
+      root.setAttribute("data-dream-shell", shell);
+      applyIndependentThemeVariables(root, shell, theme, descriptor, artSource);
+      ensureStyle(root);
+      ensureDreamSkinCompanion(theme);
+
+      const homeIndicator = document.querySelector('[data-testid="home-icon"]');
+      const homeCandidate = homeIndicator?.closest('[role="main"]')
+        || [...document.querySelectorAll('[role="main"]')].find((candidate) =>
+          candidate.querySelector('[data-feature="game-source"]')
+          && candidate.querySelector('.group\\/home-suggestions'))
+        || null;
+      const homeHasClassicChrome = !!(
+        homeCandidate
+        && homeCandidate.querySelector('[data-feature="game-source"]')
+        && (
+          homeCandidate.querySelector('.group\\/home-suggestions')
+          || homeCandidate.querySelector('[class*="home-suggestions"]')
+          || homeCandidate.querySelector('[class*="_homeUtilityBar_"]')
+        )
+      );
+      const home = homeHasClassicChrome ? homeCandidate : null;
+      for (const candidate of document.querySelectorAll(`[role="main"].${descriptor.homeClass}`)) {
+        if (candidate !== home && candidate !== homeCandidate) candidate.classList.remove(descriptor.homeClass);
+      }
+      if (home) home.classList.add(descriptor.homeClass);
+      else if (homeCandidate && descriptor.homeClass) homeCandidate.classList.add(descriptor.homeClass);
+      if (descriptor.taskClass) {
+        for (const candidate of document.querySelectorAll('[role="main"]')) {
+          candidate.classList.toggle(descriptor.taskClass, candidate !== home && candidate !== homeCandidate);
+        }
+      }
+      for (const candidate of document.querySelectorAll('[role="main"]')) {
+        if (candidate === home) {
+          const hero = candidate.querySelector(':scope > div > div > div');
+          const structured = !!(hero && hero.querySelector('[data-feature="game-source"], [data-testid="home-icon"]'));
+          candidate.setAttribute('data-dream-home-layout', structured ? 'structured' : 'soft');
+        } else {
+          candidate.setAttribute('data-dream-home-layout', 'soft');
+        }
+      }
+      shellMain.classList.toggle(descriptor.shellClass, Boolean(homeCandidate));
+      if (descriptor.taskShellClass) shellMain.classList.toggle(descriptor.taskShellClass, !home);
+
+      let chrome = document.getElementById(descriptor.chromeId);
+      if (!chrome || chrome.parentElement !== document.body) {
+        chrome?.remove();
+        chrome = document.createElement("div");
+        chrome.id = descriptor.chromeId;
+        chrome.setAttribute("aria-hidden", "true");
+        chrome.innerHTML = descriptor.chromeMarkup;
+        document.body.appendChild(chrome);
+      }
+      if (chrome.className !== descriptor.chromeClass) chrome.className = descriptor.chromeClass;
+      const fields = {
+        name: theme.name || "Codex Dream Skin",
+        subtitle: theme.brandSubtitle || "CODEX DREAM SKIN",
+        status: theme.statusText || "THEME ONLINE",
+        quote: theme.quote || "MAKE SOMETHING WONDERFUL",
+      };
+      for (const [field, value] of Object.entries(fields)) {
+        const target = chrome.querySelector(`[data-theme-field="${field}"]`);
+        if (target && target.textContent !== value) target.textContent = value;
+      }
+      const shellBox = shellMain.getBoundingClientRect();
+      chrome.style.left = `${Math.round(shellBox.left)}px`;
+      chrome.style.top = `${Math.round(shellBox.top)}px`;
+      chrome.style.width = `${Math.round(shellBox.width)}px`;
+      chrome.style.height = `${Math.round(shellBox.height)}px`;
+      chrome.classList.toggle(descriptor.shellClass, Boolean(home));
+      if (descriptor.taskShellClass) chrome.classList.toggle(descriptor.taskShellClass, !home);
+      chrome.dataset.dreamShell = shell;
+    };
+
+    const scheduler = { timeout: null };
+    const scheduleEnsure = () => {
+      if (scheduler.timeout) clearTimeout(scheduler.timeout);
+      scheduler.timeout = setTimeout(() => {
+        scheduler.timeout = null;
+        ensure();
+      }, 180);
+    };
+    const observer = new MutationObserver(scheduleEnsure);
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
+    });
+    const timer = setInterval(ensure, 4000);
+    const resizeHandler = scheduleEnsure;
+    window.addEventListener("resize", resizeHandler, { passive: true });
+
+    let mediaQuery = null;
+    let mediaHandler = null;
+    try {
+      mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      mediaHandler = scheduleEnsure;
+      mediaQuery.addEventListener("change", mediaHandler);
+    } catch {
+    }
+
+    window.__CODEX_DREAM_SKIN_STATE__ = {
+      ensure,
+      cleanup: cleanupDreamSkin,
+      observer,
+      timer,
+      scheduler,
+      resizeHandler,
+      mediaQuery,
+      mediaHandler,
+      artUrl,
+      version,
+      descriptor,
+      themeId: theme.id || "custom",
+      detectShellMode: detectDreamSkinShellMode,
+    };
+    ensure();
+  }
+
+  function refreshDreamSkin() {
+    const settings = codexPlusSettings();
+    if (settings.dreamSkinEnabled && !settings.dreamSkinPaused) ensureDreamSkinMainSurface();
+    if (window.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__) {
+      if (codexPlusBackendSettingsLoaded && (!settings.dreamSkinEnabled || settings.dreamSkinPaused)) {
+        cleanupDreamSkin();
+      } else {
+        const state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;
+        state?.ensure?.();
+        ensureDreamSkinCompanion(
+          window.__CODEX_PLUS_DREAM_SKIN_THEME__ || settings.dreamSkinThemeConfig,
+        );
+      }
+      return;
+    }
+    if (!settings.dreamSkinEnabled || settings.dreamSkinPaused) {
+      cleanupDreamSkin();
+      return;
+    }
+    installDreamSkin(settings);
+  }
+
+  function applyDreamSkinLiveUpdate(payload) {
+    if (!payload || String(payload.revision || "") !== codexPlusDreamSkinRevision) return false;
+    if (typeof payload.artDataUrl === "string" && payload.artDataUrl) {
+      window.__CODEX_PLUS_DREAM_SKIN_ART__ = payload.artDataUrl;
+    }
+    window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = String(payload.artSignature || "");
+    window.__CODEX_PLUS_DREAM_SKIN_THEME__ = payload.theme && typeof payload.theme === "object" ? payload.theme : {};
+    codexPlusBackendSettings.codexAppDreamSkinEnabled = true;
+    codexPlusBackendSettings.codexAppDreamSkinPaused = false;
+    codexPlusBackendSettings.codexAppDreamSkinThemeConfig = window.__CODEX_PLUS_DREAM_SKIN_THEME__;
+    refreshDreamSkin();
+    return true;
+  }
+
+  window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = codexPlusDreamSkinRevision;
+  window.__CODEX_PLUS_APPLY_DREAM_SKIN__ = applyDreamSkinLiveUpdate;
+
+  function setCodexPlusSetting(key, value) {
+    const backendKey = codexPlusBackendSettingMap[key];
+    if (backendKey) {
+      if (key === "stepwise") syncStepwisePanel(value);
+      if (key === "answerOutline") syncStepwisePanel(undefined, value);
+      void setBackendSetting(backendKey, value).then(() => {
+        if (key === "stepwise" || key === "answerOutline") {
+          Promise.resolve(window.__codexStepwisePanel?.loadSettings?.()).then(() => syncStepwisePanel());
+        }
+      }).catch(() => {
+        void loadBackendSettings();
+      });
+      return;
+    }
+    let stored = {};
+    try {
+      stored = JSON.parse(localStorage.getItem(codexPlusSettingsKey) || "{}");
+    } catch {
+      stored = {};
+    }
+    const next = { ...stored, [key]: value };
+    localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
+    if (key === "threadScrollRestore" && !value) {
+      clearTimeout(window.__codexThreadScrollSaveTimer);
+      window.__codexThreadScrollSaveTimer = null;
+      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
+      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
+      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
+      window.__codexThreadScrollRestoreTimers = [];
+      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
+      window.__codexThreadScrollSyncTimers = [];
+      window.__codexThreadScrollRuntime = null;
+    }
+    if (key === "serviceTierControls") {
+      if (value) {
+        void loadCodexServiceTierState();
+      } else {
+        removeCodexServiceTierBadges();
+        refreshCodexServiceTierControls();
+      }
+    }
+    if (key === "stepwise") syncStepwisePanel(value);
+    renderCodexPlusMenu();
+    scan();
+  }
+
+  function syncStepwisePanel(
+    enabled = codexPlusSettings().stepwise,
+    answerOutlineEnabled = codexPlusSettings().answerOutline
+  ) {
+    try {
+      window.__codexStepwisePanel?.syncSettings?.({
+        enabled: !!enabled,
+        answerOutlineEnabled: !!answerOutlineEnabled,
+      });
+    } catch (error) {
+      sendCodexPlusDiagnostic("stepwise_sync_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
+  }
+
+  function normalizeConversationViewWidth(value) {
+    if (value === null || value === undefined || String(value).trim() === "") return null;
+    const number = Number(value);
+    if (!Number.isFinite(number)) return null;
+    return Math.max(conversationViewMinWidth, Math.min(conversationViewMaxAllowedWidth, Math.round(number)));
+  }
+
+  function conversationViewWidth() {
+    const settingsWidth = normalizeConversationViewWidth(codexPlusSettings().conversationViewMaxWidth);
+    if (settingsWidth) return settingsWidth;
+    const legacyWidth = normalizeConversationViewWidth(localStorage.getItem(conversationViewLegacyWidthKey));
+    return legacyWidth || conversationViewDefaultWidth;
+  }
+
+  function refreshConversationViewControls() {
+    const enabled = !!codexPlusSettings().conversationView;
+    const width = conversationViewWidth();
+    document.querySelectorAll("[data-codex-plus-conversation-view-width]").forEach((input) => {
+      input.value = String(width);
+      input.disabled = !enabled;
+    });
+  }
+
+  function setConversationViewWidth(value) {
+    const width = normalizeConversationViewWidth(value);
+    if (!width) return;
+    setCodexPlusSetting("conversationViewMaxWidth", width);
+  }

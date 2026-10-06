@@ -1,733 +1,3 @@
-  function currentThreadScroller() {
-    const explicit = document.querySelector(".thread-scroll-container");
-    if (explicit?.isConnected) return explicit;
-    const root = conversationRoot();
-    if (!root?.isConnected) return document.scrollingElement || document.documentElement;
-    const style = getComputedStyle(root);
-    if (/(auto|scroll)/.test(style.overflowY) && root.scrollHeight > root.clientHeight) return root;
-    return nearestScrollableAncestor(root);
-  }
-
-  function threadScrollRuntime() {
-    if (!window.__codexThreadScrollRuntime || typeof window.__codexThreadScrollRuntime !== "object") {
-      window.__codexThreadScrollRuntime = {
-        activeSessionId: "",
-        activeScroller: null,
-        scrollListener: null,
-        scrollListenerUsesWindow: false,
-        lastSavedTop: -1,
-        lastSavedHeight: -1,
-        lastSavedClientHeight: -1,
-        restoreLock: null,
-        applyingRestore: false,
-        pendingNavigation: null,
-        userScrollIntentUntil: 0,
-        userCancelledRestoreSessionId: "",
-      };
-    }
-    return window.__codexThreadScrollRuntime;
-  }
-
-  function clearThreadScrollRestoreTimers() {
-    (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-    window.__codexThreadScrollRestoreTimers = [];
-  }
-
-  function clearThreadScrollSyncTimers() {
-    (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-    window.__codexThreadScrollSyncTimers = [];
-  }
-
-  function clearThreadScrollRestoreLock() {
-    threadScrollRuntime().restoreLock = null;
-  }
-
-  function cancelThreadScrollRestoreForUserIntent() {
-    const runtime = threadScrollRuntime();
-    const cancelledSessionId = validThreadScrollSessionKey(runtime.restoreLock?.sessionId)
-      || validThreadScrollSessionKey(currentSessionRef().session_id)
-      || validThreadScrollSessionKey(runtime.activeSessionId);
-    runtime.userScrollIntentUntil = Date.now() + codexThreadScrollUserIntentWindowMs;
-    runtime.userCancelledRestoreSessionId = cancelledSessionId;
-    window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-    window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-    clearThreadScrollRestoreTimers();
-    clearThreadScrollSyncTimers();
-    clearThreadScrollRestoreLock();
-  }
-
-  function userScrollIntentActive() {
-    return finiteNonNegativeNumber(threadScrollRuntime().userScrollIntentUntil) > Date.now();
-  }
-
-  function threadScrollRestoreCancelledForSession(sessionId = threadScrollRuntime().activeSessionId) {
-    const key = validThreadScrollSessionKey(sessionId);
-    return !!key && threadScrollRuntime().userCancelledRestoreSessionId === key;
-  }
-
-  function activeThreadScrollRestoreLock(sessionId = threadScrollRuntime().activeSessionId) {
-    const runtime = threadScrollRuntime();
-    const key = validThreadScrollSessionKey(sessionId);
-    const lock = runtime.restoreLock;
-    if (!lock || !key || lock.sessionId !== key) return null;
-    if (lock.expiresAt <= Date.now()) {
-      clearThreadScrollRestoreLock();
-      return null;
-    }
-    return lock;
-  }
-
-  function currentThreadScrollRestoreLock() {
-    const sessionId = threadScrollRuntime().restoreLock?.sessionId;
-    return sessionId ? activeThreadScrollRestoreLock(sessionId) : null;
-  }
-
-  function threadScrollIsReversed(scroller) {
-    return getComputedStyle(scroller).flexDirection === "column-reverse";
-  }
-
-  function threadScrollRange(scroller) {
-    const extent = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    return threadScrollIsReversed(scroller)
-      ? { min: -extent, max: 0, bottom: 0 }
-      : { min: 0, max: extent, bottom: extent };
-  }
-
-  function startThreadScrollRestoreLock(sessionId, entry) {
-    const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !entry) {
-      clearThreadScrollRestoreLock();
-      return null;
-    }
-    const runtime = threadScrollRuntime();
-    runtime.restoreLock = {
-      sessionId: key,
-      targetTop: finiteScrollNumber(entry.top),
-      expiresAt: Date.now() + codexThreadScrollRestoreWindowMs,
-    };
-    return runtime.restoreLock;
-  }
-
-  function prepareThreadScrollRestoreLock(sessionId) {
-    const key = validThreadScrollSessionKey(sessionId);
-    const entry = key ? readThreadScrollEntries()[key] : null;
-    if (entry) startThreadScrollRestoreLock(key, entry);
-  }
-
-  function threadScrollTargetTop(scroller, targetTop) {
-    const range = threadScrollRange(scroller);
-    return Math.max(range.min, Math.min(range.max, finiteScrollNumber(targetTop)));
-  }
-
-  function threadScrollNearBottom(scroller, top) {
-    const range = threadScrollRange(scroller);
-    return Math.abs(range.bottom - finiteScrollNumber(top)) <= Math.max(24, scroller.clientHeight * 0.15);
-  }
-
-  function threadScrollGuardScroller(scroller) {
-    if (!scroller) return null;
-    const runtime = threadScrollRuntime();
-    const rootScroller = document.scrollingElement || document.documentElement || document.body;
-    const normalizedScroller = scroller === document.body || scroller === document.documentElement ? rootScroller : scroller;
-    if (normalizedScroller === runtime.activeScroller) return normalizedScroller;
-    const currentScroller = currentThreadScroller();
-    if (normalizedScroller === currentScroller) return normalizedScroller;
-    return null;
-  }
-
-  function shouldBlockThreadScrollAutobottom(scroller, top) {
-    const runtime = threadScrollRuntime();
-    const lock = currentThreadScrollRestoreLock();
-    if (!lock || !codexPlusSettings().threadScrollRestore) return false;
-    const guardScroller = threadScrollGuardScroller(scroller);
-    if (runtime.applyingRestore || !guardScroller) return false;
-    const targetTop = threadScrollTargetTop(guardScroller, lock.targetTop);
-    return Math.abs(finiteScrollNumber(top) - targetTop) > 8 && threadScrollNearBottom(guardScroller, top);
-  }
-
-  function scrollToRequestedTop(args, scroller) {
-    if (!args.length) return null;
-    const first = args[0];
-    if (typeof first === "object" && first !== null) return first.top == null ? null : finiteScrollNumber(first.top);
-    if (args.length >= 2) return finiteScrollNumber(args[1]);
-    return scroller?.scrollTop ?? null;
-  }
-
-  function scrollByRequestedTop(args, scroller) {
-    if (!args.length || !scroller) return null;
-    const first = args[0];
-    let delta = null;
-    if (typeof first === "object" && first !== null) {
-      delta = first.top == null ? null : Number(first.top);
-    } else if (args.length >= 2) {
-      delta = Number(args[1]);
-    }
-    return Number.isFinite(delta) ? finiteScrollNumber(scroller.scrollTop + delta) : null;
-  }
-
-  function shouldBlockThreadScrollIntoView(element) {
-    const runtime = threadScrollRuntime();
-    const lock = currentThreadScrollRestoreLock();
-    if (runtime.applyingRestore || !lock || !element) return false;
-    const activeScroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
-    if (!activeScroller || element === activeScroller || !activeScroller.contains?.(element)) return false;
-    if (threadScrollIsReversed(activeScroller) && shouldBlockThreadScrollAutobottom(activeScroller, 0)) return true;
-    const elementRect = element.getBoundingClientRect?.();
-    if (!elementRect) return false;
-    const elementBottomTop = activeScroller.scrollTop + elementRect.bottom - scrollerViewportTop(activeScroller) - activeScroller.clientHeight;
-    return shouldBlockThreadScrollAutobottom(activeScroller, elementBottomTop);
-  }
-
-  function installThreadScrollProgrammaticScrollGuard() {
-    if (window.__codexThreadScrollProgrammaticGuardInstalled === codexThreadScrollProgrammaticGuardVersion) return;
-    window.__codexThreadScrollProgrammaticGuardInstalled = codexThreadScrollProgrammaticGuardVersion;
-    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
-    const originals = window.__codexThreadScrollOriginals;
-    originals.elementScrollTo = originals.elementScrollTo || Element.prototype.scrollTo;
-    if (typeof originals.elementScrollTo === "function") {
-      Element.prototype.scrollTo = function codexThreadScrollGuardedScrollTo(...args) {
-        const top = scrollToRequestedTop(args, this);
-        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
-        return originals.elementScrollTo.apply(this, args);
-      };
-    }
-    originals.elementScroll = originals.elementScroll || Element.prototype.scroll;
-    if (typeof originals.elementScroll === "function") {
-      Element.prototype.scroll = function codexThreadScrollGuardedScroll(...args) {
-        const top = scrollToRequestedTop(args, this);
-        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
-        return originals.elementScroll.apply(this, args);
-      };
-    }
-    originals.elementScrollBy = originals.elementScrollBy || Element.prototype.scrollBy;
-    if (typeof originals.elementScrollBy === "function") {
-      Element.prototype.scrollBy = function codexThreadScrollGuardedScrollBy(...args) {
-        const top = scrollByRequestedTop(args, this);
-        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(this, top)) return;
-        return originals.elementScrollBy.apply(this, args);
-      };
-    }
-    originals.scrollIntoView = originals.scrollIntoView || Element.prototype.scrollIntoView;
-    if (typeof originals.scrollIntoView === "function") {
-      Element.prototype.scrollIntoView = function codexThreadScrollGuardedScrollIntoView(...args) {
-        if (window.__codexThreadScrollHandlers?.shouldBlockIntoView?.(this)) return;
-        return originals.scrollIntoView.apply(this, args);
-      };
-    }
-    originals.windowScrollTo = originals.windowScrollTo || window.scrollTo;
-    if (typeof originals.windowScrollTo === "function") {
-      window.scrollTo = function codexThreadScrollGuardedWindowScrollTo(...args) {
-        const scroller = document.scrollingElement || document.documentElement || document.body;
-        const top = scrollToRequestedTop(args, scroller);
-        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
-        return originals.windowScrollTo.apply(this, args);
-      };
-    }
-    originals.windowScroll = originals.windowScroll || window.scroll;
-    if (typeof originals.windowScroll === "function") {
-      window.scroll = function codexThreadScrollGuardedWindowScroll(...args) {
-        const scroller = document.scrollingElement || document.documentElement || document.body;
-        const top = scrollToRequestedTop(args, scroller);
-        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
-        return originals.windowScroll.apply(this, args);
-      };
-    }
-    originals.windowScrollBy = originals.windowScrollBy || window.scrollBy;
-    if (typeof originals.windowScrollBy === "function") {
-      window.scrollBy = function codexThreadScrollGuardedWindowScrollBy(...args) {
-        const scroller = document.scrollingElement || document.documentElement || document.body;
-        const top = scrollByRequestedTop(args, scroller);
-        if (top != null && window.__codexThreadScrollHandlers?.shouldBlockAutobottom?.(scroller, top)) return;
-        return originals.windowScrollBy.apply(this, args);
-      };
-    }
-  }
-
-  function bindThreadScrollListener(scroller) {
-    const runtime = threadScrollRuntime();
-    const currentUsesWindow = !runtime.activeScroller || runtime.activeScroller === document.scrollingElement || runtime.activeScroller === document.documentElement || runtime.activeScroller === document.body;
-    const nextUsesWindow = !scroller || scroller === document.scrollingElement || scroller === document.documentElement || scroller === document.body;
-    let listenerReplaced = false;
-    if (runtime.scrollListener && runtime.scrollListenerVersion !== codexThreadScrollListenerVersion) {
-      const currentTarget = currentUsesWindow ? window : runtime.activeScroller;
-      currentTarget?.removeEventListener?.("scroll", runtime.scrollListener, true);
-      runtime.scrollListener = null;
-      runtime.scrollListenerVersion = "";
-      listenerReplaced = true;
-    }
-    runtime.scrollListener = runtime.scrollListener || (() => scheduleThreadScrollSave());
-    runtime.scrollListenerVersion = codexThreadScrollListenerVersion;
-    if (!listenerReplaced && runtime.activeScroller === scroller && runtime.scrollListenerUsesWindow === nextUsesWindow) return;
-    if (runtime.activeScroller) {
-      const target = currentUsesWindow ? window : runtime.activeScroller;
-      target.removeEventListener("scroll", runtime.scrollListener, true);
-    }
-    runtime.activeScroller = scroller;
-    runtime.scrollListenerUsesWindow = nextUsesWindow;
-    if (!scroller || !codexPlusSettings().threadScrollRestore) return;
-    const target = nextUsesWindow ? window : scroller;
-    target.addEventListener("scroll", runtime.scrollListener, true);
-  }
-
-  function saveThreadScrollPositionNow(sessionId = threadScrollRuntime().activeSessionId, scroller = threadScrollRuntime().activeScroller) {
-    if (!codexPlusSettings().threadScrollRestore) return;
-    const runtime = threadScrollRuntime();
-    const key = validThreadScrollSessionKey(sessionId);
-    if (!key || !scroller) return;
-    if (activeThreadScrollRestoreLock(key)) return;
-    const snapshot = {
-      top: finiteScrollNumber(scroller.scrollTop),
-      scrollHeight: finiteNonNegativeNumber(scroller.scrollHeight),
-      clientHeight: finiteNonNegativeNumber(scroller.clientHeight),
-      at: Date.now(),
-    };
-    if (Math.abs(runtime.lastSavedTop - snapshot.top) < 2 && runtime.lastSavedHeight === snapshot.scrollHeight && runtime.lastSavedClientHeight === snapshot.clientHeight) return;
-    const entries = readThreadScrollEntries();
-    entries[key] = snapshot;
-    writeThreadScrollEntries(entries);
-    runtime.lastSavedTop = snapshot.top;
-    runtime.lastSavedHeight = snapshot.scrollHeight;
-    runtime.lastSavedClientHeight = snapshot.clientHeight;
-  }
-
-  function scheduleThreadScrollSave() {
-    if (!codexPlusSettings().threadScrollRestore || window.__codexThreadScrollSaveTimer) return;
-    window.__codexThreadScrollSaveTimer = setTimeout(() => {
-      window.__codexThreadScrollSaveTimer = null;
-      saveThreadScrollPositionNow();
-    }, codexThreadScrollSaveThrottleMs);
-  }
-
-  function restoreThreadScrollPosition(sessionId) {
-    const runtime = threadScrollRuntime();
-    const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || runtime.activeSessionId !== key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
-    const lock = activeThreadScrollRestoreLock(key);
-    const entry = lock || readThreadScrollEntries()[key];
-    if (!entry) return;
-    const scroller = currentThreadScroller();
-    if (!scroller) return;
-    bindThreadScrollListener(scroller);
-    const targetTop = threadScrollTargetTop(scroller, lock ? lock.targetTop : entry.top);
-    if (Math.abs(scroller.scrollTop - targetTop) <= 1) return;
-    runtime.applyingRestore = true;
-    try {
-      if (typeof scroller.scrollTo === "function") {
-        scroller.scrollTo({ top: targetTop, behavior: "auto" });
-      } else {
-        scroller.scrollTop = targetTop;
-      }
-    } finally {
-      runtime.applyingRestore = false;
-    }
-    runtime.lastSavedTop = targetTop;
-    runtime.lastSavedHeight = finiteNonNegativeNumber(scroller.scrollHeight);
-    runtime.lastSavedClientHeight = finiteNonNegativeNumber(scroller.clientHeight);
-  }
-
-  function scheduleThreadScrollRestore(sessionId) {
-    clearThreadScrollRestoreTimers();
-    const key = validThreadScrollSessionKey(sessionId);
-    if (!codexPlusSettings().threadScrollRestore || !key || userScrollIntentActive() || threadScrollRestoreCancelledForSession(key)) return;
-    const entry = readThreadScrollEntries()[key];
-    if (!entry) {
-      clearThreadScrollRestoreLock();
-      return;
-    }
-    startThreadScrollRestoreLock(key, entry);
-    const restoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-    window.__codexThreadScrollRestoreRevision = restoreRevision;
-    window.__codexThreadScrollRestoreTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
-      if (window.__codexThreadScrollRestoreRevision !== restoreRevision) return;
-      restoreThreadScrollPosition(key);
-    }, delay));
-  }
-
-  function syncThreadScrollState(forceRestore = false) {
-    const runtime = threadScrollRuntime();
-    const currentRef = currentSessionRef();
-    const nextSessionId = validThreadScrollSessionKey(currentRef.session_id);
-    if (!nextSessionId) return;
-    if (!codexPlusSettings().threadScrollRestore) {
-      bindThreadScrollListener(null);
-      clearThreadScrollRestoreTimers();
-      clearThreadScrollRestoreLock();
-      runtime.activeSessionId = nextSessionId;
-      return;
-    }
-    if (runtime.activeSessionId !== nextSessionId) prepareThreadScrollRestoreLock(nextSessionId);
-    const nextScroller = currentThreadScroller();
-    bindThreadScrollListener(nextScroller);
-    if (runtime.activeSessionId !== nextSessionId) {
-      runtime.lastSavedTop = -1;
-      runtime.lastSavedHeight = -1;
-      runtime.lastSavedClientHeight = -1;
-      clearThreadScrollRestoreLock();
-      runtime.activeSessionId = nextSessionId;
-      runtime.pendingNavigation = null;
-      runtime.userScrollIntentUntil = 0;
-      if (runtime.userCancelledRestoreSessionId !== nextSessionId) runtime.userCancelledRestoreSessionId = "";
-      scheduleThreadScrollRestore(nextSessionId);
-      return;
-    }
-    runtime.activeSessionId = nextSessionId;
-    if (forceRestore && !userScrollIntentActive() && !threadScrollRestoreCancelledForSession(nextSessionId)) scheduleThreadScrollRestore(nextSessionId);
-  }
-
-  function scheduleThreadScrollSyncAttempts(forceRestore = true) {
-    const currentKey = validThreadScrollSessionKey(currentSessionRef().session_id) || validThreadScrollSessionKey(threadScrollRuntime().activeSessionId);
-    if (userScrollIntentActive() || threadScrollRestoreCancelledForSession(currentKey)) return;
-    clearThreadScrollSyncTimers();
-    const syncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-    window.__codexThreadScrollSyncRevision = syncRevision;
-    window.__codexThreadScrollSyncTimers = codexThreadScrollRestoreDelaysMs.map((delay) => setTimeout(() => {
-      if (window.__codexThreadScrollSyncRevision !== syncRevision) return;
-      scheduleThreadScrollSync(forceRestore);
-    }, delay));
-  }
-
-  function captureThreadScrollNavigation(targetSessionId) {
-    if (!codexPlusSettings().threadScrollRestore) return;
-    const runtime = threadScrollRuntime();
-    const targetKey = validThreadScrollSessionKey(targetSessionId);
-    const sessionChanged = !!targetKey && targetKey !== runtime.activeSessionId;
-    if (sessionChanged) {
-      runtime.userScrollIntentUntil = 0;
-      runtime.userCancelledRestoreSessionId = "";
-    }
-    const pending = runtime.pendingNavigation;
-    const duplicatePendingTarget = !!targetKey && pending?.targetSessionId === targetKey && Date.now() - finiteNonNegativeNumber(pending.at) < 5000;
-    if (!duplicatePendingTarget) saveThreadScrollPositionNow();
-    if (targetKey) {
-      runtime.pendingNavigation = { fromSessionId: runtime.activeSessionId, targetSessionId: targetKey, at: Date.now() };
-      prepareThreadScrollRestoreLock(targetKey);
-    }
-    scheduleThreadScrollSyncAttempts(true);
-  }
-
-  function editableThreadScrollTarget(element) {
-    return !!element?.closest?.("input, textarea, select, [contenteditable='true'], [contenteditable='']");
-  }
-
-  function eventTargetsActiveThreadScroller(event) {
-    const runtime = threadScrollRuntime();
-    const scroller = threadScrollGuardScroller(runtime.activeScroller) || threadScrollGuardScroller(currentThreadScroller());
-    if (!scroller) return false;
-    const target = event?.target;
-    if (!target || target === document || target === window) return true;
-    return target === scroller || scroller.contains?.(target) || scroller.contains?.(document.activeElement);
-  }
-
-  function markThreadScrollUserIntent(event) {
-    if (!codexPlusSettings().threadScrollRestore || !eventTargetsActiveThreadScroller(event)) return;
-    cancelThreadScrollRestoreForUserIntent();
-  }
-
-  function markThreadScrollKeyboardIntent(event) {
-    if (editableThreadScrollTarget(event.target)) return;
-    if (!["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " ", "Spacebar"].includes(event.key)) return;
-    markThreadScrollUserIntent(event);
-  }
-
-  function markThreadScrollPointerIntent(event) {
-    const scroller = threadScrollGuardScroller(threadScrollRuntime().activeScroller) || threadScrollGuardScroller(currentThreadScroller());
-    if (event.target === scroller) markThreadScrollUserIntent(event);
-  }
-
-  function updateThreadScrollHandlers() {
-    window.__codexThreadScrollHandlers = {
-      shouldBlockAutobottom: shouldBlockThreadScrollAutobottom,
-      shouldBlockIntoView: shouldBlockThreadScrollIntoView,
-      markUserIntent: markThreadScrollUserIntent,
-      markKeyboardIntent: markThreadScrollKeyboardIntent,
-      markPointerIntent: markThreadScrollPointerIntent,
-      captureNavigation: captureThreadScrollNavigation,
-      saveNow: saveThreadScrollPositionNow,
-      prepareRestoreLock: prepareThreadScrollRestoreLock,
-      scheduleSyncAttempts: scheduleThreadScrollSyncAttempts,
-    };
-  }
-
-  function installThreadScrollUserIntentCapture() {
-    if (window.__codexThreadScrollUserIntentInstalled === codexThreadScrollUserIntentVersion) return;
-    document.removeEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, true);
-    document.removeEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, true);
-    document.removeEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
-    document.removeEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
-    window.__codexThreadScrollWheelIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
-    window.__codexThreadScrollTouchIntentHandler = (event) => window.__codexThreadScrollHandlers?.markUserIntent?.(event);
-    window.__codexThreadScrollKeyIntentHandler = (event) => window.__codexThreadScrollHandlers?.markKeyboardIntent?.(event);
-    window.__codexThreadScrollPointerIntentHandler = (event) => window.__codexThreadScrollHandlers?.markPointerIntent?.(event);
-    document.addEventListener("wheel", window.__codexThreadScrollWheelIntentHandler, { capture: true, passive: true });
-    document.addEventListener("touchmove", window.__codexThreadScrollTouchIntentHandler, { capture: true, passive: true });
-    document.addEventListener("keydown", window.__codexThreadScrollKeyIntentHandler, true);
-    document.addEventListener("pointerdown", window.__codexThreadScrollPointerIntentHandler, true);
-    window.__codexThreadScrollUserIntentInstalled = codexThreadScrollUserIntentVersion;
-  }
-
-  function installThreadScrollNavigationCapture() {
-    document.removeEventListener("pointerdown", window.__codexThreadScrollNavigationHandler, true);
-    document.removeEventListener("click", window.__codexThreadScrollClickNavigationHandler, true);
-    document.removeEventListener("keydown", window.__codexThreadScrollKeyboardHandler, true);
-    const navigationHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
-      const row = event.target?.closest?.(selectors.sidebarThread);
-      if (!row) return;
-      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
-    };
-    const clickHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
-      const row = event.target?.closest?.(selectors.sidebarThread);
-      if (!row) return;
-      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
-    };
-    const keyboardHandler = (event) => {
-      if (!codexPlusSettings().threadScrollRestore) return;
-      if (event.key !== "Enter" && event.key !== " ") return;
-      const row = event.target?.closest?.(selectors.sidebarThread);
-      if (!row) return;
-      window.__codexThreadScrollHandlers?.captureNavigation?.(sessionRefFromRow(row).session_id);
-    };
-    window.__codexThreadScrollNavigationHandler = navigationHandler;
-    window.__codexThreadScrollClickNavigationHandler = clickHandler;
-    window.__codexThreadScrollKeyboardHandler = keyboardHandler;
-    document.addEventListener("pointerdown", navigationHandler, true);
-    document.addEventListener("click", clickHandler, true);
-    document.addEventListener("keydown", keyboardHandler, true);
-  }
-
-  function scheduleThreadScrollSync(forceRestore = false) {
-    if (window.__codexThreadScrollSyncPending) return;
-    window.__codexThreadScrollSyncPending = true;
-    setTimeout(() => {
-      window.__codexThreadScrollSyncPending = false;
-      syncThreadScrollState(forceRestore);
-    }, 0);
-  }
-
-  function installThreadScrollRouteHooks() {
-    if (window.__codexThreadScrollRouteHooksInstalled === codexThreadScrollRouteHooksVersion) return;
-    window.__codexThreadScrollRouteHooksInstalled = codexThreadScrollRouteHooksVersion;
-    window.__codexThreadScrollOriginals = window.__codexThreadScrollOriginals || {};
-    const originals = window.__codexThreadScrollOriginals;
-    ["pushState", "replaceState"].forEach((method) => {
-      const currentMethod = history[method];
-      const original = originals[`history_${method}`] || currentMethod;
-      originals[`history_${method}`] = original;
-      if (typeof original !== "function") return;
-      history[method] = function codexThreadScrollPatchedHistory(...args) {
-        window.__codexThreadScrollHandlers?.saveNow?.();
-        const result = original.apply(this, args);
-        window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
-        return result;
-      };
-    });
-    window.removeEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
-    window.removeEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
-    document.removeEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
-    window.__codexThreadScrollPopStateHandler = () => {
-      window.__codexThreadScrollHandlers?.saveNow?.();
-      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
-    };
-    window.__codexThreadScrollHashChangeHandler = () => {
-      window.__codexThreadScrollHandlers?.saveNow?.();
-      window.__codexThreadScrollHandlers?.captureNavigation?.(locationThreadId());
-    };
-    window.__codexThreadScrollVisibilityHandler = () => {
-      if (document.visibilityState === "hidden") window.__codexThreadScrollHandlers?.saveNow?.();
-    };
-    window.addEventListener("popstate", window.__codexThreadScrollPopStateHandler, true);
-    window.addEventListener("hashchange", window.__codexThreadScrollHashChangeHandler, true);
-    document.addEventListener("visibilitychange", window.__codexThreadScrollVisibilityHandler, true);
-  }
-
-  async function postJson(path, payload) {
-    async function fetchBackendStatusFromHelper(path, payload) {
-      const controller = typeof AbortController === "function" ? new AbortController() : null;
-      const timeoutId = setTimeout(() => controller?.abort(), 2000);
-      try {
-        const response = await fetch(`${helperBase}${path}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload || {}),
-          ...(controller ? { signal: controller.signal } : {}),
-        });
-        return await response.json();
-      } catch (error) {
-        return {
-          status: "failed",
-          message: error?.name === "AbortError" ? "后端检查超时" : "未连接",
-          timeout: error?.name === "AbortError",
-        };
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    }
-    if (!window.__codexSessionDeleteBridge) {
-      recordCodexPlusBridgeFailure();
-      if (path === "/backend/status") {
-        return await fetchBackendStatusFromHelper(path, payload);
-      }
-      sendCodexPlusDiagnostic("bridge_missing_for_route", { path });
-      return { status: "failed", message: "桥接不可用，请重启启动器" };
-    }
-    function bridgeWithBackendTimeout(path, payload) {
-      let request;
-      try {
-        request = window.__codexSessionDeleteBridge(path, payload);
-      } catch (error) {
-        recordCodexPlusBridgeFailure();
-        return Promise.resolve({ status: "failed", message: error?.message || "未连接" });
-      }
-      return withBackendTimeout(request);
-    }
-    try {
-      if (path === "/backend/status") {
-        const result = await bridgeWithBackendTimeout(path, payload);
-        if (result?.status === "ok") {
-          recordCodexPlusBridgeSuccess();
-          return result;
-        }
-        recordCodexPlusBridgeFailure();
-        if (result?.timeout) {
-          // 超时也要记 lastAttemptAt：15 秒内的尝试视为桥还活着，
-          // 避免页面忙碌时被看门狗误判为桥已死而重复注入整份脚本（issue #2169 / #2274）。
-          recordCodexPlusBridgeAttempt();
-          sendCodexPlusDiagnostic("backend_bridge_timeout", { path });
-        }
-        const fallback = await fetchBackendStatusFromHelper(path, payload);
-        if (fallback?.status === "ok") {
-          sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
-            path,
-            httpStatus: 200,
-            responseStatus: fallback.status || "",
-          });
-          return fallback;
-        }
-        sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
-          path,
-          errorName: "",
-          errorMessage: "",
-        });
-        return fallback;
-      }
-      const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
-      recordCodexPlusBridgeSuccess();
-      return bridgeResult;
-    } catch (error) {
-      recordCodexPlusBridgeFailure();
-      sendCodexPlusDiagnostic("bridge_call_failed", {
-        path,
-        errorName: error?.name || "",
-        errorMessage: error?.message || String(error),
-      });
-      if (path === "/backend/status") {
-        const fallback = await fetchBackendStatusFromHelper(path, payload);
-        if (fallback?.status === "ok") {
-          sendCodexPlusDiagnostic("backend_status_bridge_failed_http_fallback_ok", {
-            path,
-            httpStatus: 200,
-            responseStatus: fallback.status || "",
-          });
-          return fallback;
-        }
-        sendCodexPlusDiagnostic("backend_status_bridge_and_http_failed", {
-          path,
-          errorName: error?.name || "",
-          errorMessage: error?.message || String(error),
-        });
-        return fallback;
-      }
-      throw error;
-    }
-  }
-
-  function downloadMarkdownFallback(filename, markdown) {
-    if (!filename || typeof markdown !== "string") {
-      throw new Error("导出结果不完整");
-    }
-    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  async function saveMarkdown(filename, markdown) {
-    if (!filename || typeof markdown !== "string") {
-      throw new Error("导出结果不完整");
-    }
-    if (typeof window.showSaveFilePicker !== "function") {
-      downloadMarkdownFallback(filename, markdown);
-      return { status: "saved" };
-    }
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: filename,
-        types: [{
-          description: "Markdown",
-          accept: { "text/markdown": [".md", ".markdown"] },
-        }],
-      });
-      const writable = await handle.createWritable();
-      await writable.write(markdown);
-      await writable.close();
-      return { status: "saved" };
-    } catch (error) {
-      if (error?.name === "AbortError") {
-        return { status: "cancelled", message: "导出已取消" };
-      }
-      throw error;
-    }
-  }
-
-  let codexStateApiPromise = null;
-  let chatsSortInFlight = false;
-  let chatsSortSignature = "";
-  let chatsSortLastFetchAt = 0;
-
-  function codexStateApiFromModule(module, assetPrefix = "") {
-    if (assetPrefix.startsWith("vscode-api-")) {
-      return typeof module?.n === "function" ? module.n : null;
-    }
-    if (assetPrefix.startsWith("app-initial-")) {
-      return typeof module?.qut === "function" ? module.qut : null;
-    }
-    return null;
-  }
-
-  async function codexStateApi() {
-    codexStateApiPromise = codexStateApiPromise || (async () => {
-      const errors = [];
-      for (const assetPrefix of ["vscode-api-", "app-initial-"]) {
-        try {
-          const api = await loadCodexAppModule(assetPrefix);
-          const call = codexStateApiFromModule(api, assetPrefix);
-          if (typeof call === "function") return call;
-          errors.push(`${assetPrefix}: state export unavailable`);
-        } catch (error) {
-          errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
-        }
-      }
-      throw new Error(`Codex 状态 API 不可用 (${errors.join("; ")})`);
-    })();
-    return await codexStateApiPromise;
-  }
-
-  async function codexStateCall(method, params) {
-    const call = await codexStateApi();
-    return await call(method, params);
-  }
-
-  async function getCodexGlobalState(key) {
-    const result = await codexStateCall("get-global-state", { params: { key } });
-    return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result;
-  }
-
   async function setCodexGlobalState(key, value) {
     return await codexStateCall("set-global-state", { params: { key, value } });
   }
@@ -943,3 +213,778 @@
       }
     }
     return changed;
+  }
+
+  function codexPlusModelDescriptor(modelName) {
+    const metadata = codexPlusModelMetadata(modelName);
+    return {
+      model: modelName,
+      id: modelName,
+      slug: modelName,
+      name: modelName,
+      displayName: metadata?.displayName || modelName,
+      description: metadata?.description || codexModelCatalog.provider_name || codexModelCatalog.model_provider || "Custom model",
+      hidden: false,
+      isDefault: false,
+      defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
+      supportedReasoningEfforts: modelReasoningEfforts(modelName),
+    };
+  }
+
+  function sortModelChoices(models, nameOf) {
+    const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
+    const entries = models.map((model) => ({ model, parts: nameOf(model).trim().replace(/[._\s]+/g, "-").match(/\d+|\D+/g) || [] }));
+    entries.sort((left, right) => {
+      const length = Math.min(left.parts.length, right.parts.length);
+      for (let index = 0; index < length; index += 1) {
+        const leftPart = left.parts[index];
+        const rightPart = right.parts[index];
+        const order = /^\d+$/.test(leftPart) && /^\d+$/.test(rightPart) ? compare(rightPart, leftPart) : compare(leftPart, rightPart);
+        if (order) return order;
+      }
+      return right.parts.length - left.parts.length;
+    });
+    const changed = entries.some((entry, index) => entry.model !== models[index]);
+    if (changed) models.splice(0, models.length, ...entries.map((entry) => entry.model));
+    return changed;
+  }
+
+  function modelArrayLooksPatchable(value, allowEmpty = false) {
+    return Array.isArray(value)
+      && (allowEmpty || value.length > 0)
+      && value.every((item) => item && typeof item === "object" && typeof item.model === "string");
+  }
+
+  function stringArrayLooksPatchable(value) {
+    return Array.isArray(value) && value.every((item) => typeof item === "string");
+  }
+
+  function patchModelNameArray(models) {
+    if (!stringArrayLooksPatchable(models)) return false;
+    const customModels = codexPlusModelNames();
+    if (!customModels.length) return false;
+    let changed = false;
+    customModels.forEach((modelName) => {
+      if (!models.includes(modelName)) {
+        models.push(modelName);
+        changed = true;
+      }
+    });
+    return sortModelChoices(models, (name) => name) || changed;
+  }
+
+  function patchModelArray(models, allowEmpty = false) {
+    if (!modelArrayLooksPatchable(models, allowEmpty)) return false;
+    const customModels = codexPlusModelNames();
+    if (!customModels.length) return false;
+    let changed = false;
+    const sourceModels = new Set(customModels);
+    const authoritative = codexPlusSettings().includeNativeModels === false
+      && codexModelCatalog.status === "ok"
+      && codexModelCatalog.model_provider && codexModelCatalog.model_provider !== "openai"
+      && codexModelCatalog.sources?.some((source) => source.status === "ok" && source.models > 0 && ["config", "relay_profile_model_list"].includes(source.type));
+    for (let index = models.length - 1; index >= 0; index -= 1) {
+      if ((authoritative || models[index].__codexPlusInjected) && !sourceModels.has(models[index].model)) {
+        models.splice(index, 1);
+        changed = true;
+      }
+    }
+    const existing = new Map(models.map((item) => [item.model, item]));
+    models.forEach((item) => {
+      if (customModels.includes(item.model)) {
+        if (item.hidden !== false) {
+          item.hidden = false;
+          changed = true;
+        }
+        if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
+      }
+    });
+    customModels.forEach((modelName) => {
+      if (!existing.has(modelName)) {
+        models.push(codexPlusModelDescriptor(modelName));
+        changed = true;
+      }
+    });
+    if (customModels.length && codexModelCatalog.status === "ok") {
+      if (sortModelChoices(models, (item) => item.model)) changed = true;
+      models.forEach((item, index) => {
+        if (item.priority !== index) {
+          item.priority = index;
+          changed = true;
+        }
+      });
+    }
+    return changed;
+  }
+
+  function patchModelContainer(value) {
+    if (!value || typeof value !== "object") return false;
+    let changed = false;
+    if (patchModelArray(value.models, "defaultModel" in value || "availableModels" in value)) changed = true;
+    if (patchModelNameArray(value.models)) changed = true;
+    if (patchModelArray(value.data)) changed = true;
+    if (patchModelArray(value.result)) changed = true;
+    if (patchModelArray(value.pages?.[0]?.data)) changed = true;
+    if (patchModelArray(value.result?.data)) changed = true;
+    if (patchModelArray(value.result?.models)) changed = true;
+    if (patchModelArray(value.message?.result?.data)) changed = true;
+    if (patchModelArray(value.message?.result?.models)) changed = true;
+    const names = codexPlusModelNames();
+    if (value.availableModels instanceof Set) {
+      names.forEach((name) => {
+        if (!value.availableModels.has(name)) {
+          value.availableModels.add(name);
+          changed = true;
+        }
+      });
+    }
+    if (value.available_models instanceof Set) {
+      names.forEach((name) => {
+        if (!value.available_models.has(name)) {
+          value.available_models.add(name);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(value.availableModels)) {
+      names.forEach((name) => {
+        if (!value.availableModels.includes(name)) {
+          value.availableModels.push(name);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(value.available_models)) {
+      names.forEach((name) => {
+        if (!value.available_models.includes(name)) {
+          value.available_models.push(name);
+          changed = true;
+        }
+      });
+    }
+    if (Array.isArray(value.hiddenModels)) {
+      const before = value.hiddenModels.length;
+      value.hiddenModels = value.hiddenModels.filter((name) => !names.includes(name));
+      if (value.hiddenModels.length !== before) changed = true;
+    }
+    if (Array.isArray(value.hidden_models)) {
+      const before = value.hidden_models.length;
+      value.hidden_models = value.hidden_models.filter((name) => !names.includes(name));
+      if (value.hidden_models.length !== before) changed = true;
+    }
+    return changed;
+  }
+
+  function modelJsonResponseLooksPatchable(payload) {
+    if (!payload || typeof payload !== "object") return false;
+    const descriptorArrays = [
+      payload.models,
+      payload.data,
+      payload.result,
+      payload.pages?.[0]?.data,
+      payload.result?.data,
+      payload.result?.models,
+      payload.message?.result?.data,
+      payload.message?.result?.models,
+    ];
+    if (descriptorArrays.some((value) => modelArrayLooksPatchable(value))) return true;
+    const hasModelContainerSignal = "defaultModel" in payload
+      || "default_model" in payload
+      || "availableModels" in payload
+      || "available_models" in payload
+      || "hiddenModels" in payload
+      || "hidden_models" in payload
+      || "modelMetadata" in payload
+      || "model_metadata" in payload;
+    return hasModelContainerSignal && Array.isArray(payload.models)
+      && payload.models.every((value) => typeof value === "string");
+  }
+
+  async function patchModelJsonResponse(payload) {
+    if (!codexPlusModelUnlockEnabled()) return payload;
+    if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+    if (!modelJsonResponseLooksPatchable(payload)) return payload;
+    try {
+      patchModelContainer(payload);
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return payload;
+  }
+
+  function installModelJsonResponsePatch() {
+    if (window.__codexPlusModelJsonResponsePatchInstalled === "1") return;
+    window.__codexPlusModelJsonResponsePatchInstalled = "1";
+    window.__codexPlusModelJsonResponseOriginals = window.__codexPlusModelJsonResponseOriginals || {};
+    const originals = window.__codexPlusModelJsonResponseOriginals;
+    originals.responseJson = originals.responseJson || Response.prototype.json;
+    if (typeof originals.responseJson !== "function") return;
+    Response.prototype.json = async function codexPlusPatchedResponseJson(...args) {
+      const payload = await originals.responseJson.apply(this, args);
+      return await patchModelJsonResponse(payload);
+    };
+  }
+
+  function patchStatsigModelDynamicConfig(config) {
+    const names = codexPlusModelNames();
+    const value = config?.value;
+    if (!names.length || !value || typeof value !== "object") return config;
+    const availableModels = Array.isArray(value.available_models) ? [...value.available_models] : [];
+    let changed = false;
+    names.forEach((name) => {
+      if (!availableModels.includes(name)) {
+        availableModels.push(name);
+        changed = true;
+      }
+    });
+    if (!changed) return config;
+    const nextValue = { ...value, available_models: availableModels };
+    try {
+      config.value = nextValue;
+    } catch {
+      return { ...config, value: nextValue };
+    }
+    return config;
+  }
+
+  function statsigClients() {
+    const root = window.__STATSIG__ || globalThis.__STATSIG__;
+    if (!root || typeof root !== "object") return [];
+    const clients = [root.firstInstance, typeof root.instance === "function" ? root.instance() : null];
+    if (root.instances && typeof root.instances === "object") clients.push(...Object.values(root.instances));
+    return clients.filter((client, index, array) => client && typeof client === "object" && array.indexOf(client) === index);
+  }
+
+  function patchStatsigModelWhitelist() {
+    statsigClients().forEach((client) => {
+      if (typeof client.getDynamicConfig !== "function") return;
+      if (!client.__codexPlusModelWhitelistPatched) {
+        const originalGetDynamicConfig = client.getDynamicConfig.bind(client);
+        client.getDynamicConfig = (name, options) => {
+          const result = originalGetDynamicConfig(name, options);
+          return String(name) === "107580212" ? patchStatsigModelDynamicConfig(result) : result;
+        };
+        client.__codexPlusModelWhitelistPatched = true;
+      }
+      try {
+        patchStatsigModelDynamicConfig(client.getDynamicConfig("107580212", { disableExposureLog: true }));
+      } catch {
+      }
+    });
+  }
+
+  function patchAppServerModelMessages() {
+    if (window.__codexPlusModelMessagePatchInstalled) return;
+    window.__codexPlusModelMessagePatchInstalled = true;
+    window.addEventListener("codex-message-from-view", (event) => {
+      try {
+        const detail = event?.detail;
+        const request = detail?.request;
+        if (detail?.type === "mcp-request" && request?.method === "model/list") {
+          request.params = { ...(request.params || {}), includeHidden: true };
+          if (request.id != null) {
+            const requestId = String(request.id);
+            codexPlusModelListRequestIds.add(requestId);
+            if (codexPlusModelListRequestIds.size > 64) {
+              codexPlusModelListRequestIds.delete(codexPlusModelListRequestIds.values().next().value);
+            }
+            window.setTimeout(() => codexPlusModelListRequestIds.delete(requestId), 30_000);
+          }
+        }
+      } catch (error) {
+        window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+        window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+      }
+    }, true);
+
+    window.addEventListener("message", (event) => {
+      try {
+        patchMcpModelResponseData(event?.data);
+      } catch (error) {
+        window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+        window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+      }
+    }, true);
+  }
+
+  function patchMcpModelResponseData(data) {
+    if (!codexPlusModelUnlockEnabled()) return false;
+    if (data?.type !== "mcp-response") return false;
+    const message = data.message || data.response;
+    const requestId = message?.id != null ? String(message.id) : "";
+    if (codexPlusModelListRequestIds.size === 0 || !codexPlusModelListRequestIds.has(requestId)) return false;
+    codexPlusModelListRequestIds.delete(requestId);
+    let changed = false;
+    if (patchModelArray(message?.result?.data, true)) changed = true;
+    if (patchModelArray(message?.result?.models, true)) changed = true;
+    return changed;
+  }
+
+  function appServerModelRequestMethod(method, params) {
+    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
+    if (method === "vscode://codex/list-plugins") return "list-plugins";
+    if (method === "vscode://codex/plugin/install") return "install-plugin";
+    if (method === "vscode://codex/plugin/uninstall") return "uninstall-plugin";
+    if (method === "plugin/list") return "list-plugins";
+    if (method === "plugin/install") return "install-plugin";
+    if (method === "plugin/uninstall") return "uninstall-plugin";
+    return String(method || "");
+  }
+
+  function patchAppServerModelResult(method, result) {
+    if (method !== "list-models-for-host" && method !== "model/list") return result;
+    try {
+      if (Array.isArray(result)) patchModelArray(result, true);
+      if (Array.isArray(result?.data)) patchModelArray(result.data, true);
+      if (Array.isArray(result?.models)) patchModelArray(result.models, true);
+      sendCodexPlusDiagnostic("model_app_server_result_patched", {
+        method,
+        modelCount: Array.isArray(result?.data) ? result.data.length : Array.isArray(result?.models) ? result.models.length : Array.isArray(result) ? result.length : null,
+      });
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return result;
+  }
+
+  function codexPerModelContextEnabled() {
+    const profile = codexRemoteSessionActiveProfile();
+    if (!profile) return false;
+    return [profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata]
+      .some((value) => typeof value === "string" && value.trim() && value.trim() !== "{}");
+  }
+
+  function codexThreadModelRequestState(method, params, result) {
+    const requestMethod = String(method || "");
+    const threadId = String(
+      params?.threadId
+      || params?.conversationId
+      || result?.thread?.id
+      || result?.threadId
+      || ""
+    ).trim();
+    const model = String(params?.model || result?.thread?.model || "").trim();
+    return { requestMethod, threadId, model };
+  }
+
+  async function refreshCodexThreadModelBeforeTurn(client, originalSendRequest, method, params, options) {
+    if (String(method || "") !== "turn/start" || !codexPerModelContextEnabled()) return null;
+    const { threadId, model } = codexThreadModelRequestState(method, params);
+    if (!threadId || !model) return null;
+    const previousModel = client.__codexPlusThreadModels?.get(threadId) || "";
+    if (!previousModel || previousModel === model) return null;
+    let resumeParams = { threadId, model };
+    resumeParams = applyCodexRemoteSessionProviderOverride("thread/resume", resumeParams);
+    try {
+      await originalSendRequest("thread/resume", resumeParams, options);
+      client.__codexPlusThreadModels.set(threadId, model);
+      sendCodexPlusDiagnostic("thread_model_context_refreshed", {
+        threadId,
+        from: previousModel,
+        to: model,
+      });
+      return true;
+    } catch (error) {
+      sendCodexPlusDiagnostic("thread_model_context_refresh_failed", {
+        threadId,
+        from: previousModel,
+        to: model,
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+      return false;
+    }
+  }
+
+  function patchAppServerModelRequestClient(client) {
+    if (!client || typeof client.sendRequest !== "function") return false;
+    try {
+      if (!Object.isExtensible(client)) return false;
+      for (const key of [
+        "__codexPlusModelRequestPatch",
+        "__codexPlusModelOriginalSendRequest",
+        "__codexPlusThreadModels",
+        "__codexPlusServiceTierOriginalPrewarmThreadStart",
+        "sendRequest",
+        "prewarmThreadStart",
+      ]) {
+        const descriptor = Object.getOwnPropertyDescriptor(client, key);
+        if (descriptor && descriptor.writable === false && typeof descriptor.set !== "function") return false;
+      }
+    } catch {
+      return false;
+    }
+    if (client.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) return true;
+    const originalSendRequest = client.__codexPlusModelOriginalSendRequest || client.sendRequest.bind(client);
+    client.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
+    client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      let providerRefreshFailed = false;
+      if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderPatchEnabled()
+          && window.__codexSessionDeleteBridge) {
+        const settingsLoaded = await loadBackendSettingsState();
+        providerRefreshFailed = !settingsLoaded;
+        if (providerRefreshFailed) {
+          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
+        }
+      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderOverrideEnabled()
+          && !codexRemoteSessionTargetProvider()) {
+        await loadCodexModelCatalog();
+      }
+      const providerParams = providerRefreshFailed
+        ? params
+        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
+      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
+        client,
+        originalSendRequest,
+        method,
+        nextParams,
+        options
+      );
+      const result = await originalSendRequest(method, nextParams, options);
+      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      if (modelContextRefresh !== false && threadState.threadId && threadState.model
+          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
+        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
+      }
+      if (!codexPlusModelUnlockEnabled()
+          || !["list-models-for-host", "model/list"].includes(requestMethod)
+          || (client.__codexPlusHostId && client.__codexPlusHostId !== "local")) return result;
+      await loadCodexModelCatalog();
+      return patchAppServerModelResult(requestMethod, result);
+    };
+    if (typeof client.prewarmThreadStart === "function"
+        && !client.__codexPlusServiceTierOriginalPrewarmThreadStart) {
+      const originalPrewarmThreadStart = client.prewarmThreadStart.bind(client);
+      client.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
+      client.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
+        const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
+        return originalPrewarmThreadStart(nextParams, options);
+      };
+    }
+    client.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    return true;
+  }
+
+  // issue #2177：Codex 26.908 把 AppServerRequestClient 类藏进模块闭包且不再导出，
+  // 渲染层扫描在新版上永远 not_found，直接改写 dispatcher 又会撞上不可写的 RPC stub。
+  // 改为两段式接管：这里先用纯文本定位算出 sendRequest 的断点坐标（按 UTF-16 计数，
+  // 与 V8 断点坐标语义一致），launcher 侧 bridge.rs 再用 CDP Debugger 按坐标下条件断点，
+  // 命中时把类构造器挂到 window.__codexPlusAppServerClientClass，随后对原型套用与
+  // 实例版完全一致的请求补丁。断点条件 `!window.__codexPlusAppServerClientClass`
+  // 保证页面重载后自动重新捕获，且每次页面生命周期内只暂停一次。
+    function locateCodexAppServerClientBreakpoint(text) {
+    if (typeof text !== "string" || !text) return null;
+    const markerIdx = text.indexOf(codexAppServerClientCaptureMarker);
+    if (markerIdx < 0) return null;
+    const anchorIdx = text.lastIndexOf(codexAppServerClientCaptureAnchor, markerIdx);
+    if (anchorIdx < 0 || markerIdx - anchorIdx > 220) return null;
+    const braceIdx = text.indexOf("{", anchorIdx);
+    if (braceIdx < 0) return null;
+    let lineNumber = 0;
+    let lastNewline = -1;
+    for (let i = 0; i < braceIdx; i++) {
+      if (text.charCodeAt(i) === 10) {
+        lineNumber += 1;
+        lastNewline = i;
+      }
+    }
+    return { lineNumber, columnNumber: braceIdx - lastNewline - 1 };
+  }
+
+    let codexAppServerClientCaptureStarted = false;
+  async function installCodexAppServerClientCapture() {
+    if (codexAppServerClientCaptureStarted || window.__codexPlusAppServerClientCapture) return;
+    codexAppServerClientCaptureStarted = true;
+    try {
+      if (typeof fetch !== "function") return;
+      const url = codexAppAssetUrl("app-initial-") || await codexAppAssetUrlFromScriptText("app-initial-");
+      if (!url) {
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "asset_url_missing" });
+        return;
+      }
+      const response = await fetch(url);
+      const text = response.ok ? await response.text() : "";
+      const location = locateCodexAppServerClientBreakpoint(text);
+      if (!location) {
+        sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", { reason: "anchor_missing" });
+        return;
+      }
+      const urlRegex = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      window.__codexPlusAppServerClientCapture = { urlRegex, ...location };
+      sendCodexPlusDiagnostic("app_server_client_capture_located", {
+        lineNumber: location.lineNumber,
+        columnNumber: location.columnNumber,
+      });
+    } catch (error) {
+      codexAppServerClientCaptureStarted = false;
+      sendCodexPlusDiagnostic("app_server_client_capture_locate_failed", {
+        errorName: error?.name || "",
+        errorMessage: error?.message || String(error),
+      });
+    }
+  }
+
+    function installCodexAppServerClientPrototypePatch() {
+    if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
+    const wanted = codexPlusModelUnlockEnabled()
+      || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
+      || codexPlusSettings().serviceTierControls;
+    if (!wanted) return false;
+    const klass = window.__codexPlusAppServerClientClass;
+    if (!klass || typeof klass !== "function" || !klass.prototype) return false;
+    const proto = klass.prototype;
+    if (proto.__codexPlusModelRequestPatch === codexAppServerModelRequestPatchVersion) {
+      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      return true;
+    }
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "sendRequest");
+      if (!descriptor || descriptor.writable === false) {
+        sendCodexPlusDiagnostic("app_server_client_prototype_patch_skipped", {});
+        window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+        return false;
+      }
+    } catch {
+      window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+      return false;
+    }
+    const originalSendRequest = proto.__codexPlusModelOriginalSendRequest || proto.sendRequest;
+    proto.__codexPlusModelOriginalSendRequest = originalSendRequest;
+    proto.__codexPlusThreadModels = proto.__codexPlusThreadModels || new Map();
+    proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const client = this;
+      const requestMethod = appServerModelRequestMethod(String(method || ""), params);
+      let providerRefreshFailed = false;
+      if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderPatchEnabled()
+          && window.__codexSessionDeleteBridge) {
+        const settingsLoaded = await loadBackendSettingsState();
+        providerRefreshFailed = !settingsLoaded;
+        if (providerRefreshFailed) {
+          sendCodexPlusDiagnostic("remote_session_provider_refresh_failed", {});
+        }
+      } else if (codexRemoteSessionProviderRequestMethod(requestMethod)
+          && codexRemoteSessionProviderOverrideEnabled()
+          && !codexRemoteSessionTargetProvider()) {
+        await loadCodexModelCatalog();
+      }
+      const providerParams = providerRefreshFailed
+        ? params
+        : applyCodexRemoteSessionProviderOverride(requestMethod, params);
+      const nextParams = applyCodexServiceTierRequestOnly(requestMethod, providerParams);
+      const modelContextRefresh = await refreshCodexThreadModelBeforeTurn(
+        client,
+        originalSendRequest.bind(client),
+        method,
+        nextParams,
+        options
+      );
+      const result = await originalSendRequest.call(client, method, nextParams, options);
+      const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
+      if (modelContextRefresh !== false && threadState.threadId && threadState.model
+          && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
+        client.__codexPlusThreadModels.set(threadState.threadId, threadState.model);
+      }
+      if (!codexPlusModelUnlockEnabled()) return result;
+      if (!codexPlusModelNames().length) await loadCodexModelCatalog();
+      return patchAppServerModelResult(requestMethod, result);
+    };
+    if (typeof proto.prewarmThreadStart === "function"
+        && !proto.__codexPlusServiceTierOriginalPrewarmThreadStart) {
+      const originalPrewarmThreadStart = proto.prewarmThreadStart;
+      proto.__codexPlusServiceTierOriginalPrewarmThreadStart = originalPrewarmThreadStart;
+      proto.prewarmThreadStart = async function codexPlusServiceTierPrewarmThreadStart(params, options) {
+        const nextParams = applyCodexServiceTierRequestOnly("thread/start", params);
+        return originalPrewarmThreadStart.call(this, nextParams, options);
+      };
+    }
+    proto.__codexPlusModelRequestPatch = codexAppServerModelRequestPatchVersion;
+    window.__codexPlusAppServerClientPrototypePatchInstalled = codexAppServerModelRequestPatchVersion;
+    sendCodexPlusDiagnostic("app_server_client_prototype_patch_installed", {});
+    return true;
+  }
+
+  const appServerModelRequestPatchMaxMisses = 8;
+  const appServerModelRequestPatchMaxRetryDelayMs = 30000;
+  let appServerModelRequestPatchMissCount = 0;
+  let appServerModelRequestPatchDisabled = false;
+  let appServerModelRequestPatchPromise = null;
+  let appServerModelRequestPatchRetryTimer = 0;
+  let appServerModelRequestPatchRetryDelayMs = 250;
+
+  function scheduleAppServerModelRequestPatchRetry() {
+    if (!codexRemoteSessionProviderPatchEnabled()) return;
+    if (appServerModelRequestPatchRetryTimer) return;
+    // issue #2256/#2255：固定 250ms 重试在 Codex 改 asset 命名后变成每秒 4 轮的全量
+    // rescan（每轮 fetch 全部 app asset）。改为指数退避， miss 计满后由熔断停掉。
+    appServerModelRequestPatchRetryTimer = window.setTimeout(() => {
+      appServerModelRequestPatchRetryTimer = 0;
+      installAppServerModelRequestPatch();
+    }, appServerModelRequestPatchRetryDelayMs);
+    appServerModelRequestPatchRetryDelayMs = Math.min(appServerModelRequestPatchRetryDelayMs * 2, appServerModelRequestPatchMaxRetryDelayMs);
+  }
+
+  function noteAppServerModelRequestPatchMiss(event, detail) {
+    appServerModelRequestPatchMissCount += 1;
+    // installAppServerModelRequestPatch() runs on every model-whitelist
+    // refresh tick (~120ms). On Codex builds where the app-server module was
+    // renamed/removed (e.g. 26.623+, issue #1324) this layer never succeeds
+    // and would otherwise emit the same diagnostic on every tick forever.
+    // Report the first miss so telemetry still captures the cause, then stay
+    // quiet, and finally disable this layer once it is clearly unavailable.
+    // This is a graceful fallback: the remaining whitelist layers (Statsig
+    // config / React state / response JSON patch) keep injecting the custom
+    // models on their own.
+    if (appServerModelRequestPatchMissCount === 1) {
+      sendCodexPlusDiagnostic(event, detail);
+    }
+    // issue #2256：provider 重试路径以前在这里提前 return，绕过下面的 maxMisses
+    // 熔断，失败变成 250ms 无限重试（每轮全量 rescan 全部 app assets）。
+    // 现在两个路径统一计数：先按 maxMisses 熔断，未熔断时再走指数退避重试。
+    if (appServerModelRequestPatchMissCount >= appServerModelRequestPatchMaxMisses && !appServerModelRequestPatchDisabled) {
+      appServerModelRequestPatchDisabled = true;
+      clearTimeout(appServerModelRequestPatchRetryTimer);
+      appServerModelRequestPatchRetryTimer = 0;
+      sendCodexPlusDiagnostic("model_app_server_request_patch_skipped", {
+        misses: appServerModelRequestPatchMissCount,
+        lastEvent: event,
+      });
+      return;
+    }
+    if (!appServerModelRequestPatchDisabled) {
+      scheduleAppServerModelRequestPatchRetry();
+    }
+  }
+
+  function installAppServerModelRequestPatch() {
+    if (window.__codexPlusAppServerModelRequestPatchInstalled === codexAppServerModelRequestPatchVersion) return;
+    if (appServerModelRequestPatchDisabled) return;
+    if (appServerModelRequestPatchPromise) return;
+    if (appServerModelRequestPatchRetryTimer) return;
+    if (appServerModelRequestPatchMissCount > 0 && appServerModelRequestPatchDisabled) return;
+    const patch = async () => {
+      try {
+        const { modules, candidates, sources, discovery } = await loadAppServerRequestCandidates();
+        if (modules.length === 0) {
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_skipped", {
+            reason: "app_server_request_assets_missing",
+          });
+          return;
+        }
+        let patchedCount = 0;
+        for (const candidate of candidates) {
+          if (patchAppServerModelRequestClient(candidate)) patchedCount += 1;
+        }
+        if (patchedCount > 0) {
+          clearTimeout(appServerModelRequestPatchRetryTimer);
+          appServerModelRequestPatchRetryTimer = 0;
+          appServerModelRequestPatchMissCount = 0;
+          appServerModelRequestPatchRetryDelayMs = 250;
+          window.__codexPlusAppServerModelRequestPatchInstalled = codexAppServerModelRequestPatchVersion;
+          sendCodexPlusDiagnostic("model_app_server_request_patch_installed", {
+            moduleCount: modules.length,
+            candidateCount: candidates.length,
+            patchedCount,
+            sources,
+            discovery,
+          });
+        } else {
+          noteAppServerModelRequestPatchMiss("model_app_server_request_patch_not_found", {
+            moduleCount: modules.length,
+            candidateCount: candidates.length,
+            sources,
+            discovery,
+          });
+        }
+      } catch (error) {
+        noteAppServerModelRequestPatchMiss("model_app_server_request_patch_failed", {
+          errorName: error?.name || "",
+          errorMessage: error?.message || String(error),
+        });
+      }
+    };
+    appServerModelRequestPatchPromise = patch().finally(() => {
+      appServerModelRequestPatchPromise = null;
+    });
+    void appServerModelRequestPatchPromise;
+  }
+
+  function ensureCodexModelWhitelistInstalls() {
+    if (codexPlusModelUnlockEnabled()
+        || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
+        || codexPlusSettings().serviceTierControls) {
+      installAppServerModelRequestPatch();
+      void installCodexAppServerClientCapture().catch(() => {});
+    }
+    void installDictationSupportPatch();
+    if (!codexPlusModelUnlockEnabled()) return;
+    installModelJsonResponsePatch();
+    patchAppServerModelMessages();
+  }
+
+  function runCodexModelWhitelistRefreshPass() {
+    if (!codexPlusModelUnlockEnabled() || !codexPlusModelNames().length) return false;
+    try {
+      patchStatsigModelWhitelist();
+      installAppServerModelRequestPatch();
+    } catch (error) {
+      window.__codexPlusModelPatchFailures = window.__codexPlusModelPatchFailures || [];
+      window.__codexPlusModelPatchFailures.push(String(error?.stack || error));
+    }
+    return false;
+  }
+
+  function scheduleCodexModelWhitelistRefresh(durationMs = 2500) {
+    if (!codexPlusModelUnlockEnabled()) return;
+    codexModelWhitelistRefreshUntil = Math.max(codexModelWhitelistRefreshUntil, Date.now() + durationMs);
+    if (codexModelWhitelistRefreshTimer) return;
+    sendCodexPlusDiagnostic("model_whitelist_refresh_scheduled", { durationMs });
+    let delay = 120;
+    const tick = () => {
+      codexModelWhitelistRefreshTimer = 0;
+      if (runCodexModelWhitelistRefreshPass()) return;
+      if (Date.now() < codexModelWhitelistRefreshUntil) {
+        codexModelWhitelistRefreshTimer = window.setTimeout(tick, delay);
+        delay = Math.min(delay * 2, 1000);
+      }
+    };
+    tick();
+  }
+
+  function refreshCodexModelWhitelistFromScan() {
+    // 连续页面变更共用刷新预算；目录变化仍会立即触发独立的补充流程。
+    const now = Date.now();
+    if (codexModelWhitelistLastScanAt && now - codexModelWhitelistLastScanAt < 1000) return;
+    codexModelWhitelistLastScanAt = now;
+    ensureCodexModelWhitelistInstalls();
+    if (!codexPlusModelUnlockEnabled()) return;
+    void loadCodexModelCatalog();
+    runCodexModelWhitelistRefreshPass();
+  }
+
+  function threadIdVariants(sessionId) {
+    if (typeof sessionId !== "string" || !sessionId.trim()) return [];
+    const id = sessionId.trim();
+    const bareId = id.startsWith("local:") ? id.slice("local:".length) : id;
+    return uniqueValues([id, bareId, `local:${bareId}`]);
+  }
+
+  function sessionKey(sessionId) {
+    const variants = threadIdVariants(sessionId);
+    const bareId = variants.find((id) => !id.startsWith("local:"));
+    return bareId || variants[0] || "";
+  }
+
+  function uuidV7TimestampMs(sessionId) {
+    const id = sessionKey(sessionId).replaceAll("-", "");
+    if (!/^[0-9a-fA-F]{12}/.test(id)) return 0;
+    const timestamp = Number.parseInt(id.slice(0, 12), 16);
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
