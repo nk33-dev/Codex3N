@@ -3878,16 +3878,45 @@ async fn respond_once(listener: tokio::net::TcpListener, response: &'static str)
     stream.write_all(response.as_bytes()).await.unwrap();
 }
 
+/// 收齐一次请求再回响应，返回原始请求文本。
+///
+/// 不能只 `read` 一次就当作整条请求：hyper 把请求头和 body 分成两次写，读得早
+/// 就只拿到头、body 是空的——机器空闲时两次写往往已经都到了，忙起来就会漏。
+/// 所以按 `Content-Length` 收满才算数（与 `capture_request_with_response` 同款）。
 async fn capture_request_and_respond_once(
     listener: tokio::net::TcpListener,
     response: &'static str,
 ) -> String {
     let (mut stream, _) = listener.accept().await.unwrap();
-    let mut buffer = [0; 4096];
-    let read = stream.read(&mut buffer).await.unwrap();
-    let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let (header_end, content_length) = loop {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before headers completed");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]);
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+            })
+            .unwrap_or(0);
+        break (header_end + 4, content_length);
+    };
+    while buffer.len() < header_end + content_length {
+        let read = stream.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "request closed before body completed");
+        buffer.extend_from_slice(&chunk[..read]);
+    }
     stream.write_all(response.as_bytes()).await.unwrap();
-    request
+    String::from_utf8_lossy(&buffer).to_string()
 }
 
 async fn capture_json_request_once(
