@@ -110,12 +110,12 @@ test("Key 快捷入口及其子节点不会触发宿主页面扫描", () => {
 });
 
 /** 用注入脚本里真实的 Key 面板渲染与加载逻辑搭建一个最小运行环境。 */
-function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?: unknown[]; switching?: boolean; liveKeyMatched?: boolean; requestError?: string }) {
+function relayKeysRuntime(state: { enabled: boolean; status?: string; activeKeyId?: string; keys?: unknown[]; switching?: boolean; liveKeyMatched?: boolean; requestError?: string }, backendStatus = "ok") {
   const summary = { textContent: "正在读取当前供应商…" };
   const list = { textContent: "", innerHTML: "" };
   let requests = 0;
   const serialize = (value: unknown) => String(value);
-  const load = new Function("document", "postJson", "escapeHtml", "refreshCodexRelayApiKeyBadges", `
+  const runtime = new Function("document", "postJson", "escapeHtml", "refreshCodexRelayApiKeyBadges", `
     let codexPlusRelayApiKeys = ${JSON.stringify({
       status: "ok",
       providerId: "relay-1",
@@ -124,10 +124,11 @@ function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?
       keys: [],
       ...state,
     })};
+    const codexPlusBackendStatus = { status: ${JSON.stringify(backendStatus)} };
     let codexPlusRelayApiKeySwitching = ${state.switching ? "true" : "false"};
     let codexPlusRelayApiKeysPromise = null;
     ${section("  function renderRelayApiKeys(", "  function selectCodexPlusTab(")}
-    return loadRelayApiKeys;
+    return { load: loadRelayApiKeys, refreshOnOpen: refreshRelayApiKeysOnPanelOpen };
   `)(
     { querySelector: (selector: string) => (selector.includes("summary") ? summary : selector.includes("list") ? list : null) },
     async () => {
@@ -138,7 +139,7 @@ function relayKeysRuntime(state: { enabled: boolean; activeKeyId?: string; keys?
     serialize,
     () => {},
   );
-  return { summary, list, load, requestCount: () => requests };
+  return { summary, list, load: runtime.load, refreshOnOpen: runtime.refreshOnOpen, requestCount: () => requests };
 }
 
 test("已读取的 Key 列表在面板重开时重画，不会停在占位文字", async () => {
@@ -208,6 +209,40 @@ test("读取 Key 失败后显示失败状态，不在每次刷新时重复请求
   assert.equal(summary.textContent, "桥接不可用");
   await load();
   assert.equal(requestCount(), 1);
+});
+
+test("面板打开时用缓存重画，不重复请求", async () => {
+  // 重画必须由「打开面板」驱动：新面板 DOM 是新建的，靠事件门控会永久停在占位文案。
+  const { summary, list, load, refreshOnOpen, requestCount } = relayKeysRuntime({
+    enabled: true,
+    activeKeyId: "key-b",
+    keys: [{ id: "key-a", name: "备用 Key" }, { id: "key-b", name: "主 Key" }],
+  });
+  await load();
+  summary.textContent = "正在读取当前供应商…";
+  list.innerHTML = "";
+  await refreshOnOpen();
+  assert.equal(requestCount(), 0);
+  assert.equal(summary.textContent, "当前供应商：示例供应商");
+  assert.match(list.innerHTML, /<option value="key-b" selected>主 Key<\/option>/);
+});
+
+test("后端已连接但上次读取失败时，面板打开会补拉一次", async () => {
+  const { summary, load, refreshOnOpen, requestCount } = relayKeysRuntime({ enabled: true, requestError: "桥接不可用" });
+  await load(true);
+  assert.equal(requestCount(), 1);
+  await refreshOnOpen();
+  assert.equal(requestCount(), 2);
+  assert.equal(summary.textContent, "桥接不可用");
+});
+
+test("后端没连上时不会永远停在占位文字", async () => {
+  // 首拉挂在 backendStatus==="ok" 上，所以后端未就绪时必须由面板打开推一次请求，
+  // 超时/失败后显示失败文案，而不是把模板里的“正在读取当前供应商…”留在界面上。
+  const { summary, refreshOnOpen, requestCount } = relayKeysRuntime({ enabled: true, status: "loading", requestError: "桥接不可用" }, "checking");
+  await refreshOnOpen();
+  assert.equal(requestCount(), 1);
+  assert.equal(summary.textContent, "桥接不可用");
 });
 
 test("设置对象按输入身份缓存，热路径不再重复解析", () => {
