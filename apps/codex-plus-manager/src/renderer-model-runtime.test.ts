@@ -31,6 +31,64 @@ function section(start: string, end: string) {
   return renderer.slice(offset, limit);
 }
 
+test("客户端资产按内容定位，覆盖新前缀和单个请求失败", async () => {
+  const visited: string[] = [];
+  const urls = ["app://-/assets/app-shared-new.js", "app://-/assets/renamed-client.js", ...Array.from({ length: 30 }, (_, i) => `app://-/assets/other-${i}.js`)];
+  const locate = new Function("codexAppAssetCandidateUrls", "codexAppAssetUrl", "fetch", `
+    ${runtimeSource("codexAppServerClientBundleHints", "codexAppServerClientAssetFetchLimit", "codexAppServerClientCaptureMarker", "codexAppServerClientCaptureAnchor", "locateCodexAppServerClientBreakpoint", "codexAppServerClientAssetCandidateUrls", "resolveCodexAppServerClientHintedUrl", "locateCodexAppServerClientInAssets")}
+    return { locate: locateCodexAppServerClientInAssets, marker: codexAppServerClientCaptureMarker, anchor: codexAppServerClientCaptureAnchor };
+  `)(() => urls, () => "", async (url: string) => {
+    visited.push(url);
+    if (url.includes("app-shared-")) throw new Error("asset unavailable");
+    return { ok: true, text: async () => url.includes("renamed-client") ? `${locate.anchor}{${locate.marker}` : "unrelated bundle" };
+  });
+  const result = await locate.locate();
+  assert.equal(result.urls.length, 24);
+  assert.equal(visited[0], urls[0]);
+  assert.equal(result.hit?.url, urls[1]);
+  assert.equal(result.hit?.location.lineNumber, 0);
+});
+
+test("新版全局状态接口按能力识别，保留旧版导出兼容", () => {
+  const resolve = new Function(`
+    ${runtimeSource("codexStateCallByCapability", "codexStateApiFromModule")}
+    return codexStateApiFromModule;
+  `)();
+  const legacy = () => null;
+  const current = (params: unknown) => ({ get: "get-global-state", set: "set-global-state", params });
+  assert.equal(resolve({ qut: legacy }, "app-initial-old"), legacy);
+  assert.equal(resolve({ renamed: current, unrelated: legacy }, "app-shared-new"), current);
+  assert.equal(resolve({ unrelated: legacy }, "app-shared-new"), null);
+});
+
+test("线程徽章重复安装保留标题的父节点和顺序", () => {
+  type Node = { parentElement: unknown; dataset: Record<string, string>; textContent: string; className: string; setAttribute: (...args: unknown[]) => void; remove: () => void };
+  const children: Node[] = [];
+  let created = 0;
+  const parent = {
+    insertBefore(node: Node, before: Node) {
+      assert.equal(before, title);
+      node.parentElement = parent;
+      children.splice(children.indexOf(before), 0, node);
+    },
+  };
+  const title: Node = { parentElement: parent, dataset: {}, textContent: "会话", className: "title", setAttribute() {}, remove() { throw new Error("官方标题不应移除"); } };
+  children.push(title);
+  const row = { dataset: {}, querySelectorAll: () => [], querySelector: () => children.find((node) => node.className === "badge") || null };
+  const install = new Function("document", "sessionRefFromRow", "threadIdBadgeMeta", "threadIdBadgeTitleNode", `
+    const threadIdBadgeClass = "badge", codexThreadIdBadgeVersion = "test";
+    ${runtimeSource("threadIdBadgeInsertBefore", "unwrapThreadIdBadgeWrappers", "installThreadIdBadge")}
+    return installThreadIdBadge;
+  `)({ createElement: () => { created++; return { parentElement: null, dataset: {}, setAttribute() {}, remove() {} }; } }, () => ({ session_id: "local:test" }), () => ({ label: "test", id: "test" }), () => title);
+  install(row);
+  install(row);
+  assert.equal(created, 1);
+  assert.equal(title.parentElement, parent);
+  assert.equal(children.length, 2);
+  assert.equal(children[1], title);
+  assert.equal(children[0].textContent, "test");
+});
+
 test("模型仍可选择，但不再插入管理面板或未测试状态", () => {
   const descriptor = new Function("codexPlusModelMetadata", "codexModelCatalog", "modelReasoningEfforts", `
     ${section("  function codexPlusModelDescriptor(", "  function modelArrayLooksPatchable(")}

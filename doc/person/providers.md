@@ -31,6 +31,8 @@
 
 ## 同步风险与验证
 
+通用配置合并在 `relay_config.rs::merge_common_config_into_config` 校验 MCP 条目的 `command/url`。残缺条目先用供应商原配置补缺，仍无传输定义则移除并记诊断；现有连接及新环境变量须保留。插件市场注册和状态查询在 `plugin_marketplace.rs` 共用磁盘 `marketplace.json` 的实际名称，保留名仍按原规则处理。相关用例见 `tests/relay_config.rs` 和市场模块单测。
+
 切换、导入或升级迁移时同时检查扁平字段和 `tools.codex`，防止旧镜像覆盖新配置；不能仅凭界面显示“系统默认”就认定实际配置已应用。
 
 验证：`crates/codex-plus-core/tests/local_config_provider.rs`、前端 `local-config-provider.test.ts`，以及供应商切换相关测试。
