@@ -75,6 +75,22 @@ jobs:
       - name: Rust formatting
         run: cargo fmt --all --check
 
+      # codex-plus-manager 的 tauri::generate_context! 在编译期要求 tauri.conf.json
+      # 的 frontendDist（"../dist"）存在，缺目录会直接 proc macro panic；所以
+      # `cargo check` 之前必须先产出前端产物（fmt 不需要，放在前面先跑）。
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
       - name: Rust check
         run: cargo check --workspace
 
