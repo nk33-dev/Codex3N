@@ -753,7 +753,6 @@ fn settings_payload_value(
     );
     let mut value = serde_json::to_value(settings)?;
     if let Some(object) = value.as_object_mut() {
-        object.remove("codexAppStepwiseApiKey");
         object.insert(
             "activeRelaySessionProvider".to_string(),
             Value::String(active_relay_session_provider.as_str().to_string()),
@@ -767,21 +766,37 @@ fn settings_payload_value(
             Value::String(codex_app_version),
         );
     }
-    remove_named_api_keys(&mut value);
+    strip_secret_fields(&mut value);
     Ok(value)
 }
 
-fn remove_named_api_keys(value: &mut Value) {
+/// 桥接下发给注入页面时剥掉全部密钥字段。
+///
+/// 判定复用落盘加密的同一套规则（`crate::settings::is_secret_field_name`），
+/// 「什么算密钥」全仓只有一个定义，将来新增的 `*ApiKey` 字段自动被剥掉——
+/// 逐个 `remove` 会随着字段增加而漏。`apiKeys` 数组（元素是 `{id,name,apiKey}`）
+/// 整项删除；注入页要展示 Key 列表时走 `/relay-api-keys`，那里只回 id/name。
+///
+/// 只剥字符串值，与落盘加密的 `visit_secret_fields` 同语义：`officialMixApiKey`
+/// 是布尔开关，名字命中规则但不是密钥，注入页靠它判断官方混用模式，不能剥。
+///
+/// 管理器自己的编辑器不经这里：它读 Tauri IPC 的 `get_settings`，那份仍返回明文。
+fn strip_secret_fields(value: &mut Value) {
     match value {
         Value::Object(object) => {
-            object.remove("apiKeys");
+            object.retain(|key, child| {
+                if key == "apiKeys" {
+                    return false;
+                }
+                !(child.is_string() && crate::settings::is_secret_field_name(key))
+            });
             for child in object.values_mut() {
-                remove_named_api_keys(child);
+                strip_secret_fields(child);
             }
         }
         Value::Array(items) => {
             for child in items {
-                remove_named_api_keys(child);
+                strip_secret_fields(child);
             }
         }
         _ => {}
