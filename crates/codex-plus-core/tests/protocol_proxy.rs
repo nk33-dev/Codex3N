@@ -3508,6 +3508,14 @@ async fn aggregate_proxy_fails_over_to_next_member_in_same_request() {
             .to_ascii_lowercase()
             .contains("authorization:")
     );
+    // 回退的第二个供应商必须收到完整请求体：请求体在首次尝试时会交给协议转换，
+    // 「还有候选时先复制一份」的逻辑一旦写反，这里就会发出空 body。
+    for request in [&first_request, &second_request] {
+        let (_, body) = request.split_once("\r\n\r\n").expect("请求应带 body");
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["input"], json!("hi"));
+        assert_eq!(body["model"], json!("gpt-5-mini"));
+    }
 }
 
 #[tokio::test]
