@@ -1,5 +1,11 @@
 name: Codex3N CI artifacts
 
+# 耗时构成（2026-10-07，run 37614229957 的 Windows job，共 27 分钟）：
+#   cargo install cargo-audit 6.0、cargo build --release 8.5、cargo test 7.3、
+#   cargo check 2.9，其余全部（npm ci/test/tsc、前端构建、NSIS、上传）加起来约 1.5 分钟。
+# 因此这里只做三件事：去掉与 test 重复的 check、把 cargo-audit 换成预编译安装、
+# 用 rust-cache 复用依赖编译产物；覆盖面（平台、测试、产包）一项不减。
+
 on:
   pull_request:
   push:
@@ -8,6 +14,13 @@ on:
 
 permissions:
   contents: read
+
+# 同一 ref 的新 push 取消未结束的旧 run，避免过期的红色结果和排队中的旧 run 混在一起。
+# personal/main 除外：发布脚本要求标签提交的这次 push run 处于 completed/success，
+# 取消会让那个提交永远等不到成功结果。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/personal' && github.ref != 'refs/heads/main' }}
 
 jobs:
   frontend-platforms:
@@ -41,6 +54,33 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run check
 
+  # 快速失败面：格式化、编译检查与 clippy。故意不设 needs，产包 job 不等它，
+  # 所以它只用来把「编译不过」的反馈从 10 分钟压到 2～3 分钟，不改变总墙钟。
+  # 放在 Windows 上跑：与产包 job 同一平台，不会引入未验证的 Linux 编译面。
+  rust-lint:
+    name: Rust lint
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-lint
+
+      - name: Rust formatting
+        run: cargo fmt --all --check
+
+      - name: Rust check
+        run: cargo check --workspace
+
+      - name: Relay Clippy gate
+        run: cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings
+
   windows-artifacts:
     name: Windows artifacts
     runs-on: windows-latest
@@ -55,6 +95,11 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-artifacts
 
       - name: Install NSIS
         run: choco install nsis -y
@@ -79,22 +124,19 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
-      - name: Rust formatting
-        run: cargo fmt --all --check
-
-      - name: Rust check
-        run: cargo check --workspace
-
-      - name: Relay Clippy gate
-        run: cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings
-
-      - name: Install Rust security audit
-        run: cargo install cargo-audit --locked --version 0.22.2
-
+      # 依赖安全审计用预编译二进制；`cargo install` 每次从源码编译 cargo-audit
+      # 就要 6 分钟，与代码是否安全无关。
       - name: Rust dependency audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2
+
+      - name: Run Rust dependency audit
         run: cargo audit
 
       # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
+      # 不在这里再跑 `cargo check`：`cargo test` 会编译全部目标，check 只是重复
+      # （本地按 AGENTS.md 仍保留 check 这一步）。
       - name: Rust tests
         run: cargo test --workspace --no-fail-fast
 
@@ -164,6 +206,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-dmg-${{ matrix.arch }}
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager

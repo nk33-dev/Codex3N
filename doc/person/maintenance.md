@@ -73,7 +73,9 @@ cargo test --workspace
 
 ### Windows 与跨平台门禁
 
-`pr-build.yml` 的 Windows job 执行完整前端、Rust 和安全门禁，并构建 NSIS 安装包；macOS、Linux job 执行共享前端测试，macOS x64/arm64 job 另做原生 DMG 打包。job 所在系统只表示测试宿主：Windows 上的 `macos-dmg.test.ts` 是磁盘命令模拟，不能据此认定 Windows 安装包或真实 macOS 挂载已验证。
+`pr-build.yml` 的 `windows-artifacts` job 执行完整前端、Rust 和安全门禁，并构建 NSIS 安装包；独立并行的 `rust-lint` job 在 Windows 上只跑 `cargo fmt`、`cargo check` 与 relay clippy，把编译类失败提前到 2～3 分钟暴露，它不设 `needs`，产包 job 不等它。Ubuntu、macOS job 执行共享前端测试，macOS x64/arm64 job 另做原生 DMG 打包。job 所在系统只表示测试宿主：Windows 上的 `macos-dmg.test.ts` 是磁盘命令模拟，不能据此认定 Windows 安装包或真实 macOS 挂载已验证。
+
+- CI 的耗时几乎全在 Rust 编译：依赖编译由 `Swatinem/rust-cache` 复用，`cargo-audit` 改用 `taiki-e/install-action` 装预编译二进制（`cargo install` 每次从源码编译约 6 分钟），CI 不再重复 `cargo check`（`cargo test --workspace` 已编译全部目标；本地仍按上面的步骤保留 check）。`release-assets.yml` 的 `verify-tests` 与两个产包 job 同样加了 rust-cache，并把源码编译的 cargo-audit 换掉。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外：发布脚本要求标签提交的那次 push CI 成功，取消会让它永远等不到结果。
 
 - 本地使用 PowerShell 7、CI 同一主版本的 Node 22（直接运行 TypeScript 测试要求至少 22.18）及 Git for Windows Bash。用 `node --version`、`where.exe node.exe`、`where.exe bash.exe` 核对实际程序；测试选取 Git 目录内的 Bash，系统的 WSL `bash.exe` 不能代替它。非默认 Git 安装路径可在当前进程将其 `usr/bin` 加入 `PATH`。
 - 先 `npm ci`，再执行测试、类型检查、安全审计和 `npm run vite:build`；Tauri 编译依赖前端产物，完成后才运行 Rust 门禁。保留完整输出，并在每条原生命令后立即记录 `$LASTEXITCODE`；只看到局部 `test result: ok` 不能证明整个 workspace 通过。
