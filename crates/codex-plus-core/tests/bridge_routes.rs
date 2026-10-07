@@ -268,6 +268,47 @@ async fn settings_get_does_not_expose_stepwise_api_key_to_renderer() {
 }
 
 #[tokio::test]
+async fn settings_get_strips_every_secret_field() {
+    // 桥接只该下发注入页用得上的字段。密钥判定与落盘加密共用同一套规则，
+    // 新增的 *ApiKey 字段自动被剥掉——逐个 remove 会漏（曾漏 relayApiKey /
+    // vlmApiKey / relayProfiles[].apiKey）。
+    let settings = BackendSettings {
+        relay_api_key: "sk-top-relay".to_string(),
+        relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+            id: "relay-a".to_string(),
+            name: "Relay A".to_string(),
+            api_key: "sk-legacy-profile".to_string(),
+            vlm_api_key: "sk-vlm".to_string(),
+            // 名字命中 *ApiKey 规则但是布尔开关，注入页靠它判断官方混用模式。
+            official_mix_api_key: true,
+            model_list: "deepseek-v4-flash".to_string(),
+            ..codex_plus_core::settings::RelayProfile::default()
+        }],
+        ..BackendSettings::default()
+    };
+    let ctx = BridgeContext::new(
+        Arc::new(FakeSettings::with_settings(settings)),
+        Arc::new(FakeRuntime::default()),
+        Arc::new(FakeData::default()),
+    );
+
+    let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+
+    let text = result.to_string();
+    for secret in ["sk-top-relay", "sk-legacy-profile", "sk-vlm"] {
+        assert!(!text.contains(secret), "{secret} 不该下发到注入页");
+    }
+    // 同一批供应商里非密钥字段必须原样保留，注入页靠它们画切换界面。
+    assert_eq!(result["relayProfiles"][0]["name"], json!("Relay A"));
+    assert_eq!(
+        result["relayProfiles"][0]["modelList"],
+        json!("deepseek-v4-flash")
+    );
+    // officialMixApiKey 是布尔开关，不是密钥；按名字一刀切会连带删掉它。
+    assert_eq!(result["relayProfiles"][0]["officialMixApiKey"], json!(true));
+}
+
+#[tokio::test]
 async fn relay_api_keys_route_only_exposes_names() {
     let settings = BackendSettings {
         relay_profiles_enabled: true,

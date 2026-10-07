@@ -1490,7 +1490,10 @@ impl SettingsStore {
 /// `vlmApiKey`、`relayApiKey`、`codexAppStepwiseApiKey`，将来新增的 `*ApiKey`
 /// 字段自动生效。`codexAppStepwiseApiKeyEnv` 这类「环境变量名」字段以 `Env`
 /// 结尾，不会被命中——它的值是变量名不是密钥。
-fn is_secret_field_name(key: &str) -> bool {
+///
+/// 这是全仓唯一的「什么算密钥」定义，落盘加密（`visit_secret_fields`）与桥接
+/// 下发剥离（`routes::strip_secret_fields`）共用，两边不会走偏。
+pub(crate) fn is_secret_field_name(key: &str) -> bool {
     key == "apiKey" || key.ends_with("ApiKey")
 }
 
