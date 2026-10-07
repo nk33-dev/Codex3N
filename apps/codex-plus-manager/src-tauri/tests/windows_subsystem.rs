@@ -208,7 +208,7 @@ fn macos_packager_hides_silent_launcher_but_not_manager() {
 }
 
 #[test]
-fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
+fn github_release_workflow_builds_one_universal_macos_dmg() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let workflow = manifest_dir
         .parent()
@@ -218,12 +218,15 @@ fn github_release_workflow_builds_separate_macos_x64_and_arm64_dmgs() {
         .join(".github/workflows/release-assets.yml");
     let workflow = std::fs::read_to_string(&workflow).expect("read release assets workflow");
 
-    assert!(workflow.contains("macos-15-intel"));
-    assert!(workflow.contains("x86_64-apple-darwin"));
+    // 通用包：单个 job 在两个 target 上各编一遍，由 build-universal.sh
+    // 用 lipo 合并。两个架构的 std 都要装。
     assert!(workflow.contains("macos-14"));
-    assert!(workflow.contains("aarch64-apple-darwin"));
-    assert!(workflow.contains("package-dmg.sh \"$VERSION\" \"${{ matrix.arch }}\""));
-    assert!(workflow.contains("target/${{ matrix.target }}/release"));
+    assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
+    assert!(workflow.contains("build-universal.sh \"$VERSION\""));
+
+    // 分架构的 matrix 形态不应再出现，否则会回到「用户自己挑架构」的老问题。
+    assert!(!workflow.contains("matrix.arch"));
+    assert!(!workflow.contains("macos-15-intel"));
 }
 
 #[test]
@@ -243,7 +246,7 @@ fn github_release_workflow_uploads_static_latest_json() {
     assert!(workflow.contains("SHA256SUMS.txt"));
     assert!(workflow.contains("gh release upload \"$TAG\" latest.json SHA256SUMS.txt --clobber"));
     assert!(workflow.contains("Codex3N-$version-windows-x64.zip"));
-    assert!(workflow.contains("Codex3N-${VERSION}-macos-${{ matrix.arch }}.zip"));
+    assert!(workflow.contains("Codex3N-${VERSION}-macos-universal.zip"));
     assert!(workflow.contains("verify-release:"));
     assert!(workflow.contains("git merge-base --is-ancestor \"$TAG_COMMIT\" origin/personal"));
 }
@@ -262,7 +265,7 @@ fn github_ci_builds_personal_branch_with_codex3n_artifact_names() {
     assert!(workflow.contains("branches: [main, personal]"));
     assert!(workflow.contains("codex3n-windows-binaries"));
     assert!(workflow.contains("codex3n-windows-installer"));
-    assert!(workflow.contains("codex3n-macos-${{ matrix.arch }}-dmg"));
+    assert!(workflow.contains("codex3n-macos-universal-dmg"));
 }
 
 #[test]

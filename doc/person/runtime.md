@@ -8,7 +8,7 @@
 
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描、环境检查和远端插件状态进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
-- `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告；推荐页通过同一入口读取广告列表。
+- `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
 - 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入、会话分享和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
@@ -31,6 +31,12 @@
 - 拆分时必须同步更新**按源码文本/AST 切片**的测试路径（如 `dream-skin.test.ts`、`renderer-inject.test.ts`、`commands.rs` 内的切片测试）以及 `tools/i18n-verify.mjs` 的 `SRC_FILES` 清单，断言语义保持不变。
 
 ## 配置和安装维护
+
+- 启动链路在 `launcher.rs` 通过 `LaunchTimeline` 更新 `status.rs` 的 `phase/progress`，旧状态文件仍可读取。启动器的 `LauncherHooks::run_provider_sync` 同步失败时记录诊断并继续索引修复和启动。
+- Windows 重启在 `commands.rs` 写入停止阶段，再经 `watcher.rs::LauncherExitSnapshot::wait_for_exit_or_force` 等待旧启动器；超时只结束进程身份与快照相符的实例，并确认退出后才继续。保存的有效应用路径优先；MSIX 激活先核对包注册，再使用解析出的 AUMID 构造命令。
+- macOS 打包唯一入口为 `scripts/installer/macos/build-universal.sh`：分别编译 x64/arm64，用 `lipo` 合并并验证双架构，再调用 `package-dmg.sh`。CI 和 Release 都产出 universal DMG；个人仓库沿用 ad-hoc 签名，未经过 Apple 公证。脚本仍支持通过 `MACOS_SIGNING_IDENTITY` 和 `MACOS_NOTARY_PROFILE` 启用正式签名与公证。
+
+验证：启动器同步降级测试、核心 `app_paths.rs` / `watcher.rs` / `status.rs` 单测，以及 `tests/launcher.rs`、`tests/updater.rs`；DMG 生命周期由 `macos-dmg.test.ts` 执行模拟磁盘命令，真实双架构构建和 bundle 检查由 macOS CI 执行。
 
 - 设置写入采用跨进程锁和唯一临时文件；损坏内容会报错并保留原件，禁止静默回退默认值或覆盖用户配置，保存时保护已有供应商列表。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
 - **只读热路径用 `SettingsStore::load_cached()`**：按路径缓存 `Arc<BackendSettings>`，失效依据是 `mtime + len`；本进程 `save`/`update` 落盘后直接清条目，不依赖时间戳精度（Windows 系统时钟粒度约 15.6ms，同刻度连写会撞指纹）。代理各入口、启动器看门狗与注入脚本构造、`read_codex_model_catalog` 已切过去；**读-改-写路径（`relay_switch`、`provider_import`、`connect`）必须继续用 `load()`**，拿到过期快照会丢字段。
