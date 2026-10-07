@@ -32,6 +32,10 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 ## 管理器市场布局
 
+脚本市场通过 `App.tsx::UserScriptsScreen` 从 `user_scripts` 映射市场 ID 到本地 `user:` key，`MarketScriptCard` 用原 `deleteUserScript` 操作卸载。插件修复进度是估算值，封顶 92% 后显示等待后端结果。
+
+线程 ID 徽章在 `60-plugin-marketplace.js` 插入为官方标题节点的兄弟，并清理旧 wrapper，保持 React 节点归属。Codex++ 页面在 `40-backend-settings.js::positionCodexPlusPage` 读取顶部栏、工作区边界和官方面板圆角，再由 `10-style.js` 布局；缩放值统一换算到布局坐标。
+
 脚本市场的标题与安装状态分别布局，状态标签不收缩、不拆行，长标题和标签可换行。列表在窄窗口中改为分行展示；皮肤市场的操作区允许换行，长名称、版本和状态截断时保留悬停提示。共享 `Badge`、`Button` 组件保留 `badge`、`button` 类名，供市场角标定位和操作区布局使用。
 
 入口为 `apps/codex-plus-manager/src/App.tsx`、`styles.css` 与 `components/ui/`。
