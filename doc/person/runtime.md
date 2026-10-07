@@ -49,6 +49,7 @@
 - **非环回目标仍然走系统代理**：只有 `url_targets_loopback` 判定为真的目标（`localhost`、`127.0.0.0/8`、`::1`）才切到直连 client，其余目标继续用 `proxied_client`。调用点按实际请求 URL 选择：`protocol_proxy.rs` 用 `endpoint`、`models_url(...)`、`chat_completions_url(...)` 派生出的那个值，`model_catalog.rs`、`sub2api.rs`、`relay_config::test_relay_profile`、`stepwise.rs` 同理。例外：`plugin_marketplace.rs`、`skills.rs` 的目标是固定公网 GitHub 地址，无需改动。
 - **client 按 (是否环回, UA) 池化复用**（`http_client.rs`）：以前每个请求都新建 `reqwest::Client`，连接池随之丢掉，每个上游请求都要重做一次 TCP + TLS 握手。现在同 UA 同代理语义的请求共用一个 client，keep-alive 生效；VLM client 按 (是否环回, connect/total 超时) 另作一类。**代理变更的代价**：系统代理只在 `build()` 时读一次，缓存后改端口不再逐请求生效——所以 `send_upstream_request_with_header_timeout` 在连接类错误（`is_connect`/`is_request`）时调 `reset_client_pool()`，下一次请求重建 client 并重读系统代理，最多失败一次，不需要重启进程。验证 `http_client.rs` 的 `client_pool_keeps_upstream_connections_alive`（真实 TCP 服务端数连接数）。
 - 会话快照、删除与撤销的数据保护见 [sessions.md](sessions.md)。
+- **诊断日志复用文件句柄**（`diagnostic_log.rs`）：代理路径每个请求要写 4 条以上日志，原先每条都 stat（压缩检查）+ open + write + close。现在按路径缓存句柄，压缩检查看自维护的字节数、超 50MB 才 stat；`clear_diagnostic_log` 与压缩都会丢掉句柄（压缩是 temp + rename 换文件，旧句柄会写进被替换的那份）。句柄不带缓冲，写完立即可读，读日志的测试不需要额外 flush。
 
 ## 本地 helper 的请求边界
 
