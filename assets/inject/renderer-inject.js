@@ -5693,6 +5693,16 @@
     return codexPlusRelayApiKeysPromise;
   }
 
+  /// 面板每次打开都会重建 DOM，所以重画必须由「打开面板」驱动，不能挂在事件上：
+  /// 缓存已是 ok/failed 时 loadRelayApiKeys 首行就会重画新 DOM；状态还在 loading
+  /// 且没有在途请求时进入请求分支，5 秒超时必然落到失败态，不会永远停在占位文案。
+  /// 历史两轮修复（22f7f9b、b0e68bb）都只补了「读完之后重画」，漏掉了面板重开这条路。
+  function refreshRelayApiKeysOnPanelOpen() {
+    const shouldRetry = codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status !== "ok";
+    // 把 promise 透出去便于调用方/测试等待；loadRelayApiKeys 自己吞掉异常，不会产生未处理拒绝。
+    return loadRelayApiKeys(shouldRetry);
+  }
+
   async function selectRelayApiKey(keyId) {
     if (!keyId || codexPlusRelayApiKeySwitching || keyId === codexPlusRelayApiKeys.activeKeyId) return;
     codexPlusRelayApiKeySwitching = true;
@@ -6301,9 +6311,7 @@
     renderCodexPlusMenu();
     refreshCodexPlusBackendToggles();
     renderBackendStatus();
-    if (codexPlusBackendStatus.status === "ok" && codexPlusRelayApiKeys.status === "failed") {
-      void loadRelayApiKeys(true);
-    }
+    refreshRelayApiKeysOnPanelOpen();
     void loadCodexServiceTierState();
     loadUserScripts();
   }
