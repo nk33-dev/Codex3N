@@ -20,6 +20,41 @@ pub struct ModelCatalogEntry {
     pub auto_compact_percent: Option<u32>,
 }
 
+/// 把模型名归一成剥掉后缀的规范 slug（大小写原样保留）。
+pub(crate) fn normalize_model_key(raw: &str) -> String {
+    parse_model_suffix(raw).0
+}
+
+/// 在 per-model map 中逐级查表：原始名 → 规范 slug（剥后缀）→ 剥后缀 + 大小写不敏感。
+///
+/// 三级回退与前端 `model-windows.ts::lookupModelMapEntry` 同源（issue #2345）：
+/// - 直接命中：上游请求里的 model 字符串与 map key 逐字相同；
+/// - 规范 slug：请求带 `[1M]` 后缀而 key 不带（前端落盘的新数据）；
+/// - 归一化后大小写不敏感：**两侧都先剥后缀再比大小写**——只剥请求侧不够，
+///   历史数据的 key 是带后缀的行名原样（`deepseek-v4-pro[1M]`），请求侧不带后缀时
+///   会整个漏掉。同时覆盖供应商 slug 大小写不统一（`GLM-5.3` vs `glm-5.3`）。
+///
+/// 大小写不敏感一级按 BTreeMap 的字典序取第一个匹配，保证同一份配置的多次请求
+/// 解析结果稳定（不会因 HashMap 迭代序在两个同名不同 case 的 key 之间抖动）。
+///
+/// 生成目录、注入侧元数据、外部 catalog 覆盖、vision 换图都用这一份实现：
+/// 各写一套精确 `get` 会让手工窗口在大小写不一致时被静默丢弃。
+pub(crate) fn lookup_model_map<'a, T>(
+    map: &'a std::collections::BTreeMap<String, T>,
+    model: &str,
+) -> Option<&'a T> {
+    if let Some(value) = map.get(model) {
+        return Some(value);
+    }
+    let slug = normalize_model_key(model);
+    if let Some(value) = map.get(&slug) {
+        return Some(value);
+    }
+    map.iter()
+        .find(|(key, _)| normalize_model_key(key).to_lowercase() == slug.to_lowercase())
+        .map(|(_, value)| value)
+}
+
 /// 解析单个模型条目的后缀，返回 (slug, 可选窗口)。
 /// 括号内非合法窗口 token 时，整串作为 slug 且 window=None（不剥离括号）。
 pub fn parse_model_suffix(raw: &str) -> (String, Option<u64>) {
@@ -117,6 +152,16 @@ pub fn collect_catalog_entries(
     current_model: &str,
 ) -> Vec<ModelCatalogEntry> {
     // 先解析 model_list，保留顺序并去重；后缀已从 model_list 剥离，窗口来自 model_windows map。
+    // 两张 map 转成 BTreeMap 是为了复用 lookup_model_map 的三级回退（大小写不一致时
+    // 手工窗口曾整条落空），同时拿到确定的字典序，避免同名不同 case 时结果抖动。
+    let windows: std::collections::BTreeMap<String, String> = model_windows
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let auto_compacts: std::collections::BTreeMap<String, String> = model_auto_compact
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     let mut seen = HashSet::new();
     let mut list_entries: Vec<ModelCatalogEntry> = Vec::new();
     for raw in model_list
@@ -132,13 +177,10 @@ pub fn collect_catalog_entries(
             continue;
         }
         let suffix_window = suffix_window.or_else(|| {
-            model_windows
-                .get(&slug)
-                .and_then(|token| parse_window_token(token))
+            lookup_model_map(&windows, &slug).and_then(|token| parse_window_token(token))
         });
-        let auto_compact_percent = model_auto_compact
-            .get(&slug)
-            .and_then(|token| parse_compact_percent(token));
+        let auto_compact_percent =
+            lookup_model_map(&auto_compacts, &slug).and_then(|token| parse_compact_percent(token));
         list_entries.push(ModelCatalogEntry {
             display_name: slug.clone(),
             slug,
@@ -154,12 +196,9 @@ pub fn collect_catalog_entries(
         let (slug, suffix_window) = parse_model_suffix(current_model);
         if !slug.is_empty() {
             let suffix_window = suffix_window.or_else(|| {
-                model_windows
-                    .get(&slug)
-                    .and_then(|token| parse_window_token(token))
+                lookup_model_map(&windows, &slug).and_then(|token| parse_window_token(token))
             });
-            let auto_compact_percent = model_auto_compact
-                .get(&slug)
+            let auto_compact_percent = lookup_model_map(&auto_compacts, &slug)
                 .and_then(|token| parse_compact_percent(token));
             entries.push(ModelCatalogEntry {
                 display_name: slug.clone(),
@@ -376,7 +415,7 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
             }))
         })
         .collect::<Vec<_>>();
-    Some(json!({
+    let mut value = json!({
         "displayName": metadata
             .get("display_name")
             .and_then(Value::as_str)
@@ -398,7 +437,22 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
             .get("service_tiers")
             .cloned()
             .unwrap_or_else(|| json!([]))
-    }))
+    });
+    // 内置条目自带的窗口也要带给注入侧：这里此前只产出展示与推理档位，注入侧于是
+    // 「只有用户给该模型手工填过窗口才带窗口」，从 /models 发现的模型一律回落到
+    // Codex 默认（表现为 256K）。camelCase 与 snake_case 两套都写，与下面手工
+    // 窗口的写入口径一致。
+    if let Some(object) = value.as_object_mut() {
+        if let Some(window) = metadata.get("context_window") {
+            object.insert("contextWindow".to_string(), window.clone());
+            object.insert("context_window".to_string(), window.clone());
+        }
+        if let Some(window) = metadata.get("max_context_window") {
+            object.insert("maxContextWindow".to_string(), window.clone());
+            object.insert("max_context_window".to_string(), window.clone());
+        }
+    }
+    Some(value)
 }
 
 /// 内置元数据匹配结果：来源名 + 完整条目（含窗口/展示/档位等字段）。
@@ -417,7 +471,7 @@ struct ResolvedBuiltinMetadata {
 }
 
 fn normalized_model_slug(slug: &str) -> String {
-    parse_model_suffix(slug).0.trim().to_string()
+    normalize_model_key(slug).trim().to_string()
 }
 
 fn resolve_compatibility_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {

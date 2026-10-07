@@ -233,7 +233,7 @@ async fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) 
         match crate::http_client::client_for_url(&profile.user_agent, &endpoint) {
             Ok(client) => {
                 let (discovered, mut status) = cached_models_from_source(&client, &source).await;
-                models = unique_strings(discovered.into_iter().chain(models).collect());
+                models = merge_discovered_models(models, discovered);
                 status["responses_api"] = responses_api_status("unknown", "", "");
                 sources.push(status);
             }
@@ -313,16 +313,27 @@ fn relay_profile_model_ui_metadata_map(profile: &RelayProfile, models: &[String]
         .as_object()
         .cloned()
         .unwrap_or_default();
-    let windows = serde_json::from_str::<Value>(&profile.model_windows)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
-        .unwrap_or_default();
+    // 手工窗口按三级回退查表（剥后缀 + 大小写不敏感），与生成目录、vision 复用同一份
+    // 实现：精确 get 会在模型名大小写不一致时把用户填的窗口整条丢掉。
+    let windows: std::collections::BTreeMap<String, String> =
+        serde_json::from_str::<Value>(&profile.model_windows)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .map(|object| {
+                object
+                    .into_iter()
+                    .filter_map(|(key, value)| value.as_str().map(|text| (key, text.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+    // profile 顶层的 context_window 是每模型的兜底，优先级与生成目录一致：
+    // 手工窗口 > 顶层窗口 > 内置元数据。
+    let fallback_window = crate::model_suffix::parse_window_token(profile.context_window.trim());
     for model in models {
-        let Some(window) = windows
-            .get(model)
-            .and_then(Value::as_str)
-            .and_then(crate::model_suffix::parse_window_token)
-        else {
+        let window = crate::model_suffix::lookup_model_map(&windows, model)
+            .and_then(|token| crate::model_suffix::parse_window_token(token))
+            .or(fallback_window);
+        let Some(window) = window else {
             continue;
         };
         let entry = metadata
@@ -1147,6 +1158,28 @@ fn unique_strings(values: Vec<String>) -> Vec<String> {
     result
 }
 
+/// 合并手工配置的模型与上游 `/models` 发现项：手工项在前并保留原写法，
+/// 上游项追加。
+///
+/// 两点与 `unique_strings` 不同，且都是刻意的：
+/// - 顺序：手工列表是显式覆盖层，排在前面才能让窗口/压缩的查表先落在用户写的
+///   slug 上，也让「没配默认模型」时的 `default_model` 取到用户自己列的第一个；
+/// - 去重：按大小写不敏感。上游把 `DeepSeek-V4` 与本地 `deepseek-v4` 同时带进
+///   目录时，`model_windows` 的 key 只会命中其中一个，另一个条目就会露出上游
+///   给的值（表现为「配好的窗口没生效」）。
+fn merge_discovered_models(configured: Vec<String>, discovered: Vec<String>) -> Vec<String> {
+    let mut result = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for value in configured.into_iter().chain(discovered) {
+        let value = value.trim();
+        if value.is_empty() || !seen.insert(value.to_lowercase()) {
+            continue;
+        }
+        result.push(value.to_string());
+    }
+    result
+}
+
 fn first_env_value(env: &HashMap<String, String>, names: &[&str]) -> String {
     names
         .iter()
@@ -1209,6 +1242,61 @@ fn unquote_toml_string(value: &str) -> String {
 #[cfg(test)]
 mod model_fetch_tests {
     use super::*;
+
+    fn relay_profile(model_windows: &str, context_window: &str) -> RelayProfile {
+        RelayProfile {
+            model_windows: model_windows.to_string(),
+            context_window: context_window.to_string(),
+            ..RelayProfile::default()
+        }
+    }
+
+    fn model_window(metadata: &Value, model: &str) -> Option<u64> {
+        metadata
+            .get(model)
+            .and_then(|entry| entry.get("contextWindow"))
+            .and_then(Value::as_u64)
+    }
+
+    #[test]
+    fn discovered_models_append_after_configured_and_dedupe_case_insensitively() {
+        // 手工项在前并保留写法：它是显式覆盖层，查表要能命中用户写的 slug；
+        // 大小写不同的同一条目只留一份，否则窗口归属会被拆成两份。
+        assert_eq!(
+            merge_discovered_models(
+                vec!["deepseek-flash".to_string()],
+                vec!["DeepSeek-Flash".to_string(), "qwen3-coder".to_string()],
+            ),
+            vec!["deepseek-flash", "qwen3-coder"]
+        );
+    }
+
+    #[test]
+    fn ui_metadata_window_follows_manual_then_profile_then_builtin() {
+        let models = vec![
+            "deepseek-flash".to_string(),
+            "vendor-only-model".to_string(),
+        ];
+        // 手工窗口大小写不同也要命中（上游 id 与保存 key 常常只差大小写）。
+        let manual = relay_profile_model_ui_metadata_map(
+            &relay_profile(r#"{"DeepSeek-Flash":"262144"}"#, "1000000"),
+            &models,
+        );
+        assert_eq!(model_window(&manual, "deepseek-flash"), Some(262_144));
+        // 没有手工条目时用 profile 顶层窗口兜底，而不是把窗口留空让 Codex 用默认值。
+        assert_eq!(model_window(&manual, "vendor-only-model"), Some(1_000_000));
+
+        let fallback_only =
+            relay_profile_model_ui_metadata_map(&relay_profile("{}", "1m"), &models);
+        assert_eq!(
+            model_window(&fallback_only, "deepseek-flash"),
+            Some(1_000_000)
+        );
+
+        // 两者都没有时不编造窗口：内置元数据没有窗口的模型保持原样。
+        let neither = relay_profile_model_ui_metadata_map(&relay_profile("{}", ""), &models);
+        assert_eq!(model_window(&neither, "vendor-only-model"), None);
+    }
 
     #[test]
     fn business_error_message_detects_zhipu_style_envelope() {
