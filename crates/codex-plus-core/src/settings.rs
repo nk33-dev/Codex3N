@@ -1349,12 +1349,12 @@ impl SettingsStore {
         // 回写，用户的 N 条供应商配置被清空。这里在写盘前比一次条数。
         // 读不到旧文件（不存在/解析失败）时按 0 处理，不拦——整体覆盖语义下
         // 不能因为旧文件读不出来就拒绝写入。
-        let existing_profile_count = self
+        let existing_profiles = self
             .load_raw_object()?
             .get("relayProfiles")
             .and_then(Value::as_array)
-            .map(|items| items.len())
-            .unwrap_or(0);
+            .cloned();
+        let existing_profile_count = existing_profiles.as_ref().map(Vec::len).unwrap_or(0);
         if settings.relay_profiles.is_empty() && existing_profile_count > 0 {
             anyhow::bail!(
                 "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存的列表为空；为避免清空用户配置，已保持原文件不变",
@@ -1366,6 +1366,33 @@ impl SettingsStore {
                 "拒绝写入 settings：磁盘上已有 {} 条供应商配置，本次保存退化为仅剩默认供应商；为避免覆盖用户配置，已保持原文件不变",
                 existing_profile_count
             );
+        }
+        // 命名 Key 也是整体覆盖写里最容易丢的一类：某条重建路径漏带 `apiKeys`
+        // 时，磁盘上仍在用的密钥会被静默清空。同 id 的供应商原本有 Key、这次
+        // 一个都不剩就拒绝写入（清空单个 Key 的值不算——那是用户在用空值占位）。
+        if let Some(existing) = existing_profiles.as_ref() {
+            for profile in &settings.relay_profiles {
+                let Some(previous) = existing.iter().find(|item| {
+                    item.get("id").and_then(Value::as_str) == Some(profile.id.as_str())
+                }) else {
+                    continue;
+                };
+                let had_keys = previous
+                    .get("apiKeys")
+                    .and_then(Value::as_array)
+                    .is_some_and(|keys| !keys.is_empty())
+                    || previous
+                        .get("apiKey")
+                        .and_then(Value::as_str)
+                        .is_some_and(|key| !key.trim().is_empty());
+                let has_keys = !profile.api_keys.is_empty() || !profile.api_key.trim().is_empty();
+                if had_keys && !has_keys {
+                    anyhow::bail!(
+                        "拒绝写入 settings：供应商 {} 原本配置了 API Key，本次保存为空；为避免清空密钥，已保持原文件不变",
+                        profile.id
+                    );
+                }
+            }
         }
         let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
@@ -3334,6 +3361,59 @@ experimental_bearer_token = "sk-existing""#
         let after = store.load().unwrap();
         assert_eq!(after.relay_profiles.len(), 3, "原 3 条不得被覆盖");
         assert_eq!(after.relay_profiles[0].id, "relay-a");
+    }
+
+    #[test]
+    fn settings_store_save_rejects_wiping_configured_api_keys() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{
+  "relayProfiles": [
+    {
+      "id": "relay-a",
+      "name": "A",
+      "relayMode": "pureApi",
+      "apiKey": "sk-live",
+      "apiKeys": [
+        {"id": "key-a", "name": "主账号", "apiKey": "sk-live"},
+        {"id": "key-b", "name": "备用", "apiKey": "sk-backup"}
+      ],
+      "activeApiKeyId": "key-a"
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+        // 管理器某条重建路径漏带 apiKeys/apiKey 时的形态：整条供应商的密钥都没了。
+        let wiped = BackendSettings {
+            relay_profiles: vec![RelayProfile {
+                id: "relay-a".to_string(),
+                name: "A".to_string(),
+                relay_mode: RelayMode::PureApi,
+                ..RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        };
+        let error = store.save(&wiped).expect_err("清空密钥必须被拒绝");
+        assert!(
+            error.to_string().contains("原本配置了 API Key"),
+            "实际错误: {error}"
+        );
+        let after = store.load().unwrap();
+        assert_eq!(
+            after.relay_profiles[0].api_keys.len(),
+            2,
+            "原 Key 不得被清空"
+        );
+        assert_eq!(after.relay_profiles[0].api_key, "sk-live");
+
+        // 只把某个 Key 的值留空（用户在用空值占位）不算清空，必须照常保存。
+        let mut blanked = after.clone();
+        blanked.relay_profiles[0].api_keys[1].api_key = String::new();
+        store.save(&blanked).expect("留空单个 Key 的值不该被拦");
     }
 
     #[test]

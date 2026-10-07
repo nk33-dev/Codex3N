@@ -1026,7 +1026,15 @@ export const EN_PLAIN: Record<string, string> = {
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "调用失败": "Call failed",
   "资源": "Asset",
-  "输入中转服务的 API Key": "Enter the relay service API Key",
+  "当前使用的 Key": "Current Key",
+  "设为当前 Key": "Use this Key",
+  "Key 名称": "Key name",
+  "例如 主账号": "For example, Primary account",
+  "输入 API Key": "Enter API Key",
+  "删除 Key": "Delete Key",
+  "至少保留一个 Key": "Keep at least one Key",
+  "添加 Key": "Add Key",
+  "为 Key 命名后，可在 Codex++ 页面中快速切换当前使用项。": "Name each Key to switch the active one quickly from the Codex++ page.",
   "运行中": "Running",
   "返回列表": "Back to list",
   "这些变量可能覆盖当前供应商写入的 config.toml / auth.json；CODEX_HOME 不会被清理。":
@@ -1180,6 +1188,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "使用 {0}": "Use {0}",
+  "{0} 的 API Key": "API Key for {0}",
   "模型名称重复：{0}": "Duplicate model name: {0}",
   "模型 {0} 的上下文窗口无效；请输入正整数，或使用 K/M 整数后缀。": "Invalid context window for model {0}. Enter a positive integer or an integer with a K/M suffix.",
   "模型 {0} 的自动压缩百分比无效；请输入 0 到 100 之间、最多 6 位小数的十进制数。":
