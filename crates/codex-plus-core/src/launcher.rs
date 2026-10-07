@@ -1959,7 +1959,10 @@ async fn handle_protocol_proxy_connection(
     remote_addr_text: Option<String>,
     cors_allow_origin: &str,
 ) -> anyhow::Result<()> {
-    let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
+    // 请求体只在下面几条真正要读结构化字段的分支里解析（且每条分支互斥，每个请求
+    // 最多解析一次）：协议代理内部已经解析过一次，在入口再无差别解析一遍等于让每个
+    // 请求白付一遍 JSON 解析——带图片的请求体可能有几 MB。
+    let parse_request_json = || serde_json::from_str::<serde_json::Value>(request_body).ok();
     let upstream = match crate::protocol_proxy::open_responses_proxy_request_for_path_with_beta(
         request_body,
         request_user_agent,
@@ -2033,7 +2036,7 @@ async fn handle_protocol_proxy_connection(
             // 压缩无增量展示诉求，收齐上游文本后一次性下发。
             // SSE 事件可能跨网络 chunk 拆开，converter 内部按事件边界缓冲。
             let mut converter = crate::protocol_proxy::CompactionSseConverter::new(
-                request_json
+                parse_request_json()
                     .as_ref()
                     .and_then(|request| request.get("model"))
                     .and_then(serde_json::Value::as_str)
@@ -2083,7 +2086,7 @@ async fn handle_protocol_proxy_connection(
             stream.shutdown().await?;
             return Ok(());
         }
-        let mut converter = request_json
+        let mut converter = parse_request_json()
             .as_ref()
             .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
             .unwrap_or_default();
@@ -2131,7 +2134,7 @@ async fn handle_protocol_proxy_connection(
         // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
         let body = crate::protocol_proxy::wrap_non_stream_response_as_compaction(
             &upstream_body,
-            request_json
+            parse_request_json()
                 .as_ref()
                 .and_then(|request| request.get("model"))
                 .and_then(serde_json::Value::as_str)
@@ -2179,6 +2182,7 @@ async fn handle_protocol_proxy_connection(
         return Ok(());
     }
     let chat_json: serde_json::Value = serde_json::from_slice(&upstream_body)?;
+    let request_json = parse_request_json();
     let response_json = if let Some(request_json) = request_json.as_ref() {
         crate::protocol_proxy::chat_completion_to_response_with_request(chat_json, request_json)?
     } else {

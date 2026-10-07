@@ -1280,15 +1280,17 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
             let channel_key = crate::channel_protection::key_for_relay(&relay);
             let channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
             let model_override = aggregate_upstream_model_override(&settings, &relay);
+            let has_more_candidates = attempt + 1 < relay_count;
+            let attempt_body =
+                request_body_for_attempt(&mut request_json, has_more_candidates, cooldown_retries);
             let (endpoint, upstream_body, wire_api, compaction) = upstream_request_parts(
                 &relay,
-                request_json.clone(),
+                attempt_body,
                 request_path,
                 model_override.as_deref(),
             )
             .await?;
             let is_compaction_request = compaction;
-            let has_more_candidates = attempt + 1 < relay_count;
             let header_timeout = response_header_timeout(is_stream);
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.upstream_request",
@@ -1814,6 +1816,26 @@ pub async fn open_chat_completions_proxy_request(
             response: upstream,
             _channel_permit: Some(channel_permit),
         });
+    }
+}
+
+/// 取本次尝试要发出去的请求体。
+///
+/// 请求体可能带几 MB 的 base64 图片，整份复制不便宜，而单候选（最常见）的请求
+/// 根本不需要第二份：把值移进 `upstream_request_parts` 就够。只有在「后面还要再用
+/// 这份原始请求体」时才复制——还有下一个候选要 failover，或冷却重试还会再进一轮
+/// （`should_retry_after_cooldown` 与调用点 `continue 'request` 的门槛是同一个判断，
+/// 所以移走之后不会再被读到）。移走后留下 `Value::Null`，万一将来多了别的重试分支，
+/// 发出去的是空对象而不是旧内容，不会静默发错请求体。
+fn request_body_for_attempt(
+    request_json: &mut Value,
+    has_more_candidates: bool,
+    cooldown_retries: usize,
+) -> Value {
+    if !has_more_candidates && !should_retry_after_cooldown(cooldown_retries) {
+        std::mem::take(request_json)
+    } else {
+        request_json.clone()
     }
 }
 
@@ -6611,6 +6633,36 @@ fn is_openai_o_series(model: &str) -> bool {
             .as_bytes()
             .get(1)
             .is_some_and(|byte| byte.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod request_body_reuse_tests {
+    use super::{MAX_COOLDOWN_RETRIES, request_body_for_attempt};
+    use serde_json::json;
+
+    #[test]
+    fn last_candidate_without_cooldown_retry_moves_the_body() {
+        let mut request = json!({"model": "gpt-5.4", "input": "hi"});
+        let body = request_body_for_attempt(&mut request, false, MAX_COOLDOWN_RETRIES);
+        assert_eq!(body["input"], json!("hi"));
+        // 移走之后原值必须空掉：调用点就是靠「移走即不再使用」成立。
+        assert!(request.is_null());
+    }
+
+    #[test]
+    fn body_is_kept_when_a_failover_candidate_or_cooldown_retry_may_follow() {
+        // 还有下一个候选：请求体要留着给下一个供应商。
+        let mut request = json!({"model": "gpt-5.4", "input": "hi"});
+        let body = request_body_for_attempt(&mut request, true, 0);
+        assert_eq!(body["input"], json!("hi"));
+        assert_eq!(request["input"], json!("hi"), "原请求体不能被移走");
+
+        // 单候选但冷却重试还可能再来一轮：同样必须留着。
+        let mut request = json!({"model": "gpt-5.4", "input": "hi"});
+        let body = request_body_for_attempt(&mut request, false, 0);
+        assert_eq!(body["input"], json!("hi"));
+        assert_eq!(request["input"], json!("hi"), "原请求体不能被移走");
+    }
 }
 
 /// 供应商自定义请求头必须真正写进发往上游的请求（issue #1685）。
