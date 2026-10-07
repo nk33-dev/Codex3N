@@ -3249,7 +3249,7 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
 /// 往已选中的可注入页面装一次桥接。注入脚本由调用方构建并复用，见 [`retry_injection`]。
 async fn try_inject(
     debug_port: u16,
-    helper_port: u16,
+    _helper_port: u16,
     new_document_scripts: &[String],
 ) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
