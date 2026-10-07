@@ -1192,6 +1192,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "清单更新时间：{0}，当前显示 {1} / {2}": "List updated: {0}; showing {1} / {2}",
   "当前缓存倍率：{0}x": "Cached multiplier: {0}x",
   "以下字段由 Codex++ 计算或维护，导入不会覆盖：{0}": "Codex++ computes or maintains these fields; importing does not overwrite them: {0}",
+  "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column currently holds {1}; the current value was kept. Clear the window first to use the document's value.",
   "Sub2API 倍率 {0}x": "Sub2API multiplier {0}x",
   // 模型元数据来源徽标（metadataSourceTags 下发，经 tf() 渲染，不能放 EN_PLAIN）
   "匹配：{0}": "Matched: {0}",
