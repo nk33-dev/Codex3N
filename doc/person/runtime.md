@@ -33,6 +33,7 @@
 ## 配置和安装维护
 
 - 设置写入采用跨进程锁和唯一临时文件；损坏内容会报错并保留原件，禁止静默回退默认值或覆盖用户配置，保存时保护已有供应商列表。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
+- **只读热路径用 `SettingsStore::load_cached()`**：按路径缓存 `Arc<BackendSettings>`，失效依据是 `mtime + len`；本进程 `save`/`update` 落盘后直接清条目，不依赖时间戳精度（Windows 系统时钟粒度约 15.6ms，同刻度连写会撞指纹）。代理各入口、启动器看门狗与注入脚本构造、`read_codex_model_catalog` 已切过去；**读-改-写路径（`relay_switch`、`provider_import`、`connect`）必须继续用 `load()`**，拿到过期快照会丢字段。
 - **settings.json 里的 API Key 落盘加密**（`crates/codex-plus-core/src/secret_store.rs`）：文件名精确等于 `apiKey` 或以 `ApiKey` 结尾的字符串值（`relayApiKey`、`vlmApiKey`、`codexAppStepwiseApiKey`、`relayProfiles[].apiKey`、`tools.<tool>.relayProfiles[].apiKey`，未来新增的 `*ApiKey` 字段自动生效）以 `enc:v1:<base64url(nonce||ciphertext||tag)>` 的 AES-256-GCM 密文存储；`codexAppStepwiseApiKeyEnv` 这类**环境变量名**字段（以 `Env` 结尾）不是密钥，保持明文。加解密只在 `SettingsStore::load`/`save`/`update` 的落盘边界发生，内存中与调用方看到的仍是明文，老版本的明文配置照常读取、下次保存自动升级，没有额外的迁移命令。
 - 32 字节主密钥交给系统凭据库：Windows 用 DPAPI 用户作用域加密后写设置目录旁的 `secret.key`（`CryptProtectData` + `CRYPTPROTECT_UI_FORBIDDEN`，只读属性尽力而为）；macOS 用 Keychain 通用密码项（service `dev.nk33.Codex3N`，account `settings-master-key`）。进程内只取一次，失败也缓存，避免中途换密钥导致「刚加密的马上解不开」。
 - **下发给注入页的设置会剥掉全部密钥字段**：桥接 `/settings/get`、`/settings/set` 的响应经 `routes.rs` 的 `strip_secret_fields`，判定复用落盘加密的同一套规则（`settings::is_secret_field_name`），并把 `apiKeys` 数组整项删除，注入页要展示 Key 列表走 `/relay-api-keys`（只回 id/name）。管理器自己的编辑器不经桥接，读 Tauri 侧 `get_settings`，那份是明文（见[安全边界](security.md#注入页的设置下发)）。

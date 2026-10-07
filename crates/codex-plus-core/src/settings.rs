@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -1299,6 +1299,40 @@ pub struct SettingsStore {
     path: PathBuf,
 }
 
+/// 进程内设置缓存的条目：落盘指纹 + 解析结果。
+struct CachedSettings {
+    /// `(mtime, len)`；文件不存在时是 `(None, 0)`。
+    fingerprint: (Option<std::time::SystemTime>, u64),
+    settings: Arc<BackendSettings>,
+}
+
+fn settings_cache() -> &'static Mutex<HashMap<PathBuf, CachedSettings>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedSettings>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lock_settings_cache(
+    cache: &Mutex<HashMap<PathBuf, CachedSettings>>,
+) -> std::sync::MutexGuard<'_, HashMap<PathBuf, CachedSettings>> {
+    cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `save`/`update` 落盘后清掉本进程的缓存条目。
+///
+/// 不靠时间戳：Windows 的系统时钟粒度约 15.6ms，同一刻度内连写两次可能拿到
+/// 相同的 `mtime`，长度也一样时指纹就撞了。本进程的写入直接清条目最稳。
+fn invalidate_settings_cache(path: &Path) {
+    lock_settings_cache(settings_cache()).remove(path);
+}
+
+/// 清空设置缓存。只给测试用：缓存是进程级的，跨用例会互相影响。
+#[doc(hidden)]
+pub fn reset_settings_cache_for_tests() {
+    lock_settings_cache(settings_cache()).clear();
+}
+
 impl Default for SettingsStore {
     fn default() -> Self {
         Self::new(crate::paths::default_settings_path())
@@ -1340,6 +1374,39 @@ impl SettingsStore {
             )
         })?;
         Ok(normalize_settings_config_sections(settings))
+    }
+
+    /// 只读热路径用的设置读取：按落盘指纹复用上一次的结果。
+    ///
+    /// 代理每个请求、注入脚本看门狗每轮、桥接 `/settings/get` 都要读一次设置，
+    /// 而 `load()` 每次都要读文件、解析、解密、归一化。这里用 `mtime + len`
+    /// 做失效判断，命中时直接给同一个 `Arc`。
+    ///
+    /// 读-改-写路径（`relay_switch`、`provider_import`、`connect`）必须继续用
+    /// `load()`：它们基于读到的快照改完再整体写回，拿到过期快照会丢字段。
+    pub fn load_cached(&self) -> Arc<BackendSettings> {
+        let fingerprint = fs::metadata(&self.path)
+            .ok()
+            .map(|metadata| (metadata.modified().ok(), metadata.len()))
+            .unwrap_or((None, 0));
+        let cache = settings_cache();
+        let mut cache = lock_settings_cache(cache);
+        if let Some(entry) = cache.get(&self.path)
+            && entry.fingerprint == fingerprint
+        {
+            return Arc::clone(&entry.settings);
+        }
+        // 读失败与 `load().unwrap_or_default()` 的调用点行为一致：给默认设置，
+        // 并且照常写进缓存——文件没变就不会有不同的结果，文件变了指纹也会变。
+        let settings = Arc::new(self.load().unwrap_or_default());
+        cache.insert(
+            self.path.clone(),
+            CachedSettings {
+                fingerprint,
+                settings: Arc::clone(&settings),
+            },
+        );
+        settings
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {
@@ -1401,7 +1468,9 @@ impl SettingsStore {
             encrypt_settings_secrets(map);
         }
         let bytes = serde_json::to_vec_pretty(&value)?;
-        atomic_write(&self.path, &bytes)
+        atomic_write(&self.path, &bytes)?;
+        invalidate_settings_cache(&self.path);
+        Ok(())
     }
 
     pub fn update(&self, payload: Value) -> anyhow::Result<BackendSettings> {
@@ -1450,6 +1519,7 @@ impl SettingsStore {
         encrypt_settings_secrets(&mut raw);
         let bytes = serde_json::to_vec_pretty(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
+        invalidate_settings_cache(&self.path);
         Ok(settings)
     }
 
@@ -2449,6 +2519,36 @@ mod tests {
             .update(json!({ "codexAppIncludeNativeModels": true }))
             .unwrap();
         assert!(store.load().unwrap().codex_app_include_native_models);
+    }
+
+    #[test]
+    fn load_cached_reuses_the_parsed_settings_until_the_file_changes() {
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+
+        store
+            .update(json!({ "relayBaseUrl": "https://first.example" }))
+            .unwrap();
+        let first = store.load_cached();
+        let second = store.load_cached();
+        // 同一个 Arc 才说明真的没重新解析；只比字段相等看不出缓存有没有命中。
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.relay_base_url, "https://first.example");
+
+        // 本进程写盘必须立刻失效，不依赖时间戳精度。
+        store
+            .update(json!({ "relayBaseUrl": "https://second.example" }))
+            .unwrap();
+        let after_write = store.load_cached();
+        assert!(!Arc::ptr_eq(&first, &after_write));
+        assert_eq!(after_write.relay_base_url, "https://second.example");
+
+        // 模拟别的进程改文件：内容长度与上次不同，指纹必变。
+        std::fs::write(&path, r#"{"relayBaseUrl":"https://third.example"}"#).unwrap();
+        assert_eq!(store.load_cached().relay_base_url, "https://third.example");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn temp_dir() -> std::path::PathBuf {
