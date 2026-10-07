@@ -1154,7 +1154,7 @@ pub async fn open_responses_proxy_request_for_path_with_beta(
     request_path: &str,
     beta_features: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
         settings,
@@ -1171,7 +1171,7 @@ pub async fn open_responses_proxy_request_with_settings(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
-        settings,
+        std::sync::Arc::new(settings),
         None,
         "/responses",
         None,
@@ -1186,7 +1186,7 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
-        settings,
+        std::sync::Arc::new(settings),
         None,
         request_path,
         None,
@@ -1202,7 +1202,7 @@ pub async fn open_responses_proxy_request_with_settings_for_path_and_beta(
 ) -> anyhow::Result<UpstreamProxyResponse> {
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
-        settings,
+        std::sync::Arc::new(settings),
         None,
         request_path,
         beta_features,
@@ -1212,7 +1212,7 @@ pub async fn open_responses_proxy_request_with_settings_for_path_and_beta(
 
 async fn open_responses_proxy_request_with_settings_and_user_agent(
     body: &str,
-    settings: crate::settings::BackendSettings,
+    settings: std::sync::Arc<crate::settings::BackendSettings>,
     original_user_agent: Option<&str>,
     request_path: &str,
     beta_features: Option<&str>,
@@ -1483,7 +1483,7 @@ fn aggregate_upstream_model_override(
 pub async fn open_models_proxy_request(
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
 
@@ -1527,7 +1527,7 @@ pub async fn open_audio_transcriptions_proxy_request(
     content_type: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     validate_upstream(&relay)?;
     let content_type = content_type.trim();
@@ -1635,7 +1635,7 @@ async fn open_image_proxy_request(
     original_user_agent: Option<&str>,
     endpoint_kind: ImageProxyEndpoint,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let relay = crate::relay_rotation::select_relay_for_probe(&settings)?;
     let base_url = if relay.upstream_base_url.trim().is_empty() {
         crate::relay_config::relay_profile_base_url(&relay)
@@ -1718,7 +1718,7 @@ pub async fn open_chat_completions_proxy_request(
     body: &str,
     original_user_agent: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let relay = settings.active_relay_profile();
     if relay.protocol != RelayProtocol::ChatCompletions {
         anyhow::bail!("当前中转未启用 Chat Completions 协议代理");

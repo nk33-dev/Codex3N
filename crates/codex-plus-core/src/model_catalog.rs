@@ -152,17 +152,19 @@ pub async fn read_codex_model_catalog() -> Value {
     let home = codex_home_dir();
     let settings_path = crate::paths::default_settings_path();
     if settings_path.exists() {
-        if let Ok(settings) = SettingsStore::new(settings_path).load() {
-            let profile = settings.active_relay_profile();
-            let catalog = relay_profile_model_catalog_value(&home, &profile).await;
-            if settings.relay_profiles_enabled
-                && catalog
-                    .get("models")
-                    .and_then(Value::as_array)
-                    .map_or(false, |m| !m.is_empty())
-            {
-                return catalog;
-            }
+        // 注入页每隔十几秒就会请求一次目录，这里用进程内缓存版本，避免每次都解析设置。
+        // 读失败时 `load_cached` 给默认设置，`relay_profiles_enabled` 为 false，同样落到
+        // 下面的环境变量分支，与原来的 `if let Ok(...)` 一致。
+        let settings = SettingsStore::new(settings_path).load_cached();
+        let profile = settings.active_relay_profile();
+        let catalog = relay_profile_model_catalog_value(&home, &profile).await;
+        if settings.relay_profiles_enabled
+            && catalog
+                .get("models")
+                .and_then(Value::as_array)
+                .map_or(false, |m| !m.is_empty())
+        {
+            return catalog;
         }
     }
     let env = std::env::vars_os()

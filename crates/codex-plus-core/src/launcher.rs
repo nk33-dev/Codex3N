@@ -1650,7 +1650,7 @@ async fn handle_helper_connection(
                 "message": "后端已连接",
                 "version": crate::version::VERSION,
                 "hideOfficialUsageAlert": crate::assets::hide_official_usage_alert_config(
-                    &crate::settings::SettingsStore::default().load().unwrap_or_default()
+                    &crate::settings::SettingsStore::default().load_cached()
                 ),
                 "transport": "http-helper"
             }))?,
@@ -1780,7 +1780,7 @@ fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
             "helper.overlay_image_not_found",
         )
     };
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     if !settings.codex_app_image_overlay_enabled {
         return not_found();
     }
@@ -1815,7 +1815,7 @@ fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {
             "helper.dream_skin_image_not_found",
         )
     };
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     if !settings.codex_app_dream_skin_enabled {
         return not_found();
     }
@@ -3241,7 +3241,7 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let script = crate::assets::injection_script_with_settings(helper_port, &settings);
     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
         debug_port,
@@ -3294,7 +3294,7 @@ async fn pet_overlay_supports_v2_cursor(websocket_url: &str) -> anyhow::Result<b
 }
 
 async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let enabled = settings.enhancements_enabled && settings.codex_app_pet_real_mouse_look;
     let targets = crate::cdp::list_targets(debug_port).await?;
     for target in targets
@@ -3334,7 +3334,7 @@ async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyh
 #[cfg(windows)]
 async fn run_pet_real_mouse_cursor_driver(debug_port: u16) {
     loop {
-        let settings = SettingsStore::default().load().unwrap_or_default();
+        let settings = SettingsStore::default().load_cached();
         if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             continue;
@@ -3386,7 +3386,7 @@ async fn run_pet_real_mouse_target_driver(debug_port: u16, target: crate::cdp::C
         std::time::Duration::from_millis(100),
         || {
             if ticks_until_settings_check == 0 {
-                let settings = SettingsStore::default().load().unwrap_or_default();
+                let settings = SettingsStore::default().load_cached();
                 if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
                     return Ok(None);
                 }
