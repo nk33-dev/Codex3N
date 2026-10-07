@@ -1,6 +1,4 @@
-export const DEFAULT_AUTO_COMPACT_PERCENT = "90%";
-
-/** 校验用户输入的自动压缩比例；空值由 Codex++ 保存为明确的 90% 默认值。 */
+/** 校验用户输入的自动压缩比例；空值表示沿用 Codex 默认的自动压缩行为，不落盘。 */
 export function isValidAutoCompactPercent(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed) return true;

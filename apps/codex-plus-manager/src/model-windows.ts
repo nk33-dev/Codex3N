@@ -1,4 +1,4 @@
-import { DEFAULT_AUTO_COMPACT_PERCENT, isValidAutoCompactPercent, normalizeAutoCompactPercent } from "./auto-compact.ts";
+import { isValidAutoCompactPercent, normalizeAutoCompactPercent } from "./auto-compact.ts";
 import { modelSlugFromRowName } from "./model-metadata.ts";
 
 /// 把 model_windows JSON map 按 model_list 行顺序转成文本（每行一个窗口，空行表示默认）。
@@ -207,7 +207,7 @@ export function modelWindowRowsFromProfile(
         model,
         window: typeof window === "string" ? window : "",
         autoCompact: normalizeAutoCompactPercent(
-          typeof autoCompact === "string" ? autoCompact : DEFAULT_AUTO_COMPACT_PERCENT,
+          typeof autoCompact === "string" ? autoCompact : "",
         ),
         imageHandling: lookupModelMapEntry(vlmMap, model) ?? "send-as-is",
       };
@@ -241,10 +241,12 @@ export function serializeModelWindowRows(rows: ModelWindowRow[]): {
     if (row.imageHandling === "vlm" || row.imageHandling === "strip") {
       modelVlm[key] = row.imageHandling;
     }
-    const autoCompact = normalizeAutoCompactPercent(
-      row.autoCompact?.trim() || DEFAULT_AUTO_COMPACT_PERCENT,
-    );
-    modelAutoCompact[key] = autoCompact;
+    // 压缩阈值只写用户显式填的百分比：留空表示让 Codex 用自己的默认行为，
+    // 这里补一个 90% 等于替它改默认值（Codex 自带目录里该字段大多是缺失/ null）。
+    const autoCompact = normalizeAutoCompactPercent(row.autoCompact?.trim() || "");
+    if (autoCompact) {
+      modelAutoCompact[key] = autoCompact;
+    }
   });
   return {
     modelList: modelList.join("\n"),

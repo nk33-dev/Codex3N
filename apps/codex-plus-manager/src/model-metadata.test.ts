@@ -805,15 +805,15 @@ describe("model metadata helpers", () => {
   });
 
   it("builtinRowBackfillValue 回填空窗口/压缩列且尊重后缀与已填值", () => {
-    // 窗口取内置值；压缩回落 Codex++ 默认 90%（当前内置资产该字段均为 null）
+    // 窗口取内置值；压缩不回填（内置资产该字段为 null，留空 = 沿用 Codex 默认行为）
     assert.deepStrictEqual(
       builtinRowBackfillValue("kimi-k3", "", "", { context_window: 1_048_576, auto_compact_token_limit: null }),
-      { window: "1048576", autoCompact: "90%" },
+      { window: "1048576", autoCompact: null },
     );
     // 空白列等同空列
     assert.deepStrictEqual(
       builtinRowBackfillValue("kimi-k3", "  ", "  ", { context_window: 1_048_576, auto_compact_token_limit: null }),
-      { window: "1048576", autoCompact: "90%" },
+      { window: "1048576", autoCompact: null },
     );
     // 用户已填的值是显式意图，不覆盖
     assert.deepStrictEqual(
@@ -830,15 +830,15 @@ describe("model metadata helpers", () => {
       builtinRowBackfillValue("unknown-model", "", "", undefined),
       { window: null, autoCompact: null },
     );
-    // 厂商给了压缩值时优先用内置换算（943718/1048576 → 90%）
+    // 厂商给了压缩值时用内置换算（943718/1048576 → 90%）
     assert.deepStrictEqual(
       builtinRowBackfillValue("kimi-k3", "", "", { context_window: 1_048_576, auto_compact_token_limit: 943_718 }),
       { window: "1048576", autoCompact: "90%" },
     );
-    // 窗口缺失：窗口列不动，压缩仍回落默认（压缩列存百分比，不依赖窗口）
+    // 窗口缺失：窗口列不动；压缩列存百分比、不依赖窗口，仍按厂商值回填
     assert.deepStrictEqual(
       builtinRowBackfillValue("kimi-k3", "", "", { context_window: null, auto_compact_token_limit: null }),
-      { window: null, autoCompact: "90%" },
+      { window: null, autoCompact: null },
     );
   });
 
