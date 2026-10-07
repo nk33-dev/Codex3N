@@ -589,10 +589,29 @@ pub async fn send_upstream_request_with_header_timeout(
     request: reqwest::RequestBuilder,
     timeout: Duration,
 ) -> anyhow::Result<reqwest::Response> {
-    tokio::time::timeout(timeout, request.send())
-        .await
-        .with_context(|| format!("上游请求超过 {} 秒未返回响应头", timeout.as_secs()))?
-        .context("上游请求失败")
+    match tokio::time::timeout(timeout, request.send()).await {
+        Ok(Ok(response)) => Ok(response),
+        Ok(Err(error)) => {
+            reset_client_pool_on_transport_error(&error);
+            Err(error).context("上游请求失败")
+        }
+        Err(_) => Err(anyhow::anyhow!(
+            "上游请求超过 {} 秒未返回响应头",
+            timeout.as_secs()
+        )),
+    }
+}
+
+/// 传输层失败时清空 client 池。
+///
+/// client 池让 keep-alive 生效，代价是系统代理只在 `build()` 时读一次：代理端口
+/// 变了（Clash 改混合端口）以后缓存的 client 还指向旧端口，请求会连接失败。这里
+/// 让下一个请求重建 client 并重新读系统代理，错误只持续一次，不必重启进程。
+/// 只对连接/发送阶段的错误生效——HTTP 状态错误走的是正常响应，不在此列。
+fn reset_client_pool_on_transport_error(error: &reqwest::Error) {
+    if error.is_connect() || error.is_request() {
+        crate::http_client::reset_client_pool();
+    }
 }
 
 pub struct ChatSseToResponsesConverter {
