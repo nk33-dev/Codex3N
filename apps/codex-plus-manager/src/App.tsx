@@ -73,7 +73,7 @@ import {
 } from "lucide-react";
 import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
 import type { PresetPatch } from "@/components/ProviderPresetSelector";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7363,6 +7363,22 @@ function RelayProfileList({
     const next = reorderRelayProfiles(form, String(active.id), String(over.id));
     if (next !== form) onFormChange(next);
   };
+  // 卡片用 memo 包了，而父组件每次渲染都会重新生成这几个内联箭头函数。用 ref 转发
+  // 保持在最新引用的同时让传下去的回调保持同一身份，否则 memo 永远命中不了。
+  const latestCallbacks = useRef({ form, onFormChange, onEdit, onSwitch });
+  latestCallbacks.current = { form, onFormChange, onEdit, onSwitch };
+  const stableOnFormChange = useCallback(
+    (value: BackendSettings) => latestCallbacks.current.onFormChange(value),
+    [],
+  );
+  const stableOnEdit = useCallback(
+    (profileId: string) => latestCallbacks.current.onEdit(profileId),
+    [],
+  );
+  const stableOnSwitch = useCallback(
+    (profileId: string) => latestCallbacks.current.onSwitch(profileId),
+    [],
+  );
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={form.relayProfiles.map((profile) => profile.id)} strategy={verticalListSortingStrategy}>
@@ -7373,9 +7389,9 @@ function RelayProfileList({
               form={form}
               index={index}
               key={profile.id}
-              onEdit={onEdit}
-              onFormChange={onFormChange}
-              onSwitch={onSwitch}
+              onEdit={stableOnEdit}
+              onFormChange={stableOnFormChange}
+              onSwitch={stableOnSwitch}
               disabled={disabled}
               profile={profile}
             />
@@ -7386,7 +7402,7 @@ function RelayProfileList({
   );
 }
 
-function SortableRelayProfileCard({
+const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
   form,
   profile,
   index,
@@ -7512,7 +7528,7 @@ function SortableRelayProfileCard({
       </span>
     </div>
   );
-}
+});
 
 function MarketScriptCard({ script, actions, view = "grid" }: { script: ScriptMarketItem; actions: Actions; view?: "grid" | "list" }) {
   const status = script.updateAvailable ? t("可更新") : script.installed ? tf("已安装 {0}", [script.installedVersion]) : t("未安装");
