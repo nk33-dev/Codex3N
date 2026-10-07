@@ -9,7 +9,7 @@
 - 设置保存与供应商切换共用互斥检查，重复保存不会排队；保存失败保留草稿，保存/切换的旧响应不覆盖期间产生的新编辑。供应商详情在保存或切换期间禁用编辑、返回和再次操作，销毁后的保存结果不再触发旧页面回调。
 - “恢复官方登录”复用官方供应商和已有切换入口，遵守供应商总开关及切换锁。管理器回填遇到损坏的 live TOML 返回 `degraded` 并保留原供应商快照；回填成功后才提交工作副本。核心切换仍独立验证 live 配置，失败时保留文件并报告原因。
 - 切换会保留用户插件表；纯 API 供应商使用 OpenAI 会话身份时，合并 live OAuth 登录态，普通纯 API 供应商仍按自身鉴权配置应用。
-- 普通 API 供应商支持多个命名 Key，`apiKeys` 保存条目，`activeApiKeyId` 指向当前项；旧 `apiKey` 配置自动迁移为“默认”条目。Key 内容继续按密钥字段规则加密落盘。
+- 普通 API 供应商支持多个命名 Key，`apiKeys` 保存条目，`activeApiKeyId` 指向当前项；旧 `apiKey` 配置自动迁移为“默认”条目。Key 内容继续按密钥字段规则加密落盘。管理器的供应商编辑页与 Codex++ 轻量页面都能编辑/切换：编辑页每行是「设为当前 + 名称 + 密钥 + 删除」，只剩一项时禁用删除；标准化（`relayProfileWithNormalizedApiKeys`）在保存前把 `apiKey` 同步成当前项的值，这三处必须一起写。保存是整表覆盖写，同 id 供应商原本有 Key、这次一条不剩时 `SettingsStore::save` 直接拒绝写入并保留原文件，避免某条重建路径漏带 `apiKeys` 时把用户的 Key 静默清空（把单个 Key 的值留空不算清空）。
 - Codex++ 轻量页面只读取 Key 的 ID 和名称，不返回密钥正文；配置多个 Key 后，模型选择器旁显示当前 Key 名称作为快捷入口。密钥页用下拉框列出当前供应商的命名 Key，选中项即当前 Key；只有切换请求进行中才禁用。`/relay-api-keys` 的 `activeKeyId` 以 live 配置里实际的 Key 为准（`live_codex_api_key_in_home` 读取 `auth.json` 的 `OPENAI_API_KEY` 或 config.toml 的 bearer token，再匹配命名 Key），匹配不上时回退到存档目标项并返回 `liveKeyMatched: false`，页面据此提示“实际在用的 Key 不在列表里”——总开关关闭时存档的 `activeApiKeyId` 可能停在最后添加的那个 Key。后端读不到 live 时不返回该字段，页面不做匹配提示。切换当前 Key 通过 `/relay-api-keys/select` 更新供应商存档和 live 配置，无需退出或重启 Codex；切换完成后前端强制刷新模型目录。轻量页面每次打开都会重建 DOM，所以重画由「打开面板」驱动（`refreshRelayApiKeysOnPanelOpen`），而不是挂在心跳或状态事件上：缓存已是 `ok`/`failed` 时只重画不重复请求，后端已连接但上次读取失败时补拉一次，状态仍在 `loading` 时推一次请求并由 5 秒超时落到失败态。任一分支都不能把模板里的「正在读取当前供应商…」留在界面上——首拉曾挂在 `backendStatus === "ok"` 上，后端未就绪时一次请求都不发，就是反复复发的那条路径。读取异常或桥接超时会显示失败状态并停止自动重试，避免心跳重复请求。
 - 换 Key 分两条路径，由 `relayProfilesEnabled` 决定：开关打开时沿用整份供应商配置应用（`switch_relay_profile_in_home`）；开关关闭时走只改 Key 的窄路径 `set_live_api_key_only_in_home`，只更新 Key 的落点，`config.toml` 与 `auth.json` 另一个文件一个字节都不动，写前同样留 `~/.codex/backups/codex-plus-live-*` 备份。
 - 窄路径先由 `live_api_key_target_in_home` 判定落点：`auth.json` 的 `OPENAI_API_KEY`，或 `config.toml` 里 Codex++ 写入的 `experimental_bearer_token`。落点不唯一（两处都有 Key）、Key 写在 `api_key`/`bearer_token` 等非标准字段、供应商用 `env_key` 声明 Key 来自环境变量、或通用环境变量（`OPENAI_API_KEY` 等，优先级高于 `auth.json`）已设置时，一律报错拒绝，不做“写了但 Codex 没读”的假成功。Key 在环境变量里的情况只能改环境变量本身，或改用整份切换。
@@ -25,7 +25,7 @@
 - `apps/codex-plus-manager/src/provider-types.ts`：`BackendSettings`、`ToolShard`、`RelayProfile` 及其关联类型；不从 `App.tsx` 反向导入。
 - `apps/codex-plus-manager/src/provider-utils.ts`：供应商首字、模式/协议/倍率标签，以及聚合和系统默认判断的唯一实现。涉及配置解析、聚合归一化的摘要仍由 `App.tsx` 生成。
 - `apps/codex-plus-manager/src/provider-config.ts`：导入与编辑共用的配置读取和鉴权 JSON 解析；保留既有 TOML 字段读取兼容规则，`parseProviderAuth` 给出文件/字段错误。后端保存前使用既有 `toml_edit` 检查完整 TOML 语法；仅检查新增或变更的文件，避免历史未修改配置阻断其他设置保存。
-- `apps/codex-plus-manager/src/provider-api-keys.ts`：命名 Key 的迁移、归一化、当前项解析及新增 ID 生成。
+- `apps/codex-plus-manager/src/provider-api-keys.ts`：命名 Key 的迁移、归一化、当前项解析及新增 ID 生成；`relayProfileWithNormalizedApiKeys` 对 profile 泛型化，保证 App 侧多出的本地字段不被削掉。供应商编辑页的命名 Key 列表在 `App.tsx` 的 `RelayProfileEditor`（`relay-api-key-*` 类名，样式在 `styles.css`），三处（`apiKeys` / `activeApiKeyId` / `apiKey`）由 `updateApiKeys` 一起写。
 - `apps/codex-plus-manager/src-tauri/src/commands/provider_import.rs`：cc-switch 读取/导入、待确认供应商读取/确认/取消五个命令；`commands.rs` 重导出原入口，Tauri 命令名称、参数和返回载荷保持兼容。配置校验也在此边界实施，失败信息不包含配置原文或密钥。
 - `apps/codex-plus-manager/src/components/providers/`：`ProviderImportActions`、`EnvConflictNotice`、`RelayProfileList` 分别负责导入操作栏、环境冲突提示和可拖拽列表。组件通过明确的操作回调连接业务；列表不直接操作 Tauri 或同步配置，也不接收整个 `Actions` 对象。
 

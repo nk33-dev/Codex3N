@@ -42,7 +42,14 @@ export function selectedRelayApiKey(profile: Pick<RelayProfile, "apiKey" | "apiK
   return normalized.apiKeys.find((entry) => entry.id === normalized.activeApiKeyId) || null;
 }
 
-export function relayProfileWithNormalizedApiKeys(profile: RelayProfile): RelayProfile {
+/// 归一化命名 Key 并把 `apiKey` 同步成选中项的值。
+///
+/// 泛型是为了保住调用方的完整 profile 类型：管理器在 App.tsx 里声明的
+/// `RelayProfile` 比这里的多出若干本地字段，固定成 `provider-types` 的
+/// `RelayProfile` 会把它们削掉（而且类型上不可赋值）。
+export function relayProfileWithNormalizedApiKeys<
+  T extends Pick<RelayProfile, "apiKey" | "apiKeys" | "activeApiKeyId">,
+>(profile: T): T {
   const normalized = normalizeRelayApiKeys(profile);
   const selected = normalized.apiKeys.find((entry) => entry.id === normalized.activeApiKeyId);
   return {
