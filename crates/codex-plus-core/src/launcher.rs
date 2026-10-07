@@ -3025,9 +3025,17 @@ pub fn build_packaged_activation_with_native_menu_inspector(
 }
 
 async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+    // 注入脚本是几百 KB 的字符串（皮肤图 base64 + 整份 renderer 脚本）。整个重试
+    // 循环只有几秒，中途不需要跟着设置变，所以构建一次就够了——以前每次尝试都
+    // 重建一遍，最坏情况要重复几百次。
+    let script = crate::assets::injection_script_with_settings(
+        helper_port,
+        &SettingsStore::default().load_cached(),
+    );
+    let scripts = [script];
     let mut last_error = None;
     for _ in 0..20 {
-        match try_inject(debug_port, helper_port).await {
+        match try_inject(debug_port, helper_port, &scripts).await {
             Ok(()) => return Ok(()),
             Err(error) => {
                 last_error = Some(error);
@@ -3234,15 +3242,18 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
-async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
+/// 往已选中的可注入页面装一次桥接。注入脚本由调用方构建并复用，见 [`retry_injection`]。
+async fn try_inject(
+    debug_port: u16,
+    helper_port: u16,
+    new_document_scripts: &[String],
+) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let settings = SettingsStore::default().load_cached();
-    let script = crate::assets::injection_script_with_settings(helper_port, &settings);
     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
         debug_port,
         StatusStore::default(),
@@ -3256,11 +3267,10 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
                 async move { Ok(crate::routes::handle_bridge_request(ctx, &path, payload).await) },
             )
         }),
-        &[script],
+        new_document_scripts,
     )
     .await
 }
-
 async fn confirmed_pet_overlay_targets(
     debug_port: u16,
 ) -> anyhow::Result<Vec<crate::cdp::CdpTarget>> {

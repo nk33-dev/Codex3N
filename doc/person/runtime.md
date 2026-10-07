@@ -69,5 +69,6 @@
 - 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts`：`readRendererInjectSource` 读取生成产物，`readStepwiseSource` 按顺序拼回悬浮球分片。`renderer-inject.test.ts` 校验 renderer 分片与产物逐字节一致；`inject-fragments.test.ts` 校验悬浮球清单与 `assets.rs` 顺序及完整语法。
 - 分片共享主 IIFE 作用域，边界可能落在函数或模板中间。`renderer-model-runtime.test.ts` 用 TypeScript AST 从完整产物提取主作用域的函数和状态声明再执行，覆盖目录刷新、白名单扫描和命名 Key 快捷入口，防止局部切片测试掩盖声明缺失或函数嵌套。
 - 改注入脚本后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言注入结果）与前端 `npm test`。
+- **注入脚本在重试循环外只构建一次**：`injection_script_with_settings` 产出的字符串有几百 KB（皮肤图 base64 + 整份 renderer 脚本），`retry_injection` 现在构建一次并把 `&[String]` 传进 `try_inject` 复用；以前每次尝试都重建，配合上层最多 120 轮的注入重试会重复几百次。循环只有几秒，不需要在循环中途跟随设置变化。
 - 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在 relay 模式下每轮都会调它）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。
