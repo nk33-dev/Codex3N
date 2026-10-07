@@ -1,4 +1,4 @@
-import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactPercent } from "./auto-compact.ts";
+import { normalizeAutoCompactPercent } from "./auto-compact.ts";
 
 export type ModelMetadata = Record<string, unknown>;
 export type ModelMetadataMap = Record<string, ModelMetadata>;
@@ -254,9 +254,9 @@ export function normalizeTokenCountInput(value: string): string {
 /// 后缀时回填，后缀与用户已填值都是显式意图，不得覆盖。
 /// - 窗口：取内置 context_window（对内置命中的模型，留空的真实含义就是
 ///   「用内置窗口」，回填把它显式化，避免被误解为「Codex 默认长度」）。
-/// - 压缩：优先取内置 auto_compact_token_limit 换算的百分比（当前内置资产
-///   均为 null，预留厂商未来提供值的通路）；否则回落 Codex++ 默认 90%——
-///   空列的真实含义就是「用默认 90%」。
+/// - 压缩：只在厂商确实给了 auto_compact_token_limit 时换算出百分比（当前内置
+///   资产该字段均为 null，等于不回填）；**不再回落 90%**——空列的含义是「用
+///   Codex 默认的自动压缩行为」，替用户补一个 90% 是改 Codex 的默认值。
 /// 上游获取、手动提交行名、打开导入面板三个入口共用这一裁决。
 export function builtinRowBackfillValue(
   slug: string,
@@ -273,7 +273,7 @@ export function builtinRowBackfillValue(
   const derived = typeof limit === "number" && Number.isFinite(limit) && limit > 0 && window
     ? displayAutoCompactPercent(autoCompactTokenLimitToPercent(window, String(limit)))
     : null;
-  const autoCompact = rowAutoCompact.trim() ? null : (derived ?? DEFAULT_AUTO_COMPACT_PERCENT);
+  const autoCompact = rowAutoCompact.trim() ? null : derived;
   return { window, autoCompact };
 }
 

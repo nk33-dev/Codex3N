@@ -79,8 +79,8 @@ export const EN_PLAIN: Record<string, string> = {
   "自动压缩": "Automatic compaction",
   "查看或重新导入 models.json": "View or reimport models.json",
   "导入 models.json": "Import models.json",
-  "需要补充供应商模型信息时填写；不填则使用 Codex++ 默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。":
-    "Fill this in to add provider model details. Leave it empty to use Codex++ defaults (90% automatic compaction and images sent unchanged). Copy from the provider's models.json or model.json; multiple models are supported.",
+  "需要补充供应商模型信息时填写；不填则使用 Codex++ 默认配置（图片原样发送、自动压缩沿用 Codex 默认）。从供应商的 models.json 或 model.json 复制，支持多个模型。":
+    "Fill this in to add provider model details. Leave it empty to use Codex++ defaults (images sent unchanged, automatic compaction kept at Codex defaults). Copy from the provider's models.json or model.json; multiple models are supported.",
   "自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。":
     "Leave automatic compaction empty to keep Codex defaults. A percentage recalculates the threshold using the model's context window.",
   "只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。点此展开编辑。":
@@ -1026,6 +1026,7 @@ export const EN_PLAIN: Record<string, string> = {
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "调用失败": "Call failed",
   "资源": "Asset",
+  "留空用默认": "Blank uses the default",
   "当前使用的 Key": "Current Key",
   "设为当前 Key": "Use this Key",
   "Key 名称": "Key name",

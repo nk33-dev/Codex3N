@@ -84,7 +84,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { codexGoalsFeatureState, setCodexGoalsFeatureInConfig } from "./goals-config";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
-import { DEFAULT_AUTO_COMPACT_PERCENT, normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
+import { normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   builtinEntryToImportDocument,
   builtinRowBackfillValue,
@@ -8893,11 +8893,12 @@ function RelayProfileEditor({
                           setMetadataImportError("");
                         }}
                         onBlur={(event) => {
+                          // 留空就留空：空值表示沿用 Codex 默认的自动压缩行为，
+                          // 失焦时补一个百分比会让这个状态在界面上没法表达。
                           const normalized = normalizeAutoCompactPercent(event.currentTarget.value);
-                          const effective = normalized || DEFAULT_AUTO_COMPACT_PERCENT;
-                          if (effective !== row.autoCompact) updateModelWindowRow(index, { autoCompact: effective });
+                          if (normalized !== row.autoCompact) updateModelWindowRow(index, { autoCompact: normalized });
                         }}
-                        placeholder="90%"
+                        placeholder={t("留空用默认")}
                       />
                       <AppSelect
                         className="text-xs"
@@ -8963,7 +8964,7 @@ function RelayProfileEditor({
                               }
                             }
                           }}
-                          placeholder={t("需要补充供应商模型信息时填写；不填则使用 Codex++ 默认配置（自动压缩 90%、图片原样发送）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
+                          placeholder={t("需要补充供应商模型信息时填写；不填则使用 Codex++ 默认配置（图片原样发送、自动压缩沿用 Codex 默认）。从供应商的 models.json 或 model.json 复制，支持多个模型。")}
                           rows={7}
                         />
                         {metadataImportError ? <div className="relay-model-metadata-import-error" role="alert">{metadataImportError}</div> : null}
