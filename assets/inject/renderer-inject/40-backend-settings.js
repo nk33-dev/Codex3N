@@ -681,12 +681,9 @@
       ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
       : "";
     list.innerHTML = `
-      <label class="codex-plus-api-key-field">
-        <span>当前 Key</span>
-        <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
-          ${options}
-        </select>
-      </label>${switchOffHint}${liveMismatchHint}`;
+      <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
+        ${options}
+      </select>${switchOffHint}${liveMismatchHint}`;
     refreshCodexRelayApiKeyBadges();
   }
 

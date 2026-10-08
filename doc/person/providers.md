@@ -16,7 +16,7 @@
 
 ## 代码入口与配置
 
-密钥页的供应商摘要与 Key 选择器放在限宽卡片内，窄窗口自动换行；选择器有可见标签、键盘焦点和切换中禁用状态，原生菜单随宿主深浅主题配色。选择器通过 `change` 事件提交切换，鼠标和键盘共用同一入口。
+密钥页沿用设置行布局：左侧显示标题和供应商摘要，右侧是 180px 宽的 Key 选择器，提示单独占一行，窄窗口自动换行。选择器保留无障碍名称、键盘焦点和切换中禁用状态，原生菜单随宿主深浅主题配色；通过 `change` 事件提交切换，鼠标和键盘共用同一入口。
 
 - `crates/codex-plus-core/src/provider_import.rs`：`initialize_local_config_provider`，关注 `localConfigProviderImported`。
 - `crates/codex-plus-core/src/settings.rs`：供应商持久化与工具配置分片。
