@@ -528,6 +528,14 @@ pub struct UpstreamProxyResponse {
     pub(crate) _channel_permit: Option<crate::channel_protection::ChannelPermit>,
 }
 
+/// 客户端会话头白名单；不接受鉴权或任意其他客户端请求头。
+#[derive(Clone, Copy, Default)]
+pub struct ProxySessionHeaders<'a> {
+    pub session_id: Option<&'a str>,
+    pub thread_id: Option<&'a str>,
+    pub opencode_session: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum UpstreamWireApi {
     Responses,
@@ -998,6 +1006,14 @@ impl Default for ChatSseToResponsesConverter {
 }
 
 impl ChatSseToResponsesConverter {
+    pub fn has_failed(&self) -> bool {
+        self.failed
+    }
+
+    pub fn has_terminal_event(&self) -> bool {
+        self.failed || self.state.completed || self.state.finish_reason.is_some()
+    }
+
     pub fn with_request(original_request: &Value) -> Self {
         Self {
             state: ChatSseState::with_request(original_request),
@@ -1173,6 +1189,23 @@ pub async fn open_responses_proxy_request_for_path_with_beta(
     request_path: &str,
     beta_features: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_for_path_with_session_headers(
+        body,
+        original_user_agent,
+        request_path,
+        beta_features,
+        ProxySessionHeaders::default(),
+    )
+    .await
+}
+
+pub async fn open_responses_proxy_request_for_path_with_session_headers(
+    body: &str,
+    original_user_agent: Option<&str>,
+    request_path: &str,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+) -> anyhow::Result<UpstreamProxyResponse> {
     let settings = SettingsStore::default().load_cached();
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
@@ -1180,6 +1213,7 @@ pub async fn open_responses_proxy_request_for_path_with_beta(
         original_user_agent,
         request_path,
         beta_features,
+        session_headers,
     )
     .await
 }
@@ -1194,6 +1228,7 @@ pub async fn open_responses_proxy_request_with_settings(
         None,
         "/responses",
         None,
+        ProxySessionHeaders::default(),
     )
     .await
 }
@@ -1209,6 +1244,7 @@ pub async fn open_responses_proxy_request_with_settings_for_path(
         None,
         request_path,
         None,
+        ProxySessionHeaders::default(),
     )
     .await
 }
@@ -1219,12 +1255,30 @@ pub async fn open_responses_proxy_request_with_settings_for_path_and_beta(
     request_path: &str,
     beta_features: Option<&str>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
+    open_responses_proxy_request_with_settings_for_path_and_session_headers(
+        body,
+        settings,
+        request_path,
+        beta_features,
+        ProxySessionHeaders::default(),
+    )
+    .await
+}
+
+pub async fn open_responses_proxy_request_with_settings_for_path_and_session_headers(
+    body: &str,
+    settings: crate::settings::BackendSettings,
+    request_path: &str,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+) -> anyhow::Result<UpstreamProxyResponse> {
     open_responses_proxy_request_with_settings_and_user_agent(
         body,
         std::sync::Arc::new(settings),
         None,
         request_path,
         beta_features,
+        session_headers,
     )
     .await
 }
@@ -1235,6 +1289,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     original_user_agent: Option<&str>,
     request_path: &str,
     beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
     let is_stream = request_json
@@ -1312,15 +1367,16 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                 }),
             );
             let mut builder = upstream_request_builder(
-                crate::http_client::proxied_client(&effective_user_agent(
-                    &relay.user_agent,
-                    original_user_agent,
-                ))?,
+                crate::http_client::client_for_url(
+                    &effective_user_agent(&relay.user_agent, original_user_agent),
+                    &endpoint,
+                )?,
                 &endpoint,
                 &relay,
                 is_stream,
                 &upstream_body,
             );
+            builder = with_client_session_headers(builder, &relay, session_headers);
             if wire_api == UpstreamWireApi::Responses {
                 if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
                     builder = builder.header("x-codex-beta-features", value);
@@ -1760,11 +1816,12 @@ pub async fn open_chat_completions_proxy_request(
     let mut cooldown_retries = 0_usize;
     loop {
         let channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
-        let request = crate::http_client::proxied_client(&effective_user_agent(
-            &relay.user_agent,
-            original_user_agent,
-        ))?
-        .post(chat_completions_url(&relay.base_url))
+        let endpoint = chat_completions_url(&relay.base_url);
+        let request = crate::http_client::client_for_url(
+            &effective_user_agent(&relay.user_agent, original_user_agent),
+            &endpoint,
+        )?
+        .post(endpoint)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&request_json);
         let upstream = match with_relay_auth(request, &relay).send().await {
@@ -1979,6 +2036,34 @@ fn with_relay_auth(
 ) -> reqwest::RequestBuilder {
     // 认证（API Key / 无认证）+ 供应商自定义请求头，统一在 relay_headers 里决定优先级。
     crate::relay_headers::apply(request, relay)
+}
+
+fn with_client_session_headers(
+    mut builder: reqwest::RequestBuilder,
+    relay: &crate::settings::RelayProfile,
+    headers: ProxySessionHeaders<'_>,
+) -> reqwest::RequestBuilder {
+    for (name, value) in [
+        ("session-id", headers.session_id),
+        ("thread-id", headers.thread_id),
+        ("x-opencode-session", headers.opencode_session),
+    ] {
+        // 显式供应商配置优先，避免 reqwest 追加出两个同名头。
+        if relay
+            .custom_headers
+            .iter()
+            .any(|header| header.key.trim().eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(value) {
+            builder = builder.header(name, value);
+        }
+    }
+    builder
 }
 
 fn conversation_id_from_responses_request(body: &Value) -> Option<String> {

@@ -1,6 +1,6 @@
-export type ManagerRoute = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "zedRemote" | "userScripts" | "recommendations" | "maintenance" | "about" | "settings";
+export type ManagerRoute = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "userScripts" | "maintenance" | "about" | "settings";
 
-type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "zedRemoteProjects" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "ads" | "logs" | "diagnostics" | "watcher" | "remotePluginMarketplace";
+type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "logs" | "diagnostics" | "watcher";
 export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
 
 /** 同一批任务互不依赖；不同批次保留设置、脚本库存等数据的写入顺序。 */
@@ -14,11 +14,10 @@ const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
   skills: [],
   // 微信页面的状态由可见性调度立即刷新，避免切页时重复请求。
   weixin: [["settings", "sessions"]],
-  enhance: [["settings", "remotePluginMarketplace"]],
+  enhance: [["settings"]],
   dreamSkin: [["settings", "overview", "dreamSkinLibrary", "dreamSkinMarket", "dreamSkinCommunity", "dreamSkinStatus"]],
-  zedRemote: [["settings", "zedRemoteProjects"]],
+  agentCache: [],
   userScripts: [["settings"], ["scriptMarket"], ["userScriptInventory"]],
-  recommendations: [["ads"]],
   maintenance: [["overview", "watcher"]],
   about: [["overview", "logs", "diagnostics"]],
   settings: [["settings"]],

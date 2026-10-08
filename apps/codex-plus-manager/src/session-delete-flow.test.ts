@@ -46,7 +46,8 @@ test("取消批删不会发送请求", async () => {
 test("增强开关统一保留未保存状态，不再自动保存导致栏闪烁", () => {
   const screen = source.slice(source.indexOf("function EnhanceScreen("), source.indexOf("function DreamSkinScreen("));
   assert.doesNotMatch(screen, /saveSettingsValue|setPersistedEnhanceFlag/);
-  assert.match(screen, /dirty \? \(/);
+  assert.match(screen, /disabled=\{!dirty\}/);
+  assert.match(screen, /dirty \? t\("有未保存修改"\)/);
   assert.match(screen, /actions.saveSettings\(\)/);
 });
 

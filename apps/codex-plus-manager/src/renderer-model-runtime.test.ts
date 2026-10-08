@@ -348,7 +348,7 @@ test("相同目录刷新不重绘菜单，也不重启白名单补扫", async ()
   let schedules = 0;
   let requests = 0;
   let models = ["custom"];
-  const load = new Function("postJson", "Date", "renderCodexPlusMenu", "scheduleCodexModelWhitelistRefresh", `
+  const load = new Function("readCodexAppServerPreparation", "Date", "renderCodexPlusMenu", "scheduleCodexModelWhitelistRefresh", `
     ${runtimeSource("codexModelCatalog", "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRetryAt", "codexModelCatalogFailures")}
     const refreshCodexModelQueries = () => {};
     ${section("  async function loadCodexModelCatalog(", "  function codexPlusModelMetadata(")}
@@ -371,7 +371,7 @@ test("目录请求失败后退避，扫描复用进行中的请求", async () =>
   let now = 1000;
   let requests = 0;
   let resolveRequest: (value: unknown) => void = () => {};
-  const load = new Function("postJson", "Date", `
+  const load = new Function("readCodexAppServerPreparation", "Date", `
     ${runtimeSource("codexModelCatalog", "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRetryAt", "codexModelCatalogFailures", "loadCodexModelCatalog")}
     const renderCodexPlusMenu = () => {}, scheduleCodexModelWhitelistRefresh = () => {}, refreshCodexModelQueries = () => {};
     return loadCodexModelCatalog;

@@ -844,7 +844,7 @@
     state.settingsStatus = "正在打开 Codex++...";
     renderFloat();
     const payload = await bridgeCall("/manager/open-transient", {
-      page: "settings",
+      page: "enhance",
       section: "stepwise",
     });
     if (!isCurrentRuntime(generation)) return;

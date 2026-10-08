@@ -42,3 +42,9 @@
 - 前端 `model-order.test.ts`：混合供应商、未知家族、别名、命名空间、大小写、数字版本、完整名称和简写、动态新增、对象元数据与稳定性。
 - 前端 `model-rpc-compat.test.ts` / `renderer-model-runtime.test.ts`：实际 RPC 合并链路、默认模型保留与远程隔离。
 - Rust `crates/codex-plus-core/tests/model_catalog.rs` / `cdp_bridge.rs`：目录与注入兼容。
+
+## 主机范围与目录恢复
+
+模型请求通过 `modelResponseHostId` 同时核对参数、结果及客户端主机；AppScope RPC 适配器保留 `hostId` 与 `__codexPlusHostId`，远程或未知主机不注入本机供应商目录。`codexAppIncludeNativeModels` 默认开启；关闭后只在当前本机纯 API 供应商目录有效且归属匹配时收窄。数组、Set 与默认模型的原生快照存于跨重注入 WeakMap，供应商模式、目录状态或主机变化时恢复原值，再应用当前策略。排序后更新快照，远程共享同一列表对象时仍能恢复原生条目。准备读取采用有界超时，保留个人版失败退避和相同目录不重绘。
+
+验证：`model-rpc-compat.test.ts`、`renderer-model-runtime.test.ts` 和 `cdp_bridge.rs::injection_script_applies_fast_service_tier_contract`。

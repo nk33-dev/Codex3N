@@ -17,8 +17,7 @@
 
   function installPluginBuildFlavorFilterPatch() {
     if (window.__codexPluginBuildFlavorFilterPatch === codexPluginMarketplaceUnlockVersion) return;
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    if (!codexPluginMarketplacePatchEnabled()) return;
     const originalFilter = Array.prototype.__codexPluginBuildFlavorOriginalFilter || Array.prototype.filter;
     if (!Array.prototype.__codexPluginBuildFlavorOriginalFilter) {
       Object.defineProperty(Array.prototype, "__codexPluginBuildFlavorOriginalFilter", {
@@ -76,14 +75,12 @@
     return next;
   }
 
-  function patchPluginMarketplaceResult(method, result, options = {}) {
+  function patchPluginMarketplaceResult(method, result) {
     if (method !== "list-plugins") return result;
-    const mergeLocal = options.mergeLocal !== false;
     let patchedCount = 0;
     try {
       const pluginMarketplaceCounts = {};
       if (Array.isArray(result?.marketplaces)) {
-        if (mergeLocal) mergeLocalPluginMarketplaces(result);
         result.marketplaces.forEach((marketplace) => {
           if (Array.isArray(marketplace?.plugins)) {
             marketplace.plugins.forEach((plugin) => {
@@ -102,7 +99,6 @@
             remoteMarketplaceName: marketplace?.remoteMarketplaceName || null,
           })),
           pluginMarketplaceCounts,
-          mergeLocal,
         });
       }
       if (patchedCount > 0) {
@@ -144,20 +140,20 @@
     });
   }
 
-  function pluginMarketplaceFallbackResult(mergeLocal = true) {
+  function pluginMarketplaceFallbackResult() {
     return patchPluginMarketplaceResult("list-plugins", {
       marketplaces: [],
       marketplaceLoadErrors: [],
       featuredPluginIds: [],
-    }, { mergeLocal });
+    });
   }
 
   function localPluginMarketplaceFallbackResult() {
-    return pluginMarketplaceFallbackResult(true);
+    return pluginMarketplaceFallbackResult();
   }
 
   function remoteOnlyPluginMarketplaceFallbackResult() {
-    return pluginMarketplaceFallbackResult(false);
+    return pluginMarketplaceFallbackResult();
   }
 
   function patchPluginMarketplaceRequestClient(client) {
@@ -185,7 +181,7 @@
       }
       try {
         const result = await originalSendRequest(method, requestParams, options);
-        return patchPluginMarketplaceResult(requestMethod, result, { mergeLocal: !requestProfile.remoteOnly });
+        return patchPluginMarketplaceResult(requestMethod, result);
       } catch (error) {
         if (requestMethod === "list-plugins" && pluginMarketplaceRemoteAuthError(error)) {
           markPluginMarketplaceRemoteCatalogUnavailable(error);
@@ -312,9 +308,8 @@
             result = fallback;
           }
         } else if (result && typeof result === "object") {
-          const patchOptions = { mergeLocal: requestProfile?.remoteOnly !== true };
-          patchPluginMarketplaceResult("list-plugins", result, patchOptions);
-          patchPluginMarketplaceResult("list-plugins", result.data, patchOptions);
+          patchPluginMarketplaceResult("list-plugins", result);
+          patchPluginMarketplaceResult("list-plugins", result.data);
         }
         data.bodyJsonString = JSON.stringify(result);
         return true;
@@ -351,9 +346,8 @@
     }
     const result = message?.result;
     if (!result || typeof result !== "object") return false;
-    const patchOptions = { mergeLocal: requestProfile?.remoteOnly !== true };
-    patchPluginMarketplaceResult("list-plugins", result, patchOptions);
-    patchPluginMarketplaceResult("list-plugins", result.data, patchOptions);
+    patchPluginMarketplaceResult("list-plugins", result);
+    patchPluginMarketplaceResult("list-plugins", result.data);
     return true;
   }
 
@@ -396,8 +390,7 @@
 
   function installPluginMarketplaceBridgePatch() {
     if (window.__codexPluginMarketplaceBridgePatch === codexPluginMarketplaceUnlockVersion) return;
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    if (!codexPluginMarketplacePatchEnabled()) return;
     installPluginMarketplaceWindowEventPatchOnly();
     const bridge = window.electronBridge;
     if (!bridge || typeof bridge.sendMessageFromView !== "function") {
@@ -428,8 +421,7 @@
 
   function installPluginMarketplaceWindowEventPatchOnly() {
     if (window.__codexPluginMarketplaceWindowEventPatch === codexPluginMarketplaceUnlockVersion) return;
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    if (!codexPluginMarketplacePatchEnabled()) return;
     const originalDispatchEvent = window.__codexPluginMarketplaceOriginalDispatchEvent || window.dispatchEvent;
     if (!window.__codexPluginMarketplaceOriginalDispatchEvent) {
       window.__codexPluginMarketplaceOriginalDispatchEvent = originalDispatchEvent;
@@ -502,8 +494,7 @@
 
   function installPluginMarketplaceRequestPatch() {
     if (window.__codexPluginMarketplaceUnlockInstalled === codexPluginMarketplaceUnlockVersion) return;
-    if (pluginPatchDisabledInRelayMode()) return;
-    if (!codexPlusSettings().pluginMarketplaceUnlock) return;
+    if (!codexPluginMarketplacePatchEnabled()) return;
     if (pluginMarketplaceRequestPatchDisabled) return;
     // 上一轮还没跑完就不要再起一轮:loadAppServerRequestCandidates() 会把所有 app asset 拉一遍,
     // 没有这道去重时 scan 的频率直接变成并发 fetch 的频率。
@@ -549,8 +540,8 @@
     pluginMarketplaceRequestPatchPromise = patch();
   }
 
-  function pluginPatchDisabledInRelayMode() {
-    return !codexPlusBackendSettingsLoaded || codexPlusBackendSettings.launchMode === "relay";
+  function codexPluginMarketplacePatchEnabled() {
+    return codexPlusBackendSettingsLoaded && !!codexPlusSettings().pluginMarketplaceUnlock;
   }
 
   function restorePluginBuildFlavorFilterPatch() {
@@ -853,6 +844,7 @@
     const href = row.getAttribute("href") || row.querySelector("a")?.getAttribute("href") || "";
     const idMatch = href.match(/(?:session|conversation|thread)[=/:-]([A-Za-z0-9_.-]+)/i) || href.match(/([A-Za-z0-9_-]{8,})$/);
     const codexThreadId = row.getAttribute("data-app-action-sidebar-thread-id") || "";
+    const scopedThread = codexThreadId.match(/^(.+):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i);
     const fallbackId = row.getAttribute("data-session-id") || row.getAttribute("data-testid") || "";
     const placeholderThreadId = isClientNewThreadId(codexThreadId);
     const hrefId = idMatch && idMatch[1];
@@ -863,6 +855,7 @@
     const sessionId = placeholderThreadId
       ? canonicalHrefId || (!hrefIsTemporary ? reactConversationIdFromRow(row) : "")
       : normalizedCodexThreadUuid(codexThreadId)
+        || (scopedThread ? scopedThread[2] : "")
         || canonicalHrefId
         || codexThreadId
         || hrefId
@@ -870,13 +863,147 @@
     const titleNode = row.querySelector(`${selectors.threadTitle}, .truncate.select-none, .truncate.text-base`);
     const rawTitle = (titleNode?.textContent || (titleNode ? "" : (row.textContent || "Untitled session")));
     const title = (titleNode ? rawTitle : rawTitle.replace(/\s*(导出|删除|移动|移出项目)(\s*(导出|删除|移动|移出项目))*$/g, "")).trim().slice(0, 160);
-    return { session_id: sessionId, title };
+    return { session_id: sessionId, title, host_id: sessionHostIdFromRow(row, sessionId, scopedThread?.[1]) };
+  }
+
+  function sessionHostIdFromRow(row, sessionId, scopedHost) {
+    const hosts = new Set();
+    const add = (value) => {
+      if (typeof value === "string" && value.trim()) hosts.add(value.trim());
+    };
+    add(row.getAttribute("data-app-action-sidebar-thread-host-id"));
+    add(scopedHost);
+    // 仅接受和当前会话 ID 同一份 React props 中的 hostId。
+    // UUID 本身不能说明本地归属，祖先上另一个会话的 hostId 也不能拿来猜。
+    const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
+    let fiber = fiberKey ? row[fiberKey] : null;
+    for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
+      for (const props of [fiber.pendingProps, fiber.memoizedProps, fiber.pendingProps?.children?.props, fiber.memoizedProps?.children?.props]) {
+        const conversationId = props?.conversationId;
+        if (conversationId === sessionId || (normalizedCodexThreadUuid(conversationId) && normalizedCodexThreadUuid(conversationId) === sessionId)) {
+          add(props.hostId);
+          if (typeof conversationId === "string" && conversationId.startsWith("local:")) add("local");
+        }
+      }
+    }
+    return hosts.size === 1 ? [...hosts][0] : null;
   }
 
   if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
     window.__codexPlusSessionRefTest = {
       fromRow: sessionRefFromRow,
     };
+  }
+
+  // 注册数据跨重注入保留；只存弱引用，不缓存会重建的 sidebar DOM。
+  const codexNativeHostClients = window.__codexPlusNativeHostClients instanceof Map
+    ? window.__codexPlusNativeHostClients
+    : (window.__codexPlusNativeHostClients = new Map());
+  const codexNativeHostClientLimit = 32;
+
+  function bindNativeHostClient(hostId, client, getterBound = false) {
+    if (typeof hostId !== "string" || !hostId.trim() || !client || typeof client.sendRequest !== "function") return false;
+    hostId = hostId.trim();
+    if (typeof client.hostId === "string" && client.hostId !== hostId) return false;
+    if (!getterBound && client.hostId !== hostId) return false;
+    codexNativeHostClients.delete(hostId);
+    codexNativeHostClients.set(hostId, {
+      hostId, getterBound,
+      ref: typeof WeakRef === "function" ? new WeakRef(client) : { deref: () => client },
+    });
+    while (codexNativeHostClients.size > codexNativeHostClientLimit) {
+      codexNativeHostClients.delete(codexNativeHostClients.keys().next().value);
+    }
+    return true;
+  }
+
+  function registerNativeHostClient(client) {
+    try {
+      // 已安装客户端的 RequestClient 构造器把 hostId 绑定到 dispatcher。
+      // 普通 HTTP/IPC duck-type sendRequest 对象不能充当这个删除客户端。
+      if (!Function.prototype.toString.call(client?.constructor).includes(codexAppServerClientCaptureMarker)) return false;
+      return bindNativeHostClient(client.hostId, client);
+    } catch { return false; }
+  }
+
+  function nativeHostClient(hostId) {
+    const entry = codexNativeHostClients.get(hostId);
+    const client = entry?.ref?.deref();
+    // AppScope 的 forHost RPC proxy 每次操作现取，避免跨账号/树重建复用旧 scope。
+    if (entry?.getterBound) return null;
+    if (!client || client.disposed === true || (typeof client.hostId === "string" && client.hostId !== hostId)
+        || (!entry.getterBound && client.hostId !== hostId)) {
+      codexNativeHostClients.delete(hostId);
+      return null;
+    }
+    return client;
+  }
+
+  async function discoverNativeHostClient(ref) {
+    // 原生 DeleteThreadDialog 的实装：getter(scope, hostId).sendRequest("thread/delete", {threadId})。
+    // getter 读取 AppScope 的 manager RPC，再 forHost(hostId)。只接受这个已验证的签名。
+    const module = await loadOptionalCodexAppModule("app-shared-");
+    const values = Object.values(module || {});
+    const getters = values.filter((value) => {
+      if (typeof value !== "function") return false;
+      const source = Function.prototype.toString.call(value);
+      return source.includes("AppServerManager RPC is not connected") && /\.forHost\(/.test(source);
+    });
+    if (!getters.length) return null;
+    for (const row of sessionRows(true)) {
+      const rowRef = sessionRefFromRow(row);
+      if (rowRef.session_id !== ref.session_id || rowRef.host_id !== ref.host_id) continue;
+      const fiberKey = Object.getOwnPropertyNames(row).find((key) => key.startsWith("__reactFiber$"));
+      let fiber = fiberKey ? row[fiberKey] : null;
+      for (let depth = 0; fiber && depth < 16; depth += 1, fiber = fiber.return) {
+        let hook = fiber.memoizedState;
+        for (let index = 0; hook && index < 64; index += 1, hook = hook.next) {
+          const scope = hook.memoizedState?.current;
+          if (!scope || typeof scope.get !== "function" || !values.includes(scope.scope)) continue;
+          for (const getter of getters) {
+            try {
+              const client = getter(scope, ref.host_id);
+              if (bindNativeHostClient(ref.host_id, client, true)) return client;
+            } catch {}
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  function deletePayloadHost(payload) {
+    if (!payload || typeof payload !== "object") return null;
+    const parse = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
+    const snake = parse(payload?.host_id);
+    const camel = parse(payload?.hostId);
+    if (payload && "host_id" in payload && "hostId" in payload && snake !== camel) return null;
+    return snake || camel;
+  }
+
+  async function deleteRemoteSession(ref) {
+    const failed = (message) => ({ status: "failed", session_id: ref.session_id, message, undo_token: null, backup_path: null });
+    if (!ref.host_id || ref.host_id === "local" || !normalizedCodexThreadUuid(ref.session_id)) {
+      return failed("无法安全确定远端会话归属，未进行本地删除");
+    }
+    try {
+      let client = null;
+      try { client = await discoverNativeHostClient(ref); } catch {}
+      client = client || nativeHostClient(ref.host_id);
+      if (!client) return failed("当前未找到对应主机的原生删除客户端；请使用 Codex 原生删除，未进行本地回退");
+      const result = await client.sendRequest("thread/delete", { threadId: ref.session_id });
+      if (result?.error || result?.status === "failed") throw new Error("native deletion failed");
+      // 原生 thread/deleted 通知由同 host manager 清理缓存；这里不碰本地库或伪造 undo。
+      return { status: "server_deleted", session_id: ref.session_id, message: "远端任务及子任务已永久删除，无法撤销", undo_token: null, backup_path: null };
+    } catch {
+      return failed("远端删除结果未确认，未进行本地回退；请先刷新远端状态再决定是否重试");
+    }
+  }
+
+  if (window.__CODEX_PLUS_TEST_SESSION_REF__) {
+    Object.assign(window.__codexPlusSessionRefTest, {
+      registerNativeHostClient, deleteRemoteSession, deletePayloadHost,
+    });
   }
 
   function threadIdBadgeTitleNode(row) {
@@ -1673,6 +1800,11 @@
   }
 
   async function postJson(path, payload) {
+    if (path === "/delete") {
+      const hostId = deletePayloadHost(payload);
+      if (!hostId) return { status: "failed", message: "无法确定会话主机归属，未删除", session_id: payload?.session_id || "" };
+      if (hostId !== "local") return deleteRemoteSession({ ...payload, host_id: hostId });
+    }
     async function fetchBackendStatusFromHelper(path, payload) {
       const controller = typeof AbortController === "function" ? new AbortController() : null;
       const timeoutId = setTimeout(() => controller?.abort(), 2000);
