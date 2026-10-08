@@ -27,11 +27,11 @@
 - `apps/codex-plus-manager/src/provider-config.ts`：导入与编辑共用的配置读取和鉴权 JSON 解析；保留既有 TOML 字段读取兼容规则，`parseProviderAuth` 给出文件/字段错误。后端保存前使用既有 `toml_edit` 检查完整 TOML 语法；仅检查新增或变更的文件，避免历史未修改配置阻断其他设置保存。
 - `apps/codex-plus-manager/src/provider-api-keys.ts`：命名 Key 的迁移、归一化、当前项解析及新增 ID 生成；`relayProfileWithNormalizedApiKeys` 对 profile 泛型化，保证 App 侧多出的本地字段不被削掉。供应商编辑页的命名 Key 列表在 `App.tsx` 的 `RelayProfileEditor`（`relay-api-key-*` 类名，样式在 `styles.css`），三处（`apiKeys` / `activeApiKeyId` / `apiKey`）由 `updateApiKeys` 一起写。
 - `apps/codex-plus-manager/src-tauri/src/commands/provider_import.rs`：cc-switch 读取/导入、待确认供应商读取/确认/取消五个命令；`commands.rs` 重导出原入口，Tauri 命令名称、参数和返回载荷保持兼容。配置校验也在此边界实施，失败信息不包含配置原文或密钥。
-- `apps/codex-plus-manager/src/components/providers/`：`ProviderImportActions`、`EnvConflictNotice`、`RelayProfileList` 分别负责导入操作栏、环境冲突提示和可拖拽列表。组件通过明确的操作回调连接业务；列表不直接操作 Tauri 或同步配置，也不接收整个 `Actions` 对象。
+- 当前运行的供应商列表、环境提示与导入操作在 `App.tsx` 的 `RelayProfileList`、`EnvConflictNotice`、`RelayScreen`，供应商卡片沿用 memo 与稳定回调；`components/providers/` 保留可复用组件及其独立回归。上游布局改动迁入运行中的 App 入口。
 
 ## 同步风险与验证
 
-通用配置合并在 `relay_config.rs::merge_common_config_into_config` 校验 MCP 条目的 `command/url`。残缺条目先用供应商原配置补缺，仍无传输定义则移除并记诊断；现有连接及新环境变量须保留。插件市场注册和状态查询在 `plugin_marketplace.rs` 共用磁盘 `marketplace.json` 的实际名称，保留名仍按原规则处理。相关用例见 `tests/relay_config.rs` 和市场模块单测。
+通用配置合并在 `relay_config.rs::merge_common_config_into_config` 校验 MCP 条目的 `command/url`。残缺条目先用供应商原配置补缺，仍无传输定义则移除并记诊断；现有连接及新环境变量须保留。上游已撤下本地插件市场缓存释放与自动注册，配置应用保持用户自己配置的插件条目。相关用例见 `tests/relay_config.rs`。
 
 切换、导入或升级迁移时同时检查扁平字段和 `tools.codex`，防止旧镜像覆盖新配置；不能仅凭界面显示“系统默认”就认定实际配置已应用。
 
@@ -42,3 +42,11 @@
 `provider-components.test.ts` 执行真实组件的按钮、拖拽回调和 App 的列表切换接线，验证同步顺序、旧供应商 ID 和禁用条件。类型契约读取 `provider-types.ts` 的 AST；迁移后须更新测试入口，不能在注释中复制旧代码来满足断言。新增含翻译调用的模块须加入 `tools/i18n-verify.mjs` 的扫描清单。
 
 `provider-save.test.ts` 覆盖连续保存、与切换互斥、保存期间新编辑、失败保留草稿及重试；`provider-config.test.ts` 覆盖官方鉴权、损坏 JSON、字段类型和多供应商 TOML 读取。Rust 导入模块测试验证完整语法检查与历史配置兼容。
+
+## 供应商身份与回滚
+
+自动回填使用 `RelayBackfillPolicy::PreserveIdentity`，未知端点漂移返回错误并保留配置副本；明确属于其他已保存供应商的 live 配置不写入旧供应商。显式采纳完整 live 身份使用 `AdoptLiveIdentity`，端点与凭据一起采用，命名 Key 更新为该身份的导入条目，不沿用旧供应商 Key 或自定义鉴权头。
+
+官方配置统一调用 `relay_config.rs::apply_official_profile_to_home`，净化认证与代理字段后恢复官方非认证设置、公共配置和模型目录。切换失败通过 `SettingsStore::snapshot_raw_bytes` / `restore_raw_snapshot` 恢复精确字节，保留未知字段与密文并失效设置缓存；配置读取、输入序列化、落盘序列化均限制为 16 MiB。旧配置损坏或超限时拒绝覆盖。用例在 `relay_config_safety.rs`、`relay_switch.rs`、settings 单测。
+
+cc-switch 数据库路径 `ccsDbPath` 由共用类型与默认设置提供，后端在 `commands/provider_import.rs::load_ccs_providers` 读取，并返回实际路径和回退原因。

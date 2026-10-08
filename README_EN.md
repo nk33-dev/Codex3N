@@ -28,7 +28,7 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++ 管理工具.app"
 - Adds session pagination, invalid-session checks and hiding, backed-up deletion and project association recovery.
 - Adapts background refresh, floating-panel interaction, host compatibility and mobile relay behavior.
 
-Upstream provider, plugin, WeChat, skin and user-script features remain available. See the [personal documentation](doc/person/README.md) for behavior and code entry points. In official-login + API mode, model requests always use the configured API; test it in the manager before use.
+Upstream provider, plugin, WeChat, skin, user-script, independent dictation and cache-cleaning features remain available. See the [personal documentation](doc/person/README.md) for behavior and code entry points. In official-login + API mode, model requests always use the configured API; test it in the manager before use.
 
 ## Development and maintenance
 

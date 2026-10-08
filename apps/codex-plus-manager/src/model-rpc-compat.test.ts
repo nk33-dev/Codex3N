@@ -51,6 +51,9 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
   const windowValue = hasRoot ? { __codexRoot: { _internalRoot: { current: fiber } } } : {};
   const create = new Function("window", "models", "provider", "status", "includeNativeModels", `
     const codexPlusSettings = () => ({ includeNativeModels });
+    const codexPlusBackendSettingsLoaded = true;
+    const codexRemoteSessionActiveProfile = () => ({ id: provider, relayMode: provider === "openai" ? "official" : "pureApi" });
+    const codexPlusModelCollectionSnapshots = new WeakMap(), codexPlusModelDefaultSnapshots = new WeakMap();
     const codexModelCatalog = { status, model_provider: provider, sources: [{ type: 'config', status, models: models.length }] };
     const codexPlusModelNames = () => models;
     const codexPlusModelUnlockEnabled = () => true;
@@ -65,6 +68,7 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     const refreshCodexThreadModelBeforeTurn = async () => null;
     const codexThreadModelRequestState = () => ({});
     const loadCodexModelCatalog = async () => codexModelCatalog;
+    ${section("  const codexNativeHostClients =", "  async function deleteRemoteSession(")}
     ${section("  const codexAppServerRpcRoots", "  async function loadAppServerRequestModules(")}
     ${section("  function codexPlusModelDescriptor(", "  function patchModelContainer(")}
     ${section("  function appServerModelRequestMethod(", "  function codexPerModelContextEnabled(")}
@@ -156,6 +160,7 @@ test("后端设置变化时刷新模型查询，相同设置不重复刷新", as
   let refreshes = 0;
   const load = new Function("postJson", "refreshCodexModelQueries", `
     const codexPlusBackendSettingsSeq = 0;
+    const window = { __CODEX_PLUS_TEST_SERVICE_TIER__: true };
     let codexPlusBackendSettings = { enhancementsEnabled: true }, codexPlusBackendSettingsLoaded = false;
     ${section("  async function loadBackendSettingsState(", "  async function loadBackendSettings(")}
     return loadBackendSettingsState;
