@@ -5,7 +5,7 @@ use codex_plus_core::relay_switch::select_active_relay_api_key_in_home;
 use codex_plus_core::relay_switch::switch_relay_profile_in_home;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, BackendSettings,
-    LaunchMode, RelayApiKey, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
+    RelayApiKey, RelayMode, RelayProfile, RelaySessionProvider, SettingsStore,
 };
 
 #[test]
@@ -186,7 +186,7 @@ base_url = "https://edited-a.example/v1"
         relay_profiles_enabled: true,
         active_relay_id: "a".to_string(),
         relay_profiles: vec![
-            pure_profile("a", "https://a.example/v1", "sk-a"),
+            pure_profile("a", "https://edited-a.example/v1", "sk-a"),
             pure_profile("b", "https://b.example/v1", "sk-b"),
         ],
         ..BackendSettings::default()
@@ -212,7 +212,12 @@ base_url = "https://edited-a.example/v1"
     assert_eq!(previous.context_window, "1000000");
     assert_eq!(previous.auto_compact_limit, "900000");
     assert_eq!(stored.active_relay_id, "b");
-    assert_eq!(stored.launch_mode, LaunchMode::Patch);
+    assert!(
+        serde_json::to_value(&stored)
+            .unwrap()
+            .get("launchMode")
+            .is_none()
+    );
     let live: toml::Value = std::fs::read_to_string(home.join("config.toml"))
         .unwrap()
         .parse()

@@ -3,24 +3,41 @@ name: Codex3N release assets
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已发布的版本标签，例如 v1.6.0"
+        required: true
+        type: string
+      platform:
+        description: "需要重新构建的平台"
+        default: all
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
 
 permissions:
   contents: write
 
 jobs:
   verify-release:
-    if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Verify tag belongs to personal branch
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           git fetch origin personal
           TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
@@ -28,7 +45,7 @@ jobs:
 
       - name: Verify tag matches Cargo.toml version
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           MANIFEST_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
@@ -44,7 +61,7 @@ jobs:
           fi
 
   verify-tests:
-    if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.')
     name: Release test gate
     needs: verify-release
     runs-on: windows-latest
@@ -52,7 +69,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -118,14 +135,14 @@ jobs:
         run: cargo test --workspace --no-fail-fast
 
   windows-installer:
-    if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform != 'macos')
     needs: [verify-release, verify-tests]
     runs-on: windows-latest
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -141,7 +158,29 @@ jobs:
           shared-key: release-windows-installer
 
       - name: Install NSIS
-        run: choco install nsis -y
+        shell: pwsh
+        run: |
+          $makensis = $null
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install nsis -y --no-progress
+            # Chocolatey 可能在下载失败后返回成功，必须实际验证编译器。
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+              "$env:ProgramFiles\NSIS\makensis.exe"
+            )
+            $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+            if (-not $makensis) {
+              $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
+              if ($command) { $makensis = $command.Source }
+            }
+            if ($makensis) {
+              & $makensis /VERSION
+              if ($LASTEXITCODE -eq 0) { break }
+            }
+            $makensis = $null
+            if ($attempt -lt 3) { Start-Sleep -Seconds (10 * $attempt) }
+          }
+          if (-not $makensis) { throw "NSIS 安装失败或编译器不可用，停止发布构建。" }
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
@@ -164,32 +203,45 @@ jobs:
       - name: Build Windows zip asset
         shell: pwsh
         run: |
-          $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
+          $version = ($env:RELEASE_TAG).TrimStart("v", "V")
           New-Item -ItemType Directory -Force dist/windows | Out-Null
           Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/Codex3N-$version-windows-x64.zip" -Force
 
       - name: Build Windows installer
         shell: pwsh
         run: |
-          $version = "${{ github.event.release.tag_name }}".TrimStart("v", "V")
-          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
-          if (-not (Test-Path $makensis)) {
-            $makensis = "makensis"
+          $version = ($env:RELEASE_TAG).TrimStart("v", "V")
+          # NSIS 的 64 位安装目录与 Chocolatey PATH 更新均需要兼容。
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
+            "$env:ProgramFiles\NSIS\makensis.exe"
+          )
+          $makensis = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $makensis) {
+            $command = Get-Command makensis.exe -ErrorAction SilentlyContinue
+            if ($command) { $makensis = $command.Source }
+          }
+          if (-not $makensis) {
+            throw "NSIS 编译器未找到，检查 Chocolatey 安装结果。"
           }
           Push-Location scripts/installer/windows
-          & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
-          Pop-Location
+          try {
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
+            if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Upload Windows installer
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             dist/windows/*.exe
             dist/windows/*.zip
 
   macos-dmg:
-    if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform != 'windows')
     needs: [verify-release, verify-tests]
     name: macOS DMG (universal)
     runs-on: macos-14
@@ -197,7 +249,7 @@ jobs:
       - name: Checkout release tag
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -224,9 +276,12 @@ jobs:
         run: npm run vite:build
 
       # 个人仓库沿用 ad-hoc 签名；正式签名与公证由打包脚本按凭据启用。
+      - name: Test native macOS update transactions
+        run: cargo test -p codex-plus-core --lib update::macos::tests
+
       - name: Build universal macOS DMG
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           VERSION="${VERSION#V}"
           # 构建脚本自己编两个架构、lipo 合并、再调 package-dmg.sh 打包。
           bash scripts/installer/macos/build-universal.sh "$VERSION"
@@ -268,16 +323,19 @@ jobs:
       - name: Upload macOS DMG
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             dist/macos/*.dmg
             dist/macos/*.zip
 
   latest-json:
-    if: startsWith(github.event.release.tag_name, 'v') && contains(github.event.release.tag_name, '-3n.')
+    if: always() && needs.verify-release.result == 'success' && needs.verify-tests.result == 'success' && (needs.windows-installer.result == 'success' || needs.windows-installer.result == 'skipped') && (needs.macos-dmg.result == 'success' || needs.macos-dmg.result == 'skipped')
     name: Upload static latest.json
+    # 单平台补跑时另一个 job 会跳过；成功或跳过才允许更新元数据。
     runs-on: ubuntu-latest
     needs:
+      - verify-release
+      - verify-tests
       - windows-installer
       - macos-dmg
     steps:
@@ -288,7 +346,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         shell: bash
         run: |
           set -euo pipefail
@@ -323,6 +381,16 @@ jobs:
             const repo = process.env.REPO;
             const tag = release.tagName || process.env.TAG;
             const version = tag.replace(/^v/i, "");
+            const required = [
+              `Codex3N-${version}-windows-x64-setup.exe`,
+              `Codex3N-${version}-windows-x64.zip`,
+              `Codex3N-${version}-macos-universal.dmg`,
+            ];
+            for (const name of required) {
+              if (!(release.assets || []).some((asset) => asset.name === name && asset.size > 0)) {
+                throw new Error(`发布附件缺失或为空：${name}`);
+              }
+            }
             const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
 
             const names = fs
@@ -368,7 +436,7 @@ jobs:
       - name: Upload latest.json and SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ env.RELEASE_TAG }}
           REPO: ${{ github.repository }}
         shell: bash
         run: |

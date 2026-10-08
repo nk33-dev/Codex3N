@@ -1,8 +1,7 @@
 import type { DreamSkinThemeConfig } from "./dream-skin";
+import type { DictationSettings } from "./dictation-settings";
 import type { RelayModelRoute } from "./model-routes";
 
-export type ZedOpenStrategy = "addToFocusedWorkspace" | "reuseWindow" | "newWindow" | "default";
-export type LaunchMode = "patch" | "relay";
 export type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
 export type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
 export type StepwiseGenerationMode = "auto" | "manual";
@@ -59,6 +58,10 @@ export type RelayProfile = {
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];
   aggregate?: RelayAggregateConfig | null;
+  rateLimitCooldownEnabled: boolean;
+  channelQueueEnabled: boolean;
+  channelRequestsPerMinute: number;
+  cooldownErrorStatuses: number[];
 };
 
 export type AggregateRelayMember = { relayId: string; weight: number };
@@ -83,6 +86,7 @@ export type ToolShard = {
 };
 
 export type BackendSettings = {
+  dictation: DictationSettings;
   codexAppPath: string;
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
@@ -98,19 +102,11 @@ export type BackendSettings = {
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
   codexAppPasteFix: boolean;
-  codexAppForceChineseLocale: boolean;
-  codexAppFastStartup: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
-  codexAppZedRemoteOpen: boolean;
-  zedRemoteOpenStrategy: ZedOpenStrategy;
-  zedRemoteProjectRegistryEnabled: boolean;
-  zedRemoteSyncToZedSettings: boolean;
-  codexAppUpstreamWorktreeCreate: boolean;
   codexAppNativeMenuPlacement: boolean;
-  codexAppNativeMenuLocalization: boolean;
   codexAppServiceTierControls: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppStepwiseEnabled: boolean;
@@ -146,7 +142,6 @@ export type BackendSettings = {
   weixinConnectModel: string;
   weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
   weixinConnectCodexPath: string;
-  launchMode: LaunchMode;
   relayBaseUrl: string;
   relayApiKey: string;
   relayProfiles: RelayProfile[];
@@ -160,5 +155,6 @@ export type BackendSettings = {
   tools?: Record<string, ToolShard>;
   /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
   activeTool?: string;
+  ccsDbPath: string;
 };
 

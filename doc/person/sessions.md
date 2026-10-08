@@ -42,3 +42,7 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 ## 回归检查
 
 前端 `session-health.test.ts` / `session-delete-flow.test.ts`，数据层 `session_health.rs` / `storage_adapter.rs` / `provider_sync.rs`，Tauri 删除响应序列化及无效会话保护测试。需要重点覆盖远程、归档、备份、读取错误、恢复竞态、重复库记录与部分失败。
+
+## 删除请求的主机归属
+
+`SessionRef.host_id` 接受 snake_case 和 camelCase；缺失、空值或双字段不一致视为未知来源。桥接 `/delete` 与启动器数据服务都要求 `require_local_delete()`，只有明确 `local` 才进入本机 SQLite 删除。管理器从本机数据库列表发起的删除明确传 `local`；远程请求通过捕获的原生主机客户端处理，不能因为 thread ID 相同回退到本机。会话保护与备份删除响应仍沿用 `deletion` 包装。验证在 models、routes 与 `cdp_bridge.rs` 的主机归属用例。

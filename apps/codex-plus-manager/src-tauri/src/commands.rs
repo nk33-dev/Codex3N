@@ -24,12 +24,77 @@ use codex_plus_core::settings::{
 };
 use codex_plus_core::status::{LaunchStatus, StatusStore};
 use codex_plus_core::user_scripts::UserScriptManager;
-use codex_plus_core::zed_remote::{ZedOpenStrategy, ZedRemoteProject};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tauri::Emitter;
 
 use crate::install::{self, InstallActionResult, InstallOptions};
+
+// 扫描快照仅驻留后端内存，不接受前端指定磁盘路径，不开放给扩展路由。
+static AGENT_CACHE_PLAN: OnceLock<Mutex<Option<codex_plus_core::agent_cache::CachePlan>>> =
+    OnceLock::new();
+
+#[tauri::command]
+pub async fn scan_agent_cache() -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
+        let mut slot = AGENT_CACHE_PLAN
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("缓存扫描状态不可用"))?;
+        *slot = None;
+        let plan = codex_plus_core::agent_cache::scan_default()?;
+        let report = serde_json::to_value(&plan.report)?;
+        *slot = Some(plan);
+        Ok(json!({ "report": report }))
+    })
+    .await;
+    match result {
+        Ok(Ok(payload)) => ok("缓存扫描完成。", payload),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("缓存扫描失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn clean_agent_cache(
+    scan_id: String,
+    group_ids: Vec<String>,
+    confirmed: bool,
+) -> CommandResult<Value> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Value> {
+        anyhow::ensure!(confirmed, "尚未确认清理。");
+        let mut slot = AGENT_CACHE_PLAN
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("缓存扫描状态不可用"))?;
+        let plan = slot
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("请先扫描缓存。"))?;
+        plan.validate_selection(&scan_id, &group_ids, SystemTime::now())?;
+        // 持锁消费快照，阻止并行扫描/清理和重复执行。
+        let plan = slot.take().unwrap();
+        let result = plan.clean(&scan_id, &group_ids, confirmed)?;
+        Ok(json!({ "result": result }))
+    })
+    .await;
+    match result {
+        Ok(Ok(payload)) => ok("缓存清理完成。", payload),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("缓存清理失败：{error}"), json!({})),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsPayload {
+    pub skills: Vec<codex_plus_core::skills::SkillEntry>,
+    pub repos: Vec<codex_plus_core::skills::SkillRepo>,
+    pub backups: Vec<codex_plus_core::skills::SkillBackup>,
+    /// 单个仓库拉取失败不该让整块面板空掉，把错误单独带回前端提示。
+    pub repo_errors: Vec<String>,
+    pub skills_dir: String,
+    pub codex_skills_dir: String,
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VersionPayload {
@@ -88,27 +153,6 @@ struct WeixinRuntime {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PluginMarketplaceRepairPayload {
-    pub codex_home: String,
-    pub marketplace_root: Option<String>,
-    pub initialized: bool,
-    pub configured: bool,
-    pub needs_repair: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RemotePluginMarketplacePayload {
-    pub codex_home: String,
-    pub marketplace_root: Option<String>,
-    pub config_registered: bool,
-    pub needs_repair: bool,
-    pub plugin_count: usize,
-    pub skill_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CcsProvidersPayload {
     pub db_path: String,
     pub configured_db_path: String,
@@ -161,19 +205,6 @@ pub struct ListLocalSessionsRequest {
     pub offset: usize,
     #[serde(default = "default_local_sessions_page_size")]
     pub limit: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ZedRemoteProjectsPayload {
-    pub projects: Vec<ZedRemoteProject>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ZedRemoteOpenPayload {
-    pub url: String,
-    pub strategy: ZedOpenStrategy,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -335,6 +366,8 @@ pub struct SaveRelayFileRequest {
 pub struct BackfillRelayProfileRequest {
     pub settings: BackendSettings,
     pub profile_id: String,
+    #[serde(default)]
+    pub adopt_provider_identity: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1145,7 +1178,7 @@ fn sync_active_relay_to_home(
     if relay.relay_mode == codex_plus_core::settings::RelayMode::Official
         && !relay.official_mix_api_key
     {
-        return codex_plus_core::relay_config::apply_official_relay_profile_to_home(
+        return codex_plus_core::relay_config::apply_official_profile_to_home(
             home,
             &relay,
             &relay_combined_common_config(settings),
@@ -2070,79 +2103,6 @@ pub async fn import_session_url(url: String) -> CommandResult<SessionImportPaylo
     }
 }
 
-#[tauri::command]
-pub fn list_zed_remote_projects() -> CommandResult<ZedRemoteProjectsPayload> {
-    let result = codex_plus_core::zed_remote::list_zed_remote_projects_response(&json!({}));
-    if result.get("status").and_then(Value::as_str) == Some("ok") {
-        let projects = serde_json::from_value::<Vec<ZedRemoteProject>>(
-            result
-                .get("projects")
-                .cloned()
-                .unwrap_or_else(|| Value::Array(Vec::new())),
-        )
-        .unwrap_or_default();
-        return ok(
-            &format!("已读取 {} 个 Zed 远程项目。", projects.len()),
-            ZedRemoteProjectsPayload { projects },
-        );
-    }
-    failed(
-        result
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("读取 Zed 远程项目失败。"),
-        ZedRemoteProjectsPayload {
-            projects: Vec::new(),
-        },
-    )
-}
-
-#[tauri::command]
-pub fn open_zed_remote(payload: Value) -> CommandResult<ZedRemoteOpenPayload> {
-    let result = codex_plus_core::zed_remote::open_zed_remote(&payload);
-    let strategy = result
-        .get("strategy")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<ZedOpenStrategy>(value).ok())
-        .unwrap_or_default();
-    let url = result
-        .get("url")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_string();
-    if result.get("status").and_then(Value::as_str) == Some("ok") {
-        return ok(
-            "已在 Zed Remote 打开项目。",
-            ZedRemoteOpenPayload { url, strategy },
-        );
-    }
-    failed(
-        result
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("无法在 Zed Remote 打开项目。"),
-        ZedRemoteOpenPayload { url, strategy },
-    )
-}
-
-#[tauri::command]
-pub fn forget_zed_remote_project(id: String) -> CommandResult<ZedRemoteProjectsPayload> {
-    let result =
-        codex_plus_core::zed_remote::forget_zed_remote_project_response(&json!({ "id": id }));
-    if result.get("status").and_then(Value::as_str) != Some("ok") {
-        return failed(
-            result
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("移除 Zed 远程项目失败。"),
-            ZedRemoteProjectsPayload {
-                projects: Vec::new(),
-            },
-        );
-    }
-    list_zed_remote_projects()
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvalidLocalSessionsPayload {
@@ -2343,6 +2303,7 @@ pub fn delete_local_session(
     let session = SessionRef {
         session_id: session_id.to_string(),
         title: request.title,
+        host_id: Some("local".into()),
     };
     let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
     let mut candidate_paths = Vec::new();
@@ -3208,6 +3169,25 @@ pub async fn install_market_script(id: String) -> CommandResult<ScriptMarketPayl
 }
 
 #[tauri::command]
+pub fn set_user_scripts_enabled(enabled: bool) -> CommandResult<SettingsPayload> {
+    let manager = default_user_script_manager();
+    match manager.set_global_enabled(enabled) {
+        Ok(_) => settings_payload(
+            if enabled {
+                "本地拓展整体已开启。"
+            } else {
+                "本地拓展整体已关闭。"
+            },
+            "本地拓展整体开关设置失败",
+        ),
+        Err(error) => failed(
+            &format!("本地拓展整体开关设置失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+#[tauri::command]
 pub fn set_user_script_enabled(key: String, enabled: bool) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
@@ -3246,6 +3226,288 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
     }
 }
 
+/// 拉取所有启用仓库的 skill 清单，合并本地安装/启用状态后返回。
+///
+/// 单个仓库失败（限流、网络、仓库删了）不影响其它仓库，错误单独收集回前端。
+#[tauri::command]
+pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let repos = manager.list_repos();
+    let mut remote = Vec::new();
+    let mut repo_errors = Vec::new();
+
+    for repo in repos.iter().filter(|repo| repo.enabled) {
+        let cached = cached_repo_skills(&repo.key());
+        match codex_plus_core::skills::fetch_repo_skills(repo, &cached).await {
+            Ok(skills) => {
+                store_repo_skills(&repo.key(), &skills);
+                remote.extend(skills);
+            }
+            Err(error) => {
+                repo_errors.push(format!("{}/{}：{error}", repo.owner, repo.name));
+                // 拉不动就先用上一次的结果撑着，别让已知的 skill 从列表里消失
+                remote.extend(cached.into_values());
+            }
+        }
+    }
+
+    let message = if repo_errors.is_empty() {
+        "Skills 列表已刷新。".to_string()
+    } else {
+        format!("Skills 列表已刷新，{} 个仓库拉取失败。", repo_errors.len())
+    };
+    let payload = skills_payload(&manager, &remote, repo_errors);
+    if payload.repo_errors.is_empty() {
+        ok(&message, payload)
+    } else {
+        failed(&message, payload)
+    }
+}
+
+/// 只读本地状态，不联网。切到 Skills 页时先用它把已装的列出来。
+#[tauri::command]
+pub fn list_installed_skills() -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let payload = skills_payload(&manager, &[], Vec::new());
+    ok("已加载本地 Skills。", payload)
+}
+
+#[tauri::command]
+pub async fn install_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
+    install_or_update_skill(&repo_key, &id, "Skill 已安装。", "安装 Skill 失败").await
+}
+
+#[tauri::command]
+pub async fn update_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
+    install_or_update_skill(&repo_key, &id, "Skill 已更新。", "更新 Skill 失败").await
+}
+
+async fn install_or_update_skill(
+    repo_key: &str,
+    id: &str,
+    success_message: &str,
+    failure_prefix: &str,
+) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let Some(repo) = codex_plus_core::skills::parse_repo_key(repo_key) else {
+        return failed(
+            &format!("{failure_prefix}：仓库标识无法解析（{repo_key}）。"),
+            current_skills_payload(&manager),
+        );
+    };
+
+    // 装之前重新拉一次树，拿到当前的 repo_path 和哈希，避免用陈旧缓存装错版本。
+    let cached = cached_repo_skills(repo_key);
+    let skills = match codex_plus_core::skills::fetch_repo_skills(&repo, &cached).await {
+        Ok(skills) => {
+            store_repo_skills(repo_key, &skills);
+            skills
+        }
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    let Some(skill) = skills.iter().find(|skill| skill.id == id) else {
+        return failed(
+            &format!("{failure_prefix}：仓库里没有找到 {id}。"),
+            current_skills_payload(&manager),
+        );
+    };
+
+    let zip = match codex_plus_core::skills::download_repo_zip(&repo).await {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return failed(
+                &format!("{failure_prefix}：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    match manager.install_from_zip(skill, &zip) {
+        Ok(_) => ok(success_message, current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("{failure_prefix}：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn set_skill_enabled(id: String, enabled: bool) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.set_enabled(id.trim(), enabled) {
+        Ok(()) => ok(
+            if enabled {
+                "Skill 已启用，下次对话生效。"
+            } else {
+                "Skill 已停用。"
+            },
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("Skill 启停失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn uninstall_skill(id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.uninstall(id.trim()) {
+        Ok(_) => ok(
+            "Skill 已卸载，源目录已备份，可随时恢复。",
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("卸载 Skill 失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn restore_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.restore_backup(backup_id.trim()) {
+        Ok(_) => ok("Skill 已从备份恢复。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("从备份恢复失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_skill_backup(backup_id: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.delete_backup(backup_id.trim()) {
+        Ok(_) => ok("备份已删除。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("删除备份失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn upsert_skill_repo(repo: codex_plus_core::skills::SkillRepo) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.upsert_repo(repo) {
+        Ok(_) => ok("仓库源已保存。", current_skills_payload(&manager)),
+        Err(error) => failed(
+            &format!("保存仓库源失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn delete_skill_repo(key: String) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    match manager.delete_repo(key.trim()) {
+        Ok(_) => {
+            forget_repo_skills(key.trim());
+            ok("仓库源已删除。", current_skills_payload(&manager))
+        }
+        Err(error) => failed(
+            &format!("删除仓库源失败：{error}"),
+            current_skills_payload(&manager),
+        ),
+    }
+}
+
+fn skills_payload(
+    manager: &codex_plus_core::skills::SkillsManager,
+    remote: &[codex_plus_core::skills::RemoteSkill],
+    repo_errors: Vec<String>,
+) -> SkillsPayload {
+    SkillsPayload {
+        skills: if remote.is_empty() {
+            manager.local_inventory()
+        } else {
+            manager.merge_entries(remote)
+        },
+        repos: manager.list_repos(),
+        backups: manager.list_backups(),
+        repo_errors,
+        skills_dir: manager.source_dir().to_string_lossy().to_string(),
+        codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
+    }
+}
+
+fn current_skills_payload(manager: &codex_plus_core::skills::SkillsManager) -> SkillsPayload {
+    skills_payload(manager, &all_cached_repo_skills(), Vec::new())
+}
+
+fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
+    codex_plus_core::skills::SkillsManager::new(
+        codex_plus_core::paths::default_skills_source_dir(),
+        codex_plus_core::paths::default_skill_backups_dir(),
+        codex_plus_core::paths::default_skills_state_path(),
+        codex_plus_core::codex_home::default_codex_home_dir(),
+    )
+}
+
+/// 上一次成功拉取的远端清单，按仓库 key 存。
+///
+/// 两个用途：拉取时传给 `fetch_repo_skills` 跳过没变的 SKILL.md 请求；
+/// 以及在只读命令里还原出完整视图，不必每次都联网。进程内缓存，重启即失效。
+type RepoSkillCache = std::collections::HashMap<
+    String,
+    std::collections::BTreeMap<String, codex_plus_core::skills::RemoteSkill>,
+>;
+
+fn repo_skill_cache() -> &'static std::sync::Mutex<RepoSkillCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<RepoSkillCache>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(RepoSkillCache::new()))
+}
+
+fn cached_repo_skills(
+    repo_key: &str,
+) -> std::collections::BTreeMap<String, codex_plus_core::skills::RemoteSkill> {
+    repo_skill_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(repo_key).cloned())
+        .unwrap_or_default()
+}
+
+fn all_cached_repo_skills() -> Vec<codex_plus_core::skills::RemoteSkill> {
+    repo_skill_cache()
+        .lock()
+        .ok()
+        .map(|cache| {
+            cache
+                .values()
+                .flat_map(|skills| skills.values().cloned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn store_repo_skills(repo_key: &str, skills: &[codex_plus_core::skills::RemoteSkill]) {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        cache.insert(
+            repo_key.to_string(),
+            skills
+                .iter()
+                .map(|skill| (skill.id.clone(), skill.clone()))
+                .collect(),
+        );
+    }
+}
+
+fn forget_repo_skills(repo_key: &str) {
+    if let Ok(mut cache) = repo_skill_cache().lock() {
+        cache.remove(repo_key);
+    }
+}
+
 #[tauri::command]
 pub async fn install_entrypoints() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::install_entrypoints)
@@ -3265,175 +3527,6 @@ pub async fn repair_shortcuts() -> InstallActionResult {
     tauri::async_runtime::spawn_blocking(install::repair_shortcuts)
         .await
         .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
-}
-
-#[tauri::command]
-pub async fn repair_plugin_marketplace() -> CommandResult<PluginMarketplaceRepairPayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    match codex_plus_core::plugin_marketplace::initialize_openai_curated_marketplace_and_configure(
-        &home,
-    )
-    .await
-    {
-        Ok(result) => ok(
-            if result.initialized {
-                "插件市场已从 openai/plugins 初始化并注册。"
-            } else if result.configured {
-                "已注册本地插件市场。"
-            } else {
-                "插件市场已可用，无需修复。"
-            },
-            PluginMarketplaceRepairPayload {
-                codex_home: home.to_string_lossy().to_string(),
-                marketplace_root:
-                    codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home)
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                initialized: result.initialized,
-                configured: result.configured,
-                needs_repair: false,
-            },
-        ),
-        Err(error) => failed(
-            &format!("插件市场修复失败：{error}"),
-            PluginMarketplaceRepairPayload {
-                codex_home: home.to_string_lossy().to_string(),
-                marketplace_root:
-                    codex_plus_core::plugin_marketplace::openai_curated_marketplace_status(&home)
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                initialized: false,
-                configured: false,
-                needs_repair: true,
-            },
-        ),
-    }
-}
-
-#[tauri::command]
-pub fn remote_plugin_marketplace_status() -> CommandResult<RemotePluginMarketplacePayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    let status =
-        codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(&home);
-    let (plugin_count, skill_count) =
-        remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
-    ok(
-        if status.needs_repair() {
-            "官方远端插件缓存需要释放或注册。"
-        } else {
-            "官方远端插件缓存已可用。"
-        },
-        RemotePluginMarketplacePayload {
-            codex_home: home.to_string_lossy().to_string(),
-            marketplace_root: status
-                .marketplace_root
-                .as_ref()
-                .map(|path| path.to_string_lossy().to_string()),
-            config_registered: status.config_registered,
-            needs_repair: status.needs_repair(),
-            plugin_count,
-            skill_count,
-        },
-    )
-}
-
-#[tauri::command]
-pub fn repair_remote_plugin_marketplace() -> CommandResult<RemotePluginMarketplacePayload> {
-    let home = codex_plus_core::codex_home::default_codex_home_dir();
-    match codex_plus_core::plugin_marketplace::ensure_openai_curated_remote_marketplace_available(
-        &home,
-    ) {
-        Ok(result) => {
-            let status =
-                codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
-                    &home,
-                );
-            let (plugin_count, skill_count) =
-                remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
-            ok(
-                if result.initialized {
-                    "已释放并注册内置官方远端插件缓存。"
-                } else if result.configured {
-                    "已注册官方远端插件缓存。"
-                } else {
-                    "官方远端插件缓存已可用，无需修复。"
-                },
-                RemotePluginMarketplacePayload {
-                    codex_home: home.to_string_lossy().to_string(),
-                    marketplace_root: status
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    config_registered: status.config_registered,
-                    needs_repair: status.needs_repair(),
-                    plugin_count,
-                    skill_count,
-                },
-            )
-        }
-        Err(error) => {
-            let status =
-                codex_plus_core::plugin_marketplace::openai_curated_remote_marketplace_status(
-                    &home,
-                );
-            let (plugin_count, skill_count) =
-                remote_plugin_marketplace_counts(status.marketplace_root.as_deref());
-            failed(
-                &format!("官方远端插件缓存修复失败：{error}"),
-                RemotePluginMarketplacePayload {
-                    codex_home: home.to_string_lossy().to_string(),
-                    marketplace_root: status
-                        .marketplace_root
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    config_registered: status.config_registered,
-                    needs_repair: status.needs_repair(),
-                    plugin_count,
-                    skill_count,
-                },
-            )
-        }
-    }
-}
-
-fn remote_plugin_marketplace_counts(root: Option<&Path>) -> (usize, usize) {
-    let Some(root) = root else {
-        return (0, 0);
-    };
-    let marketplace_path = root
-        .join(".agents")
-        .join("plugins")
-        .join("marketplace.json");
-    let plugin_count = std::fs::read_to_string(&marketplace_path)
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|marketplace| {
-            marketplace
-                .get("plugins")
-                .and_then(Value::as_array)
-                .map(Vec::len)
-        })
-        .unwrap_or(0);
-    let skill_count = count_skill_files(&root.join("plugins")).unwrap_or(0);
-    (plugin_count, skill_count)
-}
-
-fn count_skill_files(root: &Path) -> std::io::Result<usize> {
-    if !root.is_dir() {
-        return Ok(0);
-    }
-    let mut total = 0;
-    for entry in std::fs::read_dir(root)? {
-        let path = entry?.path();
-        if path.is_dir() {
-            total += count_skill_files(&path)?;
-        } else if path.file_name().and_then(|name| name.to_str()) == Some("SKILL.md") {
-            total += 1;
-        }
-    }
-    Ok(total)
 }
 
 #[tauri::command]
@@ -3478,8 +3571,33 @@ pub async fn check_update() -> CommandResult<Value> {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn perform_update(
+    app: tauri::AppHandle,
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    let result = perform_update_inner(release).await;
+    if result.status == "ok" {
+        // 先返回准备结果，再正常退出；独立更新进程等待当前管理工具结束。
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(750));
+            app.exit(0);
+        });
+    }
+    result
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn perform_update(
+    release: Option<codex_plus_core::update::Release>,
+) -> CommandResult<Value> {
+    perform_update_inner(release).await
+}
+
+// 无需 app runtime 的业务核心；其它平台测试不应引入 Wry 析构依赖。
+async fn perform_update_inner(
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
     let Some(release) = release else {
@@ -3494,14 +3612,18 @@ pub async fn perform_update(
     let download_dir = codex_plus_core::paths::default_app_state_dir().join("updates");
     match codex_plus_core::update::perform_update(&release, &download_dir).await {
         Ok(result) => ok(
-            "安装包已下载并启动，请按安装向导完成更新。",
+            if cfg!(target_os = "macos") {
+                "安装包已验证，管理工具将关闭以安装更新，完成后自动重启；失败时保留旧版。"
+            } else {
+                "安装包已下载并启动，请按安装向导完成更新。"
+            },
             json!({
-                "currentVersion": codex_plus_core::version::VERSION,
-                "latestVersion": result.release.version,
-                "releaseSummary": result.release.body,
-                "installedPath": result.installer_path.to_string_lossy(),
-                "launched": result.launched,
-                "progress": 100
+            "currentVersion": codex_plus_core::version::VERSION,
+            "latestVersion": result.release.version,
+            "releaseSummary": result.release.body,
+            "installedPath": result.installer_path.to_string_lossy(),
+            "launched": result.launched,
+            "progress": 100
             }),
         ),
         Err(error) => failed(
@@ -3951,16 +4073,45 @@ pub fn backfill_relay_profile_from_live(
         );
     }
 
+    if !request.adopt_provider_identity {
+        match codex_plus_core::relay_config::live_config_matches_other_profile_in_home(
+            &home,
+            &settings,
+            &request.profile_id,
+        ) {
+            Ok(true) => {
+                return ok(
+                    "实时配置属于其它已保存供应商，已保留原快照。",
+                    SettingsBackfillPayload { settings },
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return failed(
+                    &format!("读取实时配置归属失败，已保留原配置：{error}"),
+                    SettingsBackfillPayload { settings },
+                );
+            }
+        }
+    }
+
     // 回填会就地改写 profile 与公共配置。先在副本上跑，成功才提交，避免中途
     // 失败时留下「改了一半」的 profile 被后续切换流程用上。
     let mut next_profile = settings.relay_profiles[profile_index].clone();
     let mut next_context = settings.relay_context_config_contents.clone();
-    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common(
+    match codex_plus_core::relay_config::backfill_relay_profile_from_home_with_common_and_policy(
         &home,
         &mut next_profile,
         &mut next_context,
+        if request.adopt_provider_identity {
+            codex_plus_core::relay_config::RelayBackfillPolicy::AdoptLiveIdentity
+        } else {
+            codex_plus_core::relay_config::RelayBackfillPolicy::PreserveIdentity
+        },
     ) {
         Ok(()) => {
+            let changed = next_profile != settings.relay_profiles[profile_index]
+                || next_context != settings.relay_context_config_contents;
             settings.relay_profiles[profile_index] = next_profile;
             settings.relay_context_config_contents = next_context;
             log_manager_event(
@@ -3970,7 +4121,13 @@ pub fn backfill_relay_profile_from_live(
                 }),
             );
             ok(
-                "当前供应商配置已从 live 文件回填。",
+                if !changed {
+                    "实时配置没有需要回填的内容，已保留当前供应商快照。"
+                } else if request.adopt_provider_identity {
+                    "已采纳当前 URL 与认证，并重置旧自定义请求头。"
+                } else {
+                    "当前供应商配置已从 live 文件回填。"
+                },
                 SettingsBackfillPayload { settings },
             )
         }
@@ -4351,20 +4508,20 @@ pub async fn test_stepwise_settings(
             if error.is_empty() {
                 ok(
                     &format!(
-                        "Stepwise 连接正常（{}），测试返回 {item_count} 条建议。",
+                        "下一步建议连接正常（{}），测试返回 {item_count} 条建议。",
                         stepwise_protocol_label(&protocol)
                     ),
                     StepwiseTestPayload { item_count, error },
                 )
             } else {
                 failed(
-                    &format!("Stepwise 测试失败：{error}"),
+                    &format!("下一步建议测试失败：{error}"),
                     StepwiseTestPayload { item_count, error },
                 )
             }
         }
         Err(error) => failed(
-            &format!("Stepwise 测试失败：{error}"),
+            &format!("下一步建议测试失败：{error}"),
             StepwiseTestPayload {
                 item_count: 0,
                 error: error.to_string(),
@@ -6113,7 +6270,7 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn update_install_requires_release_payload() {
-        let result = tauri::async_runtime::block_on(perform_update(None));
+        let result = tauri::async_runtime::block_on(perform_update_inner(None));
 
         assert_eq!(result.status, "failed");
         assert!(result.message.contains("请先检查更新"));
@@ -7245,6 +7402,21 @@ enabled = true
     }
 
     #[test]
+    fn backfill_request_preserves_identity_unless_explicitly_adopted() {
+        let settings = serde_json::to_value(BackendSettings::default()).unwrap();
+        let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
+            "settings": settings, "profileId": "profile-a"
+        }))
+        .unwrap();
+        assert!(!request.adopt_provider_identity);
+        let request: BackfillRelayProfileRequest = serde_json::from_value(json!({
+            "settings": settings, "profileId": "profile-a", "adoptProviderIdentity": true
+        }))
+        .unwrap();
+        assert!(request.adopt_provider_identity);
+    }
+
+    #[test]
     fn normalize_settings_before_save_preserves_profile_context_until_manual_extract() {
         let settings = BackendSettings {
             relay_common_config_contents: "[mcp_servers.context7]\ncommand = \"npx\"\n".to_string(),
@@ -7282,23 +7454,22 @@ enabled = true
     }
 
     #[test]
-    fn normalize_settings_before_save_preserves_manual_relay_mode_for_pure_api_profile() {
-        let settings = BackendSettings {
-            active_relay_id: "api".to_string(),
-            launch_mode: codex_plus_core::settings::LaunchMode::Relay,
-            relay_profiles: vec![RelayProfile {
-                id: "api".to_string(),
-                relay_mode: codex_plus_core::settings::RelayMode::PureApi,
-                ..RelayProfile::default()
-            }],
-            ..BackendSettings::default()
-        };
-
+    fn normalize_settings_before_save_ignores_legacy_launch_mode_and_preserves_provider_mode() {
+        let settings: BackendSettings = serde_json::from_value(json!({
+            "activeRelayId": "api", "launchMode": "relay",
+            "relayProfiles": [{ "id": "api", "name": "API", "relayMode": "pureApi" }],
+        }))
+        .unwrap();
         let normalized = normalize_settings_before_save(settings);
-
         assert_eq!(
-            normalized.launch_mode,
-            codex_plus_core::settings::LaunchMode::Relay
+            normalized.relay_profiles[0].relay_mode,
+            codex_plus_core::settings::RelayMode::PureApi
+        );
+        assert!(
+            serde_json::to_value(&normalized)
+                .unwrap()
+                .get("launchMode")
+                .is_none()
         );
     }
 

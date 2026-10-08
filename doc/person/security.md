@@ -21,3 +21,7 @@
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。
 
 push CI 分四个并行 job：Windows 上的 `rust-lint` 只跑格式化、`cargo check` 与 relay clippy，作为快速失败面；`windows-artifacts` 执行完整前端、Rust 与安全门禁并构建 NSIS 安装包；Ubuntu 与 macOS 各跑一遍共享前端回归；macOS x64/arm64 各自构建原生 DMG。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外——发布脚本要求当前 SHA 最新一次 push CI 已全部成功，取消会让那个提交永远等不到结果。`-SkipChecks` 只复用该结果。缺少结果、运行中、失败、查询异常或检查产生未提交改动时，脚本在创建标签前停止。行为回归见 `apps/codex-plus-manager/src/release.test.ts`；环境与日志检查见 [maintenance.md](maintenance.md)。
+
+## 语音服务边界
+
+`dictation.apiKey` 使用既有密钥字段规则加密落盘，桥接只返回 `apiKeyConfigured`；`apiKeyEnv` 保存环境变量名称。语音路由仍先通过 helper 的回环与来源检查，再核对语音 helper token；音频上传限制为 25 MiB，CDP 完整消息及单 frame 限制为 40 MiB。语音失败响应不回显音频、token 或请求中的会话内容。配置存储与内部回滚共用 16 MiB 预算。

@@ -6,7 +6,7 @@
 
 ## 管理器加载和后台刷新
 
-- `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描、环境检查和远端插件状态进入对应页面才加载。
+- `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描和环境检查进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
 - `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
@@ -16,7 +16,7 @@
 - `weixin-qr-polling.ts` 是扫码轮询的唯一调度入口，复用 `createVisibleRefresh`，但不绑定窗口可见性。等待和已扫码每次响应完成后隔 1 秒补查；确认、过期、业务失败或请求异常均停止，异常只提示一次，不自动重试。新二维码或取消会销毁旧任务，未返回结果与错误都不再提交。
 - 扫码确认后先补读设置和连接状态，再提交二维码终态，避免 effect 清理使补读失效。每次异步返回均检查当前任务；补读期间编辑过的设置草稿不被覆盖。验证见 `weixin-qr-polling.test.ts` 的慢请求、销毁、重新登录和终态测试。
 - 浏览器验证使用真实 React 页面配合 Tauri 官方 IPC mock，覆盖供应商切换、复制、删除、拖拽排序，以及扫码确认、重新扫码和过期提示；mock 数据不代表真实微信登录或原生文件写入已实测。后端命令由 Rust 集成测试验证。日常界面验证优先使用浏览器，不通过 Windows 桌面自动化占用用户输入。
-- 页面结构和视觉样式未因本次性能拆分调整。按需加载意味着第一次进入某页面才开始对应检查；如果跨进程唤起没有产生窗口事件，待处理链接会等到下一次兜底或窗口恢复时出现。
+- 页面布局跟随上游，按需读取与个人版生命周期入口保持一致。按需加载意味着第一次进入某页面才开始对应检查；如果跨进程唤起没有产生窗口事件，待处理链接会等到下一次兜底或窗口恢复时出现。
 
 验证：前端 `manager-loading.test.ts`、`manager-lifecycle.test.ts`、`manager-window-lifecycle.test.ts`、`manager-navigation.test.ts`；后端窗口契约见 `apps/codex-plus-manager/src-tauri/tests/windows_subsystem.rs`。重点检查慢请求、连续事件、隐藏恢复、监听销毁和启动导航竞态。
 
@@ -52,7 +52,7 @@
 - 安装失败须如实报告，Watcher 按安装实例处理进程，避免误杀其他安装。入口：`crates/codex-plus-core/src/install/` / `watcher.rs`；验证 `updater.rs`、`installers.rs`、`watcher.rs`。
 - **启动器只跟随自己这次启动的 Codex 进程**：退出等待用 `owned_launcher_target_alive`（`launcher.rs`），只认本次 launch 直接拥有的进程（macOS 经 `watcher::find_macos_codex_processes_for_debug_port` 按调试端口精确匹配），机器上别的 Codex 进程不会让启动器一直占着原生浏览器监控。它与个人版「同一次安装才终止」的 `filter_killable_launcher_processes`（比对映像路径）互补：一个决定「该不该继续活着」，一个决定「该不该被终止」。
 - **发往环回目标的请求显式禁用系统代理**：`reqwest` 的 `system-proxy` 特性在 `ClientBuilder::build()` 时**无条件**追加系统代理匹配器，再 `proxy()` 一个 `no_proxy` 规则也排除不掉。而 Windows 的 `ProxyOverride` 常见配置含 `127.*`，上游 hyper-util 把 `*.` 直接 `.replace("*.", "")` 得到无效条目 `127.`，且对 IP 字面量只查 IP 表而不做前缀匹配，于是发往 `127.0.0.1` 的请求仍被本机代理（如 Clash）接管：代理把请求转交远端节点后，远端去连它自己的 `127.0.0.1:<端口>`，连接被拒时本机代理回 **502**。本地 relay、把 `http://127.0.0.1:57321` 协议代理当供应商、本地 VLM / 模型目录探测都会因此失败。唯一可靠做法是按目标 URL 选 client，环回走 `reqwest::ClientBuilder::no_proxy()`（清空并禁用系统代理匹配器）。入口：`crates/codex-plus-core/src/http_client.rs` 的 `client_for_url` / `url_targets_loopback` / `direct_client`（VLM 侧为 `vlm_http_client_for_url`，connect/total 超时语义不变）。这是**有意绕开**系统代理，不是忽略用户的代理设置。
-- **非环回目标仍然走系统代理**：只有 `url_targets_loopback` 判定为真的目标（`localhost`、`127.0.0.0/8`、`::1`）才切到直连 client，其余目标继续用 `proxied_client`。调用点按实际请求 URL 选择：`protocol_proxy.rs` 用 `endpoint`、`models_url(...)`、`chat_completions_url(...)` 派生出的那个值，`model_catalog.rs`、`sub2api.rs`、`relay_config::test_relay_profile`、`stepwise.rs` 同理。例外：`plugin_marketplace.rs`、`skills.rs` 的目标是固定公网 GitHub 地址，无需改动。
+- **非环回目标仍然走系统代理**：只有 `url_targets_loopback` 判定为真的目标（`localhost`、`127.0.0.0/8`、`::1`）才切到直连 client，其余目标继续用 `proxied_client`。调用点按实际请求 URL 选择：`protocol_proxy.rs` 用 `endpoint`、`models_url(...)`、`chat_completions_url(...)` 派生出的那个值，`model_catalog.rs`、`sub2api.rs`、`relay_config::test_relay_profile`、`stepwise.rs` 同理。Skills 的目录下载仍使用公网 GitHub 地址。
 - **client 按 (是否环回, UA) 池化复用**（`http_client.rs`）：以前每个请求都新建 `reqwest::Client`，连接池随之丢掉，每个上游请求都要重做一次 TCP + TLS 握手。现在同 UA 同代理语义的请求共用一个 client，keep-alive 生效；VLM client 按 (是否环回, connect/total 超时) 另作一类。**代理变更的代价**：系统代理只在 `build()` 时读一次，缓存后改端口不再逐请求生效——所以 `send_upstream_request_with_header_timeout` 在连接类错误（`is_connect`/`is_request`）时调 `reset_client_pool()`，下一次请求重建 client 并重读系统代理，最多失败一次，不需要重启进程。验证 `http_client.rs` 的 `client_pool_keeps_upstream_connections_alive`（真实 TCP 服务端数连接数）。
 - 会话快照、删除与撤销的数据保护见 [sessions.md](sessions.md)。
 - **诊断日志复用文件句柄**（`diagnostic_log.rs`）：代理路径每个请求要写 4 条以上日志，原先每条都 stat（压缩检查）+ open + write + close。现在按路径缓存句柄，压缩检查看自维护的字节数、超 50MB 才 stat；`clear_diagnostic_log` 与压缩都会丢掉句柄（压缩是 temp + rename 换文件，旧句柄会写进被替换的那份）。句柄不带缓冲，写完立即可读，读日志的测试不需要额外 flush。
@@ -77,5 +77,11 @@
 - 分片共享主 IIFE 作用域，边界可能落在函数或模板中间。`renderer-model-runtime.test.ts` 用 TypeScript AST 从完整产物提取主作用域的函数和状态声明再执行，覆盖目录刷新、白名单扫描和命名 Key 快捷入口，防止局部切片测试掩盖声明缺失或函数嵌套。
 - 改注入脚本后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言注入结果）与前端 `npm test`。
 - **注入脚本在重试循环外只构建一次**：`injection_script_with_settings` 产出的字符串有几百 KB（皮肤图 base64 + 整份 renderer 脚本），`retry_injection` 现在构建一次并把 `&[String]` 传进 `try_inject` 复用；以前每次尝试都重建，配合上层最多 120 轮的注入重试会重复几百次。循环只有几秒，不需要在循环中途跟随设置变化。
-- 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在 relay 模式下每轮都会调它）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
+- 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在插件解锁关闭时调用）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。
+
+## 安装与自动更新
+
+macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换两个 app，失败时回滚；不在纯下载校验函数里启动安装。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 通过卸载登记判断首次安装，升级和修复不重建用户主动删除的桌面快捷方式。
+
+Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。

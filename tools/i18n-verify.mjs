@@ -23,6 +23,7 @@ const SRC_FILES = [
   "src/App.tsx",
   "src/route-subtitle.ts",
   "src/launch-status.ts",
+  "src/agent-cache.tsx",
   "src/components/ProviderPresetSelector.tsx",
   "src/components/providers/ProviderImportActions.tsx",
   "src/components/providers/EnvConflictNotice.tsx",
