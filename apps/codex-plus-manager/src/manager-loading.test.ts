@@ -34,13 +34,13 @@ test("启动公共请求并行，工具摘要等设置初始化完成后读取",
   assert.deepEqual(await startup, { showUpdate: true });
 });
 
-test("首页启动不请求其他页面，增强页按需读取远端市场", async () => {
+test("首页启动不请求其他页面，增强页按需读取设置", async () => {
   const calls: string[] = [];
   const loaders = pageLoaders(calls);
   await loadManagerPage("overview", loaders, new Set(["settings", "overview"]));
   assert.deepEqual(calls, []);
   await loadManagerPage("enhance", loaders);
-  assert.deepEqual(calls, ["settings", "remotePluginMarketplace"]);
+  assert.deepEqual(calls, ["settings"]);
 });
 
 test("会话列表与设置并行，供应商默认选择等待设置完成", async () => {
@@ -98,8 +98,8 @@ test("微信页面的状态交给可见性调度，页面加载不重复查询",
   assert.deepEqual(calls, ["settings", "sessions"]);
 });
 
-test("推荐内容页面读取广告列表", async () => {
+test("缓存清理页面由独立面板发起扫描", async () => {
   const calls: string[] = [];
-  await loadManagerPage("recommendations", pageLoaders(calls));
-  assert.deepEqual(calls, ["ads"]);
+  await loadManagerPage("agentCache", pageLoaders(calls));
+  assert.deepEqual(calls, []);
 });

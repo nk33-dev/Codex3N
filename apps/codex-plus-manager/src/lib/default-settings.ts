@@ -1,3 +1,4 @@
+import { defaultDictationSettings } from "../dictation-settings";
 import { t } from "@/i18n";
 
 import { defaultDreamSkinTheme } from "../dream-skin";
@@ -10,9 +11,11 @@ export const emptyContextSelection = (): RelayContextSelection => ({
 });
 
 export const defaultSettings: BackendSettings = {
+  dictation: defaultDictationSettings(),
   codexAppPath: "",
   codexExtraArgs: [],
   providerSyncEnabled: false,
+  ccsDbPath: "",
   providerSyncSavedProviders: [],
   providerSyncManualProviders: [],
   providerSyncLastSelectedProvider: "",
@@ -25,19 +28,11 @@ export const defaultSettings: BackendSettings = {
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppPasteFix: false,
-  codexAppForceChineseLocale: true,
-  codexAppFastStartup: false,
   codexAppNativeBrowserRequireIdentification: false,
   codexAppThreadIdBadge: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
-  codexAppZedRemoteOpen: true,
-  zedRemoteOpenStrategy: "addToFocusedWorkspace",
-  zedRemoteProjectRegistryEnabled: true,
-  zedRemoteSyncToZedSettings: false,
-  codexAppUpstreamWorktreeCreate: true,
   codexAppNativeMenuPlacement: true,
-  codexAppNativeMenuLocalization: true,
   codexAppServiceTierControls: false,
   codexAppPetRealMouseLook: false,
   codexAppStepwiseEnabled: false,
@@ -73,7 +68,6 @@ export const defaultSettings: BackendSettings = {
   weixinConnectModel: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
-  launchMode: "patch",
   relayBaseUrl: "",
   relayApiKey: "",
   relayProfiles: [
@@ -112,6 +106,10 @@ export const defaultSettings: BackendSettings = {
       standardOpenaiProtocol: false,
       sub2apiEnabled: false,
       sub2apiMultiplier: "",
+      rateLimitCooldownEnabled: false,
+      channelQueueEnabled: false,
+      channelRequestsPerMinute: 20,
+      cooldownErrorStatuses: [429, 500],
     },
   ],
   relayCommonConfigContents: "",

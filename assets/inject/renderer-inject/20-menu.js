@@ -11,7 +11,7 @@
     refreshCodexServiceTierControls();
   }
 
-  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, launchMode: "patch", codexAppVersion: "" };
+  let codexPlusBackendSettings = { providerSyncEnabled: false, enhancementsEnabled: true, codexAppVersion: "" };
   let codexPlusBackendSettingsSeq = 0;
   const codexPluginLegacyEntryUnlockBeforeVersion = "26.601.2237";
   const codexPluginBridgeRequestUnlockFromVersion = "26.616.0";
@@ -309,7 +309,7 @@
         const remote = forHost.call(this, hostId, ...args);
         if (!remote || !["object", "function"].includes(typeof remote)) return remote;
         if (!clients.has(remote)) {
-          const local = { __codexPlusHostId: hostId, sendRequest: (...request) => Reflect.apply(remote.sendRequest, remote, request) };
+          const local = { hostId, __codexPlusHostId: hostId, sendRequest: (...request) => Reflect.apply(remote.sendRequest, remote, request) };
           patchAppServerModelRequestClient(local);
           clients.set(remote, new Proxy(local, { get(target, key, receiver) { return Reflect.has(target, key) ? Reflect.get(target, key, receiver) : Reflect.get(remote, key, remote); } }));
         }

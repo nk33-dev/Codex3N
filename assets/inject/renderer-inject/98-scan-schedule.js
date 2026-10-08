@@ -29,8 +29,7 @@
       selectors.archiveNav,
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
-      codexMenuLocalizationScopeSelector(),
-      ...(pluginPatchDisabledInRelayMode() ? [] : [selectors.disabledInstallButton]),
+      ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }
 
@@ -83,7 +82,6 @@
 
   function scheduleScan(mutations) {
     window.__codexSessionDeleteLastMutations = mutations;
-    scheduleZedRemoteMenuRefresh(mutations);
     if (!shouldScheduleScan(mutations)) return;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
@@ -123,8 +121,6 @@
   }
 
   void loadBackendSettingsForStartup();
-  installUpstreamBranchDropdownAdapter();
-  installUpstreamWorktreeNativeAdapter();
   scan();
   syncOfficialUsagePolicy();
   scheduleSidebarNavStartupRetry();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import ts from "typescript";
+import { managerNavigationDestination } from "./enhancement-navigation.ts";
 
 const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
 const source = app.slice(app.indexOf("  const consumePendingManagerNavigation ="), app.indexOf("  const launch = async"));
@@ -13,9 +14,9 @@ function harness() {
   const revision = { current: 0 };
   const visited: string[] = [];
   const navigate = { current: async (page: string) => { visited.push(page); } };
-  const consume = new Function("invoke", "navigationRevision", "navigateRef", "setPendingSettingsSection", "logDiagnostic", "stringifyError",
+  const consume = new Function("invoke", "navigationRevision", "navigateRef", "setPendingEnhancementSection", "logDiagnostic", "stringifyError", "managerNavigationDestination", "setActiveTool", "setEnhancementTab",
     `${compiled}\nreturn consumePendingManagerNavigation;`,
-  )(() => response, revision, navigate, () => {}, assert.fail, String) as (initial?: boolean) => Promise<boolean>;
+  )(() => response, revision, navigate, () => {}, assert.fail, String, managerNavigationDestination, () => {}, () => {}) as (initial?: boolean) => Promise<boolean>;
   return { consume, resolve, revision, navigate, visited };
 }
 

@@ -8,11 +8,11 @@
 
 ## 增强设置保存
 
-增强页开关统一只改草稿；存在未保存修改时显示底部保存栏，点击保存后同步配置。Stepwise、回答大纲和桌宠开关也不偷偷提交整个表单，避免部分自动保存、部分手动保存造成保存栏闪烁。
+增强页分为常用增强、语音输入、下一步建议三个标签，开关统一只改草稿；顶部显示保存状态与保存按钮，点击保存后同步配置。Stepwise、回答大纲和桌宠开关也不偷偷提交整个表单，避免部分自动保存、部分手动保存造成保存栏闪烁。
 
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
-增强页与注入面板的功能标题、说明使用中文，例如“用 Zed 打开远程文件”“从上游创建工作树”；产品名、SSH 和 `git worktree add -b branch path upstream/base` 等命令、参数保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。
+增强页与注入面板使用中文标题、说明；产品名、协议与命令保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。远程 Zed、Upstream 工作树适配、强制中文、原生菜单汉化、快速启动及增强模式选择已随上游撤下，原生 SSH、工作树和会话分享保持可用。旧语言标记只恢复本工具曾设置且用户没有随后更改的值，失败时保留标记供下次重试。
 
 注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，因此按输入身份缓存（后端设置对象、`__CODEX_PLUS_DREAM_SKIN_THEME__` 全局），缓存命中时不再读 `localStorage` 也不再 `JSON.parse`；本地设置写入与皮肤原地更新处显式调用 `invalidateCodexPlusSettingsCache()`。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
 
@@ -45,3 +45,9 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 会话导出、Stepwise、大纲、插件市场等大部分能力源自上游；这里记录个人版的兼容和交互差异，不将上游能力都列作个人原创。
 
 验证：前端 `session-delete-flow.test.ts`、`floating-panel-interaction.test.ts`，Rust `crates/codex-plus-core/tests/floating_panel_*.rs` / `cdp_bridge.rs`。同时检查市场卡片与列表的窄窗口布局，以及悬浮窗各材质、拖动、缩放、吸附和展开收起效果。
+
+## 语音输入与缓存清理
+
+语音输入使用独立的 `dictation` 配置，默认关闭；`enhancementsEnabled` 关闭时暂停录音，服务配置保留。管理器草稿与默认值位于 `dictation-settings.ts`、`provider-types.ts` 和 `lib/default-settings.ts`，Rust `settings.rs` 归一化并加密 `dictation.apiKey`。渲染端唯一入口是 manifest 的 `93-dictation.js`，设置加载成功后经 `runScanStep` 安装，录音界面失败不改变供应商设置加载结果。支持插入、停止并发送、重试和取消；发送前验证当前会话与原生输入框，避免把旧录音发进新会话。旧的 settings/stepwise 导航归一到增强页的下一步建议标签。
+
+缓存页 `agent-cache.tsx` 通过 Tauri `scan_agent_cache` / `clean_agent_cache` 调用 `agent_cache.rs`。清理只接受后端保存的扫描快照和组 ID，快照 10 分钟到期且只能消费一次；逐文件校验并删除超过 24 小时的白名单缓存，不接收前端文件路径。录音、配置和会话数据不作为缓存清理对象。验证：`dictation-runtime.test.ts`、`enhancement-settings.test.ts`、`agent-cache-model.test.ts`、Rust dictation 与 agent_cache 单测。
