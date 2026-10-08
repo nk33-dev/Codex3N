@@ -16,6 +16,8 @@
 
 ## 代码入口与配置
 
+密钥页的供应商摘要与 Key 选择器放在限宽卡片内，窄窗口自动换行；选择器有可见标签、键盘焦点和切换中禁用状态，原生菜单随宿主深浅主题配色。选择器通过 `change` 事件提交切换，鼠标和键盘共用同一入口。
+
 - `crates/codex-plus-core/src/provider_import.rs`：`initialize_local_config_provider`，关注 `localConfigProviderImported`。
 - `crates/codex-plus-core/src/settings.rs`：供应商持久化与工具配置分片。
 - `crates/codex-plus-core/src/relay_config.rs` / `relay_switch.rs`：配置应用与切换。`relay_switch::select_active_relay_api_key_in_home` 按总开关分流；`relay_config::live_api_key_target_in_home` / `set_live_api_key_only_in_home` 是窄路径的落点判定与写入。`API_KEY_ENV_KEYS`、`PROVIDER_TOKEN_KEYS`、`PROVIDER_ENV_KEY_KEYS` 在这里定义，模型目录的 `provider_api_key` 复用同一份清单，不再各写一套。

@@ -681,9 +681,12 @@
       ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
       : "";
     list.innerHTML = `
-      <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
-        ${options}
-      </select>${switchOffHint}${liveMismatchHint}`;
+      <label class="codex-plus-api-key-field">
+        <span>当前 Key</span>
+        <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
+          ${options}
+        </select>
+      </label>${switchOffHint}${liveMismatchHint}`;
     refreshCodexRelayApiKeyBadges();
   }
 
@@ -1216,6 +1219,11 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
+      if (apiKeySelect) {
+        void selectRelayApiKey(apiKeySelect.value);
+        return;
+      }
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -1266,11 +1274,6 @@
       if (issueButton) {
         const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
         window.open(issueUrl, "_blank");
-        return;
-      }
-      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
-      if (apiKeySelect) {
-        void selectRelayApiKey(apiKeySelect.value);
         return;
       }
       if (target?.closest("[data-codex-service-tier-inherit]")) {

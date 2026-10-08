@@ -239,6 +239,31 @@ test("切换进行中才禁用下拉框", async () => {
   assert.match(list.innerHTML, /data-codex-relay-api-key-select="true"[^>]* disabled/);
 });
 
+test("Key 选择器在值变化时提交，支持键盘选择", () => {
+  const modal = declarations.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "openCodexPlusModal");
+  assert.ok(modal);
+  let handler: ts.Node | undefined;
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(syntax) === "overlay"
+      && node.expression.name.text === "addEventListener"
+      && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "change") {
+      handler = node.arguments[1];
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(modal);
+  assert.ok(handler);
+  const selected: string[] = [];
+  const onChange = new Function("Element", "selectRelayApiKey", `return (${handler.getText(syntax)});`)(
+    Object, (keyId: string) => selected.push(keyId),
+  );
+  const select = { value: "backup", closest: (selector: string) => selector === "[data-codex-relay-api-key-select]" ? select : null };
+  onChange({ target: select });
+  assert.deepEqual(selected, ["backup"]);
+  assert.doesNotMatch(runtimeSource("openCodexPlusModal").split('overlay.addEventListener("click"')[1], /selectRelayApiKey\(apiKeySelect.value\)/);
+});
+
 test("没有命名 Key 时都提示去管理工具添加", async () => {
   for (const enabled of [true, false]) {
     const { list, load } = relayKeysRuntime({ enabled });
