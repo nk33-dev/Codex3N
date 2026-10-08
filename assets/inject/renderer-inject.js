@@ -1653,6 +1653,45 @@
       .codex-plus-modal-body::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--codex-plus-text-tertiary) 45%, transparent); background-clip: padding-box; }
       .codex-plus-modal-body::-webkit-scrollbar-thumb:hover { background: var(--codex-plus-text-tertiary); background-clip: padding-box; }
       .codex-plus-row { border-top-color: var(--codex-plus-border-subtle); }
+      .codex-plus-row.codex-plus-api-key-section {
+        box-sizing: border-box;
+        width: 100%;
+        max-width: 720px;
+        margin: 16px 0;
+        padding: 20px;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 20px 24px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-xl, 12px);
+        background: var(--codex-plus-bg-secondary);
+      }
+      .codex-plus-api-key-copy { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; }
+      .codex-plus-api-key-copy .codex-plus-row-description { margin-top: 6px; line-height: 1.5; }
+      .codex-plus-api-key-list { display: grid; gap: 10px; flex: 1 1 200px; min-width: 0; }
+      .codex-plus-api-key-field { display: grid; gap: 6px; color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-api-key-select {
+        appearance: auto;
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+        min-height: 44px;
+        padding: 10px 12px;
+        border: 1px solid var(--codex-plus-border);
+        border-radius: var(--border-radius-lg, 8px);
+        background: var(--codex-plus-bg-primary);
+        color: var(--codex-plus-text);
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .codex-plus-api-key-select option { background: var(--codex-plus-bg-elevated); color: var(--codex-plus-text); }
+      .codex-plus-api-key-select:hover:not(:disabled) { border-color: var(--codex-plus-text-tertiary); }
+      .codex-plus-api-key-select:focus-visible { outline: 2px solid var(--codex-plus-focus); outline-offset: 2px; }
+      .codex-plus-api-key-select:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-api-key-empty { color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+      [data-codex-plus-theme="light"] .codex-plus-api-key-select { color-scheme: light; }
+      [data-codex-plus-theme="dark"] .codex-plus-api-key-select { color-scheme: dark; }
       .codex-plus-toggle { background: var(--color-background-secondary-solid, var(--codex-plus-text-tertiary)); }
       .codex-plus-toggle span { background: var(--color-token-bg-primary, #fff); box-shadow: var(--switch-thumb-shadow, 0 1px 2px rgba(0,0,0,.16)); }
       .codex-plus-toggle[data-enabled="true"] { background: var(--color-background-primary-solid, var(--color-background-success-solid, #10a37f)); }
@@ -5010,9 +5049,12 @@
       ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
       : "";
     list.innerHTML = `
-      <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
-        ${options}
-      </select>${switchOffHint}${liveMismatchHint}`;
+      <label class="codex-plus-api-key-field">
+        <span>当前 Key</span>
+        <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
+          ${options}
+        </select>
+      </label>${switchOffHint}${liveMismatchHint}`;
     refreshCodexRelayApiKeyBadges();
   }
 
@@ -5545,6 +5587,11 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
+      if (apiKeySelect) {
+        void selectRelayApiKey(apiKeySelect.value);
+        return;
+      }
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -5595,11 +5642,6 @@
       if (issueButton) {
         const issueUrl = "https://github.com/BigPizzaV3/CodexPlusPlus/issues";
         window.open(issueUrl, "_blank");
-        return;
-      }
-      const apiKeySelect = target?.closest("[data-codex-relay-api-key-select]");
-      if (apiKeySelect) {
-        void selectRelayApiKey(apiKeySelect.value);
         return;
       }
       if (target?.closest("[data-codex-service-tier-inherit]")) {
