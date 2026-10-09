@@ -1,3 +1,4 @@
+import type { WhaleBalanceSettings } from "./whale-settings";
 import type { DreamSkinThemeConfig } from "./dream-skin";
 import type { DictationSettings } from "./dictation-settings";
 import type { RelayModelRoute } from "./model-routes";
@@ -85,7 +86,7 @@ export type ToolShard = {
   relayTestModel?: string;
 };
 
-export type BackendSettings = {
+export type BackendSettings = WhaleBalanceSettings & {
   dictation: DictationSettings;
   codexAppPath: string;
   codexExtraArgs: string[];
@@ -101,6 +102,8 @@ export type BackendSettings = {
   codexAppIncludeNativeModels: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
+  codexAppSessionShare: boolean;
+  codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";
   codexAppPasteFix: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppThreadIdBadge: boolean;
@@ -153,7 +156,7 @@ export type BackendSettings = {
   relayTestModel: string;
   /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
   tools?: Record<string, ToolShard>;
-  /** 顶栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
+  /** 侧栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
   activeTool?: string;
   ccsDbPath: string;
 };

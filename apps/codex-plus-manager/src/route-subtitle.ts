@@ -14,6 +14,7 @@ export function routeSubtitle(route: ManagerRoute): string {
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
+    pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     userScripts: t("内置和用户自定义拓展清单"),
     maintenance: t("入口安装、修复、Watcher 与手动启动"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
