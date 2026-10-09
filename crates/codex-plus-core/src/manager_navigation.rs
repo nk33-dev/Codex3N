@@ -129,7 +129,7 @@ fn normalize_navigation(
         navigation.page = "enhance".to_string();
     }
     match (navigation.page.as_str(), navigation.section.as_deref()) {
-        ("settings", None)
+        ("settings" | "pluginMarket", None)
         | ("enhance", None | Some("stepwise" | "dictation"))
         | ("relay", None) => Ok(navigation),
         _ => anyhow::bail!(

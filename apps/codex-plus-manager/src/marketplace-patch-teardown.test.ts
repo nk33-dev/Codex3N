@@ -81,7 +81,13 @@ function marketplacePatchRuntime(source: string) {
     "loadAppServerRequestCandidates",
     "patchPluginMarketplaceRequestClient",
     "sendCodexPlusDiagnostic",
-    `${filterChunk}\n${bridgeChunk}\n${tailChunk}\nreturn { installPluginBuildFlavorFilterPatch, installPluginMarketplaceBridgePatch, installPluginMarketplaceWindowEventPatchOnly, installPluginMarketplaceRequestPatch, clearPluginPatchArtifacts };`,
+    `const ensureCodexPlusPluginNativeTransportReinjection = () => {};
+const codexPlusPluginNativeInterceptOutgoing = () => false, codexPlusPluginNativeInterceptIncoming = () => false;
+function installCodexPlusPluginNativeTransportListener() {
+  window.__codexPlusPluginNativeResponseListener = () => {};
+  window.addEventListener("message", window.__codexPlusPluginNativeResponseListener, true);
+}
+${filterChunk}\n${bridgeChunk}\n${tailChunk}\nreturn { installPluginBuildFlavorFilterPatch, installPluginMarketplaceBridgePatch, installPluginMarketplaceWindowEventPatchOnly, installPluginMarketplaceRequestPatch, clearPluginPatchArtifacts };`,
   );
 
   const api = factory(
@@ -162,7 +168,7 @@ describe("插件市场补丁还原", () => {
       assert.notEqual(Array.prototype.filter, originalFilter, "filter 补丁应先装上");
       assert.notEqual(runtime.window.dispatchEvent, runtime.dispatchEvent, "dispatchEvent 补丁应先装上");
       assert.notEqual(bridge.sendMessageFromView, runtime.sendMessageFromView, "bridge 补丁应先装上");
-      assert.equal(runtime.listeners.size, 1, "message 监听应先装上");
+      assert.equal(runtime.listeners.size, 2, "市场响应与原生插件响应监听应先装上");
       assert.equal(runtime.patchedClients.length, 1, "RPC sendRequest 补丁应先装上");
       const patched = runtime.patchedClients[0];
       assert.notEqual(patched.client.sendRequest, patched.original, "sendRequest 应已被替换");

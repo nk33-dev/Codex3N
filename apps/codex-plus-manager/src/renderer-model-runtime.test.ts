@@ -112,59 +112,18 @@ test("手工上下文窗口覆盖同名上游模型描述", () => {
   assert.equal(descriptor.maxContextWindow, 1_000_000);
 });
 
-test("模型切换区提供命名 Key 快捷入口", () => {
-  assert.match(renderer, /data-codex-relay-api-key-badge/);
-  assert.match(renderer, /openCodexPlusPage\("apiKeys"\)/);
+test("注入重载清理会话中的旧 Key 徽章，密钥切换保留在设置页", () => {
+  let removed = 0;
+  const cleanup = new Function("document", `
+    ${runtimeSource("removeLegacyRelayApiKeyBadges")}
+    return removeLegacyRelayApiKeyBadges;
+  `)({ querySelectorAll: () => Array.from({ length: 2 }, () => ({ remove() { removed += 1; } })) });
+  cleanup();
+  assert.equal(removed, 2);
+  assert.doesNotMatch(renderer, /installCodexRelayApiKeyBadge|refreshCodexRelayApiKeyBadges|codexRelayApiKeyBadgeClass/);
+  assert.match(renderer, /runScanStep\(removeLegacyRelayApiKeyBadges\)/);
+  assert.match(renderer, /data-codex-relay-api-key-select/);
   assert.match(renderer, /\/relay-api-keys\/select/);
-});
-
-test("命名 Key 快捷入口在主作用域可调用，重复安装复用按钮", () => {
-  const keys = { status: "ok", activeKeyId: "main", keys: [{ id: "backup", name: "备用" }, { id: "main", name: "主 Key" }] };
-  let route = "";
-  let click: () => void = () => {};
-  let badges: typeof button[] = [];
-  const button = {
-    dataset: {} as Record<string, string>, textContent: "", title: "", className: "", type: "",
-    parentElement: null as unknown, nextSibling: null as unknown,
-    setAttribute() {},
-    addEventListener(_type: string, handler: (event: unknown) => void) {
-      click = () => handler({ preventDefault() {}, stopPropagation() {} });
-    },
-    remove() { badges = badges.filter((badge) => badge !== button); },
-  };
-  const parent = { insertBefore(badge: typeof button) { badge.parentElement = parent; badges.push(badge); } };
-  const install = new Function("document", "codexPlusRelayApiKeys", "codexServiceTierFindComposerEl", "codexServiceTierBadgePlacement", "openCodexPlusPage", `
-    const codexPlusBackendStatus = { status: "ok" }, codexPlusRelayApiKeySwitching = false;
-    ${runtimeSource("codexRelayApiKeyBadgeClass", "codexRelayApiKeyBadgeVersion", "refreshCodexRelayApiKeyBadges", "installCodexRelayApiKeyBadge")}
-    return installCodexRelayApiKeyBadge;
-  `)(
-    { querySelectorAll: () => badges, createElement: () => button }, keys,
-    () => ({}), () => ({ parent, before: null }), (next: string) => { route = next; },
-  );
-  install();
-  install();
-  assert.equal(badges.length, 1);
-  assert.equal(button.textContent, "主 Key");
-  assert.equal(button.className, "codex-relay-api-key-badge");
-  assert.ok(renderer.includes(".${codexRelayApiKeyBadgeClass} {"), "快捷入口须有对应样式");
-  click();
-  assert.equal(route, "apiKeys");
-  keys.keys = [];
-  install();
-  assert.equal(badges.length, 0);
-});
-
-test("Key 快捷入口及其子节点不会触发宿主页面扫描", () => {
-  const isExtension = new Function(`
-    ${runtimeSource("codexPlusPageClass", "codexPlusSidebarNavId", "codexPlusRailNavId", "codexPlusRailExtensionsId", "codexPlusRailSponsorId", "codexServiceTierBadgeClass", "codexRelayApiKeyBadgeClass", "sessionShareButtonClass", "sessionCopyMenuItemClass", "isExtensionUiNode")}
-    const isCodexPlusExtensionNode = () => false;
-    return isExtensionUiNode;
-  `)();
-  const badge = { className: "codex-relay-api-key-badge" };
-  const closest = (selector: string) => selector.split(",").some((part) => part.trim() === `.${badge.className}`) ? badge : null;
-  assert.equal(isExtension({ closest }), true);
-  assert.equal(isExtension({ parentElement: badge, closest }), true);
-  assert.equal(isExtension({ closest: () => null }), false);
 });
 
 /** 用注入脚本里真实的 Key 面板渲染与加载逻辑搭建一个最小运行环境。 */
@@ -173,7 +132,7 @@ function relayKeysRuntime(state: { enabled: boolean; status?: string; activeKeyI
   const list = { textContent: "", innerHTML: "" };
   let requests = 0;
   const serialize = (value: unknown) => String(value);
-  const runtime = new Function("document", "postJson", "escapeHtml", "refreshCodexRelayApiKeyBadges", `
+  const runtime = new Function("document", "postJson", "escapeHtml", `
     let codexPlusRelayApiKeys = ${JSON.stringify({
       status: "ok",
       providerId: "relay-1",
@@ -195,7 +154,6 @@ function relayKeysRuntime(state: { enabled: boolean; status?: string; activeKeyI
       return { status: "ok" };
     },
     serialize,
-    () => {},
   );
   return { summary, list, load: runtime.load, refreshOnOpen: runtime.refreshOnOpen, requestCount: () => requests };
 }
@@ -237,6 +195,31 @@ test("切换进行中才禁用下拉框", async () => {
   });
   await load();
   assert.match(list.innerHTML, /data-codex-relay-api-key-select="true"[^>]* disabled/);
+});
+
+test("Key 选择器在值变化时提交，支持键盘选择", () => {
+  const modal = declarations.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "openCodexPlusModal");
+  assert.ok(modal);
+  let handler: ts.Node | undefined;
+  function visit(node: ts.Node) {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(syntax) === "overlay"
+      && node.expression.name.text === "addEventListener"
+      && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "change") {
+      handler = node.arguments[1];
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(modal);
+  assert.ok(handler);
+  const selected: string[] = [];
+  const onChange = new Function("Element", "selectRelayApiKey", `return (${handler.getText(syntax)});`)(
+    Object, (keyId: string) => selected.push(keyId),
+  );
+  const select = { value: "backup", closest: (selector: string) => selector === "[data-codex-relay-api-key-select]" ? select : null };
+  onChange({ target: select });
+  assert.deepEqual(selected, ["backup"]);
+  assert.doesNotMatch(runtimeSource("openCodexPlusModal").split('overlay.addEventListener("click"')[1], /selectRelayApiKey\(apiKeySelect.value\)/);
 });
 
 test("没有命名 Key 时都提示去管理工具添加", async () => {
