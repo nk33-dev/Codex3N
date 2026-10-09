@@ -662,12 +662,14 @@
   }
 
   function appServerModelRequestMethod(method, params) {
-    if (method === "send-cli-request-for-host" && params?.method) return String(params.method);
+    if (method === "send-cli-request-for-host" && params?.method) return appServerModelRequestMethod(String(params.method), params.params);
     if (method === "vscode://codex/list-plugins") return "list-plugins";
     if (method === "vscode://codex/plugin/install") return "install-plugin";
     if (method === "vscode://codex/plugin/uninstall") return "uninstall-plugin";
     if (method === "plugin/list") return "list-plugins";
     if (method === "plugin/install") return "install-plugin";
+    if (method === "plugin/read") return "read-plugin";
+    if (method === "plugin/installed") return "installed-plugins";
     if (method === "plugin/uninstall") return "uninstall-plugin";
     return String(method || "");
   }
@@ -763,6 +765,9 @@
     client.__codexPlusModelOriginalSendRequest = originalSendRequest;
     client.__codexPlusThreadModels = client.__codexPlusThreadModels || new Map();
     client.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest(method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
@@ -930,6 +935,7 @@
     function installCodexAppServerClientPrototypePatch() {
     if (window.__codexPlusAppServerClientPrototypePatchInstalled === codexAppServerModelRequestPatchVersion) return true;
     const wanted = codexPlusModelUnlockEnabled()
+      || codexPluginMarketplacePatchEnabled()
       || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
       || codexPlusSettings().serviceTierControls
       || codexPlusSettings().sessionDelete;
@@ -958,6 +964,9 @@
     proto.sendRequest = async function codexPlusModelPatchedSendRequest(method, params, options) {
       const client = this;
       registerNativeHostClient(client);
+      const managed = codexPlusPluginNativeInterceptClient(method, params, options,
+        (nextOptions) => originalSendRequest.call(client, method, params, nextOptions), client.hostId);
+      if (managed) return await managed;
       const requestMethod = appServerModelRequestMethod(String(method || ""), params);
       let providerRefreshFailed = false;
       if (codexRemoteSessionProviderRequestMethod(requestMethod)
@@ -1116,6 +1125,7 @@
 
   function ensureCodexModelWhitelistInstalls() {
     if (codexPlusModelUnlockEnabled()
+        || codexPluginMarketplacePatchEnabled()
         || (codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled())
         || codexPlusSettings().serviceTierControls
         || codexPlusSettings().sessionDelete) {

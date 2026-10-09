@@ -42,6 +42,12 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 ## 功能归属与验证
 
+管理器沿用上游 Agent 图标栏与原生工作区布局。供应商编辑分组由 `App.tsx::RelayFold` 保存展开偏好，新出现的校验错误展开对应分组，模型配置首次默认展开。
+
+`codexAppSessionShare` 控制当前会话工具栏的分享按钮；`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭。注入入口为 `80-session-share.js` 与 `94-typing-effects.js`，分享入口限定当前会话，打字特效跟随输入法组合状态和系统减少动态效果设置。
+
+`codexAppWhaleWidgetEnabled` 默认关闭，挂件入口是 `96-whale-compat.js` 与 `97-whale-widget.js`，完整引擎由 `assets.rs` 内联。余额查询复用已保存的供应商凭据，币种、路径、字段与倍率由 `whale-settings.ts` 校验；本地用量、余额账本和账户校正分别保存在 `whale_usage.rs`、`whale_history.rs` 与 `whale_full.rs` 的运行路径。相关读写回归使用临时数据，不操作活动数据库。
+
 会话导出、Stepwise、大纲、插件市场等大部分能力源自上游；这里记录个人版的兼容和交互差异，不将上游能力都列作个人原创。
 
 验证：前端 `session-delete-flow.test.ts`、`floating-panel-interaction.test.ts`，Rust `crates/codex-plus-core/tests/floating_panel_*.rs` / `cdp_bridge.rs`。同时检查市场卡片与列表的窄窗口布局，以及悬浮窗各材质、拖动、缩放、吸附和展开收起效果。

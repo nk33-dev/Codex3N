@@ -21,6 +21,7 @@ const ts = require("typescript");
 
 const SRC_FILES = [
   "src/App.tsx",
+  "src/PluginMarketScreen.tsx",
   "src/route-subtitle.ts",
   "src/launch-status.ts",
   "src/agent-cache.tsx",

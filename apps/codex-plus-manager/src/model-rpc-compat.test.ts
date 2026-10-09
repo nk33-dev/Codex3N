@@ -65,6 +65,7 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     const codexRemoteSessionProviderRequestMethod = () => false;
     const applyCodexRemoteSessionProviderOverride = (_method, params) => params;
     const applyCodexServiceTierRequestOnly = (_method, params) => params;
+    const codexPlusPluginNativeInterceptClient = () => null;
     const refreshCodexThreadModelBeforeTurn = async () => null;
     const codexThreadModelRequestState = () => ({});
     const loadCodexModelCatalog = async () => codexModelCatalog;
