@@ -1,3 +1,4 @@
+import { defaultWhaleBalanceSettings } from "../whale-settings";
 import { defaultDictationSettings } from "../dictation-settings";
 import { t } from "@/i18n";
 
@@ -11,6 +12,7 @@ export const emptyContextSelection = (): RelayContextSelection => ({
 });
 
 export const defaultSettings: BackendSettings = {
+  ...defaultWhaleBalanceSettings(),
   dictation: defaultDictationSettings(),
   codexAppPath: "",
   codexExtraArgs: [],
@@ -27,6 +29,8 @@ export const defaultSettings: BackendSettings = {
   codexAppIncludeNativeModels: true,
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
+  codexAppSessionShare: true,
+  codexAppTypingEffect: "off",
   codexAppPasteFix: false,
   codexAppNativeBrowserRequireIdentification: false,
   codexAppThreadIdBadge: false,

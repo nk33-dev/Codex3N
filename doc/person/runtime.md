@@ -74,10 +74,16 @@
 - 悬浮球的 `assets/inject/floating-panel/**` 是上游**既有**分片，沿用不变，由 `assets.rs` 的 `STEPWISE_SCRIPT` 用 `concat!` 拼装。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。renderer 的粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
 - `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；这些文件被 `include_str!` 内联，换行变化会改变注入内容。
 - 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts`：`readRendererInjectSource` 读取生成产物，`readStepwiseSource` 按顺序拼回悬浮球分片。`renderer-inject.test.ts` 校验 renderer 分片与产物逐字节一致；`inject-fragments.test.ts` 校验悬浮球清单与 `assets.rs` 顺序及完整语法。
-- 分片共享主 IIFE 作用域，边界可能落在函数或模板中间。`renderer-model-runtime.test.ts` 用 TypeScript AST 从完整产物提取主作用域的函数和状态声明再执行，覆盖目录刷新、白名单扫描和命名 Key 快捷入口，防止局部切片测试掩盖声明缺失或函数嵌套。
+- 分片共享主 IIFE 作用域，边界可能落在函数或模板中间。`renderer-model-runtime.test.ts` 用 TypeScript AST 从完整产物提取主作用域的函数和状态声明再执行，覆盖目录刷新、白名单扫描、设置页命名 Key 切换和旧徽章清理，防止局部切片测试掩盖声明缺失或函数嵌套。
 - 改注入脚本后跑 `cargo test --workspace`（`crates/codex-plus-core/tests/cdp_bridge.rs` 等按内容断言注入结果）与前端 `npm test`。
 - **注入脚本在重试循环外只构建一次**：`injection_script_with_settings` 产出的字符串有几百 KB（皮肤图 base64 + 整份 renderer 脚本），`retry_injection` 现在构建一次并把 `&[String]` 传进 `try_inject` 复用；以前每次尝试都重建，配合上层最多 120 轮的注入重试会重复几百次。循环只有几秒，不需要在循环中途跟随设置变化。
-- 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在插件解锁关闭时调用）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
+- 插件市场解锁的补丁分散在四处宿主对象上：`Array.prototype.filter`、`window.dispatchEvent`、`electronBridge.sendMessageFromView`、RPC 客户端 `sendRequest`。每处都必须同时记录原始值并在 `clearPluginPatchArtifacts()` 里还原（`scanDeferred()` 在插件解锁关闭时调用）。原始方法本身与绑定副本分开保存：还原回原始方法，绑定副本只给包装器调用。关闭时同时摘除市场响应与原生插件响应监听。验证：`apps/codex-plus-manager/src/marketplace-patch-teardown.test.ts`。
+
+## 插件市场与设置入口
+
+管理器 `PluginMarketScreen.tsx` 自行按需读取插件目录，`manager-loading.ts` 的 `pluginMarket` 页面不重复请求。Tauri 命令 `refresh_plugin_market`、`install_plugin_market_item`、`plugin_market_install_status` 注册在 `lib.rs`，桥接 `/plugin-market/*` 由 `routes.rs` 调用 `plugin_market.rs`。Codex 原生插件页通过 `62-plugin-market-adapter.js` 接入同一索引与安装任务，保留原生导航入口。
+
+上游新增设置统一迁入 `provider-types.ts` 和 `lib/default-settings.ts`，`App.tsx` 保留归一化、校验与保存互斥；页面副标题由 `route-subtitle.ts` 提供。插件市场的翻译调用加入 `tools/i18n-verify.mjs` 的扫描清单。
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。
 
 ## 安装与自动更新

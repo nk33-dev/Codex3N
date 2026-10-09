@@ -19,7 +19,7 @@ test("供应商切换立即加锁，并把切换状态纳入 actions 依赖", ()
       < switching.indexOf("await snapshotActiveRelayFilesBeforeSwitch"),
   );
 
-  const actions = section("  const actions = useMemo(", "  const hasUpdate =");
+  const actions = section("  const actions = useMemo(", "  const isGlobalPage =");
   const dependencies = actions.slice(actions.lastIndexOf("["));
   assert.match(dependencies, /\brelaySwitching\b/);
 });
