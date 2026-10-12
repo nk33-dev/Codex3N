@@ -6850,6 +6850,39 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
+    fn skills_commands_are_registered_with_tauri() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
+        let handler = source
+            .split(".invoke_handler(tauri::generate_handler![")
+            .nth(1)
+            .unwrap()
+            .split("])")
+            .next()
+            .unwrap();
+        let registered: Vec<_> = handler.split(',').map(str::trim).collect();
+
+        for command in [
+            "commands::list_installed_skills",
+            "commands::refresh_skill_catalog",
+            "commands::install_skill",
+            "commands::update_skill",
+            "commands::set_skill_enabled",
+            "commands::uninstall_skill",
+            "commands::restore_skill_backup",
+            "commands::delete_skill_backup",
+            "commands::upsert_skill_repo",
+            "commands::delete_skill_repo",
+        ] {
+            assert_eq!(
+                registered.iter().filter(|entry| **entry == command).count(),
+                1,
+                "Tauri 命令须且只能注册一次：{command}"
+            );
+        }
+    }
+
+    #[test]
     fn dream_skin_commands_are_registered_with_tauri() {
         let source =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")).unwrap();
