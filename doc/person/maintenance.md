@@ -113,4 +113,5 @@ cargo test --workspace
 - 脚本校验分支、工作区、标签，查询个人仓库中该 SHA 最新一次 push CI，并运行本地门禁；检查后再次确认工作区干净，再原子推送分支与标签并创建 Release。CI 缺失、运行中、失败或查询异常都会在打标签前停止。`.github/workflows/release-assets.yml` 仍保留独立测试门禁和标签版本校验。
 - 同一 SHA 已通过完整 CI 时，可以添加 `-SkipChecks` 复用结果，省去重复本地检查。该参数仍须通过远端 CI 校验；有任何新提交就重新验证。
 - 所有 GitHub 操作显式指定 `--repo nk33-dev/Codex3N`。`pushurl = DISABLED` 只限制 Git 推送，不能防止 `gh` 误操作上游。同步时保持个人更新源。
+- 发布工作流修复后，可从已通过 CI 的 `personal` 手动执行 `release-assets.yml`，指定已有 `tag` 与所需 `platform` 补跑；构建源码仍来自目标标签。附件全部齐备后才生成 `latest.json` 与校验和。
 - 失败不得继续发布。Release 创建成功后默认结束，不轮询构建；“Release 已创建”“安装包构建成功”“安装运行已验证”分别报告。

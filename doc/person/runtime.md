@@ -93,3 +93,5 @@ macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/mac
 多开入口为 `commands.rs::launch_codex_multi_instance`，每个实例隔离 `CODEX_HOME`、SQLite、Electron 用户目录、调试端口和 helper 端口，独立 worker 仍调用同一启动器库。Chat Completions 和搜索历史兼容模式写入实例自己的代理端口；聚合与模型路由配置暂不支持多开。主应用的健康状态由 `runtime_health.rs` 汇总。
 
 Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。签名与独立 helper 启动回归使用本机 clang 编译的普通 Mach-O，验证重新签名后的执行与源 app 完整性。
+
+macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-plus` 与 `codex-plus-legacy-shim` 通用二进制，名称从实际 DMG 派生，并通过解压完整性检查。发布附件补跑从 `personal` 的工作流执行，源码仍检出目标标签，保留标签提交。
