@@ -983,6 +983,39 @@ base_url = "https://a.example/v1"
         "key-deepseek"
     );
     assert!(result.backup_path.is_some(), "写 live 前要留备份");
+    assert_eq!(
+        codex_plus_core::relay_config::runtime_api_key_in_home(&home).as_deref(),
+        Some("sk-b")
+    );
+}
+
+#[test]
+fn runtime_api_key_reload_preserves_oauth_and_rejects_config_credentials() {
+    let _guard = lock_api_key_env();
+    let temp = tempfile::tempdir().unwrap();
+    for (config, auth) in [
+        (
+            "",
+            r#"{"OPENAI_API_KEY":"sk-a","tokens":{"access_token":"oauth"}}"#,
+        ),
+        ("", r#"{"OPENAI_API_KEY":"sk-a","auth_mode":"chatgpt"}"#),
+        (
+            "model_provider = \"custom\"\n[model_providers.custom]\nexperimental_bearer_token = \"sk-a\"\n",
+            "{}",
+        ),
+        (
+            "model_provider = \"custom\"\n[model_providers.custom]\nenv_key = \"PROBE_API_KEY\"\n",
+            r#"{"OPENAI_API_KEY":"sk-a"}"#,
+        ),
+    ] {
+        std::fs::write(temp.path().join("config.toml"), config).unwrap();
+        std::fs::write(temp.path().join("auth.json"), auth).unwrap();
+        assert!(codex_plus_core::relay_config::runtime_api_key_in_home(temp.path()).is_none());
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("auth.json")).unwrap(),
+            auth
+        );
+    }
 }
 
 #[test]

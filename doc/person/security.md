@@ -16,6 +16,8 @@
 
 **边界差异**：管理器自己的设置编辑器要能显示密钥正文，读的是 Tauri IPC 的 `get_settings`，那份仍返回明文；加密只发生在落盘边界（见[runtime.md](runtime.md)）。因此「管理器能读到明文」是设计内行为，不代表桥接也可以下发。
 
+换 Key 的运行时认证更新走独立的 CDP 调用：后端将密钥作为临时参数交给本机 RPC 的 `account/login/start`，不写入页面全局状态、列表响应或诊断日志。页面只回传是否更新成功，CDP 与 RPC 的原始错误不向页面回显。入口固定为认证更新，不提供读取密钥的桥接路由，也不向远端 host 发送。
+
 ## CI 与发布
 
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。

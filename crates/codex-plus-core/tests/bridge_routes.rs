@@ -402,6 +402,70 @@ async fn relay_api_keys_route_only_exposes_names() {
 }
 
 #[tokio::test]
+async fn relay_api_key_selection_reports_runtime_confirmation_without_exposing_secrets() {
+    for (supported, succeeds, live_key) in [
+        (true, true, "sk-selected"),
+        (true, false, "sk-selected"),
+        (false, true, "sk-selected"),
+        (true, true, "sk-unrelated"),
+    ] {
+        let settings = Arc::new(FakeSettings::with_settings(BackendSettings {
+            active_relay_id: "relay-a".to_string(),
+            relay_profiles: vec![codex_plus_core::settings::RelayProfile {
+                id: "relay-a".to_string(),
+                api_keys: vec![codex_plus_core::settings::RelayApiKey {
+                    id: "selected".to_string(),
+                    name: "主 Key".to_string(),
+                    api_key: "sk-selected".to_string(),
+                }],
+                ..codex_plus_core::settings::RelayProfile::default()
+            }],
+            ..BackendSettings::default()
+        }));
+        if supported {
+            *settings.live_codex_api_key.lock().unwrap() = Some(live_key.to_string());
+        }
+        let runtime = Arc::new(FakeRuntime {
+            api_key_reload_succeeds: succeeds,
+            ..FakeRuntime::default()
+        });
+        let ctx = BridgeContext::new(
+            settings.clone(),
+            runtime.clone(),
+            Arc::new(FakeData::default()),
+        );
+        let result = handle_bridge_request(
+            ctx,
+            "/relay-api-keys/select",
+            json!({ "keyId": "selected" }),
+        )
+        .await;
+        let applicable = supported && live_key == "sk-selected";
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["activeKeyId"], "selected");
+        assert_eq!(result["runtimeApplied"], applicable && succeeds);
+        assert_eq!(
+            settings
+                .settings
+                .lock()
+                .unwrap()
+                .active_relay_profile()
+                .active_api_key_id,
+            "selected"
+        );
+        assert_eq!(
+            runtime.reloaded_api_keys.lock().unwrap().len(),
+            usize::from(applicable)
+        );
+        assert!(!result.to_string().contains("sk-selected"));
+        assert!(!result.to_string().contains("sk-unrelated"));
+        if !applicable || !succeeds {
+            assert!(result["message"].as_str().unwrap().contains("完整退出"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn relay_api_keys_route_reports_the_live_key_not_the_stored_one() {
     // 总开关关闭时 live 才是事实来源：存档停在"最后添加的 Key"，Codex 实际还在用另一个。
     let settings = BackendSettings {
@@ -1351,6 +1415,27 @@ impl FakeSettings {
 
 #[async_trait]
 impl BridgeSettingsService for FakeSettings {
+    async fn select_relay_api_key(&self, key_id: String) -> anyhow::Result<BackendSettings> {
+        let mut settings = self.settings.lock().unwrap();
+        let profile = settings
+            .relay_profiles
+            .first_mut()
+            .ok_or_else(|| anyhow::anyhow!("当前供应商不存在"))?;
+        let selected = profile
+            .api_keys
+            .iter()
+            .find(|entry| entry.id == key_id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Key 不存在"))?;
+        profile.active_api_key_id = selected.id;
+        profile.api_key = selected.api_key;
+        Ok(settings.clone())
+    }
+
+    async fn runtime_api_key(&self) -> Option<String> {
+        self.live_codex_api_key.lock().unwrap().clone()
+    }
+
     fn whale_ledger_path(&self) -> std::path::PathBuf {
         self.whale_ledger_dir.path().join("whale.sqlite3")
     }
@@ -1406,6 +1491,8 @@ impl BridgeSettingsService for FakeSettings {
 }
 
 struct FakeRuntime {
+    reloaded_api_keys: Mutex<Vec<String>>,
+    api_key_reload_succeeds: bool,
     enabled: Mutex<bool>,
     script_enabled: Mutex<bool>,
     manager_payload: Mutex<Value>,
@@ -1414,6 +1501,8 @@ struct FakeRuntime {
 impl Default for FakeRuntime {
     fn default() -> Self {
         Self {
+            reloaded_api_keys: Mutex::new(Vec::new()),
+            api_key_reload_succeeds: false,
             enabled: Mutex::new(true),
             script_enabled: Mutex::new(true),
             manager_payload: Mutex::new(json!({})),
@@ -1423,6 +1512,15 @@ impl Default for FakeRuntime {
 
 #[async_trait]
 impl BridgeRuntimeService for FakeRuntime {
+    async fn reload_api_key(&self, api_key: &str) -> anyhow::Result<()> {
+        self.reloaded_api_keys
+            .lock()
+            .unwrap()
+            .push(api_key.to_string());
+        anyhow::ensure!(self.api_key_reload_succeeds, "不应回显 {api_key}");
+        Ok(())
+    }
+
     async fn user_script_inventory(&self) -> anyhow::Result<Value> {
         Ok(self.inventory(false))
     }

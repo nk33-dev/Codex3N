@@ -5016,6 +5016,7 @@
   let codexPlusUserScripts = { enabled: true, builtin_dir: "", user_dir: "", scripts: [] };
   let codexPlusRelayApiKeys = { status: "loading", enabled: false, providerId: "", providerName: "", activeKeyId: "", keys: [] };
   let codexPlusRelayApiKeySwitching = false;
+  let codexPlusRelayApiKeyRuntimeWarning = "";
   let codexPlusRelayApiKeysPromise = null;
   const codexPlusRelayApiKeysReadTimeoutMs = 5000;
   // 单独跟踪「读过了没有」：scripts 为空既可能是真没有脚本，也可能是还没读到。
@@ -5611,12 +5612,13 @@
       <div class="codex-plus-api-key-empty">未启用供应商配置切换：这里只更换当前 Key，模型、上下文等其它配置保持不变。</div>`;
     // 下拉框的选中项按 live 里的 Key 匹配；匹配不上说明实际在用的 Key 不在命名列表里。
     const liveMismatchHint = codexPlusRelayApiKeys.liveKeyMatched === false
-      ? '<div class="codex-plus-api-key-empty">Codex 实际在用的 Key 不在这个列表里（可能被其它工具改过）；选中任意一项会把它写进当前配置。</div>'
+      ? '<div class="codex-plus-api-key-empty">当前配置里的 Key 不在这个列表里；选中任意一项可切换。</div>'
       : "";
     list.innerHTML = `
       <select class="codex-plus-api-key-select" data-codex-relay-api-key-select="true" aria-label="切换 API Key"${switchingInFlight ? " disabled" : ""}>
         ${options}
-      </select>${switchOffHint}${liveMismatchHint}`;
+      </select>${switchOffHint}${liveMismatchHint}${codexPlusRelayApiKeyRuntimeWarning
+        ? `<div class="codex-plus-api-key-empty">${escapeHtml(codexPlusRelayApiKeyRuntimeWarning)}</div>` : ""}`;
   }
 
   async function loadRelayApiKeys(force = false) {
@@ -5672,7 +5674,7 @@
   }
 
   async function selectRelayApiKey(keyId) {
-    if (!keyId || codexPlusRelayApiKeySwitching || keyId === codexPlusRelayApiKeys.activeKeyId) return;
+    if (!keyId || codexPlusRelayApiKeySwitching || (keyId === codexPlusRelayApiKeys.activeKeyId && !codexPlusRelayApiKeyRuntimeWarning)) return;
     codexPlusRelayApiKeySwitching = true;
     renderRelayApiKeys();
     try {
@@ -5682,15 +5684,40 @@
         return;
       }
       codexPlusRelayApiKeys = { ...codexPlusRelayApiKeys, activeKeyId: result.activeKeyId || keyId };
+      codexPlusRelayApiKeyRuntimeWarning = result.runtimeApplied === true
+        ? "" : result.message || "Key 已保存，请完整退出并重新打开 Codex";
       codexModelCatalogLoadedAt = 0;
       await loadCodexModelCatalog(true);
       refreshCodexModelQueries();
       scheduleCodexModelWhitelistRefresh();
-      showToast("Key 已切换，可用模型已刷新", null);
+      showToast(result.message || codexPlusRelayApiKeyRuntimeWarning || "Key 已切换", null);
+    } catch {
+      showToast("切换 Key 失败，请重试", null);
     } finally {
       codexPlusRelayApiKeySwitching = false;
       await loadRelayApiKeys(true);
     }
+  }
+
+  let codexPlusApiKeyReloadPromise = Promise.resolve();
+  function reloadCodexApiKey(apiKey) {
+    const request = codexPlusApiKeyReloadPromise.then(async () => {
+      try {
+        if (typeof apiKey !== "string" || !apiKey.trim()) return false;
+        let client = nativeHostClient("local");
+        if (!client) {
+          const { candidates } = await loadAppServerRequestCandidates();
+          client = candidates.find((candidate) => candidate?.hostId === "local" && typeof candidate.sendRequest === "function");
+        }
+        if (!client) return false;
+        const result = await client.sendRequest("account/login/start", { type: "apiKey", apiKey });
+        return result?.type === "apiKey";
+      } catch {
+        return false;
+      }
+    });
+    codexPlusApiKeyReloadPromise = request;
+    return request;
   }
 
   function selectCodexPlusTab(tab) {
@@ -15857,6 +15884,7 @@
   scheduleSidebarNavStartupRetry();
   window.removeEventListener("resize", window.__codexPlusResizeHandler);
   runScanStep(removeLegacyRelayApiKeyBadges);
+  window.__codexPlusReloadApiKey = reloadCodexApiKey;
   void restoreCodexPlusManagedLocale();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusWhaleWidget);

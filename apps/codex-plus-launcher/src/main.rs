@@ -1052,6 +1052,16 @@ impl LauncherRuntimeService {
 
 #[async_trait::async_trait]
 impl BridgeRuntimeService for LauncherRuntimeService {
+    async fn reload_api_key(&self, api_key: &str) -> anyhow::Result<()> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        codex_plus_core::bridge::reload_api_key_at(&websocket_url, api_key).await
+    }
+
     async fn user_script_inventory(&self) -> anyhow::Result<Value> {
         self.user_scripts.inventory()
     }
