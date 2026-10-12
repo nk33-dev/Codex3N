@@ -327,7 +327,8 @@ mod runtime {
         let result = output(program, args)?;
         if !result.status.success() {
             bail!(
-                "更新命令失败 {program}：{}",
+                "更新命令失败 {program}（{}）：{}",
+                result.status,
                 String::from_utf8_lossy(&result.stderr).trim()
             );
         }
@@ -606,8 +607,9 @@ mod runtime {
 
     fn prepare_detached_helper(executable: &Path, transaction: &Path) -> anyhow::Result<PathBuf> {
         let helper = transaction.join("manager-update-helper");
-        fs::copy(executable, &helper)?;
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
+        let signing = transaction.join("manager-update-helper-signing");
+        fs::copy(executable, &signing)?;
+        fs::set_permissions(&signing, fs::Permissions::from_mode(0o700))?;
         // bundle 内的签名引用 Info.plist；裸副本须重新签名才能独立运行。
         checked(
             "/usr/bin/codesign",
@@ -615,10 +617,21 @@ mod runtime {
                 "--force".as_ref(),
                 "--sign".as_ref(),
                 "-".as_ref(),
-                helper.as_os_str(),
+                signing.as_os_str(),
             ],
         )
         .context("临时更新 helper 重新签名失败")?;
+        // 签名后写入新 inode，避免 Apple Silicon 执行仍缓存旧签名的副本。
+        let mut source = File::open(&signing)?;
+        let mut target = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o700)
+            .open(&helper)?;
+        std::io::copy(&mut source, &mut target)?;
+        target.sync_all()?;
+        drop(target);
+        fs::remove_file(&signing)?;
         checked(
             "/usr/bin/codesign",
             &["--verify".as_ref(), "--strict".as_ref(), helper.as_os_str()],
