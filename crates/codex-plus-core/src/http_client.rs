@@ -27,7 +27,7 @@ enum ClientKey {
     },
 }
 
-type ClientPool = Mutex<HashMap<ClientKey, reqwest::Client>>;
+type ClientPool = Mutex<HashMap<(Option<tokio::runtime::Id>, ClientKey), reqwest::Client>>;
 
 fn default_client_pool() -> &'static ClientPool {
     static POOL: OnceLock<ClientPool> = OnceLock::new();
@@ -82,8 +82,13 @@ fn pooled_with(
     configure: impl FnOnce(Option<&str>) -> reqwest::ClientBuilder,
 ) -> anyhow::Result<reqwest::Client> {
     let pool = default_client_pool();
+    // keep-alive 的连接任务属于创建请求的运行时，不能借给另一个 session。
+    let runtime_id = tokio::runtime::Handle::try_current()
+        .ok()
+        .map(|handle| handle.id());
+    let pool_key = (runtime_id, key.clone());
     if let Ok(entries) = pool.lock()
-        && let Some(client) = entries.get(&key)
+        && let Some(client) = entries.get(&pool_key)
     {
         return Ok(client.clone());
     }
@@ -108,7 +113,7 @@ fn pooled_with(
         if entries.len() >= CLIENT_POOL_CAPACITY {
             entries.clear();
         }
-        entries.insert(key, client.clone());
+        entries.insert(pool_key, client.clone());
     }
     Ok(client)
 }

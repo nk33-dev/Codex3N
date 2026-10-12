@@ -1,12 +1,12 @@
 {
   "name": "codex-plus-manager",
-  "version": "1.7.1-3n.1",
+  "version": "1.7.6-3n.1",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "cargo build -p codex-plus-launcher --release && tauri build",
+    "build": "tauri build",
     "check": "tsc --noEmit -p tsconfig.json",
     "i18n": "node ../../tools/i18n-verify.mjs",
     "test": "node --test \"src/*.test.ts\" && node ../../tools/i18n-verify.mjs",

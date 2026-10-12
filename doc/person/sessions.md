@@ -2,6 +2,8 @@
 
 ## 列表分页和缓存
 
+管理器 `ManagementExtra.tsx::SessionPage` 按项目或时间分组，支持搜索、详情、分页和批删。`App.tsx::SessionMaintenance` 保留供应商同步、索引修复报告及全量无效会话清理，列表与维护共用原动作和备份删除链路。
+
 - 列表接口保留 `offset`、`limit`、`hasMore`、`totalCount`；按更新时间降序、ID 降序排列，跨库同 ID 取较新的记录，时间相同则保留候选库顺序。子会话过滤规则与原数据适配器共用。
 - 历史会话同步提供只读预览：`preview_provider_sync` 统计目标供应商、rollout 与目录影响范围，并返回执行时的备份根目录；预览不加锁、不写 rollout、不改 SQLite。实际同步会补建缺失的 canonical `threads` 行并保留备份路径，失败时返回可诊断的底层原因。
 - `crates/codex-plus-data/src/storage/session_paging.rs` 的 `LocalSessionPager` 缓存 ID、排序键、来源和去重总数，翻页只读取本页 ID 的详情；不再每页从头加载 `offset + limit` 条完整会话。首次查询、库变化或缓存到期仍需重建轻量索引，缓存内存随会话数增长。
