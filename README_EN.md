@@ -11,13 +11,12 @@ Download from [Releases](https://github.com/nk33-dev/Codex3N/releases/latest):
 - Windows: `Codex3N-<version>-windows-x64-setup.exe`
 - macOS: `Codex3N-<version>-macos-universal.dmg`, supporting Intel and Apple Silicon.
 
-Open **Codex++ Manager** first, confirm the official app path and configure providers and enhancements. Then launch the official app through **Codex++**. Check for updates on the manager's About page.
+Open **Codex++**, confirm the official app path, configure providers and enhancements, then start the official app from Overview. Check for updates on About. The interface and background services run in one application; closing the window hides it in the tray.
 
 The macOS package uses ad-hoc signing and is not notarized by Apple. If macOS blocks it, verify the download source before running:
 
 ```bash
 sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
-sudo xattr -rd com.apple.quarantine "/Applications/Codex++ 管理工具.app"
 ```
 
 ## Personal changes

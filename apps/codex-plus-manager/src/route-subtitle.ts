@@ -5,7 +5,9 @@ export function routeSubtitle(route: ManagerRoute): string {
   const subtitles: Record<ManagerRoute, string> = {
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),
+    claude: t("保留官方 Claude.app 原样，通过受管副本动态应用中文界面"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP 服务器与插件"),

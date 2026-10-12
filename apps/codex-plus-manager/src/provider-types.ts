@@ -55,6 +55,7 @@ export type RelayProfile = {
   customHeaders: { key: string; value: string }[];
   noAuth: boolean;
   standardOpenaiProtocol: boolean;
+  webSearchHistoryCompat: boolean;
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];

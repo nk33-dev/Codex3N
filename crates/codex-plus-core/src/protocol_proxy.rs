@@ -133,6 +133,7 @@ const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_COOLDOWN_RETRIES: usize = 3;
+const MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES: usize = 32 * 1024 * 1024;
 const THINK_OPEN_TAG: &str = "<think>";
 const THINK_CLOSE_TAG: &str = "</think>";
 const EXTRA_CHAT_PASSTHROUGH_FIELDS: &[&str] = &[
@@ -160,43 +161,33 @@ fn should_retry_after_cooldown(retries: usize) -> bool {
 const COMPACTION_TRIGGER_TYPE: &str = "compaction_trigger";
 /// codex 期望响应里恰好包含一个的压缩结果 item，`encrypted_content` 只透传不校验。
 const COMPACTION_OUTPUT_TYPE: &str = "compaction";
+/// 本地摘要的持久化格式标识；原生 encrypted_content 不使用这个命名空间。
+/// 后缀为 JSON string，不依赖客户端可能丢弃的 item id 或额外字段。
+const LOCAL_COMPACTION_PREFIX: &str = "codexplusplus:summary:v1:";
 /// 本地代理生成摘要时注入的 user 指令（对齐 openai/codex prompts/templates/compact/prompt.md）。
 const COMPACTION_SUMMARY_INSTRUCTION: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\nInclude:\n- Current progress and key decisions made\n- Important context, constraints, or user preferences\n- What remains to be done (clear next steps)\n- Any critical data, examples, or references needed to continue\n\nBe concise, structured, and focused on helping the next LLM seamlessly continue the work.";
 /// 历史回放时 `compaction` item 展开成的文本前缀（对齐 codex SUMMARY_PREFIX 语义）。
 const COMPACTION_REPLAY_PREFIX: &str = "Another language model started to solve this problem and produced a summary of its thinking process. Here is the summary produced by the other language model:\n";
 
-/// 判断 Responses 请求体是否为 codex v2 远程压缩请求：
-/// input 末尾（允许中间有尾随的空壳 item）存在 `compaction_trigger`。
+/// 判断 Responses 请求体是否为 codex v2 远程压缩请求。
+/// 当前 Codex 把 trigger 追加在 input 末尾；这里仍接受任意位置，避免漏检。
 pub fn request_has_compaction_trigger(body: &Value) -> bool {
     body.get("input")
         .and_then(Value::as_array)
-        .and_then(|items| {
-            items
-                .iter()
-                .rev()
-                .find(|item| item.get("type").and_then(Value::as_str).is_some())
-                .map(|item| {
-                    item.get("type").and_then(Value::as_str) == Some(COMPACTION_TRIGGER_TYPE)
-                })
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some(COMPACTION_TRIGGER_TYPE)
+            })
         })
-        .unwrap_or(false)
 }
 
-/// 从请求 input 中剥离 `compaction_trigger` 控制项，返回去掉后的请求体。
-/// codex 只把它放在 input 末尾，其余位置的按未知类型忽略。
+/// 从请求 input 中剥离全部 compaction_trigger 控制项。
+/// 只在确认上游没有原生 compaction 项、需要改写成普通摘要时使用。
 fn strip_compaction_trigger(mut body: Value) -> Value {
-    if let Some(items) = body
-        .get_mut("input")
-        .and_then(Value::as_array_mut)
-        .filter(|items| !items.is_empty())
-    {
-        while items
-            .last()
-            .and_then(|item| item.get("type").and_then(Value::as_str))
-            == Some(COMPACTION_TRIGGER_TYPE)
-        {
-            items.pop();
-        }
+    if let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) {
+        items.retain(|item| {
+            item.get("type").and_then(Value::as_str) != Some(COMPACTION_TRIGGER_TYPE)
+        });
     }
     body
 }
@@ -355,6 +346,55 @@ impl UnsupportedEncryptedAgentContent {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct UnsupportedNativeWebSearch;
+
+impl std::fmt::Display for UnsupportedNativeWebSearch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "unsupported_native_web_search: Chat 路由不执行服务端原生搜索，请使用客户端搜索工具或支持原生搜索的 Responses 上游"
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedNativeWebSearch {}
+
+impl UnsupportedNativeWebSearch {
+    pub(crate) fn response_body(&self) -> Value {
+        json!({"error": {
+            "type": "invalid_request_error", "code": "unsupported_native_web_search",
+            "param": "tool_choice", "message": self.to_string()
+        }})
+    }
+}
+
+fn remove_unsupported_native_search(body: &mut Value) -> anyhow::Result<()> {
+    let choice = body.get("tool_choice");
+    if choice
+        .and_then(|choice| choice.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| matches!(kind, "web_search" | "web_search_preview"))
+    {
+        return Err(UnsupportedNativeWebSearch.into());
+    }
+    let required = choice.and_then(Value::as_str) == Some("required");
+    if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+        let before = tools.len();
+        // 同名 function/custom 和命名空间工具由客户端执行，必须保留。
+        tools.retain(|tool| {
+            !matches!(
+                tool.get("type").and_then(Value::as_str),
+                Some("web_search" | "web_search_preview")
+            )
+        });
+        if before != tools.len() && required && tools.is_empty() {
+            return Err(UnsupportedNativeWebSearch.into());
+        }
+    }
+    Ok(())
+}
+
 fn input_has_encrypted_agent_content(input: &Value) -> bool {
     fn item_has_encrypted_content(item: &Value) -> bool {
         item.get("type").and_then(Value::as_str) == Some("encrypted_content")
@@ -380,9 +420,14 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 }
 
 pub fn responses_to_chat_completions_with_options(
-    body: Value,
+    mut body: Value,
     standard: bool,
 ) -> anyhow::Result<Value> {
+    remove_unsupported_native_search(&mut body)?;
+    expand_local_compaction_history(&mut body);
+    if input_has_native_compaction(&body) {
+        return Err(NativeCompactionUnsupported::history().into());
+    }
     // agent 加密内容没有 Chat 文本映射。发送前明确拒绝；不按字段名猜测明文，
     // 也不遍历工具参数/输出里的用户 JSON。reasoning 和 compaction 保持原契约。
     if body
@@ -545,15 +590,27 @@ fn chat_completion_to_response_with_context(
         tool_context,
     ));
 
+    let invalid_web_search = output.iter().any(invalid_web_search_output_item);
     let mut response = json!({
         "id": response_id,
         "object": "response",
         "created_at": body.get("created").and_then(Value::as_u64).unwrap_or(0),
-        "status": response_status(choice.get("finish_reason").and_then(Value::as_str)),
+        "status": if invalid_web_search {
+            "failed"
+        } else {
+            response_status(choice.get("finish_reason").and_then(Value::as_str))
+        },
         "model": body.get("model").and_then(Value::as_str).unwrap_or(""),
         "output": output,
         "usage": chat_usage_to_responses_usage(body.get("usage"))
     });
+
+    if invalid_web_search {
+        response["error"] = json!({
+            "type": "invalid_upstream_tool_call",
+            "message": "Chat 上游返回了未执行的原生 web_search 调用，请使用客户端搜索工具"
+        });
+    }
 
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
         response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
@@ -574,10 +631,14 @@ pub struct UpstreamProxyResponse {
     pub content_type: String,
     pub is_stream: bool,
     pub wire_api: UpstreamWireApi,
-    /// 仅标记 Chat Completions 的合成摘要兼容路径；原生 Responses 保持透传。
-    /// 响应必须由代理重组为单个 `compaction` 输出项。
+    /// 仅标记需要代理重组的合成摘要兼容路径。
     pub compaction: bool,
-    pub response: reqwest::Response,
+    /// 原生上游已返回恰好一个 compaction 项或完整失败流时为真，
+    /// 调用方必须原样透传。
+    pub native_compaction_passthrough: bool,
+    /// 响应体已经读完。为 Some 时不要再读 response。
+    pub buffered_body: Option<Vec<u8>>,
+    pub response: Option<reqwest::Response>,
     pub(crate) _channel_permit: Option<crate::channel_protection::ChannelPermit>,
 }
 
@@ -613,6 +674,18 @@ impl UpstreamProxyResponse {
 
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status_code)
+    }
+
+    pub async fn read_body(&mut self) -> anyhow::Result<Vec<u8>> {
+        if let Some(body) = &self.buffered_body {
+            return Ok(body.clone());
+        }
+        let response = self.response.take().context("缺少上游响应")?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
+    pub fn take_response(&mut self) -> anyhow::Result<reqwest::Response> {
+        self.response.take().context("缺少上游响应")
     }
 }
 
@@ -1061,7 +1134,7 @@ impl CompactionSseConverter {
         let compaction_item = json!({
             "id": self.compaction_id,
             "type": COMPACTION_OUTPUT_TYPE,
-            "encrypted_content": self.summary
+            "encrypted_content": format!("{LOCAL_COMPACTION_PREFIX}{}", json!(self.summary))
         });
         for (sequence_number, event_type) in [
             (1, "response.output_item.added"),
@@ -1163,11 +1236,6 @@ fn extract_summary_text_from_response_item(item: &Value) -> String {
             .filter(|text| !text.is_empty())
             .collect::<Vec<_>>()
             .join("\n"),
-        Some(COMPACTION_OUTPUT_TYPE) => item
-            .get("encrypted_content")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
         _ => String::new(),
     }
 }
@@ -1185,17 +1253,392 @@ fn extract_summary_text_from_chat(response: &Value) -> String {
         .to_string()
 }
 
-/// 历史回放：把 codex 历史里的 `compaction` item 展开成明文 user 消息。
-/// codex 下游请求会把上次压缩结果作为 `{"type":"compaction","encrypted_content":"..."}`
-/// 放进 input，第三方模型看不懂该类型，必须转成文本。
+fn response_body_is_stream(content_type: &str, body: &[u8]) -> bool {
+    if content_type.contains("text/event-stream") {
+        return true;
+    }
+    let trimmed = body
+        .iter()
+        .copied()
+        .skip_while(|byte| byte.is_ascii_whitespace())
+        .take(6)
+        .collect::<Vec<_>>();
+    trimmed.starts_with(b"data:") || trimmed.starts_with(b"event:")
+}
+
+fn output_compaction_count(output: Option<&Value>) -> Option<usize> {
+    let items = output?.as_array()?;
+    let compactions = items
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE));
+    if compactions
+        .clone()
+        .any(|item| usable_compaction_content(item).is_none())
+    {
+        return Some(0);
+    }
+    Some(compactions.count())
+}
+
+async fn read_limited_upstream_body(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(content_length) = response.content_length()
+        && content_length > limit as u64
+    {
+        anyhow::bail!("上游响应体超过 {limit} 字节限制");
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len().saturating_add(chunk.len()) > limit {
+            anyhow::bail!("上游响应体超过 {limit} 字节限制");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn usable_compaction_content(item: &Value) -> Option<&str> {
+    item.get("encrypted_content")?
+        .as_str()
+        .filter(|content| !content.is_empty())
+}
+
+fn json_compaction_count(value: &Value) -> Option<usize> {
+    if let Some(count) = output_compaction_count(value.get("output")) {
+        return Some(count);
+    }
+    value
+        .get("response")
+        .and_then(|response| output_compaction_count(response.get("output")))
+}
+
+/// 按 Codex 实际消费的 SSE item-done 事件统计原生压缩项。
+/// 非流式调用仍兼容 JSON output，但流式请求不能把 JSON 当作原生 v2 透传。
+fn upstream_compaction_item_count(body: &[u8], content_type: &str) -> Option<usize> {
+    if response_body_is_stream(content_type, body) {
+        let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
+        let mut count = 0;
+        for block in text.split("\n\n") {
+            let mut event_name = None;
+            let mut data_parts = Vec::new();
+            for line in block.lines() {
+                if let Some(event) = strip_sse_field(line, "event") {
+                    event_name = Some(event.trim());
+                }
+                if let Some(data) = strip_sse_field(line.trim_end_matches('\r'), "data") {
+                    data_parts.push(data);
+                }
+            }
+            if data_parts.is_empty() {
+                continue;
+            }
+            let data = data_parts.join("\n");
+            if data.trim() == "[DONE]" {
+                continue;
+            }
+            let Ok(json) = serde_json::from_str::<Value>(&data) else {
+                continue;
+            };
+            let event = event_name.or_else(|| json.get("type").and_then(Value::as_str));
+            match event {
+                Some("response.output_item.done")
+                    if json
+                        .get("item")
+                        .and_then(|item| item.get("type"))
+                        .and_then(Value::as_str)
+                        == Some(COMPACTION_OUTPUT_TYPE) =>
+                {
+                    if usable_compaction_content(json.get("item")?).is_none() {
+                        return Some(0);
+                    }
+                    count += 1;
+                }
+                Some("response.completed") => {
+                    json.get("response")?.get("id")?.as_str()?;
+                    return Some(count);
+                }
+                Some("response.failed" | "response.incomplete" | "error") => return None,
+                _ => {}
+            }
+        }
+        return None;
+    }
+    let Ok(json) = serde_json::from_slice::<Value>(body) else {
+        return None;
+    };
+    json_compaction_count(&json)
+}
+
+fn compaction_input_rejected(status_code: u16, body: &[u8]) -> bool {
+    if status_code != 400 && status_code != 422 {
+        return false;
+    }
+    // 只读取错误本身，避免回显请求中的 trigger 让无关参数错误触发降级。
+    let text = match serde_json::from_slice::<Value>(body) {
+        Ok(json) => {
+            let error = json.get("error").unwrap_or(&json);
+            [
+                error.as_str(),
+                error.get("message").and_then(Value::as_str),
+                error.get("code").and_then(Value::as_str),
+                error.get("param").and_then(Value::as_str),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ")
+        }
+        Err(_) => String::from_utf8_lossy(body).into_owned(),
+    }
+    .to_ascii_lowercase();
+    let unrecognized = text.contains("unknown")
+        || text.contains("unrecognized")
+        || text.contains("unsupported")
+        || text.contains("unexpected")
+        || text.contains("not supported")
+        || text.contains("invalid type")
+        || text.contains("invalid_type")
+        || text.contains("additional propert");
+    text.contains(COMPACTION_TRIGGER_TYPE) && unrecognized
+}
+
+fn sse_block_type(block: &str) -> Option<String> {
+    let mut event_name = None;
+    let mut data_parts = Vec::new();
+    for line in block.lines() {
+        if let Some(event) = strip_sse_field(line, "event") {
+            event_name = Some(event.trim().to_string());
+        }
+        if let Some(data) = strip_sse_field(line.trim_end_matches('\r'), "data") {
+            data_parts.push(data);
+        }
+    }
+    if let Some(name) = event_name.filter(|name| !name.is_empty()) {
+        return Some(name);
+    }
+    let data = data_parts.join("\n");
+    let data = data.trim();
+    if data.is_empty() || data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str::<Value>(data).ok().and_then(|json| {
+        json.get("type")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+    })
+}
+
+fn upstream_has_terminal_failure(body: &[u8], content_type: &str) -> bool {
+    if response_body_is_stream(content_type, body) {
+        let text = String::from_utf8_lossy(body).replace("\r\n", "\n");
+        return text.split("\n\n").any(|block| {
+            matches!(
+                sse_block_type(block).as_deref(),
+                Some("response.failed" | "response.incomplete" | "error")
+            )
+        });
+    }
+    serde_json::from_slice::<Value>(body).is_ok_and(|json| {
+        json.get("error").is_some_and(|error| !error.is_null())
+            || matches!(
+                json.get("status").and_then(Value::as_str),
+                Some("failed" | "incomplete")
+            )
+    })
+}
+
+fn render_native_compaction_as_sse(body: &[u8]) -> Option<Vec<u8>> {
+    let json = serde_json::from_slice::<Value>(body).ok()?;
+    let response = if json.get("output").is_some() {
+        json
+    } else {
+        json.get("response")?.clone()
+    };
+    let output = response.get("output")?.as_array()?;
+    let mut compaction_items = output.iter().filter(|item| {
+        item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE)
+            && usable_compaction_content(item).is_some()
+    });
+    let item = compaction_items.next()?.clone();
+    if compaction_items.next().is_some() {
+        return None;
+    }
+    let mut sse = String::new();
+    let mut created_response = response.clone();
+    created_response["status"] = json!("in_progress");
+    created_response["output"] = json!([]);
+    push_sse(
+        &mut sse,
+        "response.created",
+        json!({
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": created_response
+        }),
+    );
+    push_sse(
+        &mut sse,
+        "response.output_item.added",
+        json!({
+            "type": "response.output_item.added",
+            "sequence_number": 1,
+            "output_index": 0,
+            "item": item
+        }),
+    );
+    push_sse(
+        &mut sse,
+        "response.output_item.done",
+        json!({
+            "type": "response.output_item.done",
+            "sequence_number": 2,
+            "output_index": 0,
+            "item": item
+        }),
+    );
+    push_sse(
+        &mut sse,
+        "response.completed",
+        json!({
+            "type": "response.completed",
+            "sequence_number": 3,
+            "response": response
+        }),
+    );
+    sse.push_str("data: [DONE]\n\n");
+    Some(sse.into_bytes())
+}
+
+fn incomplete_compaction_stream(body: &[u8]) -> Vec<u8> {
+    let mut output = String::from_utf8_lossy(body)
+        .into_owned()
+        .replace("\r\n", "\n");
+    if !output.is_empty() && !output.ends_with("\n\n") {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push('\n');
+    }
+    push_sse(
+        &mut output,
+        "response.failed",
+        json!({
+            "type": "response.failed",
+            "response": {
+                "id": "resp_compact_incomplete",
+                "status": "failed",
+                "error": {
+                    "message": "remote compaction v2 stream closed before response.completed",
+                    "type": "stream_error"
+                }
+            }
+        }),
+    );
+    output.into_bytes()
+}
+
+#[derive(Debug)]
+struct NativeCompactionUnsupported {
+    message: &'static str,
+}
+
+impl NativeCompactionUnsupported {
+    fn history() -> Self {
+        Self {
+            message: "This compaction checkpoint cannot be converted to a text summary. Use a compatible Responses upstream or start a new conversation.",
+        }
+    }
+}
+
+impl std::fmt::Display for NativeCompactionUnsupported {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for NativeCompactionUnsupported {}
+
+fn native_compaction_unsupported_result(
+    error: anyhow::Error,
+) -> anyhow::Result<UpstreamProxyResponse> {
+    if error
+        .downcast_ref::<NativeCompactionUnsupported>()
+        .is_some()
+    {
+        let body = json!({
+            "error": {
+                "message": error.to_string(),
+                "type": "compaction_incompatible",
+                "code": "native_compaction_unsupported"
+            }
+        });
+        Ok(UpstreamProxyResponse {
+            status_code: 400,
+            content_type: "application/json".to_string(),
+            is_stream: false,
+            wire_api: UpstreamWireApi::Responses,
+            compaction: false,
+            native_compaction_passthrough: false,
+            buffered_body: Some(serde_json::to_vec(&body).unwrap_or_default()),
+            response: None,
+            _channel_permit: None,
+        })
+    } else {
+        Err(error)
+    }
+}
+
+fn input_has_native_compaction(body: &Value) -> bool {
+    let is_native =
+        |item: &Value| item.get("type").and_then(Value::as_str) == Some(COMPACTION_OUTPUT_TYPE);
+    match body.get("input") {
+        Some(Value::Array(items)) => items.iter().any(is_native),
+        Some(Value::Object(_)) => is_native(&body["input"]),
+        _ => false,
+    }
+}
+
+/// 只展开带版本标识、可解码的本地摘要；未知/旧格式仍视为原生状态。
 fn expand_compaction_item(item: &Value) -> Option<Value> {
-    let summary = item.get("encrypted_content").and_then(Value::as_str)?;
+    if item.get("type").and_then(Value::as_str) != Some(COMPACTION_OUTPUT_TYPE) {
+        return None;
+    }
+    let encoded = item
+        .get("encrypted_content")?
+        .as_str()?
+        .strip_prefix(LOCAL_COMPACTION_PREFIX)?;
+    let summary: String = serde_json::from_str(encoded).ok()?;
+    if summary.trim().is_empty() {
+        return None;
+    }
     let mut text = COMPACTION_REPLAY_PREFIX.to_string();
-    text.push_str(summary);
+    text.push_str(&summary);
     Some(json!({
+        "type": "message",
         "role": "user",
-        "content": text
+        "content": [{ "type": "input_text", "text": text }]
     }))
+}
+
+fn expand_local_compaction_history(body: &mut Value) {
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items {
+                if let Some(message) = expand_compaction_item(item) {
+                    *item = message;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) => {
+            if let Some(message) = expand_compaction_item(input) {
+                *input = json!([message]);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl Default for ChatSseToResponsesConverter {
@@ -1496,6 +1939,7 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     session_headers: ProxySessionHeaders<'_>,
 ) -> anyhow::Result<UpstreamProxyResponse> {
     let mut request_json: Value = serde_json::from_str(body)?;
+    expand_local_compaction_history(&mut request_json);
     let is_stream = request_json
         .get("stream")
         .and_then(Value::as_bool)
@@ -1535,21 +1979,46 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
     let mut cooldown_retries = 0_usize;
     'request: loop {
         for (attempt, relay) in relays.iter().cloned().enumerate() {
+            let has_more_candidates = attempt + 1 < relay_count;
             validate_upstream(&relay)?;
             let channel_key = crate::channel_protection::key_for_relay(&relay);
-            let channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
+            let mut channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
             let model_override = aggregate_upstream_model_override(&settings, &relay);
-            let has_more_candidates = attempt + 1 < relay_count;
-            let attempt_body =
-                request_body_for_attempt(&mut request_json, has_more_candidates, cooldown_retries);
-            let (endpoint, upstream_body, wire_api, compaction) = upstream_request_parts(
-                &relay,
-                attempt_body,
-                request_path,
-                model_override.as_deref(),
-            )
-            .await?;
-            let is_compaction_request = compaction;
+            let preserve_native_request = relay.protocol == RelayProtocol::Responses
+                && (request_has_compaction_trigger(&request_json)
+                    || is_responses_compact_proxy_path(request_path));
+            let probe_native_compaction = request_has_compaction_trigger(&request_json)
+                && relay.protocol == RelayProtocol::Responses
+                && !is_responses_compact_proxy_path(request_path);
+            let (mut endpoint, mut upstream_body, mut wire_api, compaction) =
+                match upstream_request_parts(
+                    &relay,
+                    if probe_native_compaction {
+                        request_json.clone()
+                    } else {
+                        request_body_for_attempt(
+                            &mut request_json,
+                            has_more_candidates,
+                            cooldown_retries,
+                        )
+                    },
+                    request_path,
+                    model_override.as_deref(),
+                    preserve_native_request,
+                )
+                .await
+                {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        drop(channel_permit);
+                        if has_more_candidates && error.is::<NativeCompactionUnsupported>() {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            continue;
+                        }
+                        return native_compaction_unsupported_result(error);
+                    }
+                };
+            let is_compaction_request = compaction || probe_native_compaction;
             let header_timeout = response_header_timeout(is_stream);
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.upstream_request",
@@ -1570,23 +2039,18 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     }))
                 }),
             );
-            let mut builder = upstream_request_builder(
-                crate::http_client::client_for_url(
-                    &effective_user_agent(&relay.user_agent, original_user_agent),
-                    &endpoint,
-                )?,
-                &endpoint,
+            let mut upstream = match send_responses_upstream_request(
                 &relay,
-                is_stream,
+                &endpoint,
                 &upstream_body,
-            );
-            builder = with_client_session_headers(builder, &relay, session_headers);
-            if wire_api == UpstreamWireApi::Responses {
-                if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
-                    builder = builder.header("x-codex-beta-features", value);
-                }
-            }
-            let upstream = match send_upstream_request_for_responses(builder, is_stream).await {
+                wire_api,
+                is_stream,
+                original_user_agent,
+                beta_features,
+                session_headers,
+            )
+            .await
+            {
                 Ok(upstream) => upstream,
                 Err(error) => {
                     drop(channel_permit);
@@ -1617,7 +2081,219 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     });
                 }
             };
-            let status_code = upstream.status().as_u16();
+            let mut status_code = upstream.status().as_u16();
+            let mut content_type = upstream
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
+            if probe_native_compaction {
+                let success = (200..300).contains(&status_code);
+                let retry_after =
+                    crate::channel_protection::retry_after_duration(upstream.headers());
+                if !success {
+                    // 探测不重试摘要，但同通道的后续请求仍须遵守错误冷却。
+                    // 在读取响应体/释放 permit 前记录，避免排队请求抢先通过。
+                    crate::channel_protection::mark_failure(
+                        &channel_key,
+                        &relay,
+                        status_code,
+                        retry_after,
+                    )
+                    .await;
+                }
+                let probed = match read_limited_upstream_body(
+                    &mut upstream,
+                    MAX_NATIVE_COMPACTION_PROBE_BODY_BYTES,
+                )
+                .await
+                {
+                    Ok(body) => body.to_vec(),
+                    Err(error) => {
+                        drop(channel_permit);
+                        return Err(error.into());
+                    }
+                };
+                let stream_response = response_body_is_stream(&content_type, &probed);
+                drop(channel_permit);
+
+                if success && upstream_has_terminal_failure(&probed, &content_type) {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    return Ok(UpstreamProxyResponse {
+                        status_code,
+                        is_stream: stream_response,
+                        content_type,
+                        wire_api,
+                        compaction: false,
+                        native_compaction_passthrough: stream_response,
+                        buffered_body: Some(probed),
+                        response: None,
+                        _channel_permit: None,
+                    });
+                }
+                if success && stream_response {
+                    match upstream_compaction_item_count(&probed, &content_type) {
+                        Some(1) => {
+                            crate::relay_rotation::record_relay_request_event(
+                                &settings,
+                                RotationEvent::Success,
+                            );
+                            return Ok(UpstreamProxyResponse {
+                                status_code,
+                                is_stream: true,
+                                content_type,
+                                wire_api,
+                                compaction: false,
+                                native_compaction_passthrough: true,
+                                buffered_body: Some(probed),
+                                response: None,
+                                _channel_permit: None,
+                            });
+                        }
+                        None => {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            return Ok(UpstreamProxyResponse {
+                                status_code,
+                                is_stream: true,
+                                content_type: "text/event-stream".to_string(),
+                                wire_api,
+                                compaction: false,
+                                native_compaction_passthrough: true,
+                                buffered_body: Some(incomplete_compaction_stream(&probed)),
+                                response: None,
+                                _channel_permit: None,
+                            });
+                        }
+                        Some(_) => {}
+                    }
+                } else if success
+                    && upstream_compaction_item_count(&probed, &content_type) == Some(1)
+                {
+                    crate::relay_rotation::record_relay_request_event(
+                        &settings,
+                        RotationEvent::Success,
+                    );
+                    if !is_stream {
+                        return Ok(UpstreamProxyResponse {
+                            status_code,
+                            is_stream: false,
+                            content_type,
+                            wire_api,
+                            compaction: false,
+                            native_compaction_passthrough: true,
+                            buffered_body: Some(probed),
+                            response: None,
+                            _channel_permit: None,
+                        });
+                    }
+                    if let Some(sse) = render_native_compaction_as_sse(&probed) {
+                        return Ok(UpstreamProxyResponse {
+                            status_code,
+                            is_stream: true,
+                            content_type: "text/event-stream".to_string(),
+                            wire_api,
+                            compaction: false,
+                            native_compaction_passthrough: true,
+                            buffered_body: Some(sse),
+                            response: None,
+                            _channel_permit: None,
+                        });
+                    }
+                }
+                if !success && !compaction_input_rejected(status_code, &probed) {
+                    crate::relay_rotation::record_relay_request_failure(&settings);
+                    if has_more_candidates {
+                        continue;
+                    }
+                    return Ok(UpstreamProxyResponse {
+                        status_code,
+                        is_stream: false,
+                        content_type,
+                        wire_api,
+                        compaction: false,
+                        native_compaction_passthrough: false,
+                        buffered_body: Some(probed),
+                        response: None,
+                        _channel_permit: None,
+                    });
+                }
+
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "protocol_proxy.compaction_fallback",
+                    json!({
+                        "relayId": relay.id,
+                        "statusCode": status_code,
+                    }),
+                );
+                let fallback = upstream_request_parts(
+                    &relay,
+                    request_json.clone(),
+                    request_path,
+                    model_override.as_deref(),
+                    false,
+                )
+                .await;
+                let (fallback_endpoint, fallback_body, fallback_wire, _) = match fallback {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        if has_more_candidates && error.is::<NativeCompactionUnsupported>() {
+                            crate::relay_rotation::record_relay_request_failure(&settings);
+                            continue;
+                        }
+                        return native_compaction_unsupported_result(error);
+                    }
+                };
+                endpoint = fallback_endpoint;
+                upstream_body = fallback_body;
+                wire_api = fallback_wire;
+                channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
+                upstream = match send_responses_upstream_request(
+                    &relay,
+                    &endpoint,
+                    &upstream_body,
+                    wire_api,
+                    is_stream,
+                    original_user_agent,
+                    beta_features,
+                    session_headers,
+                )
+                .await
+                {
+                    Ok(upstream) => upstream,
+                    Err(error) => {
+                        drop(channel_permit);
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "protocol_proxy.upstream_request_failed",
+                            json!({
+                                "relayId": relay.id,
+                                "endpoint": endpoint,
+                                "compactionFallback": true,
+                                "error": error.to_string()
+                            }),
+                        );
+                        crate::relay_rotation::record_relay_request_failure(&settings);
+                        if has_more_candidates {
+                            continue;
+                        }
+                        return Err(error).with_context(|| {
+                            format!(
+                                "供应商「{}」请求上游失败，endpoint: {}",
+                                relay.name, endpoint
+                            )
+                        });
+                    }
+                };
+                status_code = upstream.status().as_u16();
+                content_type = upstream
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+            }
+
             let retry_after = crate::channel_protection::retry_after_duration(upstream.headers());
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "protocol_proxy.upstream_response",
@@ -1642,12 +2318,6 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                     RotationEvent::Failure
                 },
             );
-            let content_type = upstream
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("")
-                .to_string();
             if (200..300).contains(&status_code) || !has_more_candidates {
                 if !(200..300).contains(&status_code) {
                     let cooldown_started = crate::channel_protection::mark_failure(
@@ -1673,13 +2343,22 @@ async fn open_responses_proxy_request_with_settings_and_user_agent(
                         continue 'request;
                     }
                 }
+                // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
+                let json_compaction = is_compaction_request
+                    && content_type
+                        .split(';')
+                        .next()
+                        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"));
                 return Ok(UpstreamProxyResponse {
                     status_code,
-                    is_stream: is_stream || content_type.contains("text/event-stream"),
+                    is_stream: (is_stream && !json_compaction)
+                        || content_type.contains("text/event-stream"),
                     content_type,
                     wire_api,
                     compaction: is_compaction_request,
-                    response: upstream,
+                    native_compaction_passthrough: false,
+                    buffered_body: None,
+                    response: Some(upstream),
                     _channel_permit: Some(channel_permit),
                 });
             }
@@ -1798,7 +2477,9 @@ pub async fn open_models_proxy_request(
         content_type,
         wire_api: UpstreamWireApi::Responses,
         compaction: false,
-        response: upstream,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
         _channel_permit: None,
     })
 }
@@ -1849,7 +2530,9 @@ pub async fn open_audio_transcriptions_proxy_request(
         content_type,
         wire_api: UpstreamWireApi::AudioTranscriptions,
         compaction: false,
-        response: upstream,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
         _channel_permit: None,
     })
 }
@@ -1982,7 +2665,9 @@ async fn open_image_proxy_request(
         content_type,
         wire_api,
         compaction: false,
-        response: upstream,
+        native_compaction_passthrough: false,
+        buffered_body: None,
+        response: Some(upstream),
         _channel_permit: None,
     })
 }
@@ -2020,12 +2705,11 @@ pub async fn open_chat_completions_proxy_request(
     let mut cooldown_retries = 0_usize;
     loop {
         let channel_permit = crate::channel_protection::acquire(&channel_key, &relay).await;
-        let endpoint = chat_completions_url(&relay.base_url);
-        let request = crate::http_client::client_for_url(
-            &effective_user_agent(&relay.user_agent, original_user_agent),
-            &endpoint,
-        )?
-        .post(endpoint)
+        let request = crate::http_client::proxied_client(&effective_user_agent(
+            &relay.user_agent,
+            original_user_agent,
+        ))?
+        .post(chat_completions_url(&relay.base_url))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&request_json);
         let upstream = match with_relay_auth(request, &relay).send().await {
@@ -2074,7 +2758,9 @@ pub async fn open_chat_completions_proxy_request(
             content_type,
             wire_api: UpstreamWireApi::ChatCompletions,
             compaction: false,
-            response: upstream,
+            native_compaction_passthrough: false,
+            buffered_body: None,
+            response: Some(upstream),
             _channel_permit: Some(channel_permit),
         });
     }
@@ -2105,15 +2791,24 @@ async fn upstream_request_parts(
     mut request_json: Value,
     request_path: &str,
     model_override: Option<&str>,
+    preserve_compaction_trigger: bool,
 ) -> anyhow::Result<(String, Value, UpstreamWireApi, bool)> {
     let compact = is_responses_compact_proxy_path(request_path)
         || request_has_compaction_trigger(&request_json);
     let is_v2_compaction = compact && request_has_compaction_trigger(&request_json);
-    // 原生 Responses 状态必须来自上游，不能以普通摘要冒充加密状态。
-    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
-    if synthetic_compaction {
-        request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
+    if relay.protocol == RelayProtocol::ChatCompletions
+        && input_has_native_compaction(&request_json)
+    {
+        return Err(NativeCompactionUnsupported::history().into());
     }
+    // 原生 v2 上游要先看到 compaction_trigger。只有确认它没有返回 compaction 项后才剥掉重试。
+    if compact && !preserve_compaction_trigger {
+        request_json = rewrite_request_for_compaction(strip_compaction_trigger(request_json));
+        if input_has_native_compaction(&request_json) {
+            return Err(NativeCompactionUnsupported::history().into());
+        }
+    }
+    let synthetic_compaction = compact && relay.protocol == RelayProtocol::ChatCompletions;
     if let Some(model) = model_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -2203,6 +2898,35 @@ async fn upstream_request_parts(
         wire_api,
         synthetic_compaction,
     ))
+}
+
+async fn send_responses_upstream_request(
+    relay: &crate::settings::RelayProfile,
+    endpoint: &str,
+    upstream_body: &Value,
+    wire_api: UpstreamWireApi,
+    is_stream: bool,
+    original_user_agent: Option<&str>,
+    beta_features: Option<&str>,
+    session_headers: ProxySessionHeaders<'_>,
+) -> anyhow::Result<reqwest::Response> {
+    let mut builder = upstream_request_builder(
+        crate::http_client::client_for_url(
+            &effective_user_agent(&relay.user_agent, original_user_agent),
+            endpoint,
+        )?,
+        endpoint,
+        relay,
+        is_stream,
+        upstream_body,
+    );
+    builder = with_client_session_headers(builder, relay, session_headers);
+    if wire_api == UpstreamWireApi::Responses {
+        if let Some(value) = beta_features.filter(|value| !value.is_empty()) {
+            builder = builder.header("x-codex-beta-features", value);
+        }
+    }
+    send_upstream_request_for_responses(builder, is_stream).await
 }
 
 fn upstream_request_builder(
@@ -2296,13 +3020,13 @@ fn effective_user_agent(configured_user_agent: &str, original_user_agent: Option
 
 pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyHttpResponse> {
     let request_json: Value = serde_json::from_str(body)?;
-    let upstream = open_responses_proxy_request(body, None).await?;
+    let mut upstream = open_responses_proxy_request(body, None).await?;
     let is_compaction = upstream.compaction;
     let status_code = upstream.status_code;
     let upstream_content_type = upstream.content_type.clone();
     let is_stream = upstream.is_stream;
     let wire_api = upstream.wire_api;
-    let upstream_body = upstream.response.bytes().await?;
+    let upstream_body = upstream.read_body().await?;
 
     if !(200..300).contains(&status_code) {
         let error =
@@ -2311,6 +3035,22 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
             status: http_status_line(status_code),
             content_type: "application/json; charset=utf-8".to_string(),
             body: serde_json::to_vec(&error)?,
+        });
+    }
+
+    if upstream.native_compaction_passthrough {
+        return Ok(ProxyHttpResponse {
+            status: "200 OK".to_string(),
+            content_type: if upstream_content_type.is_empty() {
+                if is_stream {
+                    "text/event-stream; charset=utf-8".to_string()
+                } else {
+                    "application/json; charset=utf-8".to_string()
+                }
+            } else {
+                upstream_content_type
+            },
+            body: upstream_body,
         });
     }
 
@@ -3061,6 +3801,29 @@ impl ChatSseState {
         self.finalize_text_into(output);
         self.finalize_tools_into(output);
 
+        if self
+            .output_items
+            .iter()
+            .any(|(_, item)| invalid_web_search_output_item(item))
+        {
+            let mut response = self.base_response("failed", self.completed_output_items());
+            response["error"] = json!({
+                "type": "invalid_upstream_tool_call",
+                "message": "Chat 上游返回了未执行的原生 web_search 调用，请使用客户端搜索工具"
+            });
+            copy_response_request_fields(&mut response, self.original_request.as_ref());
+            push_sse(
+                output,
+                "response.failed",
+                json!({
+                    "type": "response.failed",
+                    "response": response
+                }),
+            );
+            self.completed = true;
+            return;
+        }
+
         let status = response_status(self.finish_reason.as_deref());
         let mut response = self.base_response(status, self.completed_output_items());
         if status == "incomplete" {
@@ -3756,15 +4519,6 @@ fn append_responses_item(
                 if !text.is_empty() {
                     pending_reasoning.push(text);
                 }
-            }
-        }
-        Some(COMPACTION_OUTPUT_TYPE) => {
-            // codex 历史回放：上次压缩的结果以 `compaction` item 形式出现在 input
-            // 里，`encrypted_content` 是我们生成的明文摘要，展开成 user 消息喂给上游。
-            flush_tool_calls(messages, pending_tool_calls, pending_reasoning);
-            flush_reasoning(messages, pending_reasoning);
-            if let Some(message) = expand_compaction_item(item) {
-                messages.push(message);
             }
         }
         Some(COMPACTION_TRIGGER_TYPE) => {
@@ -5735,7 +6489,7 @@ fn response_tool_call_item(
         return json!({
             "id": web_search_item_id(call_id),
             "type": "web_search_call",
-            "status": "completed",
+            "status": "failed",
             "call_id": call_id,
             "action": web_search_action_from_arguments(arguments)
         });
@@ -5786,14 +6540,16 @@ fn web_search_item_id(call_id: &str) -> String {
 /// 把上游 web_search 工具调用的 arguments 映射成客户端 action 结构。
 ///
 /// 客户端 rollout 里的形态是 `{"type":"search","query":…,"queries":[…]}` 或
-/// `{"type":"open_page","url":…}`。上游各家字段名不一（query / queries / url），
+/// `{"type":"open_page","url":…}`。上游各家字段名不一（input / query /
+/// queries / url），
 /// 这里按存在性择一，都取不到就退化成 `{"type":"search"}`，让客户端自己判空。
 fn web_search_action_from_arguments(arguments: &str) -> Value {
     let parsed = responses_arguments_to_chat_parse(arguments);
     let query = parsed
         .get("query")
         .and_then(Value::as_str)
-        .filter(|value| !value.is_empty());
+        .or_else(|| parsed.get("input").and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty());
     let url = parsed
         .get("url")
         .and_then(Value::as_str)
@@ -5827,6 +6583,29 @@ fn web_search_action_from_arguments(arguments: &str) -> Value {
         }
         (None, None) => json!({ "type": "search" }),
     }
+}
+
+fn web_search_action_has_target(action: &Value) -> bool {
+    action
+        .get("query")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        || action
+            .get("queries")
+            .and_then(Value::as_array)
+            .is_some_and(|queries| {
+                queries
+                    .iter()
+                    .any(|query| query.as_str().is_some_and(|value| !value.trim().is_empty()))
+            })
+        || action
+            .get("url")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn invalid_web_search_output_item(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("web_search_call")
 }
 
 fn tool_call_item_id(call_id: &str, name: &str, tool_context: &CodexToolContext) -> String {
@@ -6786,7 +7565,8 @@ fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str, s
         ChatReasoningStyle::DeepSeek
         | ChatReasoningStyle::LowHigh
         | ChatReasoningStyle::Default
-            if supports_reasoning_effort(model) =>
+            if supports_reasoning_effort(model)
+                || (standard && model.to_ascii_lowercase().contains("gemini")) =>
         {
             result["reasoning_effort"] = json!(mapped);
         }
@@ -6913,6 +7693,8 @@ fn supports_reasoning_effort(model: &str) -> bool {
             .is_some_and(|ch| ch.is_ascii_digit() && ch >= '5')
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::DeepSeek
         || infer_chat_reasoning_style(model) == ChatReasoningStyle::LowHigh
+        // #2464 已验证的网关模型；其它 Gemini 由供应商的标准协议开关显式启用。
+        || model.eq_ignore_ascii_case("gemini-3.8-flash")
 }
 
 fn is_openai_o_series(model: &str) -> bool {
@@ -6951,6 +7733,162 @@ mod request_body_reuse_tests {
         let body = request_body_for_attempt(&mut request, false, 0);
         assert_eq!(body["input"], json!("hi"));
         assert_eq!(request["input"], json!("hi"), "原请求体不能被移走");
+    }
+}
+
+#[cfg(test)]
+mod response_compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn chat_search_filter_preserves_client_tools_and_rejects_forced_native_search() {
+        let native = json!({"type":"web_search"});
+        for client in [
+            json!({"type":"function", "name":"web_search", "parameters":{"type":"object"}}),
+            json!({"type":"custom", "name":"web_search"}),
+            json!({"type":"tool_search", "execution":"client"}),
+            json!({"type":"namespace", "name":"search", "tools":[]}),
+        ] {
+            let mut body =
+                json!({"tools":[native.clone(),client.clone()],"tool_choice":"required"});
+            remove_unsupported_native_search(&mut body).unwrap();
+            assert_eq!(body["tools"], json!([client]));
+        }
+        for choice in [json!("required"), json!({"type":"web_search"})] {
+            let mut body = json!({"tools":[native.clone()],"tool_choice":choice});
+            assert!(
+                remove_unsupported_native_search(&mut body)
+                    .unwrap_err()
+                    .is::<UnsupportedNativeWebSearch>()
+            );
+        }
+        let mut automatic = json!({"tools":[native],"tool_choice":"auto"});
+        remove_unsupported_native_search(&mut automatic).unwrap();
+        assert_eq!(automatic["tools"], json!([]));
+    }
+
+    #[test]
+    fn native_search_with_query_is_still_not_executed_by_chat_converter() {
+        let request = json!({"tools":[{"type":"web_search"}]});
+        let response = chat_completion_to_response_with_request(
+            json!({
+                "choices":[{"message":{"tool_calls":[{"id":"call_search", "function":{
+                    "name":"web_search", "arguments":"{\"query\":\"Codex\"}"
+                }}]},"finish_reason":"tool_calls"}]
+            }),
+            &request,
+        )
+        .unwrap();
+        assert_eq!(response["status"], "failed");
+        assert_eq!(response["output"][0]["status"], "failed");
+    }
+
+    #[test]
+    fn gemini_reasoning_conversion_respects_standard_protocol_opt_in() {
+        for standard in [false, true] {
+            let body = responses_to_chat_completions_with_options(
+                json!({
+                    "model":"gemini-3.8-flash", "input":"hi", "reasoning":{"effort":"high"}
+                }),
+                standard,
+            )
+            .unwrap();
+            assert_eq!(body["reasoning_effort"], "high");
+        }
+        let request =
+            json!({"model":"google/gemini-other", "input":"hi", "reasoning":{"effort":"high"}});
+        assert!(
+            responses_to_chat_completions(request.clone())
+                .unwrap()
+                .get("reasoning_effort")
+                .is_none()
+        );
+        assert_eq!(
+            responses_to_chat_completions_with_options(request, true).unwrap()["reasoning_effort"],
+            "high"
+        );
+    }
+
+    #[test]
+    fn gemini_models_receive_reasoning_effort() {
+        assert!(supports_reasoning_effort("gemini-3.8-flash"));
+        assert!(!supports_reasoning_effort("google/gemini-2.5-pro"));
+        assert!(!supports_reasoning_effort("glm-5.3"));
+    }
+
+    #[test]
+    fn empty_web_search_call_is_failed_in_non_stream_response() {
+        let request = json!({
+            "model": "gemini-3.8-flash",
+            "tools": [{ "type": "web_search" }]
+        });
+        let upstream = json!({
+            "id": "chatcmpl-search",
+            "model": "gemini-3.8-flash",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_search",
+                        "type": "function",
+                        "function": { "name": "web_search", "arguments": "{}" }
+                    }]
+                }
+            }]
+        });
+
+        let response = chat_completion_to_response_with_request(upstream, &request).unwrap();
+        assert_eq!(
+            response.get("status").and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            response.pointer("/error/type").and_then(Value::as_str),
+            Some("invalid_upstream_tool_call")
+        );
+    }
+
+    #[test]
+    fn empty_web_search_call_is_failed_in_stream_response() {
+        let request = json!({
+            "model": "gemini-3.8-flash",
+            "tools": [{ "type": "web_search" }]
+        });
+        let chunk = json!({
+            "id": "chatcmpl-search",
+            "model": "gemini-3.8-flash",
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_search",
+                        "function": { "name": "web_search", "arguments": "{}" }
+                    }]
+                }
+            }]
+        });
+        let mut state = ChatSseState::with_request(&request);
+        let mut stream = String::new();
+        state.handle_chat_chunk_into(&chunk, &mut stream);
+        state.finalize_into(&mut stream);
+        assert!(stream.contains("response.failed"));
+        assert!(!stream.contains("response.completed"));
+    }
+
+    #[test]
+    fn web_search_action_requires_query_or_url() {
+        assert!(!web_search_action_has_target(&json!({ "type": "search" })));
+        assert!(web_search_action_has_target(
+            &json!({ "type": "search", "query": "Codex" })
+        ));
+        assert!(web_search_action_has_target(
+            &web_search_action_from_arguments(r#"{"input":"Codex"}"#)
+        ));
+        assert!(web_search_action_has_target(
+            &json!({ "type": "open_page", "url": "https://example.com" })
+        ));
     }
 }
 
@@ -7024,5 +7962,26 @@ mod channel_cooldown_retry_tests {
         assert!(should_retry_after_cooldown(2));
         assert!(!should_retry_after_cooldown(3));
         assert!(!should_retry_after_cooldown(usize::MAX));
+    }
+}
+
+#[cfg(test)]
+mod compaction_probe_body_limit_tests {
+    use super::*;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    #[tokio::test]
+    async fn oversized_content_length_is_rejected_before_body_read() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("x"))
+            .mount(&server)
+            .await;
+
+        let mut response = reqwest::get(server.uri()).await.unwrap();
+        let error = read_limited_upstream_body(&mut response, 0)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("上游响应体超过"));
     }
 }
