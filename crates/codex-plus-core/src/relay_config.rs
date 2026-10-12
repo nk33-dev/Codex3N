@@ -364,6 +364,20 @@ pub fn live_codex_api_key_in_home(home: &Path) -> Option<String> {
         .filter(|token| !token.trim().is_empty())
 }
 
+pub fn runtime_api_key_in_home(home: &Path) -> Option<String> {
+    if live_api_key_target_in_home(home).ok()? != LiveApiKeyTarget::AuthJson {
+        return None;
+    }
+    let auth = read_optional_text(&home.join("auth.json")).ok()?;
+    let parsed: Value = serde_json::from_str(&auth).ok()?;
+    if parsed.get("tokens").is_some_and(|tokens| !tokens.is_null())
+        || parsed.get("auth_mode").and_then(Value::as_str) == Some("chatgpt")
+    {
+        return None;
+    }
+    codex_auth_api_key(&auth)
+}
+
 /// 只更新 live 里的 Key：改落点那一处，另一个文件一个字不动。
 /// 返回备份目录（与整份应用共用同一套备份逻辑）。
 pub fn set_live_api_key_only_in_home(home: &Path, api_key: &str) -> anyhow::Result<Option<String>> {

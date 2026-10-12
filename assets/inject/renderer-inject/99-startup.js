@@ -1,4 +1,5 @@
   runScanStep(removeLegacyRelayApiKeyBadges);
+  window.__codexPlusReloadApiKey = reloadCodexApiKey;
   void restoreCodexPlusManagedLocale();
   runScanStep(installCodexPlusTypingEffects);
   runScanStep(syncCodexPlusWhaleWidget);

@@ -74,6 +74,10 @@ pub trait BridgeSettingsService: Send + Sync {
         None
     }
 
+    async fn runtime_api_key(&self) -> Option<String> {
+        None
+    }
+
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         Ok(String::new())
     }
@@ -85,6 +89,10 @@ pub trait BridgeSettingsService: Send + Sync {
 
 #[async_trait]
 pub trait BridgeRuntimeService: Send + Sync {
+    async fn reload_api_key(&self, _api_key: &str) -> anyhow::Result<()> {
+        anyhow::bail!("当前后端不支持更新运行中的认证")
+    }
+
     async fn user_script_inventory(&self) -> anyhow::Result<Value>;
     async fn user_script_inventory_with_runtime_status(
         &self,
@@ -263,7 +271,7 @@ pub async fn handle_bridge_request(
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string();
-            relay_api_key_selection_value(ctx.settings.select_relay_api_key(key_id).await)
+            select_relay_api_key_value(&ctx, key_id).await
         }
         "/user-scripts/list" => {
             ctx.runtime
@@ -531,6 +539,10 @@ impl BridgeSettingsService for CoreSettingsService {
         )
     }
 
+    async fn runtime_api_key(&self) -> Option<String> {
+        crate::relay_config::runtime_api_key_in_home(&crate::relay_config::default_codex_home_dir())
+    }
+
     async fn codex_app_version(&self) -> anyhow::Result<String> {
         if let Some(app_dir) = self.app_dir.as_deref() {
             return Ok(crate::app_paths::codex_app_version(app_dir).unwrap_or_default());
@@ -599,6 +611,14 @@ impl CoreRuntimeService {
 
 #[async_trait]
 impl BridgeRuntimeService for CoreRuntimeService {
+    async fn reload_api_key(&self, api_key: &str) -> anyhow::Result<()> {
+        let websocket_url = self
+            .websocket_url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        crate::bridge::reload_api_key_at(websocket_url, api_key).await
+    }
+
     async fn user_script_inventory(&self) -> anyhow::Result<Value> {
         match &self.user_scripts {
             Some(user_scripts) => user_scripts.inventory(),
@@ -994,6 +1014,32 @@ fn live_matched_api_key_id(
     // 没有命名 Key 的旧配置：live 与供应商 Key 一致时，目标项就是它。
     let single = crate::relay_config::relay_profile_api_key(profile);
     (profile.api_keys.is_empty() && single.trim() == live).then(|| active_key_id.to_string())
+}
+
+async fn select_relay_api_key_value(ctx: &BridgeContext, key_id: String) -> anyhow::Result<Value> {
+    static SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = SWITCH_LOCK
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Key 正在切换，请稍后重试"))?;
+    let settings = ctx.settings.select_relay_api_key(key_id).await?;
+    let expected_key = crate::relay_config::relay_profile_api_key(&settings.active_relay_profile());
+    let runtime_applied = match ctx
+        .settings
+        .runtime_api_key()
+        .await
+        .filter(|key| key == &expected_key)
+    {
+        Some(api_key) => ctx.runtime.reload_api_key(&api_key).await.is_ok(),
+        None => false,
+    };
+    let mut value = relay_api_key_selection_value(Ok(settings))?;
+    value["runtimeApplied"] = json!(runtime_applied);
+    value["message"] = json!(if runtime_applied {
+        "Key 已切换，后续请求使用新 Key"
+    } else {
+        "Key 已保存，运行中的认证未更新，请完整退出并重新打开 Codex"
+    });
+    Ok(value)
 }
 
 fn relay_api_key_selection_value(result: anyhow::Result<BackendSettings>) -> anyhow::Result<Value> {

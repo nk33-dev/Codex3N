@@ -173,6 +173,24 @@ pub async fn evaluate_script(websocket_url: &str, script: &str) -> anyhow::Resul
     evaluate_script_with_await_promise(websocket_url, script, false).await
 }
 
+pub async fn reload_api_key_at(websocket_url: &str, api_key: &str) -> anyhow::Result<()> {
+    let script = format!(
+        "(async()=>{{try{{return await window.__codexPlusReloadApiKey?.({})===true}}catch{{return false}}}})()",
+        serde_json::to_string(api_key)?
+    );
+    let response = evaluate_script_with_await_promise(websocket_url, &script, true)
+        .await
+        .map_err(|_| anyhow::anyhow!("运行中的认证更新失败"))?;
+    anyhow::ensure!(
+        response
+            .pointer("/result/result/value")
+            .and_then(Value::as_bool)
+            == Some(true),
+        "运行中的认证未更新"
+    );
+    Ok(())
+}
+
 pub async fn evaluate_script_with_await_promise(
     websocket_url: &str,
     script: &str,

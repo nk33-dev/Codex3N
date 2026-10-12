@@ -143,6 +143,7 @@ function relayKeysRuntime(state: { enabled: boolean; status?: string; activeKeyI
     })};
     const codexPlusBackendStatus = { status: ${JSON.stringify(backendStatus)} };
     let codexPlusRelayApiKeySwitching = ${state.switching ? "true" : "false"};
+    let codexPlusRelayApiKeyRuntimeWarning = "";
     let codexPlusRelayApiKeysPromise = null;
     ${section("  function renderRelayApiKeys(", "  function selectCodexPlusTab(")}
     return { load: loadRelayApiKeys, refreshOnOpen: refreshRelayApiKeysOnPanelOpen };
@@ -222,6 +223,69 @@ test("Key 选择器在值变化时提交，支持键盘选择", () => {
   assert.doesNotMatch(runtimeSource("openCodexPlusModal").split('overlay.addEventListener("click"')[1], /selectRelayApiKey\(apiKeySelect.value\)/);
 });
 
+test("认证更新只发送到本机 RPC，等待确认后返回成功", async () => {
+  const calls: unknown[] = [];
+  let finish: (value: unknown) => void = () => {};
+  const reload = new Function("nativeHostClient", "loadAppServerRequestCandidates", `
+    ${runtimeSource("codexPlusApiKeyReloadPromise", "reloadCodexApiKey")}
+    return reloadCodexApiKey;
+  `)(() => null, async () => ({ candidates: [
+    { hostId: "remote", sendRequest: () => { throw new Error("不能发送到远端"); } },
+    { hostId: "local", sendRequest: (...args: unknown[]) => { calls.push(args); return new Promise((resolve) => { finish = resolve; }); } },
+  ] }));
+  let completed = false;
+  const pending = reload("sk-example").then((result: boolean) => { completed = true; return result; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(completed, false);
+  assert.deepEqual(calls, [["account/login/start", { type: "apiKey", apiKey: "sk-example" }]]);
+  finish({ type: "apiKey" });
+  assert.equal(await pending, true);
+});
+
+test("认证更新失败不回显密钥，后续更新仍能执行", async () => {
+  let attempts = 0;
+  const reload = new Function("nativeHostClient", "loadAppServerRequestCandidates", `
+    ${runtimeSource("codexPlusApiKeyReloadPromise", "reloadCodexApiKey")}
+    return reloadCodexApiKey;
+  `)(() => ({ sendRequest: async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("sk-example-secret");
+    return { type: "apiKey" };
+  } }), async () => { throw new Error("已有本机客户端"); });
+  assert.deepEqual(await Promise.all([reload("sk-example-secret"), reload("sk-next")]), [false, true]);
+  assert.equal(attempts, 2);
+});
+
+test("没有本机 RPC 或返回未确认时，认证更新报告失败", async () => {
+  for (const candidates of [[], [{ hostId: "remote", sendRequest() { throw new Error("不能发送到远端"); } }], [{ hostId: "local", sendRequest: async () => ({ type: "chatgpt" }) }]]) {
+    const reload = new Function("nativeHostClient", "loadAppServerRequestCandidates", `
+      ${runtimeSource("codexPlusApiKeyReloadPromise", "reloadCodexApiKey")}
+      return reloadCodexApiKey;
+    `)(() => null, async () => ({ candidates }));
+    assert.equal(await reload("sk-example"), false);
+  }
+});
+
+test("Key 切换按运行时结果提示，刷新列表后保留重启提示", async () => {
+  for (const runtimeApplied of [true, false]) {
+    const notices: string[] = [];
+    const message = runtimeApplied ? "Key 已切换，后续请求使用新 Key" : "Key 已保存，请完整退出并重新打开 Codex";
+    const runtime = new Function("postJson", "showToast", `
+      let codexPlusRelayApiKeys = { activeKeyId: "old" };
+      let codexPlusRelayApiKeySwitching = false, codexPlusRelayApiKeyRuntimeWarning = "";
+      let codexModelCatalogLoadedAt = 100;
+      const renderRelayApiKeys = () => {}, loadCodexModelCatalog = async () => {}, refreshCodexModelQueries = () => {}, scheduleCodexModelWhitelistRefresh = () => {};
+      const loadRelayApiKeys = async () => { codexPlusRelayApiKeys = { activeKeyId: "new" }; };
+      ${runtimeSource("selectRelayApiKey")}
+      return { select: selectRelayApiKey, warning: () => codexPlusRelayApiKeyRuntimeWarning, switching: () => codexPlusRelayApiKeySwitching };
+    `)(async () => ({ status: "ok", activeKeyId: "new", runtimeApplied, message }), (text: string) => notices.push(text));
+    await runtime.select("new");
+    assert.deepEqual(notices, [message]);
+    assert.equal(runtime.warning(), runtimeApplied ? "" : message);
+    assert.equal(runtime.switching(), false);
+  }
+});
+
 test("没有命名 Key 时都提示去管理工具添加", async () => {
   for (const enabled of [true, false]) {
     const { list, load } = relayKeysRuntime({ enabled });
@@ -239,7 +303,7 @@ test("live 里的 Key 不在列表里时如实提示，不假装匹配", async (
     keys: [{ id: "key-deepseek", name: "DeepSeek" }],
   });
   await load();
-  assert.match(list.innerHTML, /实际在用的 Key 不在这个列表里/);
+  assert.match(list.innerHTML, /当前配置里的 Key 不在这个列表里/);
   assert.match(list.innerHTML, /<option value="key-deepseek" selected>DeepSeek<\/option>/);
 });
 

@@ -76,6 +76,60 @@ fn screenshot_command_uses_png_from_surface() {
     );
 }
 
+#[tokio::test]
+async fn api_key_reload_requires_cdp_confirmation_and_redacts_errors() {
+    for (confirmed, payload) in [
+        (true, json!({"result": {"type": "boolean", "value": true}})),
+        (
+            false,
+            json!({"result": {"type": "boolean", "value": false}}),
+        ),
+        (
+            false,
+            json!({"exceptionDetails": {"text": "sk-example-secret"}}),
+        ),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let message = socket.next().await.unwrap().unwrap();
+            let request: serde_json::Value =
+                serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "Runtime.evaluate");
+            assert_eq!(request["params"]["awaitPromise"], true);
+            assert!(
+                request["params"]["expression"]
+                    .as_str()
+                    .unwrap()
+                    .contains("__codexPlusReloadApiKey")
+            );
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": request["id"],
+                    "result": payload
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .await
+                .unwrap();
+        });
+        let result = bridge::reload_api_key_at(
+            &format!("ws://{address}/devtools/page/probe"),
+            "sk-example-secret",
+        )
+        .await;
+        assert_eq!(result.is_ok(), confirmed);
+        if let Err(error) = result {
+            assert!(!error.to_string().contains("sk-example-secret"));
+        }
+        server.await.unwrap();
+    }
+}
+
 #[test]
 fn injection_script_prefixes_helper_url_and_metadata() {
     let script = assets::injection_script(57321);
