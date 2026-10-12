@@ -300,7 +300,10 @@ jobs:
         run: |
           set -euo pipefail
           # 归档与 DMG 同一批通用二进制，名称沿用实际 DMG 版本。
-          ZIP_NAME="$(basename dist/macos/*.dmg .dmg).zip"
+          VERSION="$(basename dist/macos/*.dmg .dmg)"
+          VERSION="${VERSION#Codex3N-}"
+          VERSION="${VERSION%-macos-universal}"
+          ZIP_NAME="Codex3N-${VERSION}-macos-universal.zip"
           mkdir -p dist/macos/app-universal
           cp "target/universal/release/codex-plus-plus" "dist/macos/app-universal/"
           cp "target/universal/release/codex-plus-legacy-shim" "dist/macos/app-universal/"
