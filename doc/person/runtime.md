@@ -10,9 +10,9 @@
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
 - `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
-- 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入、会话分享和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
+- 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
-- 启动器在已启用且保存微信连接凭据时，以 `--background` 启动管理器；管理器 `lib.rs` 隐藏后台窗口，并经 `start_weixin_connect_from_saved_settings` 恢复连接。用户主动打开管理器时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
+- 统一应用启动时经 `start_weixin_connect_from_saved_settings` 恢复已启用的微信连接，`resume_existing_codex_background` 只恢复已有 Codex 的后台服务。用户再次打开时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
 - `weixin-qr-polling.ts` 是扫码轮询的唯一调度入口，复用 `createVisibleRefresh`，但不绑定窗口可见性。等待和已扫码每次响应完成后隔 1 秒补查；确认、过期、业务失败或请求异常均停止，异常只提示一次，不自动重试。新二维码或取消会销毁旧任务，未返回结果与错误都不再提交。
 - 扫码确认后先补读设置和连接状态，再提交二维码终态，避免 effect 清理使补读失效。每次异步返回均检查当前任务；补读期间编辑过的设置草稿不被覆盖。验证见 `weixin-qr-polling.test.ts` 的慢请求、销毁、重新登录和终态测试。
 - 浏览器验证使用真实 React 页面配合 Tauri 官方 IPC mock，覆盖供应商切换、复制、删除、拖拽排序，以及扫码确认、重新扫码和过期提示；mock 数据不代表真实微信登录或原生文件写入已实测。后端命令由 Rust 集成测试验证。日常界面验证优先使用浏览器，不通过 Windows 桌面自动化占用用户输入。
@@ -24,7 +24,7 @@
 
 `App.tsx` 只保留 `App()`、业务状态与操作回调，以及仍与其强耦合的页面；可独立成页的部分按需外移，避免单文件继续膨胀：
 
-- 页面组件放 `apps/codex-plus-manager/src/screens/`（现为 `SessionsScreen`、`GrokScreen`）。
+- 页面组件沿用上游现有边界：`ManagementPages.tsx` 提供 MCP 管理，`ManagementExtra.tsx` 提供 Skills 与会话分组列表；会话维护操作在 `App.tsx::SessionMaintenance`，由会话页统一挂载。`screens/GrokScreen.tsx` 保留既有独立组件。
 - 跨页面复用的展示原语放 `src/components/ui/manager-primitives.tsx`；默认设置放 `src/lib/default-settings.ts`。
 - 外移模块只能 `import type ... from "../App"`，**不得在运行时从 `App.tsx` 取值**，否则形成循环依赖。需要新类型的可见性时给 `App.tsx` 的类型加 `export`。
 - 后端 Tauri 命令按业务拆到 `apps/codex-plus-manager/src-tauri/src/commands/`（现为 `shared.rs`、`dream_skin.rs`、`provider_import.rs`）：`commands.rs` 用 `mod X; pub use X::*;` 汇总，`lib.rs` 的 `generate_handler!` 仍写 `commands::<命令名>`，不需要改。子模块内用 `use super::{...}` 取父模块项，需被父模块测试引用的私有项放宽为 `pub(super)`。
@@ -33,7 +33,7 @@
 ## 配置和安装维护
 
 - 启动链路在 `launcher.rs` 通过 `LaunchTimeline` 更新 `status.rs` 的 `phase/progress`，旧状态文件仍可读取。启动器的 `LauncherHooks::run_provider_sync` 同步失败时记录诊断并继续索引修复和启动。
-- Windows 重启在 `commands.rs` 写入停止阶段，再经 `watcher.rs::LauncherExitSnapshot::wait_for_exit_or_force` 等待旧启动器；超时只结束进程身份与快照相符的实例，并确认退出后才继续。保存的有效应用路径优先；MSIX 激活先核对包注册，再使用解析出的 AUMID 构造命令。
+- `src-tauri/src/main.rs` 提供唯一 GUI 二进制 `codex-plus-plus`；`apps/codex-plus-launcher` 作为库提供 `start`、`stop`、`shutdown` 和 `resume_if_running`。连续启动复用 session，重启依次停止 Codex、清理嵌入运行时并确认原生浏览器恢复，退出应用等待自有服务清理。保存的有效应用路径优先；MSIX 激活先核对包注册，再使用解析出的 AUMID 构造命令。
 - macOS 打包唯一入口为 `scripts/installer/macos/build-universal.sh`：分别编译 x64/arm64，用 `lipo` 合并并验证双架构，再调用 `package-dmg.sh`。CI 和 Release 都产出 universal DMG；个人仓库沿用 ad-hoc 签名，未经过 Apple 公证。脚本仍支持通过 `MACOS_SIGNING_IDENTITY` 和 `MACOS_NOTARY_PROFILE` 启用正式签名与公证。
 
 验证：启动器同步降级测试、核心 `app_paths.rs` / `watcher.rs` / `status.rs` 单测，以及 `tests/launcher.rs`、`tests/updater.rs`；DMG 生命周期由 `macos-dmg.test.ts` 执行模拟磁盘命令，真实双架构构建和 bundle 检查由 macOS CI 执行。
@@ -53,7 +53,7 @@
 - **启动器只跟随自己这次启动的 Codex 进程**：退出等待用 `owned_launcher_target_alive`（`launcher.rs`），只认本次 launch 直接拥有的进程（macOS 经 `watcher::find_macos_codex_processes_for_debug_port` 按调试端口精确匹配），机器上别的 Codex 进程不会让启动器一直占着原生浏览器监控。它与个人版「同一次安装才终止」的 `filter_killable_launcher_processes`（比对映像路径）互补：一个决定「该不该继续活着」，一个决定「该不该被终止」。
 - **发往环回目标的请求显式禁用系统代理**：`reqwest` 的 `system-proxy` 特性在 `ClientBuilder::build()` 时**无条件**追加系统代理匹配器，再 `proxy()` 一个 `no_proxy` 规则也排除不掉。而 Windows 的 `ProxyOverride` 常见配置含 `127.*`，上游 hyper-util 把 `*.` 直接 `.replace("*.", "")` 得到无效条目 `127.`，且对 IP 字面量只查 IP 表而不做前缀匹配，于是发往 `127.0.0.1` 的请求仍被本机代理（如 Clash）接管：代理把请求转交远端节点后，远端去连它自己的 `127.0.0.1:<端口>`，连接被拒时本机代理回 **502**。本地 relay、把 `http://127.0.0.1:57321` 协议代理当供应商、本地 VLM / 模型目录探测都会因此失败。唯一可靠做法是按目标 URL 选 client，环回走 `reqwest::ClientBuilder::no_proxy()`（清空并禁用系统代理匹配器）。入口：`crates/codex-plus-core/src/http_client.rs` 的 `client_for_url` / `url_targets_loopback` / `direct_client`（VLM 侧为 `vlm_http_client_for_url`，connect/total 超时语义不变）。这是**有意绕开**系统代理，不是忽略用户的代理设置。
 - **非环回目标仍然走系统代理**：只有 `url_targets_loopback` 判定为真的目标（`localhost`、`127.0.0.0/8`、`::1`）才切到直连 client，其余目标继续用 `proxied_client`。调用点按实际请求 URL 选择：`protocol_proxy.rs` 用 `endpoint`、`models_url(...)`、`chat_completions_url(...)` 派生出的那个值，`model_catalog.rs`、`sub2api.rs`、`relay_config::test_relay_profile`、`stepwise.rs` 同理。Skills 的目录下载仍使用公网 GitHub 地址。
-- **client 按 (是否环回, UA) 池化复用**（`http_client.rs`）：以前每个请求都新建 `reqwest::Client`，连接池随之丢掉，每个上游请求都要重做一次 TCP + TLS 握手。现在同 UA 同代理语义的请求共用一个 client，keep-alive 生效；VLM client 按 (是否环回, connect/total 超时) 另作一类。**代理变更的代价**：系统代理只在 `build()` 时读一次，缓存后改端口不再逐请求生效——所以 `send_upstream_request_with_header_timeout` 在连接类错误（`is_connect`/`is_request`）时调 `reset_client_pool()`，下一次请求重建 client 并重读系统代理，最多失败一次，不需要重启进程。验证 `http_client.rs` 的 `client_pool_keeps_upstream_connections_alive`（真实 TCP 服务端数连接数）。
+- **client 按运行时、是否环回及 UA 池化复用**（`http_client.rs`）：同一运行时中相同 UA 与代理语义的请求共用 client，keep-alive 生效；VLM client 另按 connect/total 超时区分。连接任务属于原 Tokio 运行时，session 销毁后清空池子，避免重启时复用已停止的连接任务。系统代理只在 `build()` 时读取，连接类错误（`is_connect`/`is_request`）触发 `reset_client_pool()`，下一次请求重新读取代理。验证 `http_client.rs` 的真实 TCP 连接复用用例与 Stepwise 协议回退用例。
 - 会话快照、删除与撤销的数据保护见 [sessions.md](sessions.md)。
 - **诊断日志复用文件句柄**（`diagnostic_log.rs`）：代理路径每个请求要写 4 条以上日志，原先每条都 stat（压缩检查）+ open + write + close。现在按路径缓存句柄，压缩检查看自维护的字节数、超 50MB 才 stat；`clear_diagnostic_log` 与压缩都会丢掉句柄（压缩是 temp + rename 换文件，旧句柄会写进被替换的那份）。句柄不带缓冲，写完立即可读，读日志的测试不需要额外 flush。
 
@@ -88,6 +88,8 @@
 
 ## 安装与自动更新
 
-macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换两个 app，失败时回滚；不在纯下载校验函数里启动安装。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 通过卸载登记判断首次安装，升级和修复不重建用户主动删除的桌面快捷方式。
+macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换 `Codex++.app`，失败时回滚。DMG 中保留隐藏的 `codex-plus-legacy-shim` 兼容壳供旧双应用更新器迁移，首次启动归档旧管理器；helper 脱离 bundle 后重新签名并保留执行权限。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 包内只有统一 GUI，升级清理旧管理器文件，保留用户对桌面快捷方式的选择。
+
+多开入口为 `commands.rs::launch_codex_multi_instance`，每个实例隔离 `CODEX_HOME`、SQLite、Electron 用户目录、调试端口和 helper 端口，独立 worker 仍调用同一启动器库。Chat Completions 和搜索历史兼容模式写入实例自己的代理端口；聚合与模型路由配置暂不支持多开。主应用的健康状态由 `runtime_health.rs` 汇总。
 
 Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。

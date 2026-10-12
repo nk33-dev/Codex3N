@@ -1,4 +1,4 @@
-export type ManagerRoute = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings";
+export type ManagerRoute = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings";
 
 type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "logs" | "diagnostics" | "watcher";
 export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
@@ -7,7 +7,9 @@ export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
 const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
   overview: [["overview"]],
   relay: [["settings", "weixin", "relay", "relayFiles", "envConflicts", "ccsProviders"]],
+  multiLaunch: [["settings", "weixin", "relay", "relayFiles", "envConflicts", "ccsProviders"]],
   grok: [["settings"]],
+  claude: [],
   relayEnvironment: [["relayEnvironment"]],
   sessions: [["settings", "sessions"], ["providerSyncTargets"], ["sessionIndexRepairReport"]],
   context: [["settings", "relayFiles", "liveContextEntries"]],

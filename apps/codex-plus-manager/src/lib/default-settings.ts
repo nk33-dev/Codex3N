@@ -108,6 +108,7 @@ export const defaultSettings: BackendSettings = {
       customHeaders: [],
       noAuth: false,
       standardOpenaiProtocol: false,
+      webSearchHistoryCompat: false,
       sub2apiEnabled: false,
       sub2apiMultiplier: "",
       rateLimitCooldownEnabled: false,

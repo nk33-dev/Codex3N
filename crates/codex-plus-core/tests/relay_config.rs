@@ -3,16 +3,16 @@ use codex_plus_core::relay_config::{
     apply_pure_api_config_to_home, apply_relay_config_file_to_home, apply_relay_config_to_home,
     apply_relay_files_to_home, apply_relay_files_to_home_with_common,
     apply_relay_profile_files_to_home_with_context, apply_relay_profile_to_home_with_switch_rules,
-    backfill_relay_profile_from_home, backfill_relay_profile_from_home_with_common,
-    chatgpt_auth_status_from_home, cleanup_unsupported_approval_policies_in_home,
-    clear_relay_config_to_home, clear_relay_config_to_home_with_auth,
-    delete_context_entry_from_common_config, ensure_active_protocol_proxy_config_in_home,
-    extract_common_config_from_config, list_context_entries_from_common_config,
-    merge_common_config_into_config, normalize_relay_profile_for_storage,
-    prepare_common_config_for_apply, relay_config_status_from_home, relay_profile_api_key,
-    sanitize_common_config_contents, set_codex_goals_feature_in_home,
-    strip_common_config_from_config, sync_live_config_context_entries,
-    upsert_context_entry_in_common_config,
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port, backfill_relay_profile_from_home,
+    backfill_relay_profile_from_home_with_common, chatgpt_auth_status_from_home,
+    cleanup_unsupported_approval_policies_in_home, clear_relay_config_to_home,
+    clear_relay_config_to_home_with_auth, delete_context_entry_from_common_config,
+    ensure_active_protocol_proxy_config_in_home, extract_common_config_from_config,
+    list_context_entries_from_common_config, merge_common_config_into_config,
+    normalize_relay_profile_for_storage, prepare_common_config_for_apply,
+    relay_config_status_from_home, relay_profile_api_key, sanitize_common_config_contents,
+    set_codex_goals_feature_in_home, strip_common_config_from_config,
+    sync_live_config_context_entries, upsert_context_entry_in_common_config,
 };
 use codex_plus_core::settings::{
     BackendSettings, RelayMode, RelayModelRoute, RelayProfile, RelayProtocol,
@@ -1264,6 +1264,68 @@ base_url = "https://responses.example.test/v1"
 }
 
 #[test]
+fn web_search_history_opt_in_routes_through_proxy_and_disable_restores_upstream() {
+    let mut profile = RelayProfile {
+        id: "search-compat".to_string(),
+        relay_mode: RelayMode::PureApi,
+        base_url: "https://responses.example.test/v1".to_string(),
+        upstream_base_url: "https://responses.example.test/v1".to_string(),
+        api_key: "sk-test".to_string(),
+        ..RelayProfile::default()
+    };
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
+    assert!(
+        profile
+            .config_contents
+            .contains("https://responses.example.test/v1")
+    );
+    profile.web_search_history_compat = true;
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
+    assert!(
+        profile
+            .config_contents
+            .contains("http://127.0.0.1:57321/v1")
+    );
+    assert_eq!(
+        profile.upstream_base_url,
+        "https://responses.example.test/v1"
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        profile.config_contents.replace(
+            "http://127.0.0.1:57321/v1",
+            "https://responses.example.test/v1",
+        ),
+    )
+    .unwrap();
+    let settings = BackendSettings {
+        active_relay_id: profile.id.clone(),
+        relay_profiles: vec![profile.clone()],
+        relay_profiles_enabled: true,
+        ..BackendSettings::default()
+    };
+    assert!(ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+    assert!(!ensure_active_protocol_proxy_config_in_home(temp.path(), &settings).unwrap());
+
+    profile.web_search_history_compat = false;
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut profile).unwrap();
+    assert!(
+        profile
+            .config_contents
+            .contains("https://responses.example.test/v1")
+    );
+    assert!(
+        !profile
+            .config_contents
+            .contains("http://127.0.0.1:57321/v1")
+    );
+    assert_eq!(profile.base_url, "https://responses.example.test/v1");
+}
+
+#[test]
 fn launcher_repairs_stale_openai_provider_name_for_non_openai_identity() {
     let temp = tempfile::tempdir().unwrap();
     let config_path = temp.path().join("config.toml");
@@ -1488,6 +1550,38 @@ base_url = "http://127.0.0.1:57321/v1"
     let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
     assert!(!live.contains("codex_plus_chat_base_url"));
     assert!(live.contains(r#"base_url = "http://127.0.0.1:57321/v1""#));
+}
+
+#[test]
+fn chat_protocol_profile_uses_supplied_multi_instance_proxy_port() {
+    let temp = tempfile::tempdir().unwrap();
+    let profile = RelayProfile {
+        id: "relay-chat-multi".to_string(),
+        model: "glm-4.5".to_string(),
+        base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        upstream_base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        api_key: "sk-test-redacted".to_string(),
+        protocol: RelayProtocol::ChatCompletions,
+        relay_mode: RelayMode::PureApi,
+        config_contents: r#"model = "glm-4.5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://open.bigmodel.cn/api/paas/v4"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 61234)
+        .unwrap();
+    let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+    assert!(live.contains(r#"base_url = "http://127.0.0.1:61234/v1""#));
+    assert!(!live.contains("open.bigmodel.cn"));
 }
 
 #[test]
@@ -3870,9 +3964,9 @@ experimental_bearer_token = "sk-old"
     let auth: serde_json::Value = serde_json::from_str(&profile.auth_contents).unwrap();
     assert_eq!(auth["OPENAI_API_KEY"], "sk-old");
     assert!(
-        !profile
+        profile
             .config_contents
-            .contains("experimental_bearer_token")
+            .contains(r#"experimental_bearer_token = "sk-old""#)
     );
 }
 
@@ -4329,7 +4423,7 @@ base_url = "https://relay.example/v1"
     assert!(auth.get("auth_mode").is_none());
     assert!(auth.get("tokens").is_none());
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
@@ -4373,7 +4467,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
     assert!(config.contains(r#"base_url = "https://relay.example/v1""#));
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(!config.contains("live_provider"));
     assert!(!config.contains("https://live.example/v1"));
 }
@@ -4409,7 +4503,7 @@ requires_openai_auth = true
     assert!(config.contains(r#"name = "max_ai""#));
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains("requires_openai_auth = true"));
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
     assert!(!config.contains("[model_providers.custom]"));
 }
 
@@ -4636,7 +4730,7 @@ experimental_bearer_token = "sk-provider-token"
     assert!(auth.as_object().is_some_and(|object| object.is_empty()));
 
     let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-provider-token""#));
     assert!(config.contains("requires_openai_auth = true"));
 }
 
@@ -4836,7 +4930,7 @@ experimental_bearer_token = "sk-new"
     assert!(config.contains(r#"base_url = "https://max2.jojocode.com/v1""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
-    assert!(!config.contains("experimental_bearer_token"));
+    assert!(config.contains(r#"experimental_bearer_token = "sk-new""#));
 }
 
 #[test]
