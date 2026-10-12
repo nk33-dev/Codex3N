@@ -280,6 +280,18 @@ jobs:
           # 未设置 MACOS_SIGNING_IDENTITY，脚本自动退回 ad-hoc 签名。
           bash scripts/installer/macos/build-universal.sh "$VERSION"
 
+      - name: Build macOS zip asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 归档与 DMG 同一批通用二进制，名称沿用实际 DMG 版本。
+          ZIP_NAME="$(basename dist/macos/*.dmg .dmg).zip"
+          mkdir -p dist/macos/app-universal
+          cp "target/universal/release/codex-plus-plus" "dist/macos/app-universal/"
+          cp "target/universal/release/codex-plus-legacy-shim" "dist/macos/app-universal/"
+          (cd dist/macos && zip -r "$ZIP_NAME" "app-universal")
+          unzip -t "dist/macos/$ZIP_NAME"
+
       - name: Verify macOS bundle structure
         run: |
           set -euo pipefail
@@ -315,5 +327,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: codex3n-macos-universal-dmg
-          path: dist/macos/*.dmg
+          path: |
+            dist/macos/*.dmg
+            dist/macos/*.zip
           if-no-files-found: error
