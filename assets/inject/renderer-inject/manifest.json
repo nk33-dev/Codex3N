@@ -57,8 +57,8 @@
     },
     {
       "name": "80-session-share.js",
-      "description": "会话分享、项目区、toast、工作区路径归一",
-      "lines": 1620
+      "description": "会话运行时工具；分享入口已撤出管理器扫描",
+      "lines": 1458
     },
     {
       "name": "90-action-groups.js",
@@ -108,7 +108,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 34
+      "lines": 99
     },
     {
       "name": "99-tail.js",

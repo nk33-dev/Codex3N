@@ -44,7 +44,7 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 管理器沿用上游 Agent 图标栏与原生工作区布局。供应商编辑分组由 `App.tsx::RelayFold` 保存展开偏好，新出现的校验错误展开对应分组，模型配置首次默认展开。
 
-`codexAppSessionShare` 控制当前会话工具栏的分享按钮；`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭。注入入口为 `80-session-share.js` 与 `94-typing-effects.js`，分享入口限定当前会话，打字特效跟随输入法组合状态和系统减少动态效果设置。
+上游已撤下 Codex++ 会话分享、文件导入与分享链接入口，原生会话能力继续由宿主提供。旧 `codexAppSessionShare` 配置保留读取兼容，不再注册分享按钮。`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭；入口为 `94-typing-effects.js`，跟随输入法组合状态和系统减少动态效果设置。
 
 `codexAppWhaleWidgetEnabled` 默认关闭，挂件入口是 `96-whale-compat.js` 与 `97-whale-widget.js`，完整引擎由 `assets.rs` 内联。余额查询复用已保存的供应商凭据，币种、路径、字段与倍率由 `whale-settings.ts` 校验；本地用量、余额账本和账户校正分别保存在 `whale_usage.rs`、`whale_history.rs` 与 `whale_full.rs` 的运行路径。相关读写回归使用临时数据，不操作活动数据库。
 
@@ -55,5 +55,9 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 ## 语音输入与缓存清理
 
 语音输入使用独立的 `dictation` 配置，默认关闭；`enhancementsEnabled` 关闭时暂停录音，服务配置保留。管理器草稿与默认值位于 `dictation-settings.ts`、`provider-types.ts` 和 `lib/default-settings.ts`，Rust `settings.rs` 归一化并加密 `dictation.apiKey`。渲染端唯一入口是 manifest 的 `93-dictation.js`，设置加载成功后经 `runScanStep` 安装，录音界面失败不改变供应商设置加载结果。支持插入、停止并发送、重试和取消；发送前验证当前会话与原生输入框，避免把旧录音发进新会话。旧的 settings/stepwise 导航归一到增强页的下一步建议标签。
+
+`dictation.provider` 支持 `api` 和 `sensevoice`，旧配置默认沿用 API 转写。SenseVoiceSmall INT8 模型由配置页手动下载固定版本并验证 SHA-256，录音入口不触发下载；浏览器将音频转为 16 kHz 单声道 WAV，Rust `dictation.rs` 经 sherpa-onnx 在本机推理。
+
+Claude 汉化页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性，再启动并短暂注入中文脚本。Windows 支持普通安装和 MSIX 来源，macOS 副本重新签名；失败保留可用副本，语言还原由同一命令处理。命令只通过 Tauri 注册。
 
 缓存页 `agent-cache.tsx` 通过 Tauri `scan_agent_cache` / `clean_agent_cache` 调用 `agent_cache.rs`。清理只接受后端保存的扫描快照和组 ID，快照 10 分钟到期且只能消费一次；逐文件校验并删除超过 24 小时的白名单缓存，不接收前端文件路径。录音、配置和会话数据不作为缓存清理对象。验证：`dictation-runtime.test.ts`、`enhancement-settings.test.ts`、`agent-cache-model.test.ts`、Rust dictation 与 agent_cache 单测。

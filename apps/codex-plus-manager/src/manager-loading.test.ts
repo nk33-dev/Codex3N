@@ -43,6 +43,16 @@ test("首页启动不请求其他页面，增强页按需读取设置", async ()
   assert.deepEqual(calls, ["settings"]);
 });
 
+test("多开页读取供应商状态，Claude 页由自身读取副本状态", async () => {
+  const calls: string[] = [];
+  const loaders = pageLoaders(calls);
+  await loadManagerPage("multiLaunch", loaders, new Set(["settings"]));
+  assert.deepEqual(calls, ["weixin", "relay", "relayFiles", "envConflicts", "ccsProviders"]);
+  calls.length = 0;
+  await loadManagerPage("claude", loaders);
+  assert.deepEqual(calls, []);
+});
+
 test("会话列表与设置并行，供应商默认选择等待设置完成", async () => {
   const calls: string[] = [];
   const settings = deferred();

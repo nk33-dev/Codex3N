@@ -25,6 +25,8 @@ import {
   ArrowRight,
   Bell,
   Blocks,
+  Cable,
+  BookOpen,
   CheckCircle2,
   ChevronDown,
   Camera,
@@ -36,9 +38,11 @@ import {
   Info,
   ImagePlus,
   Github,
+  GitBranch,
   ExternalLink,
   Hammer,
   KeyRound,
+  Layers3,
   Languages,
   LayoutGrid,
   LayoutDashboard,
@@ -75,6 +79,8 @@ import {
 import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
 import type { PresetPatch } from "@/components/ProviderPresetSelector";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createPresetPatch } from "@/components/ProviderPresetSelector";
+import { PRESETS, type ProviderPreset } from "./presets";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -86,6 +92,8 @@ import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
 import { PluginMarketScreen } from "./PluginMarketScreen";
+import { McpPage, PageHeader } from "./ManagementPages";
+import { SkillsPage, SessionPage } from "./ManagementExtra";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { normalizeAutoCompactEditing, normalizeAutoCompactPercent } from "./auto-compact";
 import { normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
@@ -112,6 +120,9 @@ import {
   suffixWindowString,
   normalizeTokenCountInput,
   modelMetadataKey,
+  modelFastSupportMode,
+  synchronizeModelMetadataFastSupport,
+  type ModelFastSupportMode,
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
@@ -134,6 +145,7 @@ import {
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
+  webSearchHistoryCompatEnabled,
   PROTOCOL_PROXY_BASE_URL,
   type RelayModelRoute,
 } from "./model-routes";
@@ -235,12 +247,15 @@ type LaunchStatus = {
   aumid: string | null;
 };
 
+type RuntimeServiceState = { status: string; address: string | null; message: string };
+
 type OverviewResult = CommandResult<{
   codex_app: PathState;
   codex_version: string | null;
   silent_shortcut: PathState;
   management_shortcut: PathState;
   latest_launch: LaunchStatus | null;
+  runtime_health: { codex_app: RuntimeServiceState; local_server: RuntimeServiceState; debugger: RuntimeServiceState; protocol_conversion_enabled: boolean | null };
   current_version: string;
   update_status: string;
   settings_path: string;
@@ -250,6 +265,18 @@ type OverviewResult = CommandResult<{
 type LaunchCommandResult = CommandResult<{
   launchStartedAtMs?: number;
   nativeBrowserRestoreFailed?: boolean;
+}>;
+
+type MultiLaunchResult = CommandResult<{
+  instanceId?: string;
+  profileId?: string;
+  pid?: number;
+  debugPort?: number;
+  helperPort?: number;
+  codexHome?: string;
+  sqliteHome?: string;
+  userDataDir?: string;
+  appPath?: string;
 }>;
 
 type ToolEntry = {
@@ -381,15 +408,6 @@ export type LocalSessionsResult = CommandResult<{
   limit: number;
   hasMore: boolean;
   totalCount: number;
-}>;
-
-type SessionImportResult = CommandResult<{
-  sessionId: string;
-  title: string;
-}>;
-
-type PendingSessionShareResult = CommandResult<{
-  url: string | null;
 }>;
 
 type DeleteLocalSessionResult = CommandResult<{
@@ -664,26 +682,6 @@ type UpdateResult = CommandResult<{
   progress?: number;
 }>;
 
-type AdItem = {
-  id?: string;
-  type: "sponsor" | "normal" | string;
-  title: string;
-  description: string;
-  url: string;
-  image?: string;
-  highlights?: string[];
-  expires_at?: string;
-};
-
-type AdsResult = CommandResult<{
-  version: number;
-  ads: AdItem[];
-  /// 兼容旧数据和旧管理端消费者的首条置顶赞助位。
-  topAd?: AdItem;
-  /// 独立置顶赞助位列表，供概览横幅轮播。
-  topAds?: AdItem[];
-}>;
-
 type ScriptMarketItem = {
   id: string;
   name: string;
@@ -784,9 +782,10 @@ type ToolId = string;
 const TOOL_ICONS: Record<string, string> = {
   codex: new URL("./assets/agents/chatgpt.svg", import.meta.url).href,
   grok: new URL("./assets/agents/grok.svg", import.meta.url).href,
+  claude: new URL("./assets/agents/claude.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "grok" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "maintenance" | "about" | "settings";
+type Route = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "maintenance" | "about" | "settings";
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -804,9 +803,12 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 概览在两个工具下都可见，显示各自的状态。
   { id: "overview", label: t("概览"), icon: LayoutDashboard },
   { id: "relay", label: t("供应商配置"), icon: KeyRound, tool: "codex" },
+  { id: "multiLaunch", label: t("Codex多开"), icon: Layers3, badge: "NEW", tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
+  { id: "claude", label: t("Claude 汉化"), icon: Languages, tool: "claude" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
-  { id: "context", label: t("MCP&插件"), icon: Network, tool: "codex" },
+  { id: "context", label: "MCP", icon: Network, tool: "codex" },
+  { id: "skills", label: "Skills", icon: BookOpen, tool: "codex" },
   { id: "weixin", label: t("微信连接"), icon: ScanLine, tool: "codex" },
   { id: "enhance", label: t("Codex增强"), icon: Hammer, tool: "codex" },
   { id: "dreamSkin", label: t("皮肤管理"), icon: Palette, tool: "codex" },
@@ -823,7 +825,11 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
   {
     label: t("工作区"),
-    routes: ["overview", "relay", "grok", "sessions", "context"],
+    routes: ["overview", "relay", "multiLaunch", "grok", "claude"],
+  },
+  {
+    label: t("全局管理"),
+    routes: ["context", "skills", "sessions"],
   },
   {
     label: t("扩展"),
@@ -867,7 +873,6 @@ export function App() {
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
-  const [sessionShareUrl, setSessionShareUrl] = useState("");
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -897,8 +902,10 @@ export function App() {
     helperPort: "57321",
   });
   const prevLaunchStatusRef = useRef<string | null>(null);
+  const overviewRequestSequence = useRef(0);
   const launchPendingRef = useRef(false);
   const [launchPending, setLaunchPending] = useState(false);
+  const [multiLaunchPending, setMultiLaunchPending] = useState<string | null>(null);
   const [settingsForm, setSettingsForm] = useState<BackendSettings>({ ...defaultSettings });
   // 左侧 Agent 切换栏的数据源。后端是唯一事实来源，不落 localStorage —— 多窗口
   // 同时开着时才不会各说各话。
@@ -979,7 +986,9 @@ export function App() {
     setSettingsForm(next);
     // 供应商页是跟着工具走的，切工具后如果当前页不属于新工具就跳到它自己的页。
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tool && currentRoute.tool !== toolId) {
+    if (toolId === "claude") {
+      setRoute("claude");
+    } else if (currentRoute?.tool && currentRoute.tool !== toolId) {
       setRoute(toolId === "grok" ? "grok" : "relay");
     }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
@@ -996,8 +1005,9 @@ export function App() {
   };
 
   const refreshOverview = async (silent = false) => {
+    const requestSequence = ++overviewRequestSequence.current;
     const result = await run(() => call<OverviewResult>("load_overview"));
-    if (result) {
+    if (result && requestSequence === overviewRequestSequence.current) {
       // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
       const prev = prevLaunchStatusRef.current;
       const current = result.latest_launch?.status;
@@ -1239,50 +1249,6 @@ export function App() {
     return result;
   };
 
-  const importLocalSession = async () => {
-    let selected: string | string[] | null;
-    try {
-      selected = await open({
-        title: t("导入 Codex 会话"),
-        multiple: false,
-        directory: false,
-        filters: [{ name: t("会话文件"), extensions: ["jsonl", "json", "txt"] }],
-      });
-    } catch (error) {
-      showNotice(t("会话导入"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
-      return;
-    }
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (!path) return;
-    const result = await run(() => call<SessionImportResult>("import_local_session", { path }));
-    if (!result) return;
-    showResultNotice(t("会话导入"), result);
-    if (isSuccessStatus(result.status)) await refreshLocalSessions(true, 0);
-  };
-
-  const refreshPendingSessionShare = async (silent = true) => {
-    const result = await run(() => call<PendingSessionShareResult>("load_pending_session_share"));
-    if (result?.url) setSessionShareUrl(result.url);
-    if (result && (!silent || !isSuccessStatus(result.status))) {
-      showResultNotice(t("会话导入"), result, { silentSuccess: true });
-    }
-    return result;
-  };
-
-  const importSessionUrl = async (value = sessionShareUrl) => {
-    const url = value.trim();
-    if (!url) {
-      showNotice(t("会话导入"), t("请粘贴 Codex++ 分享链接。"), "failed");
-      return;
-    }
-    const result = await run(() => call<SessionImportResult>("import_session_url", { url }));
-    if (!result) return;
-    showResultNotice(t("会话导入"), result);
-    if (isSuccessStatus(result.status)) {
-      setSessionShareUrl("");
-      await refreshLocalSessions(true, 0);
-    }
-  };
 
   const requestDeleteLocalSession = (session: LocalSession) =>
     call<DeleteLocalSessionResult>("delete_local_session", {
@@ -1852,6 +1818,19 @@ export function App() {
     return false;
   };
 
+  const launchMultiInstance = async (profile: RelayProfile) => {
+    if (multiLaunchPending) return;
+    setMultiLaunchPending(profile.id);
+    try {
+      const result = await run(() => call<MultiLaunchResult>("launch_codex_multi_instance", {
+        request: { profileId: profile.id },
+      }));
+      if (result) showNotice(t("Codex多开"), result.message, result.status);
+    } finally {
+      setMultiLaunchPending(null);
+    }
+  };
+
   const launch = async () => {
     if (launchPendingRef.current) return;
     launchPendingRef.current = true;
@@ -1880,18 +1859,18 @@ export function App() {
       const result = await launchCommand("restart_codex_plus", syncActiveRelay);
       if (!result) return false;
       if (!isSuccessStatus(result.status)) {
-        showNotice(t("重启 Codex++"), result.message, result.status);
+        showNotice(t("重启 Codex"), result.message, result.status);
         return false;
       }
       showNotice(
-        t("重启 Codex++"),
+        t("重启 Codex"),
         result.nativeBrowserRestoreFailed
           ? t("原生浏览器文件恢复失败，仍会继续启动。")
           : t("正在等待 Codex 重新启动…"),
         result.nativeBrowserRestoreFailed ? "failed" : "accepted",
       );
       const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
-      showLaunchCompletionNotice(t("重启 Codex++"), completion, result.launchStartedAtMs);
+      showLaunchCompletionNotice(t("重启 Codex"), completion, result.launchStartedAtMs);
       const succeeded = Boolean(
         completion
         && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
@@ -2725,7 +2704,7 @@ export function App() {
   useManagerLifecycle({
     ready: startupReady,
     weixinActive: route === "weixin",
-    refreshPending: async () => { await Promise.all([consumePendingManagerNavigation(), refreshPendingProviderImport(true), refreshPendingSessionShare(true), refreshPendingDreamSkinCommunity()]); },
+    refreshPending: async () => { await Promise.all([consumePendingManagerNavigation(), refreshPendingProviderImport(true), refreshPendingDreamSkinCommunity()]); },
     refreshWeixin: () => refreshWeixinStatus(true),
     onError: (error) => logDiagnostic("manager.background_refresh_failed", { error: stringifyError(error) }),
   });
@@ -2785,9 +2764,8 @@ export function App() {
     if (getLanguage() === "en") {
       void invoke("update_tray_labels", {
         showLabel: "Show window",
-        applySkinLabel: "Apply Dream Skin",
         quitLabel: "Quit",
-        windowTitle: "Codex++ Manager",
+        windowTitle: "Codex++",
       });
     }
   }, []);
@@ -2795,7 +2773,6 @@ export function App() {
   useEffect(() => {
     const timer = window.setInterval(() => {
       void refreshPendingProviderImport(true);
-      void refreshPendingSessionShare(true);
       void refreshPendingDreamSkinCommunity();
     }, 1200);
     return () => window.clearInterval(timer);
@@ -2843,6 +2820,31 @@ export function App() {
     document.documentElement.classList.toggle("light", theme === "light");
     window.localStorage.setItem("codex-plus-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    const refresh = () => { void refreshOverview(true); };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen("runtime-health-changed", () => {
+      if (!disposed) void refreshOverview(true);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else {
+        stopListening = unlisten;
+        // 先订阅再读取，覆盖后台恢复早于监听安装完成的情况。
+        void refreshOverview(true);
+      }
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
 
   const saveCodexAppPath = async (appPath: string) => {
     const next = { ...settingsForm, codexAppPath: appPath };
@@ -2921,6 +2923,8 @@ export function App() {
     () => ({
       refreshCurrent: () => navigate(route),
       launch,
+      launchMultiInstance,
+      multiLaunchPending,
       restart,
       installEntrypoints,
       uninstallEntrypoints,
@@ -3071,10 +3075,6 @@ export function App() {
       setUserScriptEnabled,
       deleteUserScript,
       refreshLocalSessions,
-      importLocalSession,
-      importSessionUrl,
-      sessionShareUrl,
-      setSessionShareUrl,
       deleteLocalSession,
       deleteLocalSessions,
       deleteInvalidLocalSessions,
@@ -3115,15 +3115,17 @@ export function App() {
       disableWatcher: () => watcherAction("disable_watcher"),
       toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
     }),
-    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, sessionShareUrl, importSessionUrl, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, relaySwitching],
+    [route, launchForm, settingsForm, settings, overview, removeOwnedData, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, relaySwitching, providerSyncProgress, sessionIndexRepairActive, sessionIndexRepairReport, sessionIndexRepairReportError],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
+  const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
 
   return (
     <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
       <ApplicationRail
         tools={toolEntries}
         activeTool={activeTool}
+        codexAppRunning={codexAppRunning}
         route={route}
         theme={theme}
         onSelect={(toolId) => void switchTool(toolId)}
@@ -3179,10 +3181,24 @@ export function App() {
           </div>
           <div className="topbar-actions">
             {activeTool === "codex" && !isGlobalPage ? (
-              <Button disabled={launchPending} onClick={() => void actions.restart()} title={t("重启 Codex++")} variant="outline">
-                <Rocket className="h-4 w-4" />
-                {t("重启 Codex++")}
-              </Button>
+              <>
+                <span className="codex-app-state" aria-live="polite">
+                  <UiBadge
+                    className={statusClass(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
+                    variant="secondary"
+                  >
+                    Codex {statusLabel(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
+                  </UiBadge>
+                </span>
+                <Button
+                  disabled={launchPending || !overview?.runtime_health}
+                  onClick={() => void (codexAppRunning ? actions.restart() : actions.launch())}
+                  title={codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                >
+                  <Rocket className="h-4 w-4" />
+                  {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
+                </Button>
+              </>
             ) : null}
           </div>
         </header>
@@ -3206,36 +3222,49 @@ export function App() {
               actions={actions}
             />
           ) : null}
+          {route === "multiLaunch" ? (
+            <CodexMultiLaunchScreen form={settingsForm} actions={actions} />
+          ) : null}
           {route === "relayEnvironment" ? (
             <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
           ) : null}
           {route === "grok" ? (
             <GrokScreen settings={settings} form={settingsForm} actions={actions} />
           ) : null}
+          {route === "claude" ? <ClaudeLocalizationScreen /> : null}
           {route === "sessions" ? (
-            <SessionsScreen
-              settings={settings}
-              form={settingsForm}
+            <SessionPage
+              maintenance={<SessionMaintenance
+                settings={settings}
+                form={settingsForm}
+                sessions={localSessions}
+                providerSyncProgress={providerSyncProgress}
+                sessionIndexRepairActive={sessionIndexRepairActive}
+                sessionIndexRepairReport={sessionIndexRepairReport}
+                sessionIndexRepairReportError={sessionIndexRepairReportError}
+                providerSyncTargets={providerSyncTargets}
+                selectedProviderSyncTarget={selectedProviderSyncTarget}
+                onFormChange={setSettingsForm}
+                actions={actions}
+              />}
               sessions={localSessions}
-              providerSyncProgress={providerSyncProgress}
-              sessionIndexRepairActive={sessionIndexRepairActive}
-              sessionIndexRepairReport={sessionIndexRepairReport}
-              sessionIndexRepairReportError={sessionIndexRepairReportError}
-              providerSyncTargets={providerSyncTargets}
-              selectedProviderSyncTarget={selectedProviderSyncTarget}
-              onFormChange={setSettingsForm}
-              actions={actions}
+              onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
+              onDelete={actions.deleteLocalSession}
+              onDeleteMany={actions.deleteLocalSessions}
+              notify={actions.showMessage}
             />
           ) : null}
           {route === "context" ? (
-            <ContextScreen
-              form={settingsForm}
-              liveEntries={liveContextEntries}
-              relayFiles={relayFiles}
-              onFormChange={setSettingsForm}
-              actions={actions}
+            <McpPage
+              entries={[...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "mcp"), ...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin")]}
+              onSave={async (kind, id, body) => Boolean(await actions.upsertContextEntry(settingsForm, kind, id, body))}
+              onDelete={async (entry) => Boolean(await actions.deleteContextEntry(settingsForm, entry.kind, entry.id))}
+              onRefresh={async () => { await actions.refreshLiveContextEntries(); await actions.refreshRelayFiles(); }}
+              onImport={async (json) => Boolean(await actions.importMcpServersJson(settingsForm, json))}
+              notify={actions.showMessage}
             />
           ) : null}
+          {route === "skills" ? <SkillsPage notify={actions.showMessage} /> : null}
           {route === "weixin" ? (
             <WeixinConnectScreen
               form={settingsForm}
@@ -3399,6 +3428,8 @@ export function App() {
 export type Actions = {
   refreshCurrent: () => Promise<void>;
   launch: () => Promise<void>;
+  launchMultiInstance: (profile: RelayProfile) => Promise<void>;
+  multiLaunchPending: string | null;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
   installEntrypoints: () => Promise<void>;
   uninstallEntrypoints: () => Promise<void>;
@@ -3454,10 +3485,6 @@ export type Actions = {
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
-  importLocalSession: () => Promise<void>;
-  importSessionUrl: (url?: string) => Promise<void>;
-  sessionShareUrl: string;
-  setSessionShareUrl: (url: string) => void;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   deleteInvalidLocalSessions: () => Promise<void>;
@@ -3970,9 +3997,24 @@ function OverviewScreen({
       {activeTool === "codex" ? (
         <>
           <Panel>
-            <CardHead title={t("健康检查")} detail={t("概览只展示关键问题，具体配置在对应页面处理")} />
+            <CardHeader className="panel-head overview-health-header">
+              <CardTitle>{t("健康检查")}</CardTitle>
+              <div className="overview-health-header-actions">
+                <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
+                <Button
+                  aria-label={t("刷新状态")}
+                  title={t("刷新状态")}
+                  size="icon"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => void actions.refreshCurrent()}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
             <CardContent>
-              <div className="health-grid">
+              <div className="health-grid overview-health-grid">
                 <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
                   {overview?.codex_version ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
                   <div>
@@ -3992,31 +4034,6 @@ function OverviewScreen({
                   </div>
                 ))}
               </div>
-              <Toolbar>
-                <Button onClick={() => void actions.checkHealth()}>
-                  <RefreshCw className="h-4 w-4" />
-                  {t("检查")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.repairShortcuts()}>
-                  <Wrench className="h-4 w-4" />
-                  {t("修复入口")}
-                </Button>
-              </Toolbar>
-            </CardContent>
-          </Panel>
-          <Panel>
-            <CardHead title={t("最近启动")} detail={overview?.logs_path ?? t("暂无状态文件")} />
-            <CardContent>
-              <LatestLaunch status={overview?.latest_launch ?? null} />
-              <Toolbar>
-                <Button disabled={launchPending} onClick={() => void actions.launch()}>
-                  <Rocket className="h-4 w-4" />
-                  {t("启动 Codex++")}
-                </Button>
-                <Button variant="secondary" onClick={() => void actions.goLogs()}>
-                  {t("打开关于")}
-                </Button>
-              </Toolbar>
             </CardContent>
           </Panel>
         </>
@@ -4082,7 +4099,7 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
       passed: result ? proxyVariables.length === 0 : false,
       detail: result
         ? proxyVariables.length
-          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex++。", [proxyVariableLabels.join(t("、"))])
+          ? tf("检测到代理环境变量：{0}。请清理后重新启动 Codex。", [proxyVariableLabels.join(t("、"))])
           : t("未检测到 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY、NO_PROXY 或 FTP_PROXY。")
         : t("等待检测。"),
     },
@@ -4149,6 +4166,8 @@ function RelayScreen({
   const normalized = normalizeSettings(form);
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
+  const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
+  const [providerView, setProviderView] = useState<"direct" | "routing" | "aggregate">("direct");
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
   const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
   const [ccsPathSaving, setCcsPathSaving] = useState(false);
@@ -4192,11 +4211,35 @@ function RelayScreen({
     setNewProfileDraft(draft);
     if (!normalizeAggregateConfig(draft.aggregate, aggregateMemberCandidates(normalized, draft.id)).members.length) {
       void actions.showMessage(
-        t("添加聚合供应商"),
+        t("创建聚合供应商"),
         t("已打开聚合供应商详情；请先添加或完善至少 1 个普通 API 供应商的 Base URL / Key，再勾选为成员。"),
         "failed",
       );
     }
+  };
+  const visibleProfiles = normalized.relayProfiles.filter((profile) => (
+    relayProviderView(profile) === providerView
+  ));
+  useEffect(() => {
+    // 协议转换供应商归入独立分区；首次打开时如果没有直连项，直接展示该分区。
+    if (
+      providerView === "direct"
+      && normalized.relayProfiles.length > 0
+      && !normalized.relayProfiles.some((profile) => relayProviderView(profile) === "direct")
+      && normalized.relayProfiles.some((profile) => relayProviderView(profile) === "routing")
+    ) {
+      setProviderView("routing");
+    }
+  }, [normalized.relayProfiles, providerView]);
+  const listForm = syncLegacyRelayFields({ ...normalized, relayProfiles: visibleProfiles });
+  const saveVisibleRelaySettings = async (next: BackendSettings) => {
+    const hiddenProfiles = normalized.relayProfiles.filter((profile) => (
+      relayProviderView(profile) !== providerView
+    ));
+    return saveRelaySettings(syncLegacyRelayFields({
+      ...next,
+      relayProfiles: [...next.relayProfiles, ...hiddenProfiles],
+    }));
   };
   const editRelayProfile = async (profileId: string) => {
     setNewProfileDraft(null);
@@ -4218,29 +4261,6 @@ function RelayScreen({
     setThirdPartyImportOpen((open) => !open);
     if (!ccsProviders) void actions.refreshCcsProviders(true);
   };
-  /// issue #595：切到中转后没有回官方登录态的路。
-  ///
-  /// 直接调 `clear_relay_injection` 会丢掉切换所需的 profile 上下文（它读的是
-  /// 磁盘上 current 的那一份），而且在中转 profile 已经是 active 时不会把
-  /// settings 的 activeRelayId 拨回来。所以这里走既有的供应商切换链路：复用一个
-  /// 「官方登录（不混入 API）」profile，没有就建一个，再设为当前。清理由
-  /// relay_config 的 clear 路径完成，与手动选该 profile 完全一致。
-  const restoreOfficialRelayProfile = async () => {
-    if (actions.relaySwitching) return;
-    const existing = normalized.relayProfiles.find(
-      (profile) => profile.relayMode === "official" && !profile.officialMixApiKey && !isAggregateRelayProfile(profile),
-    );
-    const nextProfile = existing ?? createRelayProfile(normalized);
-    const next = syncLegacyRelayFields({
-      ...normalized,
-      relayProfiles: existing
-        ? normalized.relayProfiles
-        : [...normalized.relayProfiles, nextProfile],
-      activeRelayId: nextProfile.id,
-    });
-    await actions.switchRelayProfile(next, normalized.activeRelayId);
-  };
-
   if (detailProfile) {
     return (
       <RelayProfileDetail
@@ -4262,11 +4282,34 @@ function RelayScreen({
     );
   }
 
+  if (providerCatalogOpen) {
+    return (
+      <ProviderCatalogScreen
+        form={normalized}
+        onBack={() => setProviderCatalogOpen(false)}
+        onSelect={(profile) => {
+          setNewProfileDraft(profile);
+          setProviderCatalogOpen(false);
+        }}
+      />
+    );
+  }
+
   return (
-    <>
-      <Panel>
-        <CardHead title={t("供应商列表")} detail={tf("{0} 个供应商配置；可拖动排序，点编辑进入详情", [normalized.relayProfiles.length])} />
-        <CardContent>
+    <div className="mg-page relay-management-page">
+      <PageHeader
+        icon={<KeyRound className="h-5 w-5" />}
+        title={t("供应商列表")}
+        actions={(
+          <Button onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}>
+            <Plus className="h-4 w-4" />
+            {t("添加供应商")}
+          </Button>
+        )}
+      />
+      <div className="mg-content">
+        <Panel className="relay-management-panel">
+          <CardContent>
           <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
           <label className="switch-row relay-master-switch">
             <input
@@ -4284,40 +4327,6 @@ function RelayScreen({
             <ToggleVisual />
           </label>
           <div className="relay-add-row">
-            <Button
-              variant="secondary"
-              onClick={() => {
-                setNewProfileDraft(createRelayProfile(normalized));
-                setDetailProfileId(null);
-              }}
-            >
-              <Plus className="h-4 w-4" />
-              {t("添加供应商")}
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={createNewAggregateProfile}
-            >
-              <Plus className="h-4 w-4" />
-              {t("添加聚合供应商")}
-            </Button>
-            {/* issue #595：缺一个「回到官方登录态」的显式入口。当前已经是官方登录
-                （无混入）时置灰，避免无意义的重写。 */}
-            <Button
-              disabled={!normalized.relayProfilesEnabled || actions.relaySwitching || isOfficialLoginActive(normalized)}
-              onClick={() => void restoreOfficialRelayProfile()}
-              title={
-                !normalized.relayProfilesEnabled
-                  ? t("供应商配置总开关已关闭")
-                  : isOfficialLoginActive(normalized)
-                    ? t("当前已是官方登录态")
-                    : t("清除中转 API 配置，切回 ChatGPT 官方登录")
-              }
-              variant="secondary"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {t("恢复官方登录")}
-            </Button>
             <div className="third-party-import">
               <Button
                 onClick={openThirdPartyImport}
@@ -4358,21 +4367,189 @@ function RelayScreen({
               ) : null}
             </div>
           </div>
+          <div className="provider-view-tabs" role="tablist" aria-label={t("供应商配置模式")}>
+            <button aria-selected={providerView === "direct"} className={providerView === "direct" ? "active" : ""} onClick={() => setProviderView("direct")} role="tab" type="button">
+              <Cable className="h-4 w-4" />
+              <span>{t("直连")}</span>
+            </button>
+            <button aria-selected={providerView === "routing"} className={providerView === "routing" ? "active" : ""} onClick={() => setProviderView("routing")} role="tab" type="button">
+              <GitBranch className="h-4 w-4" />
+              <span>{t("需协议转换")}</span>
+            </button>
+            <button aria-selected={providerView === "aggregate"} className={providerView === "aggregate" ? "active" : ""} onClick={() => setProviderView("aggregate")} role="tab" type="button">
+              <Layers3 className="h-4 w-4" />
+              <span>{t("聚合")}</span>
+            </button>
+          </div>
+          {providerView === "aggregate" && !visibleProfiles.length ? (
+            <div className="provider-aggregate-empty">
+              <strong>{t("还没有聚合供应商")}</strong>
+              <span>{t("切换到聚合配置后，在编辑页选择成员供应商和路由规则。")}</span>
+              <Button onClick={createNewAggregateProfile}>{t("创建聚合配置")}</Button>
+            </div>
+          ) : null}
           <RelayProfileList
-            form={normalized}
+            form={listForm}
             onSwitch={(profileId) => {
               const previousActiveRelayId = normalized.activeRelayId;
               const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
               void actions.switchRelayProfile(next, previousActiveRelayId);
             }}
             onEdit={(profileId) => void editRelayProfile(profileId)}
-            onFormChange={saveRelaySettings}
+            onFormChange={saveVisibleRelaySettings}
             disabled={!normalized.relayProfilesEnabled || actions.relaySwitching}
             actions={actions}
           />
-        </CardContent>
-      </Panel>
-    </>
+          </CardContent>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function multiLaunchSupported(profile: RelayProfile): boolean {
+  return !isAggregateRelayProfile(profile)
+    && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
+    && !(profile.modelRoutes ?? []).some((route) => route.model.trim() || route.targetRelayId.trim());
+}
+
+function CodexMultiLaunchScreen({
+  form,
+  actions,
+}: {
+  form: BackendSettings;
+  actions: Actions;
+}) {
+  const normalized = normalizeSettings(form);
+  return (
+    <div className="mg-page relay-management-page">
+      <PageHeader
+        icon={<Layers3 className="h-5 w-5" />}
+        title={t("Codex多开")}
+        actions={(
+          <Button onClick={() => void actions.refreshSettings(true)} variant="secondary">
+            <RefreshCw className="h-4 w-4" />
+            {t("刷新供应商")}
+          </Button>
+        )}
+      />
+      <div className="mg-content">
+        <Panel className="relay-management-panel">
+          <CardHeader>
+            <CardTitle>{t("选择供应商身份启动 Codex")}</CardTitle>
+            <CardDescription>{t("每个身份使用独立的配置、会话和用户数据目录，可与其他单一 Responses 或 Chat Completions 供应商同时运行。")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="relay-profile-list">
+              {normalized.relayProfiles.map((profile) => {
+                const aggregate = isAggregateRelayProfile(profile);
+                const unsupported = !multiLaunchSupported(profile);
+                const pending = actions.multiLaunchPending === profile.id;
+                return (
+                  <div className="relay-profile-card multi-launch-card" data-relay-profile-id={profile.id} key={profile.id}>
+                    <span className="relay-index" title={profile.name || t("未命名供应商")}>{providerInitial(profile.name)}</span>
+                    <span className="relay-summary">
+                      <strong>{profile.name || t("未命名供应商")}</strong>
+                      <small>{relayModeLabel(profile.relayMode)} · {relayProtocolLabel(profile.protocol)} · {relayProfileConfigBrief(profile)}</small>
+                    </span>
+                    <span className="relay-card-actions">
+                      <Button
+                        disabled={unsupported || pending}
+                        onClick={() => void actions.launchMultiInstance(profile)}
+                        title={aggregate
+                          ? t("聚合供应商暂不支持独立多开")
+                          : unsupported
+                            ? t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")
+                            : t("启动此供应商的独立 Codex 实例")}
+                        size="sm"
+                      >
+                        <Rocket className="h-4 w-4" />
+                        {pending ? t("启动中") : t("启动")}
+                      </Button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {!normalized.relayProfiles.length ? <div className="empty">{t("暂无供应商，请先添加供应商配置。")}</div> : null}
+          </CardContent>
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function ProviderCatalogScreen({
+  form,
+  onBack,
+  onSelect,
+}: {
+  form: BackendSettings;
+  onBack: () => void;
+  onSelect: (profile: RelayProfile) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const categories: Array<{ id: ProviderPreset["category"]; label: string }> = [
+    { id: "official", label: t("账号登录") },
+    { id: "cn_official", label: t("模型厂商") },
+    { id: "aggregator", label: t("聚合/中转") },
+    { id: "third_party", label: t("第三方平台") },
+  ];
+  const filteredPresets = PRESETS.filter((preset) => {
+    const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
+    return !query.trim() || haystack.includes(query.trim().toLowerCase());
+  });
+  const selectPreset = (preset?: ProviderPreset) => {
+    const draft = createRelayProfile(form);
+    const patch = preset ? createPresetPatch(preset) : { name: t("自定义供应商") };
+    onSelect(applyRelayProfilePatchToFiles(draft, patch as unknown as Partial<RelayProfile>, { allowGenerateFiles: true }));
+  };
+  return (
+    <div className="provider-catalog-screen provider-add-simple">
+      <header className="provider-catalog-header" data-tauri-drag-region>
+        <Button onClick={onBack} size="icon" variant="ghost" title={t("返回供应商列表")}>
+          <ArrowLeft className="h-5 w-5" />
+        </Button>
+        <h2>{t("添加新供应商")}</h2>
+        <span>Codex</span>
+      </header>
+      <main className="provider-add-simple-body provider-add-reference-layout">
+        <div className="provider-add-search">
+          <Search className="h-4 w-4" />
+          <Input
+            aria-label={t("搜索供应商")}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            placeholder={t("搜索名称或网址，例如 kimi、智谱、openrouter")}
+            value={query}
+          />
+        </div>
+        <div className="provider-add-results">
+          <button className="provider-add-result provider-add-custom-result" onClick={() => selectPreset()} type="button">
+            <span className="provider-add-icon">✦</span>
+            <span><strong>{t("自定义配置")}</strong><small>{t("手动填写请求地址和 API Key")}</small></span>
+          </button>
+        </div>
+        {categories.map((category) => {
+          const presets = filteredPresets.filter((preset) => preset.category === category.id);
+          if (!presets.length) return null;
+          return (
+            <section className="provider-add-section" key={category.id}>
+              <h3>{category.label}</h3>
+              <div className="provider-add-results">
+                {presets.map((preset) => (
+                  <button className="provider-add-result" key={preset.id} onClick={() => selectPreset(preset)} type="button">
+                    <span className="provider-add-icon">{preset.name.slice(0, 1).toUpperCase()}</span>
+                    <span><strong>{preset.name}</strong><small>{preset.websiteUrl ? new URL(preset.websiteUrl).host : preset.baseUrl}</small></span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          );
+        })}
+        {!filteredPresets.length ? <div className="empty">{t("没有匹配的供应商")}</div> : null}
+        <p className="provider-add-hint">{t("选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。")}</p>
+      </main>
+    </div>
   );
 }
 
@@ -4478,12 +4655,47 @@ function WhaleBalanceSettingsFields({ form, onFormChange }: {
   );
 }
 
+type DictationLocalModelState = {
+  phase: string;
+  modelReady: boolean;
+  completedBytes?: number;
+  totalBytes: number;
+  message?: string;
+};
+
 function DictationSettingsPanel({ form, onFormChange }: {
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
 }) {
   const [dictationPresetSelection, setDictationPresetSelection] = useState<DictationPreset>(() => dictationPreset(form.dictation));
   useEffect(() => setDictationPresetSelection(dictationPreset(form.dictation)), [form.dictation.baseUrl]);
+  const [localModelState, setLocalModelState] = useState<DictationLocalModelState | null>(null);
+  const [localModelDownloading, setLocalModelDownloading] = useState(false);
+  const [localModelError, setLocalModelError] = useState("");
+  useEffect(() => {
+    if (form.dictation.provider !== "sensevoice") return;
+    let active = true;
+    const refresh = () => invoke<DictationLocalModelState>("dictation_local_model_status")
+      .then((state) => { if (active) { setLocalModelState(state); } })
+      .catch(() => { if (active) setLocalModelError(t("无法读取本地模型状态，请重试。")); });
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [form.dictation.provider]);
+  const downloadLocalModel = async () => {
+    setLocalModelDownloading(true);
+    setLocalModelError("");
+    try {
+      const result = await invoke<CommandResult<DictationLocalModelState>>("download_dictation_local_model");
+      if (result.status !== "ok") setLocalModelError(result.message);
+      else setLocalModelState(result);
+    } catch {
+      setLocalModelError(t("本地模型下载失败，请重试。"));
+    } finally {
+      setLocalModelDownloading(false);
+    }
+  };
+  const downloading = localModelDownloading || localModelState?.phase === "downloading";
   const updateDictation = (patch: Partial<DictationSettings>) => onFormChange({
     ...form,
     dictation: { ...form.dictation, ...patch },
@@ -4495,7 +4707,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
       <CardContent className="settings-content">
         <div className="settings-block enhance-service-block" id={ENHANCEMENT_SECTION_IDS.dictation}>
           <FeatureToggle
-            title={t("启用 API Key 语音输入")}
+            title={t("启用语音输入")}
             detail={t("停止录音后，可将转写文字插入或发送到当前会话。")}
             disabled={!form.enhancementsEnabled}
             checked={form.dictation.enabled}
@@ -4510,6 +4722,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
                   onFormChange({ ...form, dictation: applyDictationPreset(form.dictation, value) });
                 }}
                 options={[
+                  { value: "sensevoice", label: t("本地 SenseVoice（离线）") },
                   { value: "groq", label: "Groq" },
                   { value: "openai", label: t("OpenAI 兼容") },
                   { value: "local", label: t("本地服务") },
@@ -4526,24 +4739,40 @@ function DictationSettingsPanel({ form, onFormChange }: {
               />
             </Field>
           </div>
-          <Field label="Base URL">
-            <Input
-              value={form.dictation.baseUrl}
-              onChange={(event) => updateDictation({ baseUrl: event.currentTarget.value })}
-              placeholder="https://api.groq.com/openai/v1"
-              spellCheck={false}
-            />
-          </Field>
-          <p className="field-hint">{t("填写服务的 API 基础地址，转写请求会发送到 /audio/transcriptions。可修改预设地址和模型。")}</p>
-          <Field label="API Key">
-            <Input
-              type="password"
-              autoComplete="off"
-              value={form.dictation.apiKey}
-              onChange={(event) => updateDictation({ apiKey: event.currentTarget.value })}
-            />
-          </Field>
-          <p className="field-hint">{t("可填写 API Key 或环境变量名称。本地服务不要求认证时可留空。")}</p>
+          {form.dictation.provider === "sensevoice" ? <>
+            <p className="field-hint">{t("SenseVoiceSmall 在本机 CPU 上运行。请手动下载约 229 MiB 模型，下载并校验完成后才可录音转写；音频不会离开本机。")}</p>
+            <div className="form-row">
+              <Button type="button" disabled={downloading} onClick={() => { void downloadLocalModel(); }}>
+                <Download className="h-4 w-4" />
+                {downloading ? t("正在下载并校验…") : localModelState?.modelReady ? t("校验或重新下载模型") : t("下载本地模型")}
+              </Button>
+              <span className="field-hint" role="status">
+                {downloading
+                  ? `${Math.min(100, Math.floor((localModelState?.completedBytes || 0) / (localModelState?.totalBytes || 239549735) * 100))}%`
+                  : localModelState?.modelReady ? t("本地模型已下载") : t("本地模型尚未下载")}
+              </span>
+            </div>
+            {localModelError || localModelState?.phase === "failed" ? <p className="field-hint" role="alert">{localModelError || localModelState?.message}</p> : null}
+          </> : <>
+            <Field label="Base URL">
+              <Input
+                value={form.dictation.baseUrl}
+                onChange={(event) => updateDictation({ baseUrl: event.currentTarget.value })}
+                placeholder="https://api.groq.com/openai/v1"
+                spellCheck={false}
+              />
+            </Field>
+            <p className="field-hint">{t("填写服务的 API 基础地址，转写请求会发送到 /audio/transcriptions。可修改预设地址和模型。")}</p>
+            <Field label="API Key">
+              <Input
+                type="password"
+                autoComplete="off"
+                value={form.dictation.apiKey}
+                onChange={(event) => updateDictation({ apiKey: event.currentTarget.value })}
+              />
+            </Field>
+            <p className="field-hint">{t("可填写 API Key 或环境变量名称。本地服务不要求认证时可留空。")}</p>
+          </>}
           <details className="stepwise-advanced enhance-service-advanced">
             <summary>{t("高级参数")}</summary>
             <Field label={t("API Key 环境变量")}>
@@ -4577,7 +4806,9 @@ function DictationSettingsPanel({ form, onFormChange }: {
           {dictationIssue ? <p className="field-hint" role="alert">{dictationIssue}</p> : null}
           <div className="hint-line enhance-service-note">
             <Info className="h-4 w-4" />
-            <span>{t("保存后 Codex 输入框会显示「语音输入」按钮，停止录音后可插入或发送文字。录音会发送到上面填写的服务地址，无需重启。")}</span>
+            <span>{form.dictation.provider === "sensevoice"
+              ? t("下载模型并保存配置后，可在 Codex 输入框录音，停止后在本机转写并插入文字。")
+              : t("保存后 Codex 输入框会显示「语音输入」按钮，停止录音后可插入或发送文字。录音会发送到上面填写的服务地址，无需重启。")}</span>
           </div>
         </div>
       </CardContent>
@@ -4796,7 +5027,7 @@ function EnhanceScreen({
                 {isWindowsPlatform ? <>
                   <FeatureToggle
                     title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
-                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex++ 时应用。扩展可能保留请求标识设置。")}
+                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。")}
                     checked={form.codexAppNativeBrowserRequireIdentification}
                     disabled={!masterEnabled}
                     onChange={(value) => {
@@ -4813,7 +5044,6 @@ function EnhanceScreen({
               <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
                 <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
                 <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
-                <FeatureToggle title={t("分享会话按钮")} detail={t("在当前会话工具栏显示分享按钮，保存后更新显示，无需重启 Codex。")} checked={form.codexAppSessionShare} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionShare", value)} />
                 <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
                 <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
                   <span>
@@ -6030,7 +6260,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   );
 }
 
-function SessionsScreen({
+function SessionMaintenance({
   settings,
   form,
   sessions,
@@ -6055,21 +6285,7 @@ function SessionsScreen({
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
-  const items = sessions?.sessions ?? [];
-  const pageOffset = sessions?.offset ?? 0;
-  const pageSize = sessions?.limit ?? 50;
-  const currentPage = Math.floor(pageOffset / pageSize) + 1;
-  const hasPreviousPage = pageOffset > 0;
-  const hasNextPage = sessions?.hasMore === true;
-  const activeCount = items.filter((item) => !item.archived).length;
-  const archivedCount = items.length - activeCount;
-  const totalCount = sessions?.totalCount ?? items.length;
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
-  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
-  const selectedCount = selectedSessions.length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
   const providerTargets = providerSyncTargets?.targets ?? [];
   const selectedProviderTarget = providerTargets.find(
     (target) => target.id === selectedProviderSyncTarget,
@@ -6078,74 +6294,11 @@ function SessionsScreen({
     ? isProviderSyncTargetSelectable(selectedProviderTarget)
     : false;
 
-  useEffect(() => {
-    const itemIds = new Set(items.map((session) => session.id));
-    setSelectedSessionIds((current) => {
-      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
-    setSelectedSessionIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      return next;
-    });
-  };
-
-  const selectAllSessions = () => {
-    setSelectionMode(true);
-    setSelectedSessionIds(new Set(items.map((session) => session.id)));
-  };
-
-  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const deleteSelectedSessions = async () => {
-    if (!selectionMode) {
-      setSelectionMode(true);
-      return;
-    }
-    setBulkDeleting(true);
-    try {
-      await actions.deleteLocalSessions(selectedSessions);
-    } finally {
-      setBulkDeleting(false);
-    }
-  };
-
   return (
     <>
       <Panel className="sessions-overview-panel">
         <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
         <CardContent className="sessions-overview-content">
-          <div className="session-summary-bar">
-            <div>
-              <span>{t("会话总数")}</span>
-              <strong>{tf("{0} 个", [totalCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页会话")}</span>
-              <strong>{tf("{0} 个", [items.length])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页未归档")}</span>
-              <strong>{tf("{0} 个", [activeCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页已归档")}</span>
-              <strong>{tf("{0} 个", [archivedCount])}</strong>
-            </div>
-            <div className="session-summary-path">
-              <span>{t("数据库")}</span>
-              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
-            </div>
-          </div>
-
           <div className="session-repair-tools">
             <Field className="session-sync-target" label={t("同步目标")}>
               <AppSelect
@@ -6188,9 +6341,12 @@ function SessionsScreen({
                 <RefreshCw className="h-4 w-4" />
                 {t("刷新会话")}
               </Button>
-              <Button onClick={() => void actions.importLocalSession()} variant="outline">
-                <PackageOpen className="h-4 w-4" />
-                {t("导入文件")}
+              <Button disabled={bulkDeleting || providerSyncProgress.active || sessionIndexRepairActive} onClick={async () => {
+                setBulkDeleting(true);
+                try { await actions.deleteInvalidLocalSessions(); } finally { setBulkDeleting(false); }
+              }} variant="outline">
+                <Trash2 className="h-4 w-4" />
+                {bulkDeleting ? t("正在检查或删除…") : t("删除无效会话")}
               </Button>
               <Button
                 disabled={providerSyncProgress.active || sessionIndexRepairActive || !canRepairProviderSessions}
@@ -6211,18 +6367,6 @@ function SessionsScreen({
               <Button onClick={() => void actions.saveSettings()}>
                 <Save className="h-4 w-4" />
                 {t("保存设置")}
-              </Button>
-            </div>
-            <div className="session-share-import">
-              <Input
-                aria-label={t("会话分享链接")}
-                onChange={(event) => actions.setSessionShareUrl(event.currentTarget.value)}
-                placeholder={t("粘贴 Codex++ 会话分享链接")}
-                value={actions.sessionShareUrl}
-              />
-              <Button disabled={!actions.sessionShareUrl.trim()} onClick={() => void actions.importSessionUrl()} variant="outline">
-                <Download className="h-4 w-4" />
-                {t("导入链接")}
               </Button>
             </div>
           </div>
@@ -6263,7 +6407,7 @@ function SessionsScreen({
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
-              <p><small>{t("自动检查需要 Codex++ 启动器运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
+              <p><small>{t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
               {sessionIndexRepairReport.backupPath ? <p className="break-all">{t("修复前备份：")}{sessionIndexRepairReport.backupPath}</p> : null}
               {sessionIndexRepairReport.abortedReason ? (
@@ -6305,91 +6449,6 @@ function SessionsScreen({
           </div>
         </CardContent>
       </Panel>
-      <Panel className="sessions-list-panel">
-        <CardHead
-          title={t("本地会话")}
-          detail={sessions ? tf("第 {0} 页，每页最多 {1} 条，按更新时间倒序显示", [currentPage, pageSize]) : t("点击刷新会话读取本地数据库")}
-        />
-        <CardContent className="session-list-content">
-          {items.length ? (
-            <>
-              <div className="session-list-toolbar">
-                <span className="session-selection-summary">{t("已选择")} {selectedCount} / {items.length} {t("个会话")}</span>
-                <div className="session-selection-actions">
-                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
-                    {t("全选当前列表")}
-                  </Button>
-                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
-                    {t("清空选择")}
-                  </Button>
-                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
-                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
-                    {selectionMode ? (bulkDeleting ? t("正在删除…") : t("删除已选")) : t("多选")}
-                  </Button>
-                </div>
-              </div>
-              <div className="session-list">
-                {items.map((session) => {
-                  const selected = selectedSessionIds.has(session.id);
-                  return (
-                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
-                      {selectionMode ? (
-                        <label className="session-select" title={t("选择会话")}>
-                          <input
-                            aria-label={tf("选择会话 {0}", [session.title || session.id])}
-                            checked={selected}
-                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
-                            type="checkbox"
-                          />
-                        </label>
-                      ) : null}
-                      <div className="session-main">
-                        <strong>{session.title || t("未命名会话")}</strong>
-                        <span>{session.id}</span>
-                        <small>{session.cwd || t("未记录项目路径")}</small>
-                      </div>
-                      <div className="session-meta">
-                        <Badge status={session.archived ? "archived" : "ok"} />
-                        <span>{session.modelProvider || t("provider 未记录")}</span>
-                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                      </div>
-                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                        <Trash2 className="h-4 w-4" />
-                        {t("删除")}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="session-pagination">
-                <Button
-                  aria-label={t("上一页")}
-                  disabled={!hasPreviousPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, Math.max(0, pageOffset - pageSize))}
-                  size="icon"
-                  title={t("上一页")}
-                  variant="outline"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <span>{tf("第 {0} 页", [currentPage])}</span>
-                <Button
-                  aria-label={t("下一页")}
-                  disabled={!hasNextPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, pageOffset + pageSize)}
-                  size="icon"
-                  title={t("下一页")}
-                  variant="outline"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
-          )}
-        </CardContent>
-      </Panel>
     </>
   );
 }
@@ -6419,13 +6478,12 @@ function MaintenanceScreen({
   return (
     <>
       <Panel>
-        <CardHead title={t("检查与修复")} detail={t("检查入口、Codex 应用和 Watcher 状态")} />
+        <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
         <CardContent>
           <div className="status-table">
             <StatusRow title={t("Codex 应用")} status={overview?.codex_app.status} path={overview?.codex_app.path} />
-            <StatusRow title={t("静默启动入口")} status={overview?.silent_shortcut.status} path={overview?.silent_shortcut.path} />
-            <StatusRow title={t("管理控制台入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
-            <StatusRow title={t("Watcher 自动接管")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
+            <StatusRow title={t("Codex++ 应用入口")} status={overview?.management_shortcut.status} path={overview?.management_shortcut.path} />
+            <StatusRow title={t("开机打开 Codex++")} status={watcher?.enabled ? "ok" : "disabled"} path={watcher?.disabled_flag} />
           </div>
           <Toolbar>
             <Button onClick={() => void actions.checkHealth()}>{t("检查")}</Button>
@@ -6448,18 +6506,18 @@ function MaintenanceScreen({
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("自动接管")} detail={t("Watcher 用于保持 Codex++ 接管状态")} />
+        <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，Codex 仍需点击启动")} />
         <CardContent>
           <Toolbar>
-            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("安装 watcher")}</Button>
-            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除 watcher")}</Button>
+            <Button variant="secondary" onClick={() => void actions.installWatcher()}>{t("设置开机启动")}</Button>
+            <Button variant="secondary" onClick={() => void actions.uninstallWatcher()}>{t("移除开机启动")}</Button>
             <Button variant="secondary" onClick={() => void actions.enableWatcher()}>{t("启用")}</Button>
             <Button variant="secondary" onClick={() => void actions.disableWatcher()}>{t("禁用")}</Button>
           </Toolbar>
         </CardContent>
       </Panel>
       <Panel>
-        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后静默启动会自动复用")} />
+        <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")} />
         <CardContent>
           <div className="status-table">
             <StatusRow title={t("保存路径")} status={savedCodexAppPath ? "ok" : "not_checked"} path={savedCodexAppPath || null} />
@@ -6504,7 +6562,7 @@ function MaintenanceScreen({
             </Field>
           </div>
           <Toolbar>
-            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex++")}</Button>
+            <Button disabled={launchPending} onClick={() => void actions.launch()}>{t("启动 Codex")}</Button>
             <Button variant="secondary" onClick={() => void actions.saveManualCodexAppPath()}>
               {t("保存为默认路径")}
             </Button>
@@ -6956,6 +7014,23 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
         </Button>
         <span className="relay-card-extra">
           <Button
+            disabled={!multiLaunchSupported(profile) || actions.multiLaunchPending === profile.id}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (!multiLaunchSupported(profile)) return;
+              void actions.launchMultiInstance(profile);
+            }}
+            size="icon"
+            title={isAggregateRelayProfile(profile)
+              ? t("聚合供应商暂不支持独立多开")
+              : multiLaunchSupported(profile)
+                ? t("启动独立 Codex 实例")
+                : t("仅支持单一 Responses 或 Chat Completions 供应商，且不能配置模型路由")}
+            variant="ghost"
+          >
+            <Rocket className="h-4 w-4" />
+          </Button>
+          <Button
             disabled={isAggregateRelayProfile(profile)}
             onClick={(event) => {
               event.stopPropagation();
@@ -7189,7 +7264,7 @@ function RelayProfileDetail({
         next,
         activeLiveBaseUrl,
       );
-      if (requiresRestart && !window.confirm(t("首次启用单模型路由需要启动本地协议代理。保存后将立即重启 Codex，使路由安全生效。是否继续？"))) {
+      if (requiresRestart && !window.confirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"))) {
         return;
       }
       const savedSettings = await onFormChange(next);
@@ -7779,7 +7854,8 @@ function RelayProfileEditor({
       imported: Boolean(importedModelMetadata[key]),
       // 内容与内置全字段一致时目标态就是「用内置」，不写自定义覆盖——
       // 否则「重新匹配后保存」会把内置数据复制成一份自定义配置。
-      matchesBuiltin: metadataImportPreview
+      matchesBuiltin: metadataImportPreview && !(importPrefillSource === "existing"
+        && modelFastSupportMode(metadataImportPreview.metadata) !== "inherit")
         ? metadataMatchesBuiltin(metadataImportPreview.documentEntry, builtinMetadata)
         : false,
     });
@@ -7815,6 +7891,7 @@ function RelayProfileEditor({
   };
   // 「重新匹配」：按当前模型名重查内置元数据并重填下方内容（含实时写回行窗口）。
   const rematchBuiltinImport = async (slug: string) => {
+    setImportPrefillSource("builtin");
     if (!slug.trim()) return;
     const querySeq = ++builtinQuerySeqRef.current;
     let match: BuiltinModelMetadataMatch | null = null;
@@ -7928,13 +8005,6 @@ function RelayProfileEditor({
   };
   return (
     <div className="relay-profile-editor">
-      {isNew ? (
-        <ProviderPresetSelector
-          onSelect={(patch: PresetPatch) => {
-            updateDraft(patch as unknown as Partial<RelayProfile>);
-          }}
-        />
-      ) : null}
       <div className="relay-fields">
         <section className="relay-config-section relay-basic-section">
           <div className="relay-config-section-head">
@@ -8284,7 +8354,7 @@ function RelayProfileEditor({
                             disabled={!slug}
                             onClick={() => (importing ? cancelModelMetadataImport() : beginModelMetadataImport(index, slug))}
                             size="icon"
-                            title={imported ? t("查看或重新导入 models.json") : t("导入 models.json")}
+                            title={t("模型配置：元数据与 Fast 支持")}
                             type="button"
                             variant="ghost"
                           >
@@ -8304,11 +8374,35 @@ function RelayProfileEditor({
                         </div>
                         {importing ? (
                           <section className="relay-model-import-workbench">
+                            <Field label={t("Fast（priority）支持")}>
+                              <AppSelect
+                                ariaLabel={t("Fast（priority）支持")}
+                                value={importPrefillSource === "builtin" ? "inherit" : modelFastSupportMode(metadataImportPreview?.metadata)}
+                                onChange={(value) => {
+                                  const changed = synchronizeModelMetadataFastSupport(metadataImportDocument, slug, value as ModelFastSupportMode);
+                                  if (!changed) {
+                                    setMetadataImportError(t("请先修正当前模型的 JSON 配置，再设置 Fast 支持。"));
+                                    return;
+                                  }
+                                  setMetadataImportDocument(changed.document);
+                                  setMetadataImportPreview(changed.preview);
+                                  setImportPrefillSource("existing");
+                                  setMetadataImportError("");
+                                }}
+                                options={[
+                                  { value: "inherit", label: t("继承模型默认能力") },
+                                  { value: "supported", label: t("明确支持 priority") },
+                                  { value: "unsupported", label: t("不支持 priority") },
+                                ]}
+                              />
+                              <p className="field-hint">{t("按当前供应商逐模型声明。仅在上游支持 service_tier=priority 时选择支持；继承会清除自定义声明，取消不会保存修改。")}</p>
+                            </Field>
                             <Textarea
                               autoFocus
                               value={metadataImportDocument}
                               onChange={(event) => {
                                 const document = event.currentTarget.value;
+                                setImportPrefillSource("existing");
                                 setMetadataImportDocument(document);
                                 setMetadataImportError("");
                                 const parsed = parseModelMetadataDocument(document, slug);
@@ -8420,6 +8514,7 @@ function RelayProfileEditor({
                 {modelRowsError ? <div className="relay-model-metadata-import-error" role="alert">{modelRowsError}</div> : null}
                 <p className="field-hint">
                   {t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
+                  {" "}{t("需要自定义 Fast 白名单时，打开对应模型的配置按钮，设置 Fast（priority）支持并保存此模型与供应商。")}
                 </p>
               </section>
             ) : null}
@@ -8427,7 +8522,7 @@ function RelayProfileEditor({
               <section className="relay-config-section relay-field-model-routes">
                 <div className="relay-config-section-head">
                   <div>
-                    <strong>{t("单模型路由")}</strong>
+                    <strong>{t("单模型协议转换")}</strong>
                     <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}</span>
                   </div>
                   <div className="relay-model-list-tools">
@@ -8435,12 +8530,12 @@ function RelayProfileEditor({
                       disabled={modelRouteTargets.length === 0}
                       onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
                       size="sm"
-                      title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加模型路由")}
+                      title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加协议转换")}
                       type="button"
                       variant="secondary"
                     >
                       <Plus className="h-4 w-4" />
-                      {t("添加模型路由")}
+                      {t("添加协议转换")}
                     </Button>
                   </div>
                 </div>
@@ -8473,10 +8568,10 @@ function RelayProfileEditor({
                         placeholder={t("留空保持原模型名")}
                       />
                       <Button
-                        aria-label={t("删除模型路由")}
+                        aria-label={t("删除协议转换")}
                         onClick={() => updateDraft({ modelRoutes: modelRoutes.filter((_, routeIndex) => routeIndex !== index) })}
                         size="icon"
-                        title={t("删除模型路由")}
+                        title={t("删除协议转换")}
                         type="button"
                         variant="ghost"
                       >
@@ -8609,6 +8704,26 @@ function RelayProfileEditor({
                   placeholder={t("留空使用默认值")}
                 />
               </Field>
+            ) : null}
+            {showApiFields ? (
+              <label
+                className={`switch-row compact relay-switch-row relay-field-search-history${profile.protocol === "responses" ? "" : " is-disabled"}`}
+                title={profile.protocol === "responses" ? undefined : t("仅限 Responses API。")}
+              >
+                <input
+                  checked={profile.webSearchHistoryCompat}
+                  disabled={profile.protocol !== "responses"}
+                  onChange={(event) =>
+                    updateDraft({ webSearchHistoryCompat: event.currentTarget.checked })
+                  }
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("搜索历史压缩兼容（实验）")}</strong>
+                  <small>response protection is unavailable</small>
+                </span>
+                <ToggleVisual />
+              </label>
             ) : null}
             {showApiFields ? (
               <Field className="relay-field-custom-headers" label={t("自定义请求头")}>
@@ -10047,7 +10162,7 @@ function PendingProviderImportDialog({
         <div className="modal-head">
           <div>
             <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++ 管理工具。")}</p>
+            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
@@ -10138,6 +10253,86 @@ function Panel({ children, fill = false, className = "" }: { children: React.Rea
     <Card className={`panel ${fill ? "fill" : ""} ${className}`}>
       {children}
     </Card>
+  );
+}
+
+type ClaudeLocalizationStatus = {
+  supported: boolean;
+  sourceApp: string;
+  copyApp: string;
+  sourceVersion: string;
+  copyVersion: string;
+  prepared: boolean;
+  needsRebuild: boolean;
+  running: boolean;
+  nodeAvailable: boolean;
+  pythonAvailable: boolean;
+  shellLocale: string | null;
+  catalogEntries: number;
+};
+
+function ClaudeLocalizationScreen() {
+  const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = async () => {
+    try { setStatus(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
+    catch (cause) { setError(stringifyError(cause)); }
+  };
+  useEffect(() => { void refresh(); }, []);
+  const act = async (action: "prepare" | "launch" | "restore" | "check") => {
+    setBusy(action); setError(null);
+    try {
+      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
+      setStatus(result);
+      if (result.status !== "ok") setError(result.message);
+    } catch (cause) { setError(stringifyError(cause)); }
+    finally { setBusy(null); }
+  };
+  const s = status;
+  const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
+  return (
+    <div className="claude-localization-page">
+      <Panel>
+        <CardHead title={t("Claude Code 汉化") } detail={t("官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。")} />
+        <CardContent>
+          <div className="claude-localization-status-grid">
+            <Metric label={t("官方版本")} value={s?.sourceVersion || t("未检测到")} />
+            <Metric label={t("副本状态")} value={!s ? t("读取中") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备")} />
+            <Metric label={t("外壳语言")} value={s?.shellLocale || t("未设置")} />
+            <Metric label={t("官方词条")} value={s ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("读取中")} />
+          </div>
+          <div className="hint-line" role="note">
+            {t("首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。")}
+          </div>
+          {error ? <div className="inline-error">{error}</div> : null}
+          <Toolbar>
+            <Button disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")}>
+              <PackageOpen className="h-4 w-4" />{busy === "prepare" ? t("准备中…") : t("准备汉化副本")}
+            </Button>
+            <Button disabled={busy !== null || !canLaunch} onClick={() => void act("launch")}>
+              <Play className="h-4 w-4" />{busy === "launch" ? t("启动中…") : t("启动中文 Claude")}
+            </Button>
+            <Button disabled={busy !== null || !s?.prepared} onClick={() => void act("check")} variant="secondary">
+              <RefreshCw className="h-4 w-4" />{t("检查副本")}
+            </Button>
+            <Button disabled={busy !== null || !s?.shellLocale} onClick={() => void act("restore")} variant="secondary">
+              <RotateCcw className="h-4 w-4" />{t("还原语言")}
+            </Button>
+          </Toolbar>
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("实现方式")} detail={t("安全边界") } />
+        <CardContent>
+          <ul className="claude-localization-list">
+            <li>{t("从官方应用克隆受管副本，只调整副本的 Electron inspector 开关；macOS 使用受管重签名，Windows 使用独立副本。")}</li>
+            <li>{t("把官方 zh-Hans 词表装入副本的 ion-dist；启动器短暂连接本地 inspector，注入页面脚本后关闭端口。")}</li>
+            <li>{t("更新失败会保留当前可用副本；构建完成且校验 app.asar 一致后才替换旧副本。")}</li>
+          </ul>
+        </CardContent>
+      </Panel>
+    </div>
   );
 }
 
@@ -10530,6 +10725,7 @@ function GrokScreen({
 function ApplicationRail({
   tools,
   activeTool,
+  codexAppRunning,
   route,
   theme,
   onSelect,
@@ -10538,6 +10734,7 @@ function ApplicationRail({
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  codexAppRunning: boolean;
   route: Route;
   theme: Theme;
   onSelect: (toolId: ToolId) => void;
@@ -10551,6 +10748,7 @@ function ApplicationRail({
       <ToolSwitcher
         tools={tools}
         activeTool={activeTool}
+        codexAppRunning={codexAppRunning}
         showSelection={!globalNavigationRoutes.includes(route)}
         onSelect={onSelect}
       />
@@ -10605,17 +10803,18 @@ function ApplicationRail({
  * 应用栏上方的 Agent 图标组：点击切换当前聚焦的工具。
  *
  * 这里的「工具」指 Codex / Grok / 后续接入的 CLI，每个工具在自己的供应商
- * 分区里，互相不串配置。未接入写盘能力的工具仍然展示（让用户知道后面会支持），
- * 但按钮禁用。
+ * 分区里，互相不串配置。未接入供应商写盘的工具仍可进入自己的管理页。
  */
 function ToolSwitcher({
   tools,
   activeTool,
+  codexAppRunning,
   showSelection = true,
   onSelect,
 }: {
   tools: ToolEntry[];
   activeTool: ToolId;
+  codexAppRunning: boolean;
   showSelection?: boolean;
   onSelect: (toolId: ToolId) => void;
 }) {
@@ -10624,18 +10823,19 @@ function ToolSwitcher({
       {tools.map((tool) => {
         const icon = TOOL_ICONS[tool.id];
         const selected = showSelection && tool.id === activeTool;
+        const running = tool.id === "codex" && codexAppRunning;
         const title = tool.switchable
           ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
           : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
         return (
           <button
-            aria-label={tool.switchable ? tool.name : `${tool.name} · ${t("待接入")}`}
+            aria-label={tool.switchable ? `${tool.name}${running ? ` · ${t("运行中")}` : ""}` : `${tool.name} · ${t("待接入")}`}
             aria-pressed={selected}
             className={`tool-chip ${selected ? "active" : ""}`}
             disabled={!tool.switchable}
             key={tool.id}
             onClick={() => onSelect(tool.id)}
-            title={title}
+            title={`${title}${running ? `｜${t("运行中")}` : ""}`}
             type="button"
           >
             {icon ? (
@@ -10647,6 +10847,7 @@ function ToolSwitcher({
             ) : (
               <Blocks aria-hidden="true" className="tool-chip-icon" />
             )}
+            {running ? <span aria-hidden="true" className="tool-chip-running-dot" /> : null}
           </button>
         );
       })}
@@ -10753,20 +10954,6 @@ function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
 
-function LatestLaunch({ status }: { status: LaunchStatus | null }) {
-  if (!status) return <div className="empty">{t("暂无启动状态。")}</div>;
-  return (
-    <div className="metric-list">
-      <Metric label={t("状态")} value={status.status} />
-      <Metric label={t("消息")} value={status.message} />
-      <Metric label="Debug" value={String(status.debug_port ?? "-")} />
-      <Metric label="Helper" value={String(status.helper_port ?? "-")} />
-      <Metric label={t("时间")} value={formatTime(status.started_at_ms)} />
-      {status.aumid && <Metric label="AUMID" value={status.aumid} />}
-    </div>
-  );
-}
-
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -10799,67 +10986,6 @@ function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventor
       </div>
     </div>
   );
-}
-
-function AdGrid({ ads, empty, actions }: { ads: AdItem[]; empty: string; actions: Actions }) {
-  if (!ads.length) return <div className="empty">{empty}</div>;
-  return (
-    <div className="ad-grid">
-      {ads.map((ad) => (
-        <button className="ad-card" key={ad.id || `${ad.type}-${ad.title}`} onClick={() => void actions.openExternalUrl(ad.url)} type="button">
-          {ad.image ? <img alt="" className="ad-image" src={ad.image} /> : null}
-          <div className="ad-content">
-            <strong>{formatAdTitle(ad.title)}</strong>
-            <p className="recommendation-description" title={ad.description}>{ad.description}</p>
-          </div>
-          {ad.highlights?.length ? (
-            <div className="ad-tags">
-              {ad.highlights.map((item) => (
-                <span key={item}>{item}</span>
-              ))}
-            </div>
-          ) : null}
-          <span className="ad-link">
-            {t("打开")}
-            <ExternalLink className="h-4 w-4" />
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/// 广告标题原样展示。
-///
-/// 以前这里会在 `｜` / `|` 处截断，把「火山引擎｜方舟 Agent Plan」显示成
-/// 「火山引擎」—— 后半段是作者写的产品名，不该被我们悄悄丢掉。既然卡片
-/// 已经改成按内容自适应高度，就不再需要在标题上省这一点空间。
-function formatAdTitle(title: string) {
-  return title.trim() || title;
-}
-
-/// 广告的「同一家」判据。
-///
-/// 只比 id 是不够的：置顶位和推荐池里的同一条赞助商往往有两个 id
-/// （`jojocode-top` vs `jojocode-codex-relay`），但指向同一个去处。
-/// 所以按落地 URL（去 query / 尾斜杠）比，退回标题。
-function adIdentity(ad: AdItem): string {
-  const url = (ad.url || "").trim();
-  if (url) {
-    try {
-      const parsed = new URL(url);
-      return `${parsed.host}${parsed.pathname}`.replace(/\/+$/, "").toLowerCase();
-    } catch {
-      return url.replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
-    }
-  }
-  return (ad.title || "").trim().toLowerCase();
-}
-
-function isExpiredAd(ad: AdItem) {
-  if (!ad.expires_at) return false;
-  const expiresAt = Date.parse(ad.expires_at);
-  return Number.isFinite(expiresAt) && expiresAt < Date.now();
 }
 
 function routeTitle(route: Route) {
@@ -11321,9 +11447,12 @@ function applyContextLimitPreview(configContents: string, profile: RelayProfile)
 function removeRootTomlKey(contents: string, key: string): string {
   const lines: string[] = [];
   let inRoot = true;
-  for (const line of contents.split(/\r?\n/)) {
-    if (/^\s*\[[^\]]+\]\s*$/.test(line)) inRoot = false;
-    if (inRoot && new RegExp(`^\\s*${key}\\s*=`).test(line)) continue;
+  const sourceLines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(sourceLines);
+  for (const [index, line] of sourceLines.entries()) {
+    if (structural[index] && tomlSectionName(line) !== null) inRoot = false;
+    const assignment = tomlKeyAssignment(line);
+    if (structural[index] && inRoot && assignment?.path.length === 1 && assignment.path[0] === key) continue;
     lines.push(line);
   }
   return ensureTrailingNewline(lines.join("\n").trimEnd());
@@ -11393,7 +11522,8 @@ function dedupeTomlRootLines(rootParts: string[]): string[] {
 
 function splitTomlRootAndTables(section: string): { root: string; tables: string } {
   const lines = section.trim().split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+  const structural = tomlStructureMask(lines);
+  const firstTable = lines.findIndex((line, index) => structural[index] && tomlSectionName(line) !== null);
   if (firstTable < 0) return { root: lines.join("\n"), tables: "" };
   return {
     root: lines.slice(0, firstTable).join("\n"),
@@ -11471,13 +11601,16 @@ function statusLabel(status: string) {
     not_checked: t("未检查"),
     not_implemented: t("未实现"),
     disabled: t("已禁用"),
+    stopped: t("未运行"),
+    connected: t("已连接"),
+    disconnected: t("未连接"),
     unknown: t("未知"),
   };
   return labels[status] ?? status;
 }
 
 function statusClass(status: string) {
-  if (["found", "installed", "ok", "running", "running_degraded"].includes(status)) return "good";
+  if (["found", "installed", "ok", "running", "running_degraded", "connected"].includes(status)) return "good";
   if (["failed", "missing"].includes(status)) return "bad";
   return "warn";
 }
@@ -11498,6 +11631,16 @@ function truncateSessionDeletePreview(value: string) {
 }
 
 function healthItems(overview: OverviewResult | null) {
+  const conversionEnabled = overview?.runtime_health?.protocol_conversion_enabled;
+  const conversionDetail = typeof conversionEnabled === "boolean"
+    ? t(conversionEnabled ? "协议转换已启用" : "协议转换未启用")
+    : undefined;
+  const serviceItem = (title: string, state: RuntimeServiceState | undefined, extraDetail?: string) => ({
+    title,
+    status: state?.status ?? "not_checked",
+    ok: ["running", "connected", "disabled"].includes(state?.status ?? ""),
+    detail: state ? [state.address, t(state.message), extraDetail].filter(Boolean).join(" · ") : t("等待状态检查"),
+  });
   return [
     {
       title: t("Codex 应用"),
@@ -11505,18 +11648,8 @@ function healthItems(overview: OverviewResult | null) {
       ok: overview?.codex_app.status === "found",
       detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
     },
-    {
-      title: t("静默启动入口"),
-      status: overview?.silent_shortcut.status ?? "not_checked",
-      ok: overview?.silent_shortcut.status === "installed",
-      detail: overview?.silent_shortcut.path || t("缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。"),
-    },
-    {
-      title: t("管理工具入口"),
-      status: overview?.management_shortcut.status ?? "not_checked",
-      ok: overview?.management_shortcut.status === "installed",
-      detail: overview?.management_shortcut.path || t("缺少管理工具快捷方式时可在安装维护页修复。"),
-    },
+    serviceItem(t("本地服务器状态"), overview?.runtime_health?.local_server, conversionDetail),
+    serviceItem(t("调试连接状态"), overview?.runtime_health?.debugger),
   ];
 }
 
@@ -11579,6 +11712,7 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
             noAuth: false,
             sub2apiMultiplier: "",
             standardOpenaiProtocol: false,
+            webSearchHistoryCompat: false,
             rateLimitCooldownEnabled: false,
             channelQueueEnabled: false,
             channelRequestsPerMinute: 20,
@@ -11595,7 +11729,6 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     codexAppTypingEffect: normalizeTypingEffect(settings.codexAppTypingEffect),
-    codexAppSessionShare: settings.codexAppSessionShare !== false,
     relayProfilesEnabled: settings.relayProfilesEnabled === true,
     codexAppImageOverlayOpacity: clampNumber(settings.codexAppImageOverlayOpacity || 35, 1, 100),
     codexAppImageOverlayFitMode: normalizeImageOverlayFitMode(settings.codexAppImageOverlayFitMode),
@@ -11711,6 +11844,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
         noAuth: false,
         sub2apiMultiplier: "",
         standardOpenaiProtocol: false,
+        webSearchHistoryCompat: false,
         rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
         channelQueueEnabled: profile.channelQueueEnabled === true,
         channelRequestsPerMinute: clamp(profile.channelRequestsPerMinute ?? 20, 1, 10000),
@@ -11752,6 +11886,7 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
+    webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
     rateLimitCooldownEnabled: profile.rateLimitCooldownEnabled === true,
     channelQueueEnabled: profile.channelQueueEnabled === true,
     channelRequestsPerMinute: clamp(profile.channelRequestsPerMinute ?? 20, 1, 10000),
@@ -11792,13 +11927,6 @@ function activeRelayProfile(settings: BackendSettings): RelayProfile {
 
 function relayProtocolLabel(protocol: RelayProtocol): string {
   return protocol === "chatCompletions" ? t("Chat Completions 转 Responses") : "Responses API";
-}
-
-/// 当前 active 供应商是否就是「纯官方登录」（官方模式且不混入 API Key）。
-/// 用于给「恢复官方登录」按钮置灰（issue #595）。
-function isOfficialLoginActive(settings: BackendSettings): boolean {
-  const active = activeRelayProfile(settings);
-  return active.relayMode === "official" && !active.officialMixApiKey && !isAggregateRelayProfile(active);
 }
 
 function ccsProviderSummary(result: CcsProvidersResult | null): string {
@@ -11945,16 +12073,22 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
   }
   return {
     ...profile,
-    configContents: buildRelayConfigToml(profile, { includeBearerToken: false, requiresOpenAiAuth: true }),
+    configContents: buildRelayConfigToml(profile, { includeBearerToken: !profile.noAuth, requiresOpenAiAuth: false }),
     authContents: buildRelayAuthJson(profile),
   };
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider">,
+  profile: Pick<RelayProfile, "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
-  const baseUrl = profile.protocol === "chatCompletions" ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+  const searchHistoryCompat = profile.webSearchHistoryCompat === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  const baseUrl = profile.protocol === "chatCompletions" || searchHistoryCompat
+    ? PROTOCOL_PROXY_BASE_URL
+    : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
   const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
   const rootLines = [
@@ -11999,13 +12133,24 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
   if (isAggregateRelayProfile(profile)) {
     return normalizeAggregateRelayProfile(profile, null);
   }
-  const configContents = profile.configContents || "";
+  let configContents = profile.configContents || "";
   const authContents = profile.relayMode === "official" ? buildOfficialRelayAuthJson(profile.authContents || "") : profile.authContents || "";
   const configBaseUrl = codexBaseUrlFromConfig(configContents);
   const chatUpstreamBaseUrl = rootTomlStringValue(configContents, CHAT_UPSTREAM_BASE_URL_KEY);
   const isProxyConfig = configBaseUrl === PROTOCOL_PROXY_BASE_URL;
   const upstreamBaseUrl = profile.upstreamBaseUrl || chatUpstreamBaseUrl || (configBaseUrl && !isProxyConfig ? configBaseUrl : profile.baseUrl || "");
   const configApiKey = codexExperimentalBearerTokenFromConfig(configContents);
+  const apiKey = profile.relayMode === "official"
+    ? configApiKey || profile.apiKey || ""
+    : codexApiKeyFromAuth(authContents) || configApiKey || "";
+  if (profile.relayMode === "pureApi") {
+    // 旧 false/缺省模板也需要显式 provider 认证；保留用户已有的 true/false。
+    configContents = profile.noAuth
+      ? removeCodexExperimentalBearerToken(configContents)
+      : apiKey && configContents.trim()
+        ? setCodexExperimentalBearerToken(configContents, apiKey, { requiresOpenAiAuth: false })
+        : configContents;
+  }
   const configModel = codexModelFromConfig(configContents);
   // 如果用户输入了带后缀的模型名，优先保留在界面的「配置模型」字段中；
   // config.toml 里实际写的是剥离后缀的 slug（由 applyRelayProfilePatchToFiles 处理）。
@@ -12016,9 +12161,7 @@ function deriveRelayProfileFromFiles(profile: RelayProfile): RelayProfile {
     sessionProvider: relaySessionProviderFromConfig(configContents),
     baseUrl: upstreamBaseUrl,
     upstreamBaseUrl,
-    apiKey: profile.relayMode === "official"
-      ? configApiKey || profile.apiKey || ""
-      : codexApiKeyFromAuth(authContents) || configApiKey || "",
+    apiKey,
     contextWindow: codexTopLevelIntFromConfig(configContents, "model_context_window"),
     autoCompactLimit: codexTopLevelIntFromConfig(configContents, "model_auto_compact_token_limit"),
     configContents,
@@ -12066,7 +12209,7 @@ function applyRelayProfilePatchToFiles(
   if ("apiKey" in patch) {
     if (next.relayMode === "pureApi") {
       next.authContents = setAuthOpenAiApiKey(next.authContents, patch.apiKey || "");
-      next.configContents = removeCodexExperimentalBearerToken(next.configContents);
+      next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "", { requiresOpenAiAuth: false });
     } else {
       next.configContents = setCodexExperimentalBearerToken(next.configContents, patch.apiKey || "");
     }
@@ -12077,8 +12220,12 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch) {
-    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch) {
+    const searchHistoryCompat = next.webSearchHistoryCompat === true
+      && next.protocol === "responses"
+      && next.relayMode !== "aggregate"
+      && (next.relayMode !== "official" || next.officialMixApiKey);
+    const baseUrlForConfig = next.protocol === "chatCompletions" || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -12108,7 +12255,10 @@ function applyRelayProfilePatchToFiles(
 }
 
 function codexModelFromConfig(contents: string): string {
-  for (const line of contents.split(/\r?\n/)) {
+  const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     if (trimmed.startsWith("[")) break;
@@ -12138,13 +12288,17 @@ function codexExperimentalBearerTokenFromConfig(contents: string): string {
 
 function codexProviderStringFromConfig(contents: string, key: string): string {
   const provider = rootTomlStringValue(contents, "model_provider");
-  const targetSection = provider ? `model_providers.${provider}` : "";
+  const targetSection = codexProviderSectionName(provider || "custom");
+  const fallbackSection = provider === "openai" && rootTomlStringValue(contents, "openai_base_url") === PROTOCOL_PROXY_BASE_URL
+    ? codexProviderSectionName("custom") : "";
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let currentSection = "";
-  const matches: string[] = [];
-  const providerMatches: string[] = [];
+  let rootValue = "";
+  let fallbackValue = "";
 
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(line);
     if (section !== null) {
       currentSection = section;
@@ -12152,13 +12306,13 @@ function codexProviderStringFromConfig(contents: string, key: string): string {
     }
     const value = tomlStringAssignmentValue(line, key);
     if (value === null) continue;
-    if (targetSection && currentSection === targetSection) return value;
-    if (currentSection.startsWith("model_providers.")) providerMatches.push(value);
-    else matches.push(value);
+    if (currentSection === targetSection) return value;
+    if (fallbackSection && currentSection === fallbackSection) fallbackValue = value;
+    if (!provider && currentSection === "") rootValue = value;
   }
 
-  if (matches.length === 1) return matches[0];
-  return providerMatches.length === 1 ? providerMatches[0] : "";
+  // 不借用 inactive provider 的 Key；仅托管 OpenAI 会话允许回落 custom transport。
+  return fallbackValue || rootValue;
 }
 
 function codexApiKeyFromAuth(contents: string): string {
@@ -12173,7 +12327,10 @@ function codexApiKeyFromAuth(contents: string): string {
 function codexTopLevelIntFromConfig(contents: string, key: string): string {
   const topLevel = splitTomlRootAndTables(contents).root;
   const pattern = new RegExp(`^\\s*${key}\\s*=\\s*(\\d+)\\s*(?:#.*)?$`);
-  for (const line of topLevel.split(/\r?\n/)) {
+  const lines = topLevel.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const match = pattern.exec(line);
     if (match) return match[1];
   }
@@ -12182,22 +12339,166 @@ function codexTopLevelIntFromConfig(contents: string, key: string): string {
 
 function rootTomlStringValue(contents: string, key: string): string {
   const topLevel = splitTomlRootAndTables(contents).root;
-  for (const line of topLevel.split(/\r?\n/)) {
+  const lines = topLevel.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const value = tomlStringAssignmentValue(line, key);
     if (value !== null) return value;
   }
   return "";
 }
 
+function tomlStructureMask(lines: string[]): boolean[] {
+  // 提示词里的伪表头/赋值只是字符串正文，不能参与 provider 鉴权读写。
+  let multiline: string | null = null;
+  return lines.map((line) => {
+    const structural = multiline === null;
+    for (let index = 0; index < line.length; index += 1) {
+      if (multiline !== null) {
+        if (multiline === '"' && line[index] === "\\") {
+          index += 1;
+        } else if (line[index] === multiline) {
+          let end = index;
+          while (line[end] === multiline) end += 1;
+          if (end - index >= 3) multiline = null;
+          index = end - 1;
+        }
+      } else if (line[index] === "#") {
+        break;
+      } else if (line[index] === '"' || line[index] === "'") {
+        if (line[index + 1] === line[index] && line[index + 2] === line[index]) {
+          multiline = line[index];
+          index += 2;
+        } else {
+          const quoted = tomlQuotedValue(line, index);
+          if (!quoted) break;
+          index = quoted.end - 1;
+        }
+      }
+    }
+    return structural;
+  });
+}
+
 function tomlSectionName(line: string): string | null {
-  const match = /^\s*\[([^\]]+)\]\s*$/.exec(line);
-  return match ? match[1].trim() : null;
+  const text = line.trim();
+  if (!text.startsWith("[")) return null;
+  const array = text.startsWith("[[");
+  const start = array ? 2 : 1;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === '"' || text[index] === "'") {
+      const quoted = tomlQuotedValue(text, index);
+      if (!quoted) return null;
+      index = quoted.end - 1;
+    } else if (text[index] === "]") {
+      const end = index + (array ? 2 : 1);
+      if (array && text[index + 1] !== "]") return null;
+      const rest = text.slice(end).trim();
+      if (rest && !rest.startsWith("#")) return null;
+      const path = tomlDottedKeyPath(text.slice(start, index));
+      // 数组表也是前一个表的边界，但不能与同名普通表混为一谈。
+      return path ? (array ? "[]" : "") + tomlKeyPathName(path) : null;
+    }
+  }
+  return null;
+}
+
+function tomlQuotedValue(text: string, start: number): { value: string; end: number } | null {
+  const quote = text[start];
+  if (quote !== '"' && quote !== "'") return null;
+  let value = "";
+  for (let index = start + 1; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === quote) return { value, end: index + 1 };
+    if ((character.charCodeAt(0) < 32 && character !== "\t") || character.charCodeAt(0) === 127) return null;
+    if (quote === '"' && character === "\\") {
+      const escape = text[++index];
+      const escapes: Record<string, string> = { '"': '"', "\\": "\\", b: "\b", t: "\t", n: "\n", f: "\f", r: "\r" };
+      if (Object.prototype.hasOwnProperty.call(escapes, escape)) value += escapes[escape];
+      else if (escape === "u" || escape === "U") {
+        const length = escape === "u" ? 4 : 8;
+        const digits = text.slice(index + 1, index + 1 + length);
+        if (digits.length !== length || !/^[0-9a-f]+$/i.test(digits)) return null;
+        const codepoint = Number.parseInt(digits, 16);
+        if (codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return null;
+        value += String.fromCodePoint(codepoint);
+        index += length;
+      } else return null;
+    } else value += character;
+  }
+  return null;
+}
+
+function tomlDottedKeyPath(text: string): string[] | null {
+  const path: string[] = [];
+  let index = 0;
+  while (index < text.length) {
+    while (text[index] === " " || text[index] === "\t") index += 1;
+    if (text[index] === '"' || text[index] === "'") {
+      const quoted = tomlQuotedValue(text, index);
+      if (!quoted) return null;
+      path.push(quoted.value);
+      index = quoted.end;
+    } else {
+      const bare = /^[A-Za-z0-9_-]+/.exec(text.slice(index));
+      if (!bare) return null;
+      path.push(bare[0]);
+      index += bare[0].length;
+    }
+    while (text[index] === " " || text[index] === "\t") index += 1;
+    if (index === text.length) return path;
+    if (text[index] !== ".") return null;
+    index += 1;
+  }
+  return null;
+}
+
+function tomlKeyPathName(path: string[]): string {
+  return path.map((part) => /^[A-Za-z0-9_-]+$/.test(part) ? part : JSON.stringify(part)).join(".");
+}
+
+function codexProviderSectionName(provider: string): string {
+  return tomlKeyPathName(["model_providers", provider]);
+}
+
+function tomlKeyAssignment(line: string): { path: string[]; valueStart: number } | null {
+  for (let index = 0; index < line.length; index += 1) {
+    if (line[index] === '"' || line[index] === "'") {
+      const quoted = tomlQuotedValue(line, index);
+      if (!quoted) return null;
+      index = quoted.end - 1;
+    } else if (line[index] === "#") return null;
+    else if (line[index] === "=") {
+      const path = tomlDottedKeyPath(line.slice(0, index));
+      return path ? { path, valueStart: index + 1 } : null;
+    }
+  }
+  return null;
+}
+
+function tomlInlineComment(line: string, start: number): string {
+  for (let index = start; index < line.length; index += 1) {
+    if (line[index] === '"' || line[index] === "'") {
+      const quoted = tomlQuotedValue(line, index);
+      if (!quoted) return "";
+      index = quoted.end - 1;
+    } else if (line[index] === "#") {
+      const spacing = /[ \t]*$/.exec(line.slice(start, index))?.[0] || "";
+      return spacing + line.slice(index);
+    }
+  }
+  return "";
 }
 
 function tomlStringAssignmentValue(line: string, key: string): string | null {
-  const match = new RegExp(`^\\s*${key}\\s*=\\s*([\"'])(.*)\\1\\s*(?:#.*)?$`).exec(line.trim());
-  if (!match) return null;
-  return match[2].replace(/\\(["'\\])/g, "$1");
+  const assignment = tomlKeyAssignment(line);
+  if (!assignment || assignment.path.length !== 1 || assignment.path[0] !== key) return null;
+  const text = line.slice(assignment.valueStart).trimStart();
+  const quoted = tomlQuotedValue(text, 0);
+  if (!quoted) return null;
+  const rest = text.slice(quoted.end).trimStart();
+  return !rest || rest.startsWith("#") ? quoted.value : null;
 }
 
 function setAuthOpenAiApiKey(contents: string, apiKey: string): string {
@@ -12236,11 +12537,17 @@ function setRootTomlIntKey(contents: string, key: string, value: string): string
 
 function setRootTomlLine(contents: string, key: string, lineText: string): string {
   const lines = contents.split(/\r?\n/);
-  const firstTable = lines.findIndex((line) => /^\s*\[[^\]]+\]\s*$/.test(line));
+  const structural = tomlStructureMask(lines);
+  const firstTable = lines.findIndex((line, index) => structural[index] && tomlSectionName(line) !== null);
   const rootEnd = firstTable >= 0 ? firstTable : lines.length;
   for (let index = 0; index < rootEnd; index += 1) {
-    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
-      lines[index] = lineText;
+    if (!structural[index]) continue;
+    const assignment = tomlKeyAssignment(lines[index]);
+    if (assignment?.path.length === 1 && assignment.path[0] === key) {
+      const replacement = tomlKeyAssignment(lineText);
+      lines[index] = replacement
+        ? lines[index].slice(0, assignment.valueStart) + " " + lineText.slice(replacement.valueStart).trimStart() + tomlInlineComment(lines[index], assignment.valueStart)
+        : lineText;
       return ensureTrailingNewline(lines.join("\n").trimEnd());
     }
   }
@@ -12251,12 +12558,15 @@ function setRootTomlLine(contents: string, key: string, lineText: string): strin
 
 function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
   const provider = rootTomlStringValue(contents, "model_provider");
-  const targetSection = provider ? `model_providers.${provider}` : "";
+  const targetSection = provider ? codexProviderSectionName(provider) : "";
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let currentSection = "";
   let sawProviderSection = false;
+  let rootRequiresAuth = false;
 
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(line);
     if (section !== null) {
       currentSection = section;
@@ -12264,6 +12574,7 @@ function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
       continue;
     }
     const match = /^\s*requires_openai_auth\s*=\s*(true|false)\s*(?:#.*)?$/i.exec(line);
+    if (match && currentSection === "") rootRequiresAuth = match[1].toLowerCase() === "true";
     if (!match || !currentSection.startsWith("model_providers.")) continue;
     if (targetSection) {
       if (currentSection === targetSection) return match[1].toLowerCase() === "true";
@@ -12272,7 +12583,7 @@ function codexRequiresOpenAiAuthFromConfig(contents: string): boolean {
     if (match[1].toLowerCase() === "true") return true;
   }
 
-  return !sawProviderSection && /^\s*requires_openai_auth\s*=\s*true\s*(?:#.*)?$/im.test(contents);
+  return !sawProviderSection && rootRequiresAuth;
 }
 
 function setCodexProviderStringKey(
@@ -12288,20 +12599,29 @@ function setCodexProviderStringKey(
     next = setRootTomlStringKey(next, "model_provider", sessionProvider);
   }
   next = ensureCodexProviderDefaults(next, provider, { requiresOpenAiAuth: options.requiresOpenAiAuth !== false });
-  return setTomlSectionStringKey(next, `model_providers.${provider}`, key, value);
+  return setTomlSectionStringKey(next, codexProviderSectionName(provider), key, value);
 }
 
-function setCodexExperimentalBearerToken(contents: string, apiKey: string): string {
+function setCodexExperimentalBearerToken(contents: string, apiKey: string, options: { requiresOpenAiAuth?: boolean } = {}): string {
   const trimmed = apiKey.trim();
+  if (trimmed && options.requiresOpenAiAuth === false) {
+    // 补纯 API 鉴权时只改目标字段，不覆盖导入模板的名称、协议或登录要求。
+    const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
+    const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
+    const next = rootTomlStringValue(contents, "model_provider")
+      ? contents
+      : setRootTomlStringKey(contents, "model_provider", sessionProvider);
+    return setTomlSectionStringKey(next, codexProviderSectionName(provider), "experimental_bearer_token", trimmed);
+  }
   return trimmed
-    ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed)
+    ? setCodexProviderStringKey(contents, "experimental_bearer_token", trimmed, options)
     : removeCodexExperimentalBearerToken(contents);
 }
 
 function removeCodexExperimentalBearerToken(contents: string): string {
   const sessionProvider = rootTomlStringValue(contents, "model_provider") || "custom";
   const provider = sessionProvider === "openai" ? "custom" : sessionProvider;
-  return removeTomlSectionKey(contents, `model_providers.${provider}`, "experimental_bearer_token");
+  return removeTomlSectionKey(contents, codexProviderSectionName(provider), "experimental_bearer_token");
 }
 
 function ensureCodexProviderDefaults(
@@ -12310,7 +12630,7 @@ function ensureCodexProviderDefaults(
   options: { requiresOpenAiAuth?: boolean } = {},
 ): string {
   let next = contents;
-  const section = `model_providers.${provider}`;
+  const section = codexProviderSectionName(provider);
   next = setTomlSectionStringKey(next, section, "name", provider);
   next = setTomlSectionStringKey(next, section, "wire_api", "responses");
   return options.requiresOpenAiAuth === false ? next : setTomlSectionBoolKey(next, section, "requires_openai_auth", true);
@@ -12326,9 +12646,11 @@ function setTomlSectionStringKey(contents: string, sectionName: string, key: str
 
 function setTomlSectionRawKey(contents: string, sectionName: string, key: string, value: string): string {
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let sectionStart = -1;
   let sectionEnd = lines.length;
   for (let index = 0; index < lines.length; index += 1) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(lines[index]);
     if (section === null) continue;
     if (sectionStart >= 0) {
@@ -12343,8 +12665,10 @@ function setTomlSectionRawKey(contents: string, sectionName: string, key: string
   }
   const replacement = `${key} = ${value}`;
   for (let index = sectionStart + 1; index < sectionEnd; index += 1) {
-    if (new RegExp(`^\\s*${key}\\s*=`).test(lines[index])) {
-      lines[index] = replacement;
+    if (!structural[index]) continue;
+    const assignment = tomlKeyAssignment(lines[index]);
+    if (assignment?.path.length === 1 && assignment.path[0] === key) {
+      lines[index] = lines[index].slice(0, assignment.valueStart) + " " + value + tomlInlineComment(lines[index], assignment.valueStart);
       return ensureTrailingNewline(lines.join("\n").trimEnd());
     }
   }
@@ -12356,9 +12680,11 @@ function setTomlSectionRawKey(contents: string, sectionName: string, key: string
 
 function removeTomlSectionKey(contents: string, sectionName: string, key: string): string {
   const lines = contents.split(/\r?\n/);
+  const structural = tomlStructureMask(lines);
   let sectionStart = -1;
   let sectionEnd = lines.length;
   for (let index = 0; index < lines.length; index += 1) {
+    if (!structural[index]) continue;
     const section = tomlSectionName(lines[index]);
     if (section === null) continue;
     if (sectionStart >= 0) {
@@ -12369,8 +12695,9 @@ function removeTomlSectionKey(contents: string, sectionName: string, key: string
   }
   if (sectionStart < 0) return contents;
   const next = lines.filter((line, index) => {
-    if (index <= sectionStart || index >= sectionEnd) return true;
-    return !new RegExp(`^\\s*${key}\\s*=`).test(line);
+    if (index <= sectionStart || index >= sectionEnd || !structural[index]) return true;
+    const assignment = tomlKeyAssignment(line);
+    return assignment?.path.length !== 1 || assignment.path[0] !== key;
   });
   return ensureTrailingNewline(next.join("\n").trimEnd());
 }
@@ -12421,7 +12748,7 @@ function relayModelRouteIssueMessage(issue: ReturnType<typeof findRelayModelRout
   if (!issue) return null;
   switch (issue.kind) {
     case "incomplete":
-      return t("单模型路由需要填写模型名称和目标供应商。");
+      return t("单模型协议转换需要填写模型名称和目标供应商。");
     case "duplicate":
       return tf("模型「{0}」存在重复路由。", [issue.model]);
     case "self":
@@ -12568,6 +12895,7 @@ function createRelayProfile(settings: BackendSettings): RelayProfile {
     sub2apiMultiplier: "",
     modelRoutes: [],
     standardOpenaiProtocol: false,
+    webSearchHistoryCompat: false,
     rateLimitCooldownEnabled: false,
     channelQueueEnabled: false,
     channelRequestsPerMinute: 20,
@@ -12616,6 +12944,7 @@ function createAggregateRelayProfile(settings: BackendSettings): RelayProfile {
       sub2apiMultiplier: "",
       modelRoutes: [],
       standardOpenaiProtocol: false,
+      webSearchHistoryCompat: false,
       rateLimitCooldownEnabled: false,
       channelQueueEnabled: false,
       channelRequestsPerMinute: 20,
@@ -12731,6 +13060,13 @@ function isAggregateRelayProfile(profile: Pick<RelayProfile, "relayMode" | "aggr
   return profile.relayMode === "aggregate" || !!profile.aggregate;
 }
 
+function relayProviderView(profile: RelayProfile): "direct" | "routing" | "aggregate" {
+  if (isAggregateRelayProfile(profile)) return "aggregate";
+  return profile.protocol === "chatCompletions" || normalizeRelayModelRoutes(profile.modelRoutes).length
+    ? "routing"
+    : "direct";
+}
+
 function normalizeAggregateRelayProfile(profile: RelayProfile, settings: BackendSettings | null): RelayProfile {
   const candidates = settings ? aggregateMemberCandidates(settings, profile.id) : [];
   const aggregate = normalizeAggregateConfig(profile.aggregate, candidates);
@@ -12750,6 +13086,7 @@ function normalizeAggregateRelayProfile(profile: RelayProfile, settings: Backend
     noAuth: false,
     sub2apiMultiplier: "",
     standardOpenaiProtocol: false,
+    webSearchHistoryCompat: false,
     aggregate,
   };
 }

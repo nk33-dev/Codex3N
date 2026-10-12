@@ -22,6 +22,8 @@ const ts = require("typescript");
 const SRC_FILES = [
   "src/App.tsx",
   "src/PluginMarketScreen.tsx",
+  "src/ManagementPages.tsx",
+  "src/ManagementExtra.tsx",
   "src/route-subtitle.ts",
   "src/launch-status.ts",
   "src/agent-cache.tsx",
@@ -31,7 +33,6 @@ const SRC_FILES = [
   "src/components/providers/RelayProfileList.tsx",
   "src/components/ui/manager-primitives.tsx",
   "src/screens/GrokScreen.tsx",
-  "src/screens/SessionsScreen.tsx",
   "src/screens/WeixinConnectScreen.tsx",
   "src/lib/default-settings.ts",
   "src/provider-utils.ts",

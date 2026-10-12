@@ -902,6 +902,23 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     profile: &RelayProfile,
     common_config_contents: &str,
 ) -> anyhow::Result<RelayApplyResult> {
+    apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+        home,
+        profile,
+        common_config_contents,
+        crate::protocol_proxy::protocol_proxy_port(),
+    )
+}
+
+/// 与 [`apply_relay_profile_to_home_with_switch_rules`] 相同，但允许调用方指定
+/// 协议代理端口。多开实例各自运行一个 helper，必须在写入 config.toml 时使用
+/// 实例自己的端口，不能先写默认 57321 再依赖启动器补救。
+pub fn apply_relay_profile_to_home_with_switch_rules_and_proxy_port(
+    home: &Path,
+    profile: &RelayProfile,
+    common_config_contents: &str,
+    proxy_port: u16,
+) -> anyhow::Result<RelayApplyResult> {
     if profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key {
         return apply_official_profile_to_home(home, profile, common_config_contents);
     }
@@ -912,7 +929,7 @@ pub fn apply_relay_profile_to_home_with_switch_rules(
     } else {
         String::new()
     };
-    let profile_config = complete_relay_profile_config(profile)?;
+    let profile_config = complete_relay_profile_config_with_proxy_port(profile, proxy_port)?;
     let config_with_common = merge_common_config_into_config(&profile_config, &selected_common)?;
     let config_with_common =
         preserve_unmanaged_live_context_entries(home, &config_with_common, common_config_contents)?;
@@ -1557,6 +1574,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
     let proxy_mode = profile.protocol == RelayProtocol::ChatCompletions
         || profile.has_model_routes()
         || profile.uses_no_auth()
+        || profile.web_search_history_compat_enabled()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -3412,6 +3430,49 @@ mod managed_catalog_predicate_tests {
     use serde_json::{Value, json};
     use std::collections::HashSet;
 
+    #[test]
+    fn fast_metadata_modes_preserve_other_tiers_and_never_leak_the_private_marker() {
+        #[derive(serde::Deserialize)]
+        struct NativeModelServiceTier {
+            id: String,
+            name: String,
+            description: String,
+        }
+        let base = json!({"models":[{"slug":"grok-custom", "context_window":128000,
+            "service_tiers":[{"id":"flex", "name":"Flex", "description":"Existing tier"}],
+            "additional_speed_tiers":["slow"]}]})
+        .to_string();
+        for mode in ["supported", "unsupported", "inherit"] {
+            let overrides = parse_model_metadata_map(
+                &json!({"grok-custom":{"codex_plus_fast_support":mode}}).to_string(),
+            )
+            .unwrap();
+            let generated: Value =
+                serde_json::from_str(&apply_model_metadata_overrides(&base, &overrides).unwrap())
+                    .unwrap();
+            let model = &generated["models"][0];
+            let tiers: Vec<NativeModelServiceTier> =
+                serde_json::from_value(model["service_tiers"].clone()).unwrap();
+            assert_eq!(tiers[0].id, "flex");
+            assert_eq!(tiers[0].name, "Flex");
+            assert!(!tiers[0].description.is_empty());
+            assert!(model.get("codex_plus_fast_support").is_none());
+            assert_eq!(model["service_tiers"][0]["id"], "flex");
+            assert_eq!(model["additional_speed_tiers"][0], "slow");
+            let priority = model["service_tiers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|tier| tier["id"] == "priority");
+            assert_eq!(priority.is_some(), mode == "supported");
+            if let Some(priority) = priority {
+                for field in ["id", "name", "description"] {
+                    assert!(priority[field].is_string());
+                }
+            }
+        }
+    }
+
     fn entry(slug: &str) -> ModelCatalogEntry {
         ModelCatalogEntry {
             slug: slug.to_string(),
@@ -3570,12 +3631,20 @@ fn apply_model_metadata_overrides(
             // max_context_window 是 codex 运行时的 clamp 权威，绝不能被历史 metadata 残留值覆盖。
             if matches!(
                 key.as_str(),
-                "slug" | "context_window" | "max_context_window" | "auto_compact_token_limit"
+                "slug"
+                    | "context_window"
+                    | "max_context_window"
+                    | "auto_compact_token_limit"
+                    | "codex_plus_fast_support"
             ) {
                 continue;
             }
             model_object.insert(key.clone(), value.clone());
         }
+        crate::model_suffix::apply_model_fast_support(
+            model,
+            user_override.get("codex_plus_fast_support"),
+        );
     }
     Ok(serde_json::to_string_pretty(&catalog)?)
 }
@@ -4209,8 +4278,13 @@ fn restore_profile_credentials_after_backfill(
     live_auth: &str,
 ) -> anyhow::Result<()> {
     if profile.relay_mode == crate::settings::RelayMode::PureApi {
+        let provider_token = if profile.uses_no_auth() {
+            crate::protocol_proxy::NO_AUTH_PROXY_BEARER_TOKEN
+        } else {
+            template_api_key
+        };
         profile.config_contents =
-            remove_experimental_bearer_token_from_config(&profile.config_contents)?;
+            set_experimental_bearer_token_in_config(&profile.config_contents, provider_token)?;
         profile.auth_contents =
             set_openai_api_key_in_auth_contents(template_auth, template_api_key)?;
         profile.api_key = template_api_key.trim().to_string();
@@ -4510,7 +4584,14 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
             crate::protocol_proxy::protocol_proxy_port(),
         );
     }
-    if profile.has_model_routes() || profile.uses_no_auth() {
+    let has_managed_proxy_config =
+        provider_string_from_config(&profile.config_contents, "base_url")
+            .is_some_and(|base_url| base_url.trim() == managed_openai_base_url());
+    if profile.has_model_routes()
+        || profile.uses_no_auth()
+        || profile.web_search_history_compat_enabled()
+        || has_managed_proxy_config
+    {
         if !profile.upstream_base_url.trim().is_empty() {
             return profile.upstream_base_url.trim().to_string();
         }
@@ -4584,6 +4665,16 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 }
 
 fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<String> {
+    complete_relay_profile_config_with_proxy_port(
+        profile,
+        crate::protocol_proxy::protocol_proxy_port(),
+    )
+}
+
+fn complete_relay_profile_config_with_proxy_port(
+    profile: &RelayProfile,
+    proxy_port: u16,
+) -> anyhow::Result<String> {
     let mut doc = parse_toml_document(&profile.config_contents)?;
     let session_provider_id = active_session_provider_id(&doc);
     let uses_openai_provider = session_provider_id == "openai";
@@ -4685,16 +4776,13 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     if profile.relay_mode == crate::settings::RelayMode::Aggregate {
         provider["requires_openai_auth"] = toml_edit::value(false);
     }
-    let provider_base_url = if profile.has_model_routes() || profile.uses_no_auth() {
-        crate::protocol_proxy::local_responses_proxy_base_url(
-            crate::protocol_proxy::protocol_proxy_port(),
-        )
+    let provider_base_url = if profile.has_model_routes()
+        || profile.uses_no_auth()
+        || profile.web_search_history_compat_enabled()
+    {
+        crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {
-        codex_base_url_for_protocol(
-            base_url.trim(),
-            profile.protocol,
-            crate::protocol_proxy::protocol_proxy_port(),
-        )
+        codex_base_url_for_protocol(base_url.trim(), profile.protocol, proxy_port)
     };
     if !provider_base_url.trim().is_empty() {
         provider["base_url"] = toml_edit::value(provider_base_url.trim());
@@ -4702,9 +4790,9 @@ fn complete_relay_profile_config(profile: &RelayProfile) -> anyhow::Result<Strin
     if profile.uses_no_auth() {
         provider["experimental_bearer_token"] =
             toml_edit::value(crate::protocol_proxy::NO_AUTH_PROXY_BEARER_TOKEN);
-    } else if profile.relay_mode == crate::settings::RelayMode::PureApi {
-        provider.remove("experimental_bearer_token");
     } else if !api_key.trim().is_empty() {
+        // Codex 0.149 起不再为 requires_openai_auth=false 的 provider 借用
+        // auth.json 凭据。纯 API 也必须显式携带供应商 Key，不能改成依赖官方登录。
         provider["experimental_bearer_token"] = toml_edit::value(api_key.trim());
     }
 
@@ -4809,8 +4897,8 @@ pub fn normalize_relay_profile_for_storage(profile: &mut RelayProfile) -> anyhow
     {
         profile.config_contents = complete_relay_profile_config(profile)?;
     }
-    // PureApi 模式下 `complete_relay_profile_config` 会移除 config.toml 里的
-    // `experimental_bearer_token`，auth.json 是 key 唯一的落点。
+    // PureApi 的 provider token 用于请求鉴权；auth.json 继续保存 API Key，
+    // 保持 API 登录态和旧版本兼容，不把它与 live OAuth 凭据混合。
     // 这里过去还要求 auth_contents 为空，于是「非空但不含 OPENAI_API_KEY」的 auth.json
     // （例如退出 ChatGPT 登录后残留的 tokens/last_refresh）会把写入挡掉，
     // key 两边都没有，Codex CLI 只能回退到 OPENAI_API_KEY 环境变量，上游返回 401（issue #1965）。

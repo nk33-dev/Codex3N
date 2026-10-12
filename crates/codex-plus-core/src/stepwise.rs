@@ -1286,7 +1286,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result["status"], "ok");
+        assert_eq!(result["status"], "ok", "{result}");
         assert_eq!(result["protocol"], "responses");
         assert_eq!(result["items"][0]["prompt"], "Responses 回退成功");
 

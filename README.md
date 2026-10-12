@@ -11,13 +11,12 @@
 - Windows：`Codex3N-<版本>-windows-x64-setup.exe`
 - macOS：`Codex3N-<版本>-macos-universal.dmg`，同时支持 Intel 和 Apple Silicon。
 
-首次打开 **Codex++ 管理工具**，确认官方应用路径，配置供应商和增强功能；之后通过 **Codex++** 启动官方应用。管理工具的“关于”页可检查更新。
+打开 **Codex++**，确认官方应用路径，配置供应商和增强功能，再从概览页启动官方应用。“关于”页可检查更新；界面与后台服务在同一应用内运行，关闭窗口后收起到托盘。
 
 macOS 安装包使用 ad-hoc 签名，未经过 Apple 公证。若系统拦截，确认下载来源后执行：
 
 ```bash
 sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
-sudo xattr -rd com.apple.quarantine "/Applications/Codex++ 管理工具.app"
 ```
 
 ## 个人差异
