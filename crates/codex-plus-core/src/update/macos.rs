@@ -607,9 +607,8 @@ mod runtime {
 
     fn prepare_detached_helper(executable: &Path, transaction: &Path) -> anyhow::Result<PathBuf> {
         let helper = transaction.join("manager-update-helper");
-        let signing = transaction.join("manager-update-helper-signing");
-        fs::copy(executable, &signing)?;
-        fs::set_permissions(&signing, fs::Permissions::from_mode(0o700))?;
+        fs::copy(executable, &helper)?;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
         // bundle 内的签名引用 Info.plist；裸副本须重新签名才能独立运行。
         checked(
             "/usr/bin/codesign",
@@ -617,21 +616,10 @@ mod runtime {
                 "--force".as_ref(),
                 "--sign".as_ref(),
                 "-".as_ref(),
-                signing.as_os_str(),
+                helper.as_os_str(),
             ],
         )
         .context("临时更新 helper 重新签名失败")?;
-        // 签名后写入新 inode，避免 Apple Silicon 执行仍缓存旧签名的副本。
-        let mut source = File::open(&signing)?;
-        let mut target = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o700)
-            .open(&helper)?;
-        std::io::copy(&mut source, &mut target)?;
-        target.sync_all()?;
-        drop(target);
-        fs::remove_file(&signing)?;
         checked(
             "/usr/bin/codesign",
             &["--verify".as_ref(), "--strict".as_ref(), helper.as_os_str()],
@@ -828,7 +816,13 @@ mod runtime {
         let binary = path.join("Contents/MacOS").join(spec.executable);
         fs::create_dir_all(binary.parent().unwrap())?;
         fs::create_dir_all(path.join("Contents/Resources/nested"))?;
-        fs::copy("/usr/bin/true", &binary)?;
+        // 系统 true 重签名后在原生 CI 以 SIGILL 退出，夹具使用普通 Mach-O。
+        let source = path.join("Contents/Resources/helper-fixture.c");
+        fs::write(&source, "int main(void) { return 0; }\n")?;
+        checked(
+            "/usr/bin/clang",
+            &[source.as_os_str(), "-o".as_ref(), binary.as_os_str()],
+        )?;
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))?;
         fs::write(
             path.join("Contents/Resources/test.dat"),
