@@ -25,6 +25,7 @@
 `App.tsx` 只保留 `App()`、业务状态与操作回调，以及仍与其强耦合的页面；可独立成页的部分按需外移，避免单文件继续膨胀：
 
 - 页面组件沿用上游现有边界：`ManagementPages.tsx` 提供 MCP 管理，`ManagementExtra.tsx` 提供 Skills 与会话分组列表；会话维护操作在 `App.tsx::SessionMaintenance`，由会话页统一挂载。`screens/GrokScreen.tsx` 保留既有独立组件。
+- Skills 后端命令由 `commands.rs` 实现，统一注册到 `lib.rs` 的 `generate_handler!`。页面首次进入调用 `list_installed_skills` 只读本地目录，手动刷新调用 `refresh_skill_catalog` 拉取远端清单；安装、更新、启停、卸载、备份恢复与删除、仓库保存与删除共用这一入口。注册回归见 `skills_commands_are_registered_with_tauri`，检查全部 10 个命令均只注册一次。
 - 跨页面复用的展示原语放 `src/components/ui/manager-primitives.tsx`；默认设置放 `src/lib/default-settings.ts`。
 - 外移模块只能 `import type ... from "../App"`，**不得在运行时从 `App.tsx` 取值**，否则形成循环依赖。需要新类型的可见性时给 `App.tsx` 的类型加 `export`。
 - 后端 Tauri 命令按业务拆到 `apps/codex-plus-manager/src-tauri/src/commands/`（现为 `shared.rs`、`dream_skin.rs`、`provider_import.rs`）：`commands.rs` 用 `mod X; pub use X::*;` 汇总，`lib.rs` 的 `generate_handler!` 仍写 `commands::<命令名>`，不需要改。子模块内用 `use super::{...}` 取父模块项，需被父模块测试引用的私有项放宽为 `pub(super)`。
