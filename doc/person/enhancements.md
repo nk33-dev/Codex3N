@@ -12,7 +12,9 @@
 
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
-增强页与注入面板使用中文标题、说明；产品名、协议与命令保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。远程 Zed、Upstream 工作树适配、强制中文、原生菜单汉化、快速启动及增强模式选择已随上游撤下，原生 SSH、工作树和会话分享保持可用。旧语言标记只恢复本工具曾设置且用户没有随后更改的值，失败时保留标记供下次重试。
+增强页与注入面板使用中文标题、说明；产品名、协议与命令保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。远程 Zed、Upstream 工作树适配、原生菜单汉化、快速启动及增强模式选择已随上游撤下，原生 SSH、工作树和会话分享保持可用。
+
+`codexAppForceChineseLocale` 默认关闭，启用后由 `00-prelude.js::installCodexPlusForceChineseLocale` 写入原生 `localeOverride` 并补充语言包探测；关闭时只还原本工具写入且用户未另改的值。`81-capacity-auto-retry.js` 处理容量错误，`codexAppCapacityAutoRetry` 默认关闭，间隔和次数保存在注入页设置中；`82-boot-shell-recovery.js` 对长时间未挂载的启动壳执行有界刷新。`codexAppActivityOverlayRight` 默认关闭，`98-avatar-overlay-layout.js` 负责活动浮层右侧布局，均经同一 manifest 拼装入口安装。
 
 注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，因此按输入身份缓存（后端设置对象、`__CODEX_PLUS_DREAM_SKIN_THEME__` 全局），缓存命中时不再读 `localStorage` 也不再 `JSON.parse`；本地设置写入与皮肤原地更新处显式调用 `invalidateCodexPlusSettingsCache()`。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
 
