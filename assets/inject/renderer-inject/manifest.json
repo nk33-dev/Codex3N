@@ -11,6 +11,11 @@
       "lines": 177
     },
     {
+      "name": "02-performance.js",
+      "description": "按需性能采样、切换可见性与耗时汇总",
+      "lines": 0
+    },
+    {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
       "lines": 2284

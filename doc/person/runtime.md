@@ -87,6 +87,32 @@
 上游新增设置统一迁入 `provider-types.ts` 和 `lib/default-settings.ts`，`App.tsx` 保留归一化、校验与保存互斥；页面副标题由 `route-subtitle.ts` 提供。插件市场的翻译调用加入 `tools/i18n-verify.mjs` 的扫描清单。
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。
 
+## 会话切换性能诊断
+
+- `CODEX_PLUS_PERF_DIAGNOSTICS=1` 在通过管理器启动的 renderer 中自动开启一次采样，最多 60 秒；其他值关闭。重新注入会结束旧采样，同一页面生命周期不会自动重新计时。诊断开关不写入用户设置。
+- manifest 中的 `02-performance.js` 提供 `window.__codexPlusPerf.start(durationMs)`、`stop()`、`snapshot()`。停用时没有采样监听和定时器；重新开始会先结束上一轮。完成后通过原 `/diagnostics/log` 写一条 `performance.sample`。
+- 报告只保留版本、切换序号、状态、时长及计数。会话标识仅在采样内存中用于匹配目标，结束或切换后释放；不导出标题、正文、文件路径、请求参数、返回值或异常内容。RPC 名称和阶段名使用白名单。
+- `contentVisibleMs` 表示目标会话的新内容连续两帧可见，是 DOM 观测值，不是合成器首绘或完整历史加载完成时间。旧内容不能确认新会话；快速切换记为 `superseded`，隐藏记为 `hidden`，10 秒内不能确认记为 `unconfirmed`。无可识别消息节点、空会话和其他非侧栏导航可能没有有效样本。
+- RPC 耗时复用已安装的模型请求包装，覆盖线程列表、读取、恢复和分页等现有调用；从原生 `sendRequest` 调用到其 Promise 完成计时，不包括此前的供应商配置准备，也不单独区分宿主请求队列。未安装包装或没有相关调用时报告 `rpcTiming` 缺失，不能据此判定历史读取快。
+- `spans` 汇总 `scanLightweight`、`scanDeferred`、`layout`、`floatingScan` 及白名单 RPC 的次数、总时长、最大时长；`longTasks` 仅记录浏览器支持的长任务计数和时长。`missing` 明确列出无法获得的能力，包括请求队列分段和进程资源；没有注入阶段计时的基线不输出虚假的零耗时。
+
+### 三组对照
+
+使用 Node 22 或更高版本，在仓库根目录执行 `scripts/profile-codex-switching.mjs`。工具只附加指定环回 CDP 主页面、安装临时采样并导出 JSON，不自动点击、发消息、读取完整历史或重启应用。输出文件应放在仓库外。
+
+```powershell
+node scripts/profile-codex-switching.mjs --port 9229 --group optimized --category short --temperature warm --official-version 26.1007.2314.0 --output "$env:TEMP\codex-optimized-short-warm.json"
+node scripts/profile-codex-switching.mjs --compare "$env:TEMP\codex-official-short-warm.json" --compare "$env:TEMP\codex-baseline-short-warm.json" --compare "$env:TEMP\codex-optimized-short-warm.json"
+```
+
+- `group` 取 `official`、`baseline`、`optimized`；`category` 取 `short`、`long`、`tool-heavy`；`temperature` 取 `cold`、`warm`。官方版本参数填写实测的“关于”版本，仓库版本从管理器 `package.json` 读取，注入版本从页面读取。参数版本是操作者记录，不是自动探测结果。
+- 同一官方版本和同一批会话分别测试直接启动、现有项目版本、优化版本。直接启动前完全退出已有客户端，确认页面未残留项目注入；官方基线需要自行启用 CDP，工具不会更改应用启动配置。官方组发现项目注入、项目组缺少注入、调试地址非环回或主窗口不唯一时停止。
+- 每种会话类别分别测首次打开和热切换，每组至少 20 个确认样本。首次打开使用本次启动尚未加载的会话，热切换先各打开一次再往返。保持窗口可见，尽量匹配后台任务、插件、皮肤和 Git 状态，另外记录 CPU、内存和磁盘压力；60 秒不足时分批导出。
+- 对照输出可见耗时 p95、有效及未确认样本数、注入阶段总时长和长任务。样本少于 20 会标记 `enoughSamples=false`，官方版本不同会失败。不同类别、冷热状态及样本数的结果分开比较，注入总时长按同等采样时长和切换次数核对，不能直接比较不同工作量。
+- 目标是注入扫描与布局总耗时下降至少 50%，热切换 p95 不劣于官方基线；普通会话 p95 ≤500 ms 需要真实客户端验证。若官方基线仍有秒级延迟，以阶段测量定位宿主瓶颈，不把浏览器夹具结果作为宿主修复结论。
+
+验证：`renderer-performance.test.ts`、`floating-panel-interaction.test.ts`、`renderer-inject.test.ts` 和 `assets.rs` opt-in 单测。三组真实客户端采样需单独执行，Windows、macOS、Linux 各自记录，mock 不代替真机结果。
+
 ## 安装与自动更新
 
 macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换 `Codex++.app`，失败时回滚。DMG 中保留隐藏的 `codex-plus-legacy-shim` 兼容壳供旧双应用更新器迁移，首次启动归档旧管理器；helper 脱离 bundle 后重新签名并保留执行权限。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 包内只有统一 GUI，升级清理旧管理器文件，保留用户对桌面快捷方式的选择。

@@ -24,6 +24,10 @@
       '[data-testid="conversation-turn"]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
+      selectors.conversationViewScrollContainer,
+      selectors.conversationViewFooter,
+      "[data-codex-composer-root]",
+      '[role="menu"], [role="dialog"], [role="listbox"]',
       ".composer-footer",
       selectors.appHeader,
       selectors.archiveNav,
@@ -52,8 +56,9 @@
   function isChatContentMutation(mutation) {
     const target = mutation.target;
     if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], main .prose')) return false;
-    return !Array.from(mutation.addedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node)) &&
-      !Array.from(mutation.removedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node));
+    const boundaries = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [role="menu"], [role="dialog"], [role="listbox"]`;
+    return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) => node.nodeType === 1
+      && (node.matches?.(boundaries) || node.querySelector?.(boundaries)));
   }
 
   function shouldScheduleScan(mutations) {
@@ -78,16 +83,115 @@
     window.__codexSessionDeleteScanPending = false;
     clearTimeout(window.__codexSessionDeleteScanTimer);
     window.__codexSessionDeleteScanTimer = null;
-    scan();
+    if (document.hidden) return;
+    const work = codexPlusPendingScanWork;
+    codexPlusPendingScanWork = {};
+    scan(work);
+  }
+
+  const codexPlusAllScanWork = { sidebar: true, conversation: true, menus: true, shell: true, models: true };
+  let codexPlusPendingScanWork = {};
+  let codexPlusDeferredScanWork = {};
+  let codexPlusDeferredScanFrame = 0;
+  let codexPlusScanRevision = 0;
+  let codexPlusScanDisposed = false;
+
+  function scanWorkForMutations(mutations) {
+    if (!mutations) return { ...codexPlusAllScanWork };
+    const work = {};
+    const sidebar = `${selectors.sidebarThread}, aside.app-shell-left-panel, nav[data-app-navigation-rail], [data-codex-archive-page-row]`;
+    const conversation = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"]`;
+    for (const mutation of mutations) {
+      if (!shouldScheduleScan([mutation])) continue;
+      const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes].filter((node) => node.nodeType === 1 && !isExtensionUiNode(node));
+      let classified = false;
+      for (const node of nodes) {
+        const matches = (selector) => node.matches?.(selector) || node.closest?.(selector)
+          || (node !== mutation.target && node.querySelector?.(selector));
+        if (matches(sidebar)) { work.sidebar = true; classified = true; }
+        if (matches(conversation) || nodeOrAncestorLooksLikeCodexUserBubble(node)) {
+          work.conversation = work.models = true;
+          classified = true;
+        }
+        if (matches('[role="menu"], [role="dialog"], [role="listbox"]')) { work.menus = work.models = true; classified = true; }
+        if (matches(selectors.appHeader)) { work.shell = true; classified = true; }
+      }
+      // 宿主新结构暂时不能归类时，保留完整刷新兜底。
+      if (!classified) Object.assign(work, codexPlusAllScanWork);
+    }
+    return work;
   }
 
   function scheduleScan(mutations) {
-    window.__codexSessionDeleteLastMutations = mutations;
-    if (!shouldScheduleScan(mutations)) return;
+    if (codexPlusScanDisposed) return;
+    const work = scanWorkForMutations(mutations);
+    if (!Object.keys(work).length) return;
+    Object.assign(codexPlusPendingScanWork, work);
+    if (document.hidden) {
+      window.__codexSessionDeleteLastMutations = null;
+      return;
+    }
+    // 不长期持有卸载的消息子树；超过上限让模型适配走完整刷新。
+    const previous = window.__codexSessionDeleteLastMutations;
+    const combined = mutations && previous !== null ? [...(previous || []), ...mutations] : null;
+    window.__codexSessionDeleteLastMutations = combined?.length <= 80 ? combined : null;
     if (window.__codexSessionDeleteScanPending) return;
     window.__codexSessionDeleteScanPending = true;
     window.__codexSessionDeleteScanTimer = setTimeout(runScheduledScan, 200);
   }
+
+  function cancelDeferredScan() {
+    codexPlusScanRevision += 1;
+    if (codexPlusDeferredScanFrame) cancelAnimationFrame(codexPlusDeferredScanFrame);
+    codexPlusDeferredScanFrame = 0;
+    Object.assign(codexPlusPendingScanWork, codexPlusDeferredScanWork);
+    codexPlusDeferredScanWork = {};
+  }
+
+  function onCodexPlusScanNavigation(event) {
+    if (event.type === "keydown" && (event.isComposing || !["Enter", " "].includes(event.key))) return;
+    if (["click", "keydown"].includes(event.type) && !event.target?.closest?.(selectors.sidebarThread)) return;
+    cancelDeferredScan();
+    clearTimeout(window.__codexSessionDeleteScanTimer);
+    window.__codexSessionDeleteScanTimer = null;
+    window.__codexSessionDeleteScanPending = false;
+    conversationViewState.targetsDirty = true;
+    scheduleScan();
+  }
+
+  function onCodexPlusScanVisibility() {
+    if (document.hidden) {
+      cancelDeferredScan();
+      clearTimeout(window.__codexSessionDeleteScanTimer);
+      window.__codexSessionDeleteScanTimer = null;
+      window.__codexSessionDeleteScanPending = false;
+      if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+      conversationViewState.rafId = 0;
+    } else scheduleScan();
+  }
+
+  window.__codexPlusScanCleanup = () => {
+    codexPlusScanDisposed = true;
+    cancelDeferredScan();
+    clearTimeout(window.__codexSessionDeleteScanTimer);
+    window.__codexSessionDeleteScanTimer = null;
+    window.__codexSessionDeleteScanPending = false;
+    window.__codexSessionDeleteLastMutations = undefined;
+    window.__codexSessionDeleteObserver?.disconnect();
+    clearInterval(window.__codexPlusSidebarNavRetryTimer);
+    document.removeEventListener("visibilitychange", onCodexPlusScanVisibility);
+    document.removeEventListener("click", onCodexPlusScanNavigation, true);
+    document.removeEventListener("keydown", onCodexPlusScanNavigation, true);
+    window.removeEventListener("popstate", onCodexPlusScanNavigation);
+    window.removeEventListener("hashchange", onCodexPlusScanNavigation);
+    window.navigation?.removeEventListener?.("currententrychange", onCodexPlusScanNavigation);
+  };
+  document.addEventListener("visibilitychange", onCodexPlusScanVisibility);
+  document.addEventListener("click", onCodexPlusScanNavigation, true);
+  document.addEventListener("keydown", onCodexPlusScanNavigation, true);
+  window.addEventListener("popstate", onCodexPlusScanNavigation);
+  window.addEventListener("hashchange", onCodexPlusScanNavigation);
+  window.navigation?.addEventListener?.("currententrychange", onCodexPlusScanNavigation);
 
   /**
    * 侧边栏入口的启动补扫。
@@ -107,6 +211,7 @@
     clearInterval(window.__codexPlusSidebarNavRetryTimer);
     let attempts = 0;
     window.__codexPlusSidebarNavRetryTimer = setInterval(() => {
+      if (document.hidden || codexPlusScanDisposed) return;
       attempts += 1;
       const installed = document.getElementById(codexPlusSidebarNavId)
         || document.getElementById(codexPlusRailNavId);

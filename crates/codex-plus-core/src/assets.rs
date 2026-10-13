@@ -514,6 +514,10 @@ pub fn force_chinese_locale_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_force_chinese_locale, "locale": "zh-CN" })
 }
 
+fn performance_diagnostics_enabled(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
 pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettings) -> String {
     let helper_url = format!("http://127.0.0.1:{helper_port}");
     let instance_label = std::env::var("CODEX_PLUS_INSTANCE_LABEL")
@@ -529,6 +533,11 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         .and_then(|value| serde_json::to_string(value).ok())
         .map(|value| format!("window.__CODEX_PLUS_INSTANCE_LABEL__ = {value};\n"))
         .unwrap_or_default();
+    let perf_enabled = performance_diagnostics_enabled(
+        std::env::var("CODEX_PLUS_PERF_DIAGNOSTICS").ok().as_deref(),
+    );
+    let instance_identity =
+        format!("{instance_identity}window.__CODEX_PLUS_PERF_DIAGNOSTICS__ = {perf_enabled};\n");
     let image_overlay = image_overlay_config(helper_port, settings);
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
@@ -676,6 +685,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn performance_diagnostics_require_explicit_opt_in() {
+        for value in [None, Some(""), Some("0"), Some("true")] {
+            assert!(!performance_diagnostics_enabled(value));
+        }
+        assert!(performance_diagnostics_enabled(Some("1")));
+        let script = injection_script(57321);
+        let enabled = performance_diagnostics_enabled(
+            std::env::var("CODEX_PLUS_PERF_DIAGNOSTICS").ok().as_deref(),
+        );
+        assert!(script.contains(&format!(
+            "window.__CODEX_PLUS_PERF_DIAGNOSTICS__ = {enabled};"
+        )));
+    }
+
+    #[test]
     fn injection_does_not_project_retired_plugin_cache() {
         let script = injection_script_with_settings(57321, &BackendSettings::default());
         assert!(!script.contains("window.__CODEX_PLUS_PLUGIN_MARKETPLACES__ ="));
@@ -747,7 +771,7 @@ mod tests {
             "function conversationViewFindComposerEl()",
             "function installCodexServiceTierBadge()",
             "function scheduleConversationViewAlign(frames = 16)",
-            "function scanLightweight()",
+            "function scanLightweight(work = codexPlusAllScanWork)",
             "function createSessionCopyMenuItem(referenceItem, row)",
             "function scheduleSidebarNavStartupRetry()",
             "'[PasteFix]'",

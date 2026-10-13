@@ -794,7 +794,13 @@
         nextParams,
         options
       );
-      const result = await originalSendRequest(method, nextParams, options);
+      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true);
+      let result;
+      try {
+        result = await originalSendRequest(method, nextParams, options);
+      } finally {
+        finishTiming?.();
+      }
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {
@@ -993,7 +999,13 @@
         nextParams,
         options
       );
-      const result = await originalSendRequest.call(client, method, nextParams, options);
+      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true);
+      let result;
+      try {
+        result = await originalSendRequest.call(client, method, nextParams, options);
+      } finally {
+        finishTiming?.();
+      }
       const threadState = codexThreadModelRequestState(requestMethod, nextParams, result);
       if (modelContextRefresh !== false && threadState.threadId && threadState.model
           && ["thread/start", "thread/resume", "turn/start"].includes(threadState.requestMethod)) {

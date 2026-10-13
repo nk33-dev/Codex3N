@@ -132,7 +132,7 @@ function runtime(open = false) {
   const time = clock();
   const window = Object.assign(new Events(), time);
   const document = Object.assign(new Events(), {
-    visibilityState: "visible", activeElement: null,
+    visibilityState: "visible", hidden: false, activeElement: null,
     querySelectorAll: () => [], getElementById: () => null,
   });
   const handle = new ElementStub();
@@ -188,7 +188,7 @@ function runtime(open = false) {
   const geometryNames = ["defaultPosition", "clampPosition", "persistPosition", "setPosition", "dockRightKeepHeight", "snapRightIfNear", "shellLayout", "panelDragPosition", "applyPosition"];
   const interactionNames = ["createPointerFrame", "onFabPointerDown", "dragTargetBlocked", "beginDrag", "installPanelDrag"];
   const hostNames = ["deferRender", "flushDeferredRender"];
-  const lifecycleNames = ["scan", "scheduleScan", "stopRuntime"];
+  const lifecycleNames = ["scan", "scanFloatingPanelContent", "scheduleScan", "onFloatingPanelVisibility", "stopRuntime"];
   const source = constants + [
     ...geometryNames.map(name => extract(geometry, name)),
     ...interactionNames.map(name => extract(interaction, name)),
@@ -238,6 +238,26 @@ test("同帧高频坐标只更新最后一次，下一帧仍能继续调度", ()
   time.tick();
   assert.equal(time.requests(), 2);
   assert.deepEqual(updates, [{ x: 100, y: 200 }, { x: 101, y: 202 }]);
+});
+
+test("悬浮面板隐藏时取消扫描，恢复后只补一次，停止后不再恢复", () => {
+  const app = runtime();
+  app.api.scheduleScan();
+  assert.equal(app.time.timers.size, 1);
+  app.document.hidden = true;
+  app.api.onFloatingPanelVisibility();
+  assert.equal(app.time.timers.size, 0);
+  app.api.scheduleScan();
+  app.api.scan();
+  assert.equal(app.time.timers.size, 0);
+  assert.equal(app.calls.scans, 0);
+  app.document.hidden = false;
+  app.api.onFloatingPanelVisibility();
+  app.api.onFloatingPanelVisibility();
+  assert.equal(app.time.timers.size, 1);
+  app.api.stopRuntime();
+  app.api.onFloatingPanelVisibility();
+  assert.equal(app.time.timers.size, 0);
 });
 
 test("同步刷新消费最后坐标，原动画帧和重复刷新不会二次更新", () => {

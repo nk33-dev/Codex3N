@@ -428,6 +428,9 @@
     composerEl: null,
     rafId: 0,
     settleFramesLeft: 0,
+    stableFrames: 0,
+    lastGeometry: null,
+    targetsDirty: true,
     mo: null,
     ro: null,
     pollId: 0,
@@ -547,8 +550,8 @@
    *
    * 候选链刻意从「最精确」排到「最宽松」：
    * 所有候选都必须在唯一的会话滚动区内，并排除布局祖先：
-   *   1. 旧版类名全等（老版本 Codex 上仍然最准）；
-   *   2. Codex 自己的 data-* 锚点（当前版本）；
+   *   1. Codex 自己的 data-* 锚点（当前版本）；
+   *   2. 旧版类名全等；
    *   3. 结构判定（滚动容器内、居中满宽、带 thread 宽度工具类）；
    *   4. #2085 报告里提到的兜底：两处类名都没命中时，按 CSS 变量反查宿主节点。
    *
@@ -559,10 +562,10 @@
     if (!scroller) return null;
     const accept = (el) => conversationViewSafeWidthTarget(el, scroller) && !conversationViewIsInsideFooter(el)
       && !el.querySelector?.(conversationViewFooterSelector);
-    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
-    if (legacy) return legacy;
     const anchored = Array.from(scroller.querySelectorAll(conversationViewContentAnchorSelector)).find(accept);
     if (anchored) return anchored;
+    const legacy = conversationViewFindByClasses(conversationViewContentClasses, scroller, accept);
+    if (legacy) return legacy;
     const structural = conversationViewCollectThreadWidthBoxes(scroller)
       // 页脚包裹层（data-thread-scroll-footer）也带同样的宽度工具类，必须排掉。
       .find(accept);
@@ -955,6 +958,12 @@
   }
 
   function conversationViewResolveTargets() {
+    const content = conversationViewState.contentEl;
+    if (!conversationViewState.targetsDirty
+        && (!content || content.closest?.(conversationViewScrollContainerSelector))
+        && [content, conversationViewState.composerEl].every((node) =>
+          !node || (node.isConnected && !node.closest?.(conversationViewPaneBoundarySelector)))) return;
+    conversationViewState.targetsDirty = false;
     for (const [key, next] of [
       ["contentEl", conversationViewFindContentEl()],
       ["composerEl", conversationViewFindComposerEl()],
@@ -1007,9 +1016,9 @@
       conversationViewResetOwnOffset(el);
     });
     const htmlCenter = conversationViewHtmlCenter();
-    targets.forEach((el) => {
-      const nativeRect = el.getBoundingClientRect();
-      const bounds = conversationViewSessionRectFor(el);
+    const geometry = targets.map((el) => ({ nativeRect: el.getBoundingClientRect(), bounds: conversationViewSessionRectFor(el) }));
+    geometry.forEach(({ nativeRect, bounds }, index) => {
+      const el = targets[index];
       if (!conversationViewHasRoomForHtmlCenterAt(nativeRect, bounds, htmlCenter)) return;
       const targetLeft = htmlCenter - nativeRect.width / 2;
       const delta = targetLeft - nativeRect.left;
@@ -1018,6 +1027,8 @@
         if (el.style.left !== nextLeft) el.style.left = nextLeft;
       }
     });
+    return JSON.stringify([htmlCenter, effectiveWidths, geometry.map(({ nativeRect, bounds }) =>
+      [nativeRect.left, nativeRect.width, bounds?.left, bounds?.width])]);
   }
 
   /**
@@ -1046,13 +1057,21 @@
   }
 
   function scheduleConversationViewAlign(frames = 16) {
-    conversationViewState.settleFramesLeft = Math.max(conversationViewState.settleFramesLeft, frames);
-    if (conversationViewState.rafId) return;
+    if (document.hidden || !codexPlusSettings().conversationView || conversationViewState.rafId) return;
+    conversationViewState.settleFramesLeft = Math.min(16, Math.max(1, frames));
+    conversationViewState.stableFrames = 0;
+    conversationViewState.lastGeometry = null;
     const tick = () => {
       conversationViewState.rafId = 0;
-      conversationViewAlignNow();
+      if (document.hidden || !codexPlusSettings().conversationView) return;
+      const finishTiming = window.__codexPlusPerf?.begin("layout");
+      let geometry;
+      try { geometry = conversationViewAlignNow(); } finally { finishTiming?.(); }
+      conversationViewState.stableFrames = geometry && geometry === conversationViewState.lastGeometry
+        ? conversationViewState.stableFrames + 1 : 0;
+      conversationViewState.lastGeometry = geometry;
       conversationViewState.settleFramesLeft -= 1;
-      if (conversationViewState.settleFramesLeft > 0) {
+      if (conversationViewState.settleFramesLeft > 0 && conversationViewState.stableFrames < 2) {
         conversationViewState.rafId = requestAnimationFrame(tick);
       }
     };
@@ -1070,6 +1089,10 @@
     conversationViewState.ro = null;
     conversationViewState.moObserved = false;
     conversationViewState.runtimeStarted = false;
+    conversationViewState.targetsDirty = true;
+    conversationViewState.stableFrames = 0;
+    conversationViewState.lastGeometry = null;
+    document.removeEventListener("transitionend", conversationViewTransitionEnd, true);
     conversationViewState.observed = new WeakSet();
     conversationViewState.elements.forEach(conversationViewRestoreElement);
     conversationViewState.elements.clear();

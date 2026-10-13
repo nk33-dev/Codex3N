@@ -1,3 +1,12 @@
+  window.__codexPlusPerf = createCodexPlusPerformanceDiagnostics({
+    repositoryVersion: codexPlusVersion,
+    officialVersion: () => codexPlusBackendSettings.codexAppVersion,
+    publish: (report) => { void postJson("/diagnostics/log", { event: "performance.sample", detail: report }).catch(() => {}); },
+  });
+  if (window.__CODEX_PLUS_PERF_DIAGNOSTICS__ === true && !window.__codexPlusPerfAutoStarted) {
+    window.__codexPlusPerfAutoStarted = true;
+    window.__codexPlusPerf.start();
+  }
   runScanStep(removeLegacyRelayApiKeyBadges);
   window.__codexPlusReloadApiKey = reloadCodexApiKey;
   /**
