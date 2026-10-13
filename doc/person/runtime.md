@@ -93,6 +93,10 @@ macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/mac
 
 多开入口为 `commands.rs::launch_codex_multi_instance`，每个实例隔离 `CODEX_HOME`、SQLite、Electron 用户目录、调试端口和 helper 端口，独立 worker 仍调用同一启动器库。Chat Completions 和搜索历史兼容模式写入实例自己的代理端口；聚合与模型路由配置暂不支持多开。主应用的健康状态由 `runtime_health.rs` 汇总。
 
+实例清单保存在隔离目录的 `instance.json`，`list_codex_multi_instances`、`stop_codex_multi_instance` 与 `restart_codex_multi_instance` 统一注册到 `lib.rs`。多开页的 3 秒刷新复用 `use-manager-lifecycle.ts` 的可见性队列，隐藏或离页后暂停，迟到响应不提交；启动、重启和停止操作完成后按需补读。Windows 清单额外保存 `workerBirthId`，停止 worker 前核对 PID 和创建标识，旧清单缺少标识时不结束 worker。创建清单失败时通过仍持有的 Child 句柄清理子进程。
+
+MCP 保存、删除和导入后通过 `syncLiveContextEntries` 将启用状态同步到 live 配置，供应商总开关与现有保存互斥保持不变。管理页高度与滚动采用上游 `management-screen` 布局，会话维护仍在 `SessionMaintenance` 单次挂载。验证见管理器前端回归、`manager-window-lifecycle.test.ts` 及多开清单 Rust 单测。
+
 Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。签名与独立 helper 启动回归使用本机 clang 编译的普通 Mach-O，验证重新签名后的执行与源 app 完整性。
 
 macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-plus` 与 `codex-plus-legacy-shim` 通用二进制，名称从实际 DMG 派生，并通过解压完整性检查。发布附件补跑从 `personal` 的工作流执行，源码仍检出目标标签，保留标签提交。
