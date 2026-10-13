@@ -1,3 +1,15 @@
+export const AUTO_COMPACT_PRESETS = ["50%", "60%", "70%", "75%", "80%", "85%", "90%", "95%"];
+
+/** 保留空值和已有自定义比例，切换控件不改写旧配置。 */
+export function autoCompactOptions(current: string): string[] {
+  const normalized = normalizeAutoCompactPercent(current);
+  const options = ["", ...AUTO_COMPACT_PRESETS];
+  if (!options.includes(normalized)) {
+    options.push(normalized);
+  }
+  return options;
+}
+
 /** 校验用户输入的自动压缩比例；空值表示沿用 Codex 默认的自动压缩行为，不落盘。 */
 export function isValidAutoCompactPercent(value: string): boolean {
   const trimmed = value.trim();

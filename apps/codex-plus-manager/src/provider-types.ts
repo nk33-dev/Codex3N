@@ -19,6 +19,7 @@ export type RelayAggregateConfig = {
   strategy: RelayAggregateStrategy;
   members: RelayAggregateMember[];
   routes?: RelayAggregateRoute[];
+  modelAggregationEnabled?: boolean;
 };
 
 export type RelayProfile = {
@@ -60,10 +61,6 @@ export type RelayProfile = {
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];
   aggregate?: RelayAggregateConfig | null;
-  rateLimitCooldownEnabled: boolean;
-  channelQueueEnabled: boolean;
-  channelRequestsPerMinute: number;
-  cooldownErrorStatuses: number[];
 };
 
 export type AggregateRelayMember = { relayId: string; weight: number };
@@ -71,6 +68,7 @@ export type AggregateRelayProfile = {
   id: string;
   name: string;
   sessionProvider?: RelaySessionProvider;
+  modelAggregationEnabled?: boolean;
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
@@ -106,6 +104,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppSessionShare: boolean;
   codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";
   codexAppPasteFix: boolean;
+  codexAppForceChineseLocale: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppThreadIdBadge: boolean;
   codexAppConversationView: boolean;
@@ -113,6 +112,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppNativeMenuPlacement: boolean;
   codexAppServiceTierControls: boolean;
   codexAppPetRealMouseLook: boolean;
+  codexAppActivityOverlayRight: boolean;
+  codexAppCapacityAutoRetry: boolean;
   codexAppStepwiseEnabled: boolean;
   codexAppAnswerOutlineEnabled: boolean;
   codexAppStepwiseDirectSend: boolean;

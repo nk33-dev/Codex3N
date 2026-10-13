@@ -5,6 +5,8 @@
 - 首次将本机 `config.toml` / `auth.json` 导入为普通可选的“系统默认”供应商，不重复覆盖用户配置。
 - 自定义供应商及配置导入入口在管理器供应商页。
 - 普通供应商与聚合配置分别展示，新建入口可按账号、模型厂商、第三方平台和自定义配置搜索。纯 API 模式同时保存 `auth.json` API 登录态与 provider 的 `experimental_bearer_token`，供新版 Codex 显式鉴权；关闭接管后两处都有 Key 的配置仍按窄路径规则拒绝轻量切换，需使用整份供应商切换。
+- 供应商列表分为直连、协议转换、故障转移和模型聚合。`aggregate.modelAggregationEnabled` 与后端聚合镜像同名字段区分两类，默认关闭；新建时确定类型。模型聚合固定绑定成员，不使用轮转策略与通配符路由。
+- 聚合成员支持普通 API 与官方登录账号。`official_login.rs` 从 `authContents` 解析 OAuth 凭据，优先采用同账号 live 登录态，临期刷新并写回快照；401 强制刷新后仅重试一次。命名 Key 仍由原归一化入口处理，接入方式三选一与 Key 列表共用同一编辑区。
 - `providerSyncEnabled` 和 `relayProfilesEnabled` 默认关闭；首次导入不应自动启用代理或接管当前配置。
 - 供应商切换从读取当前配置快照开始即锁定操作，完成或失败后释放，避免重复点击排队执行旧切换请求。
 - 设置保存与供应商切换共用互斥检查，重复保存不会排队；保存失败保留草稿，保存/切换的旧响应不覆盖期间产生的新编辑。供应商详情在保存或切换期间禁用编辑、返回和再次操作，销毁后的保存结果不再触发旧页面回调。
@@ -39,6 +41,8 @@
 供应商级 `webSearchHistoryCompat` 默认关闭，仅作用于非聚合 Responses 供应商；官方供应商须启用混入 API。开启后通过本地协议代理补齐压缩历史所需的搜索工具声明。原生压缩保留 checkpoint，认证失败、限流、服务端错误与截断流直接保留失败结果；Chat 转换无法执行原生搜索时明确拒绝。
 
 通用配置合并在 `relay_config.rs::merge_common_config_into_config` 校验 MCP 条目的 `command/url`。残缺条目先用供应商原配置补缺，仍无传输定义则移除并记诊断；现有连接及新环境变量须保留。上游已撤下本地插件市场缓存释放与自动注册，配置应用保持用户自己配置的插件条目。相关用例见 `tests/relay_config.rs`。
+
+上游渠道保护已移除：旧 `rateLimitCooldownEnabled`、`channelQueueEnabled`、`channelRequestsPerMinute`、`cooldownErrorStatuses` 不再参与排队、冷却或重试。协议代理保留个人版环回直连与请求体复用；官方 OAuth 测试端点也按实际 URL 判定直连，公网端点仍使用系统代理。
 
 切换、导入或升级迁移时同时检查扁平字段和 `tools.codex`，防止旧镜像覆盖新配置；不能仅凭界面显示“系统默认”就认定实际配置已应用。
 

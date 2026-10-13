@@ -100,3 +100,43 @@ test("监听注册尚未完成就销毁时也能清理监听且不发请求", as
   assert.equal(h.events.size, 0);
   assert.equal(h.pendingCalls(), 0);
 });
+
+test("多开页复用可见性队列，慢请求和销毁后的响应不继续调度", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const effects: Array<() => (() => void) | void> = [];
+  let calls = 0;
+  let current!: () => boolean;
+  let finish!: () => void;
+  const useLifecycle = new Function("useEffect", "useRef", "useState", "listen", "getCurrentWindow", "createVisibleRefresh", "document", "window",
+    `${compiled}\nreturn useManagerLifecycle;`,
+  )(
+    (effect: () => (() => void) | void) => effects.push(effect),
+    (value: unknown) => ({ current: value }),
+    () => [true, () => {}],
+    async () => () => {},
+    () => ({ isVisible: async () => true, isMinimized: async () => false }),
+    createVisibleRefresh, new EventTarget(), new EventTarget(),
+  );
+  useLifecycle({
+    ready: true, weixinActive: false, multiLaunchActive: true,
+    refreshPending: async () => {},
+    refreshWeixin: async () => {},
+    refreshMultiLaunch: (isCurrent: () => boolean) => {
+      calls++;
+      current = isCurrent;
+      return new Promise<void>((resolve) => { finish = resolve; });
+    },
+    onError: (error: unknown) => assert.fail(String(error)),
+  });
+  const dispose = effects[2]() as () => void;
+  assert.equal(calls, 1);
+  t.mock.timers.tick(12_000);
+  assert.equal(calls, 1);
+  assert.equal(current(), true);
+  dispose();
+  assert.equal(current(), false);
+  finish();
+  await setImmediate();
+  t.mock.timers.tick(12_000);
+  assert.equal(calls, 1);
+});
