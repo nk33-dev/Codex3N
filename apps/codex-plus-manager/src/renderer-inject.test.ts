@@ -676,7 +676,7 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
 
   it("rewrites official usage status at the cache boundary instead of scanning alerts", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const scanStart = renderer.indexOf("  function scanLightweight()");
+    const scanStart = renderer.indexOf("  function scanLightweight(");
     const scanEnd = renderer.indexOf("  function officialUsagePolicy()", scanStart);
     assert.ok(scanStart >= 0 && scanEnd > scanStart);
     const scan = renderer.slice(scanStart, scanEnd);

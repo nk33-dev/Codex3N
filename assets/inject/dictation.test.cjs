@@ -78,7 +78,7 @@ function fixture() {
   const loaderSource = backendLoaderSource.slice(loaderStart, loaderEnd + "\n  }\n".length);
   const scanSource = readFileSync(`${__dirname}/renderer-inject/95-conversation-view.js`, "utf8");
   const scanStart = scanSource.indexOf("  function runScanStep(step)");
-  const scanEnd = scanSource.indexOf("  function scan()", scanStart);
+  const scanEnd = scanSource.indexOf("  function scan(", scanStart);
   assert.ok(scanStart >= 0 && scanEnd > scanStart);
   for (const testMode of [false, true]) {
     let installations = 0;

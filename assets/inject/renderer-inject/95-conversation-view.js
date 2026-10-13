@@ -1,7 +1,11 @@
   function ensureConversationViewRuntime() {
     if (conversationViewState.runtimeStarted) return;
     conversationViewState.ro = conversationViewState.ro || new ResizeObserver(() => scheduleConversationViewAlign());
-    conversationViewState.mo = conversationViewState.mo || new MutationObserver(() => scheduleConversationViewAlign());
+    conversationViewState.mo = conversationViewState.mo || new MutationObserver((records) => {
+      if (!conversationViewMutationRelevant(records)) return;
+      conversationViewState.targetsDirty = true;
+      scheduleConversationViewAlign();
+    });
     if (document.body && !conversationViewState.moObserved) {
       conversationViewState.mo.observe(document.body, {
         childList: true,
@@ -11,7 +15,35 @@
       });
       conversationViewState.moObserved = true;
     }
+    document.addEventListener("transitionend", conversationViewTransitionEnd, true);
     conversationViewState.runtimeStarted = true;
+  }
+
+  function conversationViewMutationRelevant(records) {
+    const anchors = `${conversationViewScrollContainerSelector}, ${conversationViewContentAnchorSelector}, ${conversationViewFooterSelector}, [data-codex-composer-root], ${conversationViewPaneBoundarySelector}`;
+    const targets = [conversationViewState.contentEl, conversationViewState.composerEl].filter(Boolean);
+    if (targets.some((node) => !node.isConnected)) return true;
+    return records.some((record) => {
+      const node = record.target;
+      if (isExtensionUiNode(node)) return false;
+      if (record.type === "attributes") {
+        return node?.matches?.(anchors) || node?.querySelector?.(conversationViewScrollContainerSelector)
+          || targets.some((target) => node === target || node?.contains?.(target));
+      }
+      const changed = [...record.addedNodes, ...record.removedNodes].filter((item) => item.nodeType === 1 && !isExtensionUiNode(item));
+      if (!targets.length && node?.closest?.(conversationViewScrollContainerSelector)) return true;
+      return changed.some((item) => item.matches?.(anchors) || item.querySelector?.(anchors)
+        || conversationViewLooksLikeThreadWidthBox(item)
+        || targets.some((target) => item.contains?.(target)));
+    });
+  }
+
+  function conversationViewTransitionEnd(event) {
+    const target = event.target;
+    if (target?.matches?.(conversationViewPaneBoundarySelector)
+        || [conversationViewState.contentEl, conversationViewState.composerEl].some((node) => node && target?.contains?.(node))) {
+      scheduleConversationViewAlign();
+    }
   }
 
   function refreshConversationView() {
@@ -184,31 +216,38 @@
     startOfficialUsageWindowBlock();
   }
 
-  function scanLightweight() {
+  function scanLightweight(work = codexPlusAllScanWork) {
     installStyle();
-    installCodexServiceTierDispatcherPatch();
-    installCodexAppServerClientPrototypePatch();
-    installCodexRemoteSessionRecoveryListener();
-    if (window.__codexPlusRemoteSessionRecoveryDispatcher) {
-      installCodexRemoteSessionDispatcherSubscription(
-        window.__codexPlusRemoteSessionRecoveryDispatcher,
-        "existing-renderer"
-      );
+    if (work.shell || work.models) {
+      installCodexServiceTierDispatcherPatch();
+      installCodexAppServerClientPrototypePatch();
+      installCodexRemoteSessionRecoveryListener();
+      if (window.__codexPlusRemoteSessionRecoveryDispatcher) {
+        installCodexRemoteSessionDispatcherSubscription(
+          window.__codexPlusRemoteSessionRecoveryDispatcher,
+          "existing-renderer"
+        );
+      }
     }
-    installCodexPlusNavigationEntries();
-    // 拓展注册的图标栏入口与内置入口走同一条刷新路径：rail 渲染晚于注入，
-    // 所以要每轮扫描都补一次（内部靠 id 幂等，不会重复插入）。
-    refreshCodexPlusRailNavigation();
-    installCodexPlusPageNavigationCloseHandler();
-    scheduleBackendHeartbeat();
-    installDeleteButtonEventDelegation();
-    updateThreadScrollHandlers();
-    installThreadScrollProgrammaticScrollGuard();
-    installThreadScrollNavigationCapture();
-    installThreadScrollUserIntentCapture();
-    installThreadScrollRouteHooks();
-    scheduleThreadScrollSync(true);
-    refreshCodexServiceTierControls();
+    if (work.shell || work.sidebar) {
+      installCodexPlusNavigationEntries();
+      // rail 可能晚于注入挂载；安装函数按节点 ID 保持幂等。
+      refreshCodexPlusRailNavigation();
+      installCodexPlusPageNavigationCloseHandler();
+      scheduleBackendHeartbeat();
+      installDeleteButtonEventDelegation();
+    }
+    if (work.shell || work.conversation) {
+      updateThreadScrollHandlers();
+      installThreadScrollProgrammaticScrollGuard();
+      installThreadScrollNavigationCapture();
+      installThreadScrollUserIntentCapture();
+      installThreadScrollRouteHooks();
+      scheduleThreadScrollSync(true);
+    }
+    if (work.shell || work.conversation || work.menus) {
+      refreshCodexServiceTierControls();
+    }
   }
 
   function officialUsagePolicy() {
@@ -873,37 +912,46 @@
     });
   }
 
-  function scanDeferred() {
-    if (codexPluginMarketplacePatchEnabled()) {
-      const pluginUnlockStrategy = codexPluginUnlockStrategy();
-      const settings = codexPlusSettings();
-      logCodexPluginUnlockStrategy(pluginUnlockStrategy);
-      if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
-        const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
-        installPluginBuildFlavorFilterPatch();
-        if (marketplaceRequestPatchStrategy === "bridge") {
-          installPluginMarketplaceBridgePatch();
-        } else if (marketplaceRequestPatchStrategy === "client") {
-          installPluginMarketplaceRequestPatch();
-        } else {
-          installPluginMarketplaceWindowEventPatchOnly();
-          installPluginMarketplaceBridgePatch();
-          installPluginMarketplaceRequestPatch();
+  function scanDeferred(work = codexPlusAllScanWork) {
+    if (work.shell || work.menus) {
+      if (codexPluginMarketplacePatchEnabled()) {
+        const pluginUnlockStrategy = codexPluginUnlockStrategy();
+        const settings = codexPlusSettings();
+        logCodexPluginUnlockStrategy(pluginUnlockStrategy);
+        if ((pluginUnlockStrategy === "modern" || pluginUnlockStrategy === "unknown") && settings.pluginMarketplaceUnlock) {
+          const marketplaceRequestPatchStrategy = codexPluginMarketplaceRequestPatchStrategy();
+          installPluginBuildFlavorFilterPatch();
+          if (marketplaceRequestPatchStrategy === "bridge") {
+            installPluginMarketplaceBridgePatch();
+          } else if (marketplaceRequestPatchStrategy === "client") {
+            installPluginMarketplaceRequestPatch();
+          } else {
+            installPluginMarketplaceWindowEventPatchOnly();
+            installPluginMarketplaceBridgePatch();
+            installPluginMarketplaceRequestPatch();
+          }
         }
+      } else {
+        clearPluginPatchArtifacts();
       }
-    } else {
-      clearPluginPatchArtifacts();
     }
-    if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
-    refreshDreamSkin();
-    refreshThreadIdBadges();
-    sessionRows().forEach(tryAttachButton);
-    updateDeleteButtonOffsets();
-    archivedPageRows().forEach(attachArchivedPageDeleteButton);
-    refreshConversationView();
-    installCodexServiceTierBadge();
-    scheduleThreadScrollSync();
-    refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+    if (work.shell || work.conversation) {
+      if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+      refreshDreamSkin();
+    }
+    if (work.shell || work.sidebar) {
+      refreshThreadIdBadges();
+      sessionRows().forEach(tryAttachButton);
+      updateDeleteButtonOffsets();
+      archivedPageRows().forEach(attachArchivedPageDeleteButton);
+    }
+    if (work.shell || work.conversation) {
+      refreshConversationView();
+      installCodexServiceTierBadge();
+      scheduleThreadScrollSync();
+    }
+    if (work.models) refreshCodexModelWhitelistFromScan(window.__codexSessionDeleteLastMutations);
+    window.__codexSessionDeleteLastMutations = undefined;
   }
 
   function runScanStep(step) {
@@ -915,8 +963,32 @@
     }
   }
 
-  function scan() {
-    void installDictationSupportPatch();
-    runScanStep(scanLightweight);
-    requestAnimationFrame(() => runScanStep(scanDeferred));
+  function scan(work = codexPlusAllScanWork) {
+    if (codexPlusScanDisposed) return;
+    if (document.hidden) {
+      Object.assign(codexPlusPendingScanWork, work);
+      return;
+    }
+    if (work.shell || work.conversation) void installDictationSupportPatch();
+    const finishLightweight = window.__codexPlusPerf?.begin("scanLightweight");
+    runScanStep(() => scanLightweight(work));
+    finishLightweight?.();
+    Object.assign(codexPlusDeferredScanWork, work);
+    if (codexPlusDeferredScanFrame) return;
+    const revision = codexPlusScanRevision;
+    const route = window.location.href;
+    codexPlusDeferredScanFrame = requestAnimationFrame(() => {
+      if (codexPlusScanDisposed || revision !== codexPlusScanRevision) return;
+      codexPlusDeferredScanFrame = 0;
+      if (document.hidden || route !== window.location.href) {
+        cancelDeferredScan();
+        if (!document.hidden) scheduleScan();
+        return;
+      }
+      const pending = codexPlusDeferredScanWork;
+      codexPlusDeferredScanWork = {};
+      const finishDeferred = window.__codexPlusPerf?.begin("scanDeferred");
+      runScanStep(() => scanDeferred(pending));
+      finishDeferred?.();
+    });
   }

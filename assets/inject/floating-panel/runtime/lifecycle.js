@@ -1,9 +1,19 @@
 /* Floating-panel runtime lifecycle and feature coordination. */
 
   function scan(generation = state.runtimeGeneration, timerId = 0) {
+    const finishTiming = window.__codexPlusPerf?.begin("floatingScan");
+    try {
+      scanFloatingPanelContent(generation, timerId);
+    } finally {
+      finishTiming?.();
+    }
+  }
+
+  function scanFloatingPanelContent(generation, timerId) {
     if (!isCurrentRuntime(generation)) return;
     if (timerId && state.timer !== timerId) return;
     if (timerId) state.timer = 0;
+    if (document.hidden) return;
     if (state.drag || state.resizeDrag) {
       scheduleScan();
       return;
@@ -144,6 +154,8 @@
   function scheduleScan(delay = SCAN_DELAY_MS) {
     if (!isCurrentRuntime()) return;
     if (state.timer) window.clearTimeout(state.timer);
+    state.timer = 0;
+    if (document.hidden) return;
     const generation = state.runtimeGeneration;
     const timer = window.setTimeout(() => scan(generation, timer), delay);
     state.timer = timer;
@@ -169,6 +181,14 @@
       characterData: true,
     });
     return true;
+  }
+
+  function onFloatingPanelVisibility() {
+    if (!isCurrentRuntime()) return;
+    if (document.hidden) {
+      if (state.timer) window.clearTimeout(state.timer);
+      state.timer = 0;
+    } else scheduleScan(0);
   }
 
   // Stopping invalidates every generation, removes observers, and leaves no page-owned runtime behind.
@@ -224,6 +244,7 @@
     window.removeEventListener("resize", onResize);
     state.observer?.disconnect();
     state.observer = null;
+    document.removeEventListener("visibilitychange", onFloatingPanelVisibility);
     state.themeObserver?.disconnect();
     state.themeObserver = null;
     state.typographyObserver?.disconnect();
@@ -282,6 +303,7 @@
       state.runtimeActive = true;
     }
     const generation = state.runtimeGeneration;
+    document.addEventListener("visibilitychange", onFloatingPanelVisibility);
     state.activeTab = normalizeActiveTab();
     installStyle();
     installFloat();
