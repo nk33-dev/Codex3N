@@ -9,8 +9,10 @@ const MANAGER_VISIBILITY_EVENT = "manager-visibility-changed";
 type ManagerLifecycleOptions = {
   ready: boolean;
   weixinActive: boolean;
+  multiLaunchActive?: boolean;
   refreshPending: () => Promise<unknown>;
   refreshWeixin: (isCurrent: () => boolean) => Promise<unknown>;
+  refreshMultiLaunch?: (isCurrent: () => boolean) => Promise<unknown>;
   onError: (error: unknown) => void;
 };
 
@@ -100,4 +102,14 @@ export function useManagerLifecycle(options: ManagerLifecycleOptions) {
     status.setVisible(options.ready && options.weixinActive && visible);
     return () => status.dispose();
   }, [options.ready, options.weixinActive, visible]);
+
+  useEffect(() => {
+    const instances = createVisibleRefresh({
+      refresh: (isCurrent) => latest.current.refreshMultiLaunch?.(isCurrent) ?? Promise.resolve(),
+      intervalMs: 3_000,
+      onError: (error) => latest.current.onError(error),
+    });
+    instances.setVisible(options.ready && options.multiLaunchActive === true && visible);
+    return () => instances.dispose();
+  }, [options.ready, options.multiLaunchActive, visible]);
 }

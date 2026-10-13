@@ -10,6 +10,7 @@
 - 上游发现的模型排在手工列表之后，并按大小写不敏感去重：手工项是覆盖层，排在前面才能让窗口查表先落在用户写的 slug 上，也避免 `DeepSeek-V4` 与 `deepseek-v4` 同时进目录把窗口归属拆成两份。
 - 管理器模型行支持拖拽和键盘排序；排序同时移动行的原模型名，并关闭按行索引定位的元数据导入面板。上下文窗口和自动压缩输入的 K/M 单位通过 `model-metadata.ts` 的 `normalizeTokenCountInput` 展开。
 - 自动压缩比例是「留空 = 不写」：空值表示沿用 Codex 自身的默认压缩行为，不写 `auto_compact_token_limit`，也不由导入回填或失焦补 90%。窗口列是同语义（空 = 用 Codex 默认长度）。只有用户显式填了百分比才落盘。
+- 自动压缩下拉保留空值、预设比例及旧配置中的自定义比例。模型行新增思考等级与默认档，`model-reasoning.ts` 写入同一份 `modelMetadata`；清空档位恢复内置声明，不影响 Fast、窗口或其他元数据。
 - 用户外部 `model_catalog_json` 与每模型覆盖冲突时，保留外部目录并应用顶层上下文、自动压缩兜底值；每模型覆盖在该目录下不可用。
 - 每模型 Fast 可显式声明支持、禁用或继承。私有字段 `codex_plus_fast_support` 保存在供应商元数据中，生成原生目录时转换为 `service_tiers` 与 `additional_speed_tiers`，保留其它档位；注入响应通过 `prioritySupportOverride` 统一界面和请求判断，窗口覆盖仍按原优先级应用。
 - 外部目录路径含未展开变量或指向不存在的文件时，`relay_config.rs` 移除失效指针并走托管目录生成；相对路径按 `CODEX_HOME` 解析，存在的外部目录继续保留。
@@ -49,3 +50,5 @@
 模型请求通过 `modelResponseHostId` 同时核对参数、结果及客户端主机；AppScope RPC 适配器保留 `hostId` 与 `__codexPlusHostId`，远程或未知主机不注入本机供应商目录。`codexAppIncludeNativeModels` 默认开启；关闭后只在当前本机纯 API 供应商目录有效且归属匹配时收窄。数组、Set 与默认模型的原生快照存于跨重注入 WeakMap，供应商模式、目录状态或主机变化时恢复原值，再应用当前策略。排序后更新快照，远程共享同一列表对象时仍能恢复原生条目。准备读取采用有界超时，保留个人版失败退避和相同目录不重绘。
 
 验证：`model-rpc-compat.test.ts`、`renderer-model-runtime.test.ts` 和 `cdp_bridge.rs::injection_script_applies_fast_service_tier_contract`。
+
+模型聚合目录由 `aggregate_catalog.rs` 生成 `cpx-<供应商ID>/<模型名>`，协议代理解析到对应成员后使用真实模型名；未知绑定和无前缀模型拒绝进入模型聚合池。成员目录沿用各自窗口与元数据；官方登录成员通过 `official_login.rs` 获取凭据，再由 `model_catalog.rs` 拉取官方可见模型。注入目录读取仍使用缓存设置并受供应商总开关控制。验证见 aggregate_catalog 单测、`protocol_proxy.rs` 聚合回归、`auto-compact.test.ts` 与 `model-reasoning.test.ts`。
