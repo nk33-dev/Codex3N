@@ -18,7 +18,7 @@ export function routeSubtitle(route: ManagerRoute): string {
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     userScripts: t("内置和用户自定义拓展清单"),
-    maintenance: t("入口安装、修复、Watcher 与手动启动"),
+    maintenance: t("入口检查与修复、开机启动与应用路径"),
     about: t("版本信息、项目链接、GitHub Release 更新、日志与诊断"),
     settings: t("主题和启动参数"),
   };

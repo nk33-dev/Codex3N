@@ -2,12 +2,13 @@ use codex_plus_core::protocol_proxy::{
     ChatSseToResponsesConverter, CompactionSseConverter, ProxySessionHeaders,
     audio_transcriptions_url, chat_completion_to_response,
     chat_completion_to_response_with_request, chat_completions_url, chat_sse_to_responses_sse,
-    chat_sse_to_responses_sse_with_request, image_edits_url, image_generations_url,
-    is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path, is_image_edits_proxy_path,
-    is_image_generations_proxy_path, is_models_proxy_path, is_responses_compact_proxy_path,
-    is_responses_proxy_path, models_url, open_audio_transcriptions_proxy_request,
-    open_chat_completions_proxy_request, open_image_edits_proxy_request,
-    open_image_generations_proxy_request, open_models_proxy_request, open_responses_proxy_request,
+    chat_sse_to_responses_sse_with_request, ensure_web_search_tool_for_history, image_edits_url,
+    image_generations_url, is_audio_transcriptions_proxy_path, is_chat_completions_proxy_path,
+    is_image_edits_proxy_path, is_image_generations_proxy_path, is_models_proxy_path,
+    is_responses_compact_proxy_path, is_responses_proxy_path, models_url,
+    open_audio_transcriptions_proxy_request, open_chat_completions_proxy_request,
+    open_image_edits_proxy_request, open_image_generations_proxy_request,
+    open_models_proxy_request, open_responses_proxy_request,
     open_responses_proxy_request_with_settings,
     open_responses_proxy_request_with_settings_for_path,
     open_responses_proxy_request_with_settings_for_path_and_session_headers,
@@ -66,6 +67,311 @@ fn compaction_trigger_detection() {
 
     let string_input = json!({ "model": "m", "input": "hi" });
     assert!(!request_has_compaction_trigger(&string_input));
+}
+
+#[test]
+fn web_search_history_restores_declaration_without_changing_history_or_function_tools() {
+    let mut request = json!({
+        "input": [{"type": "web_search_call", "id": "ws_test", "status": "completed",
+            "action": {"type": "search", "query": "example"}}],
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "auto"
+    });
+    let original = request.clone();
+    assert!(ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(request["input"], original["input"]);
+    assert_eq!(request["tools"][0], original["tools"][0]);
+    assert_eq!(request["tool_choice"], original["tool_choice"]);
+    assert_eq!(
+        request["tools"][1],
+        json!({"type": "web_search", "external_web_access": false})
+    );
+    let repaired = request.clone();
+    assert!(!ensure_web_search_tool_for_history(&mut request));
+    assert_eq!(request, repaired, "repair must be idempotent");
+}
+
+#[test]
+fn web_search_history_keeps_existing_declarations_including_additional_tools() {
+    for declaration in [
+        "web_search",
+        "web_search_preview",
+        "web_search_preview_2025_03_11",
+    ] {
+        for additional in [false, true] {
+            let tools = json!([{"type": declaration, "search_context_size": "low"}]);
+            let mut request = json!({
+                "input": [{"type": "web_search_call", "id": "ws_test"}],
+                "tools": if additional { json!([]) } else { tools.clone() }
+            });
+            if additional {
+                request["input"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!({"type": "additional_tools", "role": "developer", "tools": tools}));
+            }
+            let original = request.clone();
+            assert!(!ensure_web_search_tool_for_history(&mut request));
+            assert_eq!(request, original);
+        }
+    }
+}
+
+#[test]
+fn web_search_history_preserves_no_tool_semantics_and_explicit_tool_choices() {
+    for tools in [None, Some(Value::Null), Some(json!([]))] {
+        for choice in [
+            None,
+            Some(Value::Null),
+            Some(json!("auto")),
+            Some(json!("none")),
+            Some(json!("required")),
+            Some(json!({"type": "function", "name": "lookup"})),
+        ] {
+            let mut request = json!({"input": [{"type": "web_search_call"}]});
+            if let Some(tools) = &tools {
+                request["tools"] = tools.clone();
+            }
+            if let Some(choice) = &choice {
+                request["tool_choice"] = choice.clone();
+            }
+            assert!(ensure_web_search_tool_for_history(&mut request));
+            let expected = match choice {
+                None | Some(Value::Null) => json!("none"),
+                Some(Value::String(ref value)) if value == "auto" || value == "none" => {
+                    json!("none")
+                }
+                Some(value) => value,
+            };
+            assert_eq!(request["tool_choice"], expected);
+            assert_eq!(
+                request["tools"],
+                json!([{"type": "web_search", "external_web_access": false}])
+            );
+        }
+    }
+    let mut request = json!({
+        "input": [{"type": "web_search_call"},
+            {"type": "additional_tools", "tools": [{"type": "function", "name": "lookup"}]}]
+    });
+    assert!(ensure_web_search_tool_for_history(&mut request));
+    assert!(
+        request.get("tool_choice").is_none(),
+        "existing additional tools remain callable"
+    );
+}
+
+#[test]
+fn web_search_history_leaves_unrelated_and_malformed_requests_unchanged() {
+    for mut request in [
+        json!({"input": "hello"}),
+        json!({"input": [{"type": "message", "role": "user", "content": "hello"}]}),
+        json!({"input": [{"type": "web_search_call"}], "tools": {}}),
+        json!({"input": [{"type": "web_search_call"}], "tools": "invalid"}),
+        json!({"input": [null, 7, "web_search_call", {"content": "web_search_call"}]}),
+    ] {
+        let original = request.clone();
+        assert!(!ensure_web_search_tool_for_history(&mut request));
+        assert_eq!(request, original);
+    }
+}
+
+#[tokio::test]
+async fn web_search_history_proxy_declares_only_for_standard_responses() {
+    for (protocol, path, trigger, enabled, repair) in [
+        (RelayProtocol::Responses, "/v1/responses", false, true, true),
+        (
+            RelayProtocol::Responses,
+            "/v1/responses",
+            false,
+            false,
+            false,
+        ),
+        (RelayProtocol::Responses, "/v1/responses", true, true, true),
+        (
+            RelayProtocol::Responses,
+            "/v1/responses/compact",
+            false,
+            true,
+            false,
+        ),
+        (
+            RelayProtocol::ChatCompletions,
+            "/v1/responses",
+            false,
+            true,
+            false,
+        ),
+    ] {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_body = if trigger {
+            json!({
+                "id": "resp_native_compaction",
+                "object": "response",
+                "output": [{"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque"}]
+            })
+        } else {
+            json!({"id": "resp_model_route", "object": "response"})
+        };
+        let server = tokio::spawn(capture_request_with_response(
+            listener,
+            "application/json",
+            response_body.to_string(),
+        ));
+        let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
+        settings.relay_profiles[1].protocol = protocol;
+        settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+        settings.relay_profiles[1].web_search_history_compat = enabled;
+        settings.relay_profiles[0].web_search_history_compat = !enabled;
+        if protocol == RelayProtocol::ChatCompletions {
+            // Model routing intentionally accepts only Responses targets.
+            settings.relay_profiles[0].model_routes.clear();
+            settings.active_relay_id = settings.relay_profiles[1].id.clone();
+        }
+        let mut request = json!({
+            "model": "gpt-5.6-luna",
+            "stream": false,
+            "tools": [],
+            "input": [
+                {"type": "message", "role": "user", "content": "summarize"},
+                {"type": "web_search_call", "id": "ws_test", "status": "completed"}
+            ]
+        });
+        if trigger {
+            request["input"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"type": "compaction_trigger", "future": "preserve"}));
+        }
+        let result = open_responses_proxy_request_with_settings_for_path(
+            &request.to_string(),
+            settings,
+            path,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.status_code, 200);
+        let (headers, sent) = server.await.unwrap();
+        if repair {
+            let mut expected = request;
+            expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
+            expected["tool_choice"] = json!("none");
+            assert_eq!(sent, expected, "history and native compaction must survive");
+            assert!(headers.starts_with("POST /v1/responses HTTP/1.1"));
+            assert!(!result.compaction);
+        } else if protocol == RelayProtocol::Responses {
+            assert_eq!(
+                sent, request,
+                "disabled providers and legacy compact remain unchanged"
+            );
+            assert!(headers.starts_with(&format!("POST {path} HTTP/1.1")));
+        } else {
+            let expected = responses_to_chat_completions_with_options(request, false).unwrap();
+            assert_eq!(sent, expected, "Chat conversion must remain unchanged");
+            assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn web_search_history_streaming_compaction_preserves_native_state() {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let item = json!({"type": "compaction", "id": "cmp_test", "encrypted_content": "opaque"});
+    let response = format!(
+        "data: {}\n\ndata: {}\n\n",
+        json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+        json!({"type": "response.completed", "response": {"id": "resp_test", "output": [item]}})
+    );
+    let server = tokio::spawn(capture_request_with_response(
+        listener,
+        "text/event-stream",
+        response.clone(),
+    ));
+    let request = json!({
+        "model": "gpt-5.6-luna", "stream": true, "store": false,
+        "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+        "tool_choice": "auto",
+        "input": [
+            {"type": "compaction", "id": "cmp_prior", "encrypted_content": "prior-state"},
+            {"type": "web_search_call", "id": "ws_test", "status": "completed",
+                "action": {"type": "search", "query": "example"}},
+            {"type": "compaction_trigger", "future": "preserve"}
+        ]
+    });
+    let mut settings = model_route_settings("gpt-5.6-luna", "", format!("http://{address}/v1"));
+    settings.relay_profiles[1].web_search_history_compat = true;
+    settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+    let mut result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+        .await
+        .unwrap();
+    assert!(!result.compaction);
+    assert_eq!(
+        result.read_body().await.unwrap(),
+        response.as_bytes().to_vec()
+    );
+    let (_, sent) = server.await.unwrap();
+    let mut expected = request;
+    expected["tools"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"type": "web_search", "external_web_access": false}));
+    assert_eq!(sent, expected);
+}
+
+#[tokio::test]
+async fn web_search_history_uses_each_fallback_providers_own_opt_in() {
+    for enabled in [false, true] {
+        let first = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let second = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let mut settings = aggregate_proxy_settings(
+            if enabled {
+                "web-history-on"
+            } else {
+                "web-history-off"
+            },
+            format!("http://{}/v1", first.local_addr().unwrap()),
+            format!("http://{}/v1", second.local_addr().unwrap()),
+        );
+        settings.relay_profiles[0].web_search_history_compat = !enabled;
+        settings.relay_profiles[1].web_search_history_compat = enabled;
+        settings.relay_profiles[0].relay_mode = RelayMode::PureApi;
+        settings.relay_profiles[1].relay_mode = RelayMode::PureApi;
+        let first_server = tokio::spawn(respond_once(
+            first,
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n",
+        ));
+        let second_server = tokio::spawn(capture_json_request_once(second));
+        let request = json!({
+            "model": "gpt-5.6-luna", "stream": false,
+            "input": [{"type": "web_search_call", "id": "ws_test"}],
+            "tools": []
+        });
+        let result = open_responses_proxy_request_with_settings(&request.to_string(), settings)
+            .await
+            .unwrap();
+        assert_eq!(result.status_code, 200);
+        first_server.await.unwrap();
+        let (_, sent) = second_server.await.unwrap();
+        let mut expected = request;
+        if enabled {
+            expected["tools"] = json!([{"type": "web_search", "external_web_access": false}]);
+            expected["tool_choice"] = json!("none");
+        }
+        assert_eq!(
+            sent, expected,
+            "the first provider must not contaminate fallback requests"
+        );
+    }
 }
 
 #[test]
@@ -3024,7 +3330,7 @@ fn responses_request_maps_codex_custom_and_namespace_tools_to_chat_functions() {
 }
 
 #[test]
-fn responses_request_stream_includes_usage_and_apply_patch_proxy_tools() {
+fn responses_request_stream_includes_usage_and_raw_apply_patch_tool() {
     let converted = responses_to_chat_completions(json!({
         "model": "gpt-5-mini",
         "input": "hi",
@@ -3047,25 +3353,18 @@ fn responses_request_stream_includes_usage_and_apply_patch_proxy_tools() {
         .iter()
         .map(|tool| tool["function"]["name"].as_str().unwrap())
         .collect();
+    assert_eq!(names, vec!["apply_patch"]);
     assert_eq!(
-        names,
-        vec![
-            "apply_patch_add_file",
-            "apply_patch_delete_file",
-            "apply_patch_update_file",
-            "apply_patch_replace_file",
-            "apply_patch_batch"
-        ]
+        converted["tools"][0]["function"]["parameters"]["properties"]["input"]["type"],
+        "string"
     );
-    assert_eq!(
-        converted["tools"][2]["function"]["parameters"]["properties"]["hunks"]["items"]["properties"]
-            ["lines"]["items"]["required"],
-        json!(["op", "text"])
+    assert!(
+        converted["tools"][0]["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Original tool definition:")
     );
-    assert_eq!(
-        converted["tool_choice"]["function"]["name"],
-        "apply_patch_batch"
-    );
+    assert_eq!(converted["tool_choice"]["function"]["name"], "apply_patch");
 }
 
 #[test]
@@ -3274,11 +3573,73 @@ fn responses_input_replays_apply_patch_custom_history_as_proxy_tool() {
 
     assert_eq!(
         converted["messages"][0]["tool_calls"][0]["function"]["name"],
-        "apply_patch_add_file"
+        "apply_patch"
     );
     assert_eq!(
         converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
-        "{\"content\":\"# Test\",\"path\":\"docs/test.md\"}"
+        "{\"input\":\"*** Begin Patch\\n*** Add File: docs/test.md\\n+# Test\\n*** End Patch\"}"
+    );
+}
+
+#[test]
+fn responses_input_migrates_legacy_apply_patch_proxy_history() {
+    for legacy_name in [
+        "apply_patch_add_file",
+        "apply_patch_delete_file",
+        "apply_patch_update_file",
+        "apply_patch_replace_file",
+        "apply_patch_batch",
+    ] {
+        let raw_patch = "*** Begin Patch\n*** Add File: docs/test.md\n+# Test\n*** End Patch";
+        let converted = responses_to_chat_completions(json!({
+            "model": "gpt-5-mini",
+            "input": [
+                {
+                    "type": "custom_tool_call",
+                    "call_id": "call_legacy_patch",
+                    "name": legacy_name,
+                    "input": raw_patch
+                }
+            ],
+            "tools": [{ "type": "custom", "name": "apply_patch" }]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            converted["messages"][0]["tool_calls"][0]["function"]["name"],
+            "apply_patch"
+        );
+        let arguments = converted["messages"][0]["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        let arguments: Value = serde_json::from_str(arguments).unwrap();
+        assert_eq!(arguments["input"], raw_patch);
+    }
+}
+
+#[test]
+fn responses_input_replays_same_path_delete_add_patch_as_apply_patch() {
+    let converted = responses_to_chat_completions(json!({
+        "model": "gpt-5-mini",
+        "input": [
+            {
+                "type": "custom_tool_call",
+                "call_id": "call_patch",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\n*** Delete File: docs/test.md\n*** Add File: docs/test.md\n+hello\n*** End Patch"
+            }
+        ],
+        "tools": [{ "type": "custom", "name": "apply_patch" }]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["name"],
+        "apply_patch"
+    );
+    assert_eq!(
+        converted["messages"][0]["tool_calls"][0]["function"]["arguments"],
+        "{\"input\":\"*** Begin Patch\\n*** Delete File: docs/test.md\\n*** Add File: docs/test.md\\n+hello\\n*** End Patch\"}"
     );
 }
 
@@ -3698,8 +4059,8 @@ fn chat_completion_response_reconstructs_apply_patch_proxy_call() {
                         "id": "call_patch",
                         "type": "function",
                         "function": {
-                            "name": "apply_patch_add_file",
-                            "arguments": "{\"path\":\"README.md\",\"content\":\"hello\"}"
+                            "name": "apply_patch",
+                            "arguments": "{\"input\":\"*** Begin Patch\\n*** Add File: README.md\\n+hello\\n*** End Patch\"}"
                         }
                     }]
                 }
@@ -3721,7 +4082,7 @@ fn chat_completion_response_reconstructs_apply_patch_proxy_call() {
 }
 
 #[test]
-fn chat_completion_response_remaps_string_apply_patch_proxy_tools() {
+fn chat_completion_response_remaps_string_apply_patch_tool() {
     let converted = chat_completion_to_response_with_request(
         json!({
             "id": "chatcmpl_patch_string_tool",
@@ -3735,8 +4096,8 @@ fn chat_completion_response_remaps_string_apply_patch_proxy_tools() {
                         "id": "call_patch",
                         "type": "function",
                         "function": {
-                            "name": "apply_patch_add_file",
-                            "arguments": "{\"path\":\"docs/test.md\",\"content\":\"# Test\\n\"}"
+                            "name": "apply_patch",
+                            "arguments": "{\"input\":\"*** Begin Patch\\n*** Add File: docs/test.md\\n+# Test\\n*** End Patch\"}"
                         }
                     }]
                 }
@@ -3744,7 +4105,7 @@ fn chat_completion_response_remaps_string_apply_patch_proxy_tools() {
         }),
         &json!({
             "model": "gpt-5-mini",
-            "tools": ["apply_patch_add_file", "apply_patch_batch"]
+            "tools": ["apply_patch"]
         }),
     )
     .unwrap();
@@ -4270,6 +4631,7 @@ async fn aggregate_official_member_forwards_with_oauth_credentials() {
                 weight: 1,
             }],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -4402,6 +4764,7 @@ async fn aggregate_official_member_refreshes_and_retries_after_401() {
                 weight: 1,
             }],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     };
@@ -4836,6 +5199,52 @@ async fn aggregate_prefixed_model_binds_member_and_preserves_upstream_model() {
     second_server.abort();
 }
 
+/// 模型聚合 + 默认供应商：解析不到成员的普通模型名固定发往默认成员，
+/// 上游模型名去掉 `<前缀>/` 与窗口后缀；未设置默认时保持原有 400。
+#[tokio::test]
+async fn aggregate_default_provider_forwards_unbound_model() {
+    let default_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let default_addr = default_listener.local_addr().unwrap();
+    let other_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let other_addr = other_listener.local_addr().unwrap();
+    let default_server = tokio::spawn(capture_json_request_once(default_listener));
+    let other_server = tokio::spawn(respond_once(
+        other_listener,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n",
+    ));
+    let request = r#"{"model":"ccs-legacy/gpt-9.9-unknown[1M]","input":"hi","stream":false}"#;
+    let base = aggregate_proxy_settings(
+        "default-provider",
+        format!("http://{other_addr}/v1"),
+        format!("http://{default_addr}/v1"),
+    );
+
+    let mut without_default = base.clone();
+    without_default.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    let result = open_responses_proxy_request_with_settings(request, without_default)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 400, "未设置默认供应商时仍是 400");
+
+    let mut settings = base;
+    settings.aggregate_relay_profiles[0].model_aggregation_enabled = true;
+    settings.aggregate_relay_profiles[0].default_relay_id = settings.relay_profiles[1].id.clone();
+    let result = open_responses_proxy_request_with_settings(request, settings)
+        .await
+        .unwrap();
+    assert_eq!(result.status_code, 200);
+    let (_, body) = default_server.await.unwrap();
+    assert_eq!(
+        body["model"], "ccs-legacy/gpt-9.9-unknown[1M]",
+        "默认供应商原样转发请求里的 model id（不做去前缀/去后缀的静默改名）"
+    );
+    other_server.abort();
+}
+
 async fn respond_once(listener: tokio::net::TcpListener, response: &'static str) {
     let (mut stream, _) = listener.accept().await.unwrap();
     let mut buffer = [0; 1024];
@@ -5054,6 +5463,7 @@ fn aggregate_proxy_settings(
                 },
             ],
             routes: Vec::new(),
+            default_relay_id: String::new(),
         }],
         ..BackendSettings::default()
     }

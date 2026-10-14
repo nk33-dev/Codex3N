@@ -227,7 +227,6 @@ struct CodexToolContext {
 struct CodexCustomToolSpec {
     openai_name: String,
     kind: CodexCustomToolKind,
-    proxy_action: Option<CodexPatchProxyAction>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -248,27 +247,6 @@ enum CodexCustomToolKind {
 impl Default for CodexCustomToolKind {
     fn default() -> Self {
         Self::Raw
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CodexPatchProxyAction {
-    AddFile,
-    DeleteFile,
-    UpdateFile,
-    ReplaceFile,
-    Batch,
-}
-
-impl CodexPatchProxyAction {
-    fn suffix(self) -> &'static str {
-        match self {
-            Self::AddFile => "add_file",
-            Self::DeleteFile => "delete_file",
-            Self::UpdateFile => "update_file",
-            Self::ReplaceFile => "replace_file",
-            Self::Batch => "batch",
-        }
     }
 }
 
@@ -2842,6 +2820,60 @@ fn request_body_for_attempt(request_json: &mut Value, has_more_candidates: bool)
     }
 }
 
+/// 补齐搜索历史的工具声明，不删历史，也不为无工具的压缩请求启用搜索。
+pub fn ensure_web_search_tool_for_history(request_json: &mut Value) -> bool {
+    let Some(input) = request_json.get("input").and_then(Value::as_array) else {
+        return false;
+    };
+    if !input.iter().any(|item| item["type"] == "web_search_call") {
+        return false;
+    }
+    let is_web_search = |tool: &Value| {
+        matches!(
+            tool.get("type").and_then(Value::as_str),
+            Some("web_search" | "web_search_preview" | "web_search_preview_2025_03_11")
+        )
+    };
+    let mut has_additional_tools = false;
+    for tool in input
+        .iter()
+        .filter(|item| item["type"] == "additional_tools")
+        .filter_map(|item| item.get("tools").and_then(Value::as_array))
+        .flatten()
+    {
+        has_additional_tools = true;
+        if is_web_search(tool) {
+            return false;
+        }
+    }
+    let has_tools = match request_json.get("tools") {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(tools)) => {
+            if tools.iter().any(is_web_search) {
+                return false;
+            }
+            !tools.is_empty()
+        }
+        _ => return false,
+    } || has_additional_tools;
+    let tool = json!({"type": "web_search", "external_web_access": false});
+    if let Some(tools) = request_json.get_mut("tools").and_then(Value::as_array_mut) {
+        tools.push(tool);
+    } else {
+        request_json["tools"] = json!([tool]);
+    }
+    if !has_tools
+        && (matches!(request_json.get("tool_choice"), None | Some(Value::Null))
+            || matches!(
+                request_json.get("tool_choice").and_then(Value::as_str),
+                Some("auto" | "none")
+            ))
+    {
+        request_json["tool_choice"] = json!("none");
+    }
+    true
+}
+
 async fn upstream_request_parts(
     relay: &crate::settings::RelayProfile,
     mut request_json: Value,
@@ -2880,6 +2912,15 @@ async fn upstream_request_parts(
         )?,
     };
     if relay.protocol == RelayProtocol::Responses {
+        if relay.web_search_history_compat_enabled()
+            && !is_responses_compact_proxy_path(request_path)
+            && ensure_web_search_tool_for_history(&mut body)
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.web_search_history_compat",
+                json!({"action": "declare_web_search", "inputContainsWebSearchCall": true}),
+            );
+        }
         normalize_responses_item_ids(&mut body);
     }
 
@@ -5279,24 +5320,11 @@ fn build_codex_tool_context(tools: Option<&Value>) -> CodexToolContext {
 
     for tool in tools {
         if let Some(name) = tool.as_str().filter(|name| !name.is_empty()) {
-            if let Some(action) = proxy_action_from_upstream_name(name) {
-                context.custom_tools.insert(
-                    name.to_string(),
-                    CodexCustomToolSpec {
-                        openai_name: "apply_patch".to_string(),
-                        kind: CodexCustomToolKind::ApplyPatch,
-                        proxy_action: Some(action),
-                    },
-                );
-                context.has_custom_tools = true;
-                continue;
-            }
             context.custom_tools.insert(
                 name.to_string(),
                 CodexCustomToolSpec {
                     openai_name: name.to_string(),
                     kind: CodexCustomToolKind::Raw,
-                    proxy_action: None,
                 },
             );
             context.has_custom_tools = true;
@@ -5318,28 +5346,8 @@ fn build_codex_tool_context(tools: Option<&Value>) -> CodexToolContext {
                     CodexCustomToolSpec {
                         openai_name: name.to_string(),
                         kind,
-                        proxy_action: None,
                     },
                 );
-                if kind == CodexCustomToolKind::ApplyPatch {
-                    for action in [
-                        CodexPatchProxyAction::AddFile,
-                        CodexPatchProxyAction::DeleteFile,
-                        CodexPatchProxyAction::UpdateFile,
-                        CodexPatchProxyAction::ReplaceFile,
-                        CodexPatchProxyAction::Batch,
-                    ] {
-                        let proxy_name = format!("{name}_{}", action.suffix());
-                        context.custom_tools.insert(
-                            proxy_name,
-                            CodexCustomToolSpec {
-                                openai_name: name.to_string(),
-                                kind: CodexCustomToolKind::ApplyPatch,
-                                proxy_action: Some(action),
-                            },
-                        );
-                    }
-                }
                 context.has_custom_tools = true;
             }
             "function" => {
@@ -5372,7 +5380,6 @@ fn build_codex_tool_context(tools: Option<&Value>) -> CodexToolContext {
                     CodexCustomToolSpec {
                         openai_name: name.to_string(),
                         kind: CodexCustomToolKind::ToolSearch,
-                        proxy_action: None,
                     },
                 );
                 context.has_custom_tools = true;
@@ -5388,7 +5395,6 @@ fn build_codex_tool_context(tools: Option<&Value>) -> CodexToolContext {
                     CodexCustomToolSpec {
                         openai_name: name.to_string(),
                         kind: CodexCustomToolKind::BuiltIn,
-                        proxy_action: None,
                     },
                 );
                 context.has_custom_tools = true;
@@ -5470,7 +5476,11 @@ fn responses_tools_to_chat_tools(tools: &[Value], context: &CodexToolContext) ->
                     .and_then(Value::as_str)
                     .unwrap_or("");
                 if detect_codex_custom_tool_kind(tool, name) == CodexCustomToolKind::ApplyPatch {
-                    converted.extend(apply_patch_proxy_tools(name, description));
+                    converted.push(custom_proxy_tool_with_original_definition(
+                        tool,
+                        name,
+                        description,
+                    ));
                 } else {
                     converted.push(generic_custom_proxy_tool(name, description));
                 }
@@ -5968,63 +5978,39 @@ fn generic_custom_proxy_tool(name: &str, description: &str) -> Value {
     })
 }
 
-fn apply_patch_proxy_tools(name: &str, description: &str) -> Vec<Value> {
-    vec![
-        function_tool(
-            &format!("{name}_add_file"),
-            &patch_proxy_description(
-                description,
-                "add_file",
-                "Create one new file by providing a target path and full file content.",
-            ),
-            apply_patch_add_file_schema(),
-        ),
-        function_tool(
-            &format!("{name}_delete_file"),
-            &patch_proxy_description(
-                description,
-                "delete_file",
-                "Delete one file by providing a target path.",
-            ),
-            apply_patch_delete_file_schema(),
-        ),
-        function_tool(
-            &format!("{name}_update_file"),
-            &patch_proxy_description(
-                description,
-                "update_file",
-                "Edit one existing file with structured hunks.",
-            ),
-            apply_patch_update_file_schema(),
-        ),
-        function_tool(
-            &format!("{name}_replace_file"),
-            &patch_proxy_description(
-                description,
-                "replace_file",
-                "Replace one existing file by providing a target path and full new file content.",
-            ),
-            apply_patch_replace_file_schema(),
-        ),
-        function_tool(
-            &format!("{name}_batch"),
-            &patch_proxy_description(
-                description,
-                "batch",
-                "Edit files by providing structured JSON patch operations.",
-            ),
-            apply_patch_batch_schema(),
-        ),
-    ]
-}
+fn custom_proxy_tool_with_original_definition(
+    tool: &Value,
+    name: &str,
+    description: &str,
+) -> Value {
+    let mut description = if description.trim().is_empty() {
+        format!("FREEFORM custom tool: {name}. Put only the tool input text here.")
+    } else {
+        format!(
+            "{}\n\nThis is a FREEFORM tool. Do not wrap the input in JSON or markdown.",
+            description.trim()
+        )
+    };
+    description.push_str("\n\nOriginal tool definition:\n```json\n");
+    description.push_str(&canonical_json_string(tool));
+    description.push_str("\n```");
 
-fn function_tool(name: &str, description: &str, parameters: Value) -> Value {
     json!({
         "type": "function",
         "function": {
             "name": name,
             "description": description,
-            "parameters": parameters
+            "parameters": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Raw string input for the original custom tool. Preserve formatting exactly and follow the original tool definition embedded in the description."
+                    }
+                },
+                "required": ["input"]
+            }
         }
     })
 }
@@ -6079,131 +6065,6 @@ fn dedup_chat_tools_by_name(tools: &mut Vec<Value>) {
             None => true,
         }
     });
-}
-
-fn patch_proxy_description(description: &str, action: &str, default_description: &str) -> String {
-    if description.trim().is_empty() {
-        default_description.to_string()
-    } else {
-        format!("{} (proxy action: {action})", description.trim())
-    }
-}
-
-fn apply_patch_add_file_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "path": { "type": "string", "description": "Target file path." },
-            "content": { "type": "string", "description": "Full file content without patch '+' prefixes." }
-        },
-        "required": ["path", "content"]
-    })
-}
-
-fn apply_patch_delete_file_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "path": { "type": "string", "description": "Target file path." }
-        },
-        "required": ["path"]
-    })
-}
-
-fn apply_patch_update_file_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "path": { "type": "string", "description": "Target file path." },
-            "move_to": { "type": "string", "description": "Optional destination path for move operations." },
-            "hunks": apply_patch_hunks_schema()
-        },
-        "required": ["path", "hunks"]
-    })
-}
-
-fn apply_patch_replace_file_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "path": { "type": "string", "description": "Target file path." },
-            "content": { "type": "string", "description": "Full replacement content." }
-        },
-        "required": ["path", "content"]
-    })
-}
-
-fn apply_patch_batch_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-            "operations": {
-                "type": "array",
-                "description": "Ordered list of file patch operations.",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {
-                        "type": { "type": "string", "enum": ["add_file", "delete_file", "update_file", "replace_file"] },
-                        "path": { "type": "string" },
-                        "move_to": { "type": "string", "description": "Optional destination path for move operations (update_file only)." },
-                        "content": { "type": "string", "description": "Full file content for add_file / replace_file." },
-                        "hunks": apply_patch_hunks_schema()
-                    },
-                    "required": ["type", "path"]
-                }
-            }
-        },
-        "required": ["operations"]
-    })
-}
-
-fn apply_patch_hunks_schema() -> Value {
-    json!({
-        "type": "array",
-        "description": "Structured update hunks (required when type=update_file).",
-        "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {
-                "context": { "type": "string", "description": "Optional @@ context header text." },
-                "lines": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "op": { "type": "string", "enum": ["context", "add", "remove"] },
-                            "text": { "type": "string" }
-                        },
-                        "required": ["op", "text"]
-                    }
-                }
-            },
-            "required": ["lines"]
-        }
-    })
-}
-
-fn proxy_action_from_upstream_name(name: &str) -> Option<CodexPatchProxyAction> {
-    if name.ends_with("_add_file") {
-        Some(CodexPatchProxyAction::AddFile)
-    } else if name.ends_with("_delete_file") {
-        Some(CodexPatchProxyAction::DeleteFile)
-    } else if name.ends_with("_update_file") {
-        Some(CodexPatchProxyAction::UpdateFile)
-    } else if name.ends_with("_replace_file") {
-        Some(CodexPatchProxyAction::ReplaceFile)
-    } else if name.ends_with("_batch") {
-        Some(CodexPatchProxyAction::Batch)
-    } else {
-        None
-    }
 }
 
 fn combine_namespace_description(namespace_description: &str, child_description: &str) -> String {
@@ -6267,11 +6128,7 @@ fn responses_tool_choice_to_chat(tool_choice: &Value, context: &CodexToolContext
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("custom") => {
             let name = object.get("name").and_then(Value::as_str)?;
             let spec = context.custom_tools.get(name)?;
-            let upstream_name = if spec.kind == CodexCustomToolKind::ApplyPatch {
-                format!("{}_batch", spec.openai_name)
-            } else {
-                spec.openai_name.clone()
-            };
+            let upstream_name = spec.openai_name.clone();
             Some(json!({
                 "type": "function",
                 "function": { "name": upstream_name }
@@ -7187,37 +7044,29 @@ fn tool_output_content(output: &Value) -> Value {
 
 fn build_custom_tool_call_history(name: &str, input: &Value) -> (String, String) {
     let input = response_output_text(input);
-    if name == "apply_patch" || input.starts_with("*** Begin Patch") {
-        let operations = parse_apply_patch_operations(&input);
-        if operations.len() == 1 {
-            let action = operations[0]
-                .get("type")
-                .and_then(Value::as_str)
-                .and_then(single_apply_patch_action)
-                .unwrap_or(CodexPatchProxyAction::Batch);
-            return (
-                format!("{name}_{}", action.suffix()),
-                build_apply_patch_operation_arguments(&operations[0], action),
-            );
-        }
-        return (
-            format!("{name}_batch"),
-            json!({ "operations": operations, "raw_patch": input }).to_string(),
-        );
-    }
+    let name = legacy_apply_patch_proxy_name(name).unwrap_or(name);
     (name.to_string(), json!({ "input": input }).to_string())
 }
 
+/// 旧版本曾把 apply_patch 拆成多个结构化代理动作。新请求只声明
+/// `apply_patch`，历史里的旧动作名必须在回放前迁移，避免上游收到
+/// 未声明工具名。
+fn legacy_apply_patch_proxy_name(name: &str) -> Option<&'static str> {
+    match name {
+        "apply_patch_add_file"
+        | "apply_patch_delete_file"
+        | "apply_patch_update_file"
+        | "apply_patch_replace_file"
+        | "apply_patch_batch" => Some("apply_patch"),
+        _ => None,
+    }
+}
+
 fn reconstruct_custom_tool_call_input_with_context(
-    tool_context: &CodexToolContext,
-    upstream_name: &str,
+    _tool_context: &CodexToolContext,
+    _upstream_name: &str,
     arguments: &str,
 ) -> String {
-    if let Some(spec) = tool_context.custom_tools.get(upstream_name) {
-        if spec.kind == CodexCustomToolKind::ApplyPatch {
-            return reconstruct_apply_patch_input(spec.proxy_action, arguments);
-        }
-    }
     reconstruct_custom_tool_call_input(arguments)
 }
 
@@ -7229,296 +7078,6 @@ fn reconstruct_custom_tool_call_input(arguments: &str) -> String {
         .get("input")
         .map(response_output_text)
         .unwrap_or_else(|| arguments.to_string())
-}
-
-fn reconstruct_apply_patch_input(action: Option<CodexPatchProxyAction>, arguments: &str) -> String {
-    let Ok(value) = serde_json::from_str::<Value>(arguments) else {
-        return arguments.to_string();
-    };
-    if let Some(raw_patch) = value
-        .get("raw_patch")
-        .or_else(|| value.get("patch"))
-        .or_else(|| value.get("input"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-    {
-        return raw_patch.to_string();
-    }
-
-    let operations = match action.unwrap_or(CodexPatchProxyAction::Batch) {
-        CodexPatchProxyAction::AddFile => vec![json!({
-            "type": "add_file",
-            "path": value.get("path").and_then(Value::as_str).unwrap_or(""),
-            "content": value.get("content").and_then(Value::as_str).unwrap_or("")
-        })],
-        CodexPatchProxyAction::DeleteFile => vec![json!({
-            "type": "delete_file",
-            "path": value.get("path").and_then(Value::as_str).unwrap_or("")
-        })],
-        CodexPatchProxyAction::UpdateFile => vec![json!({
-            "type": "update_file",
-            "path": value.get("path").and_then(Value::as_str).unwrap_or(""),
-            "move_to": value.get("move_to").and_then(Value::as_str).unwrap_or(""),
-            "hunks": value.get("hunks").cloned().unwrap_or_else(|| json!([]))
-        })],
-        CodexPatchProxyAction::ReplaceFile => vec![json!({
-            "type": "replace_file",
-            "path": value.get("path").and_then(Value::as_str).unwrap_or(""),
-            "content": value.get("content").and_then(Value::as_str).unwrap_or("")
-        })],
-        CodexPatchProxyAction::Batch => value
-            .get("operations")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    };
-
-    build_apply_patch_text(&operations)
-}
-
-fn build_apply_patch_text(operations: &[Value]) -> String {
-    let mut text = String::from("*** Begin Patch");
-    for operation in operations {
-        let op_type = operation.get("type").and_then(Value::as_str).unwrap_or("");
-        let path = operation.get("path").and_then(Value::as_str).unwrap_or("");
-        match op_type {
-            "add_file" => {
-                text.push_str(&format!("\n*** Add File: {path}"));
-                for line in operation
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .lines()
-                {
-                    text.push_str("\n+");
-                    text.push_str(line);
-                }
-            }
-            "delete_file" => {
-                text.push_str(&format!("\n*** Delete File: {path}"));
-            }
-            "update_file" => {
-                text.push_str(&format!("\n*** Update File: {path}"));
-                if let Some(move_to) = operation.get("move_to").and_then(Value::as_str) {
-                    if !move_to.is_empty() {
-                        text.push_str(&format!("\n*** Move to: {move_to}"));
-                    }
-                }
-                if let Some(hunks) = operation.get("hunks").and_then(Value::as_array) {
-                    for hunk in hunks {
-                        let context = hunk.get("context").and_then(Value::as_str).unwrap_or("");
-                        if context.is_empty() {
-                            text.push_str("\n@@");
-                        } else {
-                            text.push_str(&format!("\n@@ {context}"));
-                        }
-                        if let Some(lines) = hunk.get("lines").and_then(Value::as_array) {
-                            for line in lines {
-                                text.push('\n');
-                                text.push_str(line_op_prefix(
-                                    line.get("op").and_then(Value::as_str).unwrap_or("context"),
-                                ));
-                                text.push_str(
-                                    line.get("text").and_then(Value::as_str).unwrap_or(""),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            "replace_file" => {
-                text.push_str(&format!("\n*** Delete File: {path}"));
-                text.push_str(&format!("\n*** Add File: {path}"));
-                for line in operation
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .lines()
-                {
-                    text.push_str("\n+");
-                    text.push_str(line);
-                }
-            }
-            _ => {}
-        }
-    }
-    text.push_str("\n*** End Patch");
-    text
-}
-
-fn line_op_prefix(op: &str) -> &'static str {
-    match op {
-        "add" => "+",
-        "remove" | "delete" => "-",
-        _ => " ",
-    }
-}
-
-fn parse_apply_patch_operations(input: &str) -> Vec<Value> {
-    let mut operations = Vec::new();
-    let mut current: Option<serde_json::Map<String, Value>> = None;
-    let mut content_lines: Vec<String> = Vec::new();
-    let mut hunks: Vec<Value> = Vec::new();
-    let mut current_hunk: Option<serde_json::Map<String, Value>> = None;
-    let mut hunk_lines: Vec<Value> = Vec::new();
-
-    let flush_hunk = |current_hunk: &mut Option<serde_json::Map<String, Value>>,
-                      hunk_lines: &mut Vec<Value>,
-                      hunks: &mut Vec<Value>| {
-        if let Some(mut hunk) = current_hunk.take() {
-            hunk.insert("lines".to_string(), json!(std::mem::take(hunk_lines)));
-            hunks.push(Value::Object(hunk));
-        }
-    };
-    let flush_operation = |current: &mut Option<serde_json::Map<String, Value>>,
-                           content_lines: &mut Vec<String>,
-                           hunks: &mut Vec<Value>,
-                           operations: &mut Vec<Value>| {
-        if let Some(mut operation) = current.take() {
-            match operation.get("type").and_then(Value::as_str).unwrap_or("") {
-                "add_file" | "replace_file" => {
-                    operation.insert("content".to_string(), json!(content_lines.join("\n")));
-                }
-                "update_file" => {
-                    operation.insert("hunks".to_string(), json!(std::mem::take(hunks)));
-                }
-                _ => {}
-            }
-            content_lines.clear();
-            operations.push(Value::Object(operation));
-        }
-    };
-
-    for raw_line in input.lines() {
-        if raw_line == "*** Begin Patch" || raw_line == "*** End Patch" {
-            continue;
-        }
-        if let Some(path) = raw_line.strip_prefix("*** Add File: ") {
-            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
-            flush_operation(
-                &mut current,
-                &mut content_lines,
-                &mut hunks,
-                &mut operations,
-            );
-            current = Some(serde_json::Map::from_iter([
-                ("type".to_string(), json!("add_file")),
-                ("path".to_string(), json!(path)),
-            ]));
-            continue;
-        }
-        if let Some(path) = raw_line.strip_prefix("*** Delete File: ") {
-            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
-            flush_operation(
-                &mut current,
-                &mut content_lines,
-                &mut hunks,
-                &mut operations,
-            );
-            current = Some(serde_json::Map::from_iter([
-                ("type".to_string(), json!("delete_file")),
-                ("path".to_string(), json!(path)),
-            ]));
-            continue;
-        }
-        if let Some(path) = raw_line.strip_prefix("*** Update File: ") {
-            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
-            flush_operation(
-                &mut current,
-                &mut content_lines,
-                &mut hunks,
-                &mut operations,
-            );
-            current = Some(serde_json::Map::from_iter([
-                ("type".to_string(), json!("update_file")),
-                ("path".to_string(), json!(path)),
-            ]));
-            continue;
-        }
-        if let Some(path) = raw_line.strip_prefix("*** Move to: ") {
-            if let Some(operation) = current.as_mut() {
-                operation.insert("move_to".to_string(), json!(path));
-            }
-            continue;
-        }
-        if raw_line.starts_with("@@") {
-            flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
-            let context = raw_line.strip_prefix("@@").unwrap_or("").trim().to_string();
-            current_hunk = Some(serde_json::Map::from_iter([(
-                "context".to_string(),
-                json!(context),
-            )]));
-            continue;
-        }
-        if let Some(operation) = current.as_ref() {
-            match operation.get("type").and_then(Value::as_str).unwrap_or("") {
-                "add_file" | "replace_file" => {
-                    if let Some(line) = raw_line.strip_prefix('+') {
-                        content_lines.push(line.to_string());
-                    }
-                }
-                "update_file" => {
-                    let (op, text) = match raw_line.chars().next() {
-                        Some('+') => ("add", &raw_line[1..]),
-                        Some('-') => ("remove", &raw_line[1..]),
-                        Some(' ') => ("context", &raw_line[1..]),
-                        _ => ("context", raw_line),
-                    };
-                    hunk_lines.push(json!({ "op": op, "text": text }));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    flush_hunk(&mut current_hunk, &mut hunk_lines, &mut hunks);
-    flush_operation(
-        &mut current,
-        &mut content_lines,
-        &mut hunks,
-        &mut operations,
-    );
-    operations
-}
-
-fn single_apply_patch_action(op_type: &str) -> Option<CodexPatchProxyAction> {
-    match op_type {
-        "add_file" => Some(CodexPatchProxyAction::AddFile),
-        "delete_file" => Some(CodexPatchProxyAction::DeleteFile),
-        "update_file" => Some(CodexPatchProxyAction::UpdateFile),
-        "replace_file" => Some(CodexPatchProxyAction::ReplaceFile),
-        _ => None,
-    }
-}
-
-fn build_apply_patch_operation_arguments(
-    operation: &Value,
-    action: CodexPatchProxyAction,
-) -> String {
-    match action {
-        CodexPatchProxyAction::AddFile | CodexPatchProxyAction::ReplaceFile => json!({
-            "content": operation.get("content").and_then(Value::as_str).unwrap_or(""),
-            "path": operation.get("path").and_then(Value::as_str).unwrap_or("")
-        })
-        .to_string(),
-        CodexPatchProxyAction::DeleteFile => json!({
-            "path": operation.get("path").and_then(Value::as_str).unwrap_or("")
-        })
-        .to_string(),
-        CodexPatchProxyAction::UpdateFile => {
-            let mut args = json!({
-                "hunks": operation.get("hunks").cloned().unwrap_or_else(|| json!([])),
-                "path": operation.get("path").and_then(Value::as_str).unwrap_or("")
-            });
-            if let Some(move_to) = operation.get("move_to").and_then(Value::as_str) {
-                if !move_to.is_empty() {
-                    args["move_to"] = json!(move_to);
-                }
-            }
-            args.to_string()
-        }
-        CodexPatchProxyAction::Batch => json!({ "operations": [operation.clone()] }).to_string(),
-    }
 }
 
 fn copy_response_request_fields(response: &mut Value, original_request: Option<&Value>) {

@@ -10,9 +10,11 @@ type ManagerLifecycleOptions = {
   ready: boolean;
   weixinActive: boolean;
   multiLaunchActive?: boolean;
+  autoTakeoverActive?: boolean;
   refreshPending: () => Promise<unknown>;
   refreshWeixin: (isCurrent: () => boolean) => Promise<unknown>;
   refreshMultiLaunch?: (isCurrent: () => boolean) => Promise<unknown>;
+  refreshAutoTakeover?: (isCurrent: () => boolean) => Promise<unknown>;
   onError: (error: unknown) => void;
 };
 
@@ -112,4 +114,14 @@ export function useManagerLifecycle(options: ManagerLifecycleOptions) {
     instances.setVisible(options.ready && options.multiLaunchActive === true && visible);
     return () => instances.dispose();
   }, [options.ready, options.multiLaunchActive, visible]);
+
+  useEffect(() => {
+    const takeover = createVisibleRefresh({
+      refresh: (isCurrent) => latest.current.refreshAutoTakeover?.(isCurrent) ?? Promise.resolve(),
+      intervalMs: 3_000,
+      onError: (error) => latest.current.onError(error),
+    });
+    takeover.setVisible(options.ready && options.autoTakeoverActive === true && visible);
+    return () => takeover.dispose();
+  }, [options.ready, options.autoTakeoverActive, visible]);
 }
