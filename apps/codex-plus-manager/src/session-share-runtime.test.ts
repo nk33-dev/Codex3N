@@ -180,7 +180,7 @@ test("the in-app share toggle persists a backend update rather than a temporary 
 test("backend refresh synchronizes share immediately and skips failed heartbeat reads", async () => {
   const source = fragment("40-backend-settings.js");
   let loaded = true, installs = 0;
-  const context = vm.createContext({ codexPlusSettings: () => ({ conversationView: false }),
+  const context = vm.createContext({ codexPlusBackendSettings: {}, codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => loaded, syncOfficialUsagePolicy: () => {},
     syncCodexPlusTypingEffects: () => {}, renderCodexPlusMenu: () => {}, refreshConversationView: () => {},
     installSessionShareButton: () => { installs += 1; }, runScanStep: (fn: () => void) => fn(),

@@ -52,8 +52,12 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   let syncs = 0;
   let renders = 0;
   const context = vm.createContext({
+    codexPlusBackendSettings: {},
     codexPlusSettings: () => ({ conversationView: false }),
-    loadBackendSettingsState: async () => loads,
+    loadBackendSettingsState: async () => {
+      if (loads) context.codexPlusBackendSettings = { codexAppTypingEffect: "stars" };
+      return loads;
+    },
     syncOfficialUsagePolicy: () => {}, refreshConversationView: () => {},
     syncCodexPlusTypingEffects: () => { syncs += 1; },
     renderCodexPlusMenu: () => { renders += 1; }, runScanStep: (fn: () => void) => fn(),
@@ -66,6 +70,8 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   await context.syncBackendSettingsFromHeartbeat();
   assert.equal(syncs, 1);
   assert.equal(renders, 1);
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.equal(syncs, 1, "unchanged settings do not repaint effects");
   loads = false;
   await context.syncBackendSettingsFromHeartbeat();
   assert.equal(syncs, 1, "failed reads retain the current effect");

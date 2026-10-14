@@ -16,6 +16,11 @@
       "lines": 0
     },
     {
+      "name": "03-native-performance.js",
+      "description": "Git 仓库识别请求合并与短时缓存",
+      "lines": 0
+    },
+    {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
       "lines": 2284

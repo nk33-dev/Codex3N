@@ -572,10 +572,12 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\n{}\n{}\n{}",
+            "window.__CODEX_PLUS_WHALE_IMAGE__ = {};\nwindow.__CODEX_PLUS_PERFORMANCE_ENABLED__ = {};\n{}\n{}\n{}\n{}",
             serde_json::to_string(&image_data_uri("image/png", WHALE_DEFAULT_IMAGE))
                 .expect("whale image should serialize"),
+            settings.enhancements_enabled,
             whale_runtime_script(),
+            include_str!("../../../assets/inject/conversation-performance.js"),
             include_str!("../../../assets/inject/composer-readiness.js"),
             renderer_script()
         ),
@@ -697,6 +699,25 @@ mod tests {
         assert!(script.contains(&format!(
             "window.__CODEX_PLUS_PERF_DIAGNOSTICS__ = {enabled};"
         )));
+    }
+
+    #[test]
+    fn conversation_performance_uses_the_enhancement_switch_and_precedes_renderer() {
+        for enabled in [true, false] {
+            let settings = BackendSettings {
+                enhancements_enabled: enabled,
+                ..BackendSettings::default()
+            };
+            let script = injection_script_with_settings(57321, &settings);
+            assert!(script.contains(&format!(
+                "window.__CODEX_PLUS_PERFORMANCE_ENABLED__ = {enabled};"
+            )));
+            let performance = script
+                .find("function createConversationPerformance()")
+                .unwrap();
+            let renderer = script.find("const codexPlusIsNodeTestHarness").unwrap();
+            assert!(performance < renderer);
+        }
     }
 
     #[test]
