@@ -168,9 +168,11 @@
 
     const generation = state.runtimeGeneration;
     state.observer = new MutationObserver((mutations) => {
-      if (!isCurrentRuntime(generation)) return;
+      if (!isCurrentRuntime(generation) || document.hidden) return;
       const relevant = mutations.some((mutation) => {
         if (state.root?.contains(mutation.target)) return false;
+        const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+        if (target?.closest?.('[contenteditable="true"], textarea, input, .ProseMirror')) return false;
         return mutation.addedNodes.length || mutation.type === "characterData";
       });
       if (relevant) scheduleScan();

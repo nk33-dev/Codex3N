@@ -22,6 +22,7 @@
       "[data-codex-archive-delete-all]",
       '[data-message-author-role]',
       '[data-testid="conversation-turn"]',
+      '[data-content-search-turn-key]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       selectors.conversationViewScrollContainer,
@@ -53,17 +54,25 @@
   }
 
   function isChatContentMutation(mutation) {
-    const target = mutation.target;
-    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], main .prose')) return false;
-    const boundaries = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [role="menu"], [role="dialog"], [role="listbox"]`;
+    const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose')) return false;
+    const boundaries = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], [role="menu"], [role="dialog"], [role="listbox"]`;
     return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) => node.nodeType === 1
       && (node.matches?.(boundaries) || node.querySelector?.(boundaries)));
+  }
+
+  function isComposerContentMutation(mutation) {
+    const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+    if (!target?.closest?.('[contenteditable="true"], textarea, input, .ProseMirror')) return false;
+    // 输入框重建仍要安装增强；组词和文字编辑不需要刷新会话、菜单或侧栏。
+    return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) => node.nodeType === 1
+      && node.matches?.('[contenteditable="true"], textarea, input, [role="menu"], [role="dialog"], [role="listbox"]'));
   }
 
   function shouldScheduleScan(mutations) {
     if (!mutations) return true;
     return mutations.some((mutation) => {
-      if (isChatContentMutation(mutation)) return false;
+      if (isComposerContentMutation(mutation) || isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
@@ -81,7 +90,7 @@
   function runScheduledScan() {
     clearTimeout(window.__codexSessionDeleteScanTimer);
     window.__codexSessionDeleteScanTimer = null;
-    if (document.hidden) return;
+    if (document.hidden || codexPlusScanComposing) return;
     const work = codexPlusPendingScanWork;
     codexPlusPendingScanWork = {};
     scan(work);
@@ -93,12 +102,13 @@
   let codexPlusDeferredScanFrame = 0;
   let codexPlusScanRevision = 0;
   let codexPlusScanDisposed = false;
+  let codexPlusScanComposing = false;
 
   function scanWorkForMutations(mutations) {
     if (!mutations) return { ...codexPlusAllScanWork };
     const work = {};
     const sidebar = `${selectors.sidebarThread}, aside.app-shell-left-panel, nav[data-app-navigation-rail], [data-codex-archive-page-row]`;
-    const conversation = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"]`;
+    const conversation = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key]`;
     for (const mutation of mutations) {
       if (!shouldScheduleScan([mutation])) continue;
       const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes].filter((node) => node.nodeType === 1 && !isExtensionUiNode(node));
@@ -123,9 +133,9 @@
   function scheduleScan(mutations) {
     if (codexPlusScanDisposed) return;
     const work = scanWorkForMutations(mutations);
-    if (!Object.keys(work).length) return;
+    if (!Object.keys(work).length && !Object.keys(codexPlusPendingScanWork).length) return;
     Object.assign(codexPlusPendingScanWork, work);
-    if (document.hidden) {
+    if (document.hidden || codexPlusScanComposing) {
       window.__codexSessionDeleteLastMutations = null;
       return;
     }
@@ -169,6 +179,22 @@
     } else scheduleScan();
   }
 
+  function onCodexPlusScanComposition(event) {
+    if (event.type === "compositionstart") {
+      codexPlusScanComposing = true;
+      cancelDeferredScan();
+      clearTimeout(window.__codexSessionDeleteScanTimer);
+      window.__codexSessionDeleteScanTimer = null;
+      window.__codexSessionDeleteScanPending = false;
+      if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+      conversationViewState.rafId = 0;
+    } else if (codexPlusScanComposing) {
+      codexPlusScanComposing = false;
+      if (Object.keys(codexPlusPendingScanWork).length) scheduleScan([]);
+      if (typeof scheduleConversationViewAlign === "function") scheduleConversationViewAlign();
+    }
+  }
+
   window.__codexPlusScanCleanup = () => {
     codexPlusScanDisposed = true;
     cancelDeferredScan();
@@ -181,6 +207,10 @@
     document.removeEventListener("visibilitychange", onCodexPlusScanVisibility);
     document.removeEventListener("click", onCodexPlusScanNavigation, true);
     document.removeEventListener("keydown", onCodexPlusScanNavigation, true);
+    document.removeEventListener("compositionstart", onCodexPlusScanComposition, true);
+    document.removeEventListener("compositionend", onCodexPlusScanComposition, true);
+    window.removeEventListener("blur", onCodexPlusScanComposition);
+    window.__codexPlusGitPerformanceCleanup?.();
     window.removeEventListener("popstate", onCodexPlusScanNavigation);
     window.removeEventListener("hashchange", onCodexPlusScanNavigation);
     window.navigation?.removeEventListener?.("currententrychange", onCodexPlusScanNavigation);
@@ -188,6 +218,9 @@
   document.addEventListener("visibilitychange", onCodexPlusScanVisibility);
   document.addEventListener("click", onCodexPlusScanNavigation, true);
   document.addEventListener("keydown", onCodexPlusScanNavigation, true);
+  document.addEventListener("compositionstart", onCodexPlusScanComposition, true);
+  document.addEventListener("compositionend", onCodexPlusScanComposition, true);
+  window.addEventListener("blur", onCodexPlusScanComposition);
   window.addEventListener("popstate", onCodexPlusScanNavigation);
   window.addEventListener("hashchange", onCodexPlusScanNavigation);
   window.navigation?.addEventListener?.("currententrychange", onCodexPlusScanNavigation);

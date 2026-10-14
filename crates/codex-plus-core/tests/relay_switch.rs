@@ -1308,6 +1308,7 @@ fn switch_restores_profiles_filtered_out_of_request() {
         ..RelayProfile::default()
     };
     let original = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "deepseek".to_string(),
         relay_profiles: vec![
             pure_profile("deepseek", "https://deepseek.example/v1", "sk-deepseek"),
@@ -1338,6 +1339,7 @@ fn switch_restores_profiles_filtered_out_of_request() {
     store.save(&original).unwrap();
 
     let filtered = BackendSettings {
+        relay_profiles_enabled: true,
         active_relay_id: "agg".to_string(),
         relay_profiles: vec![aggregate_profile],
         ..BackendSettings::default()

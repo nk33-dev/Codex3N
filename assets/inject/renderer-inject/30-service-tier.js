@@ -1049,6 +1049,8 @@
       const includedNativeModels = codexPlusBackendSettings.codexAppIncludeNativeModels !== false;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      window.__codexPlusConversationPerformance?.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false);
+      if (codexPlusBackendSettings.enhancementsEnabled === false) window.__codexPlusGitPerformanceCleanup?.();
       if (includedNativeModels !== (codexPlusBackendSettings.codexAppIncludeNativeModels !== false)) refreshCodexModelQueries();
     } catch (_) {
       return false;

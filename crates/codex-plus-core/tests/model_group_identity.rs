@@ -206,7 +206,17 @@ fn duplicate_member_entries_do_not_create_duplicate_groups() {
         unique.len(),
         "重复成员不该发布重复模型：{all_slugs:?}"
     );
-    assert_eq!(all_slugs.len(), 4, "两个成员各 2 个模型：{all_slugs:?}");
+    for slug in [
+        "relay-a-main",
+        "relay-a-mini",
+        "cpx-relay-b/relay-b-main",
+        "cpx-relay-b/relay-b-mini",
+    ] {
+        assert!(all_slugs.contains(&slug), "成员模型必须保留：{slug}");
+    }
+    // 个人版同时保留原生模型，每个成员组都应带上同一份原生目录。
+    assert!(all_slugs.len() > 4, "原生模型必须保留：{all_slugs:?}");
+    let models_per_group = all_slugs.len() / 2;
 
     let group_ids: Vec<&str> = catalog["models"]
         .as_array()
@@ -216,12 +226,12 @@ fn duplicate_member_entries_do_not_create_duplicate_groups() {
         .collect();
     assert_eq!(
         group_ids.iter().filter(|id| **id == "relay-a").count(),
-        2,
+        models_per_group,
         "relay-a 只作为一个分组出现：{group_ids:?}"
     );
     assert_eq!(
         group_ids.iter().filter(|id| **id == "relay-b").count(),
-        2,
+        models_per_group,
         "relay-b 只作为一个分组出现：{group_ids:?}"
     );
 }

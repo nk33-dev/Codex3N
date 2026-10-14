@@ -219,6 +219,7 @@
   function scanLightweight(work = codexPlusAllScanWork) {
     installStyle();
     if (work.shell || work.models) {
+      if (typeof installCodexPlusGitPerformance === "function") void installCodexPlusGitPerformance();
       installCodexServiceTierDispatcherPatch();
       installCodexAppServerClientPrototypePatch();
       installCodexRemoteSessionRecoveryListener();
@@ -965,7 +966,7 @@
 
   function scan(work = codexPlusAllScanWork) {
     if (codexPlusScanDisposed) return;
-    if (document.hidden) {
+    if (document.hidden || (typeof codexPlusScanComposing !== "undefined" && codexPlusScanComposing)) {
       Object.assign(codexPlusPendingScanWork, work);
       return;
     }

@@ -29,6 +29,8 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
 
 Upstream provider, plugin, WeChat, skin, user-script, independent dictation and cache-cleaning features remain available. See the [personal documentation](doc/person/README.md) for behavior and code entry points. In official-login + API mode, model requests always use the configured API; test it in the manager before use.
 
+The usage status line below the composer is enabled by default. Aggregated model menus can fold by provider. Maintenance includes login startup and automatic takeover of the official app on macOS.
+
 ## Development and maintenance
 
 See the [maintenance guide](doc/person/maintenance.md) for synchronization, validation and release steps. Development and releases use `personal`; versions follow `<upstream-version>-3n.N`.
