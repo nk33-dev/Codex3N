@@ -5683,8 +5683,12 @@ function DreamSkinScreen({
   const currentItem = library?.themes.find((item) => pendingRestart
     ? item.key === pendingRestart.currentThemeKey
     : item.active);
-  const currentThemeName = pendingRestart?.currentThemeName || currentItem?.name || t("未记录");
-  const currentThemeLabel = status?.liveApplied
+  const nativeAppearance = !masterEnabled || !form.codexAppDreamSkinEnabled
+    || form.codexAppDreamSkinPaused || status?.paused === true;
+  const currentThemeName = nativeAppearance
+    ? t("Codex 原生外观")
+    : pendingRestart?.currentThemeName || currentItem?.name || t("未记录");
+  const currentThemeLabel = nativeAppearance || status?.liveApplied
     ? t("当前运行")
     : pendingRestart ? t("此前配置") : t("当前配置");
   const stateLabel = !masterEnabled
@@ -5924,9 +5928,9 @@ function DreamSkinScreen({
                     ? dreamSkinWindowsPreviewUrl
                     : dreamSkinMacPreviewUrl;
                 const cardDirty = item.key === selectedTheme && dirty;
-                const currentRunning = pendingRestart
+                const currentRunning = !nativeAppearance && (pendingRestart
                   ? pendingRestart.currentThemeKey === item.key
-                  : item.active;
+                  : item.active);
                 const pendingApplication = pendingRestart?.pendingThemeKey === item.key;
                 return (
                   <article
@@ -6311,6 +6315,17 @@ function DreamSkinColorField({
   );
 }
 
+function DreamSkinPreview({ src, name }: { src: string; name: string }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (!src || failedUrl === src) {
+    return <div className="dream-skin-preview-placeholder" role="img" aria-label={tf("{0}：预览暂不可用", [name])}>
+      <Palette aria-hidden="true" className="h-8 w-8" />
+      <span>{t("预览暂不可用")}</span>
+    </div>;
+  }
+  return <img alt={name} loading="lazy" onError={() => setFailedUrl(src)} src={src} />;
+}
+
 function DreamSkinMarketCard({
   theme,
   actions,
@@ -6330,15 +6345,7 @@ function DreamSkinMarketCard({
   return (
     <article className="dream-skin-market-card">
       <div className="dream-skin-market-preview">
-        <img
-          alt={theme.name}
-          loading="lazy"
-          onError={(event) => {
-            event.currentTarget.onerror = null;
-            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
-          }}
-          src={theme.previewUrl}
-        />
+        <DreamSkinPreview name={theme.name} src={theme.previewUrl} />
         <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
       </div>
       <div className="dream-skin-market-copy">
@@ -6497,15 +6504,7 @@ function DreamSkinCommunityCard({
   return (
     <article className="dream-skin-community-card">
       <div className="dream-skin-community-preview">
-        <img
-          alt={theme.name}
-          loading="lazy"
-          onError={(event) => {
-            event.currentTarget.onerror = null;
-            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
-          }}
-          src={theme.previewUrl}
-        />
+        <DreamSkinPreview name={theme.name} src={theme.previewUrl} />
         <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
       </div>
       <div className="dream-skin-community-copy">
@@ -7052,7 +7051,7 @@ function MaintenanceScreen({
               {autoTakeover?.lastTakeoverAtMs ? (
                 <p className="hint">{tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()])}</p>
               ) : null}
-              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS。")}</p>}
+              {autoTakeover?.platformSupported ? null : <p className="hint">{t("自动接管目前只支持 macOS 与 Windows。")}</p>}
               <p className="hint">{t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}</p>
               <Toolbar>
                 <Button variant="secondary" onClick={() => void actions.takeOverNow()}>{t("立即接管")}</Button>

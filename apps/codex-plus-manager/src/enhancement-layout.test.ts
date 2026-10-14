@@ -35,3 +35,7 @@ test("feature switch cards keep their own height and expanded blocks take a full
     "余额配置块必须排在开关卡之后，否则会在网格里留下空洞",
   );
 });
+
+test("enhancement controls scroll with the page so feature headings stay visible", () => {
+  assert.doesNotMatch(ruleBody(".enhance-page-controls"), /position:\s*(sticky|fixed)/);
+});

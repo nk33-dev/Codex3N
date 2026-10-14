@@ -381,5 +381,14 @@ describe("dream skin theme helpers", () => {
 
     assert.equal(assetProtocol?.enable, true);
     assert.deepEqual(assetProtocol?.scope, ["$HOME/.codex-session-delete/dream-skin/**"]);
+    for (const policy of [config.app.security.csp, config.app.security.devCsp]) {
+      const images = policy.split(";").find((directive: string) => directive.trim().startsWith("img-src "));
+      assert.ok(images.includes("https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/"));
+      assert.ok(images.includes("https://api.dreamskin.cc/v1/themes/"));
+      assert.doesNotMatch(images, /(?:^|\s)(https:|\*)(?:\s|$)/);
+      const scripts = policy.split(";").find((directive: string) => directive.trim().startsWith("script-src "));
+      const connections = policy.split(";").find((directive: string) => directive.trim().startsWith("connect-src "));
+      assert.doesNotMatch(scripts + connections, /dreamskin\.cc|raw\.githubusercontent/);
+    }
   });
 });

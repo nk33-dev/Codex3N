@@ -1298,7 +1298,9 @@ export const EN_PLAIN: Record<string, string> = {
   "官方 App": "Official app",
   "调试端口": "Debug port",
   "本次已跳过自动接管，重启官方 App 后恢复。": "Auto-takeover is skipped for this instance; it resumes after you restart the official app.",
-  "自动接管目前只支持 macOS。": "Auto-takeover is currently macOS only.",
+  "自动接管目前只支持 macOS 与 Windows。": "Auto-takeover currently supports macOS and Windows.",
+  "Codex 原生外观": "Codex native appearance",
+  "预览暂不可用": "Preview unavailable",
   "仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。": "Only effective while Codex++ is running; the official app is restarted automatically when needed.",
   "立即接管": "Take over now",
   "本次不接管": "Skip this time",
@@ -1417,6 +1419,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "❌ 认证失败（HTTP {0}）：API Key 或模型名可能不正确": "❌ Auth failed (HTTP {0}): the API key or model name may be incorrect",
   "❌ 服务返回错误（HTTP {0}）": "❌ Server returned an error (HTTP {0})",
   "上次接管：{0}": "Last takeover: {0}",
+  "{0}：预览暂不可用": "{0}: preview unavailable",
   "「{0}」是当前「配置模型」：Codex 会始终把它发布在模型列表里，删掉保存后也会被加回来。要减少模型，请先把上方「配置模型」改成要保留的那个，再删这一行。": "\"{0}\" is the configured model: Codex always publishes it in the model list, so removing it only brings it back on save. To drop models, change the configured model above to the one you keep, then delete this row.",
   "默认供应商：{0}。不带 cpx- 前缀的请求（旧会话、自动压缩带的模型名等）会原样交给它；带 cpx- 前缀但解析不出来的 ID 一律报错，不回落。": "Default provider: {0}. Requests without the cpx- prefix (old sessions, auto-compaction model names, ...) go to it verbatim; cpx- prefixed IDs that cannot be resolved are rejected instead of falling back.",
 };

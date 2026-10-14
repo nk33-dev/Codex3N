@@ -10,6 +10,8 @@
 
 `apps/codex-plus-manager/src-tauri/tauri.conf.json` 明确限制脚本、连接、图片、字体、对象和嵌入来源；开发模式只为本地 Vite 增加连接源。`assetProtocol.scope` 只允许 `$HOME/.codex-session-delete/dream-skin/**`，图片预览通过 `convertFileSrc` 使用它；扩大该路径前需要重新审查。`capabilities/default.json` 将文件对话框限于打开与保存；外链只由 `commands/external_url.rs` 在 Rust 侧校验 HTTPS 与站点白名单后交给系统浏览器。微信二维码 SVG 由本地 QR 编码器生成，前端只作为图片加载，不作为 HTML 注入。
 
+主题卡片的远程封面仅允许 `https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/` 与 `https://api.dreamskin.cc/v1/themes/` 两个图片来源路径；生产与开发 CSP 保持一致。失败显示不可用占位，不使用其他主题图片代替。脚本与连接来源不随图片白名单扩大。
+
 ## 注入页的设置下发
 
 注入进 Codex 渲染进程的脚本通过本地 helper 的桥接读设置，这条路**不下发任何密钥**：`crates/codex-plus-core/src/routes.rs` 的 `strip_secret_fields` 递归剥掉所有以 `ApiKey` 结尾或等于 `apiKey` 的字段（与落盘加密共用 `settings::is_secret_field_name`，新增 `*ApiKey` 字段自动生效），并删除 `apiKeys` 数组；`relayProfiles[].apiKey`、`relayApiKey`、`vlmApiKey`、`codexAppStepwiseApiKey` 都不出现在响应里。注入页需要 Key 列表时走 `/relay-api-keys`，该路由只回 `id`/`name`。`codexAppStepwiseApiKeyEnv` 是环境变量名，按明文保留。

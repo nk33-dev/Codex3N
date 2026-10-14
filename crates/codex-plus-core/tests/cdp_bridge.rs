@@ -3722,12 +3722,12 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("toggleCodexServiceTierFromBadge"));
     assert!(script.contains("wireCodexServiceTierBadge"));
     assert!(script.contains("codexServiceTierBadgePlacement"));
-    assert!(script.contains("codexServiceTierBadgeFooterGroup"));
+    assert!(script.contains("footer.querySelector('[data-codex-intelligence-trigger]')"));
     assert!(script.contains("codexServiceTierFindComposerEl"));
     assert!(script.contains("codexServiceTierVisibleComposerFooters"));
     assert!(script.contains("codexServiceTierBestComposerFooter"));
     assert!(script.contains("codexServiceTierComposerCandidates"));
-    assert!(script.contains("codexServiceTierComposerScore"));
+    assert!(script.contains("return footers.length === 1 ? footers[0] : null"));
     assert!(script.contains("data-codex-service-tier-badge"));
     assert!(script.contains("codexServiceTierBadgeWired"));
     assert!(script.contains("setAttribute(\"role\", \"button\")"));

@@ -234,9 +234,9 @@
   }
 
   function codexServiceTierBadgeState() {
-    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "...", disabled: true, title: "服务模式：正在检查后端连接" };
+    if (codexPlusBackendStatus.status === "checking") return { tier: "loading", label: "读取中", disabled: true, title: "服务模式：正在检查后端连接" };
     if (codexPlusBackendStatus.status && codexPlusBackendStatus.status !== "ok") return { tier: "failed", label: "未连接", disabled: true, title: "服务模式：后端未连接，无法切换" };
-    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "...", title: "服务模式：正在读取" };
+    if (codexServiceTierState.status === "loading") return { tier: "loading", label: "读取中", disabled: true, title: "服务模式：正在读取" };
     if (codexServiceTierState.status === "failed") return { tier: "failed", label: "?", title: "服务模式：读取失败" };
     const fastAvailability = codexServiceTierFastAvailability();
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
@@ -260,11 +260,13 @@
   function refreshCodexServiceTierBadges() {
     const state = codexServiceTierBadgeState();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((node) => {
-      node.dataset.tier = state.tier;
-      node.dataset.disabled = String(!!state.disabled);
-      node.textContent = state.label;
-      node.title = state.title;
-      node.setAttribute("aria-label", state.title);
+      if (node.dataset.tier !== state.tier) node.dataset.tier = state.tier;
+      const disabled = String(!!state.disabled);
+      if (node.dataset.disabled !== disabled) node.dataset.disabled = disabled;
+      if (node.textContent !== state.label) node.textContent = state.label;
+      if (node.title !== state.title) node.title = state.title;
+      if (node.getAttribute("aria-label") !== state.title) node.setAttribute("aria-label", state.title);
+      if (node.getAttribute("aria-disabled") !== disabled) node.setAttribute("aria-disabled", disabled);
     });
   }
 

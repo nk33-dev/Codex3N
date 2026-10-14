@@ -16,7 +16,7 @@
 //!    activate 不重注入。这种状态必须显式暴露，不能显示成「已接管」。
 //! 4. **多开**：`osascript quit` 按应用名发事件，会把用户正在用的多开实例一起退出，
 //!    必须先跳过。
-//! 5. **平台**：Windows 走 AUMID 激活，语义完全不同，非 macOS 一律 `Skip`。
+//! 5. **平台**：macOS 与 Windows 使用各自的进程探测和退出入口，其他平台跳过。
 
 use std::path::Path;
 use std::time::Duration;
