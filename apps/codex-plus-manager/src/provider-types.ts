@@ -20,6 +20,7 @@ export type RelayAggregateConfig = {
   members: RelayAggregateMember[];
   routes?: RelayAggregateRoute[];
   modelAggregationEnabled?: boolean;
+  defaultRelayId?: string;
 };
 
 export type RelayProfile = {
@@ -69,6 +70,7 @@ export type AggregateRelayProfile = {
   name: string;
   sessionProvider?: RelaySessionProvider;
   modelAggregationEnabled?: boolean;
+  defaultRelayId?: string;
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
@@ -88,6 +90,8 @@ export type ToolShard = {
 export type BackendSettings = WhaleBalanceSettings & {
   dictation: DictationSettings;
   codexAppPath: string;
+  codexAppAutoTakeover: boolean;
+  codexAppAutoTakeoverWhenActive: string;
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
   providerSyncSavedProviders: string[];
@@ -96,11 +100,13 @@ export type BackendSettings = WhaleBalanceSettings & {
   relayProfilesEnabled: boolean;
   localConfigProviderImported: boolean;
   enhancementsEnabled: boolean;
+  codexAppStandaloneQuotaUnlock: boolean;
   codexAppPluginMarketplaceUnlock: boolean;
   codexAppModelWhitelistUnlock: boolean;
   codexAppIncludeNativeModels: boolean;
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
+  codexAppUsageStatusLine: boolean;
   codexAppSessionShare: boolean;
   codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";
   codexAppPasteFix: boolean;

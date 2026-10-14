@@ -51,4 +51,6 @@
 
 验证：`model-rpc-compat.test.ts`、`renderer-model-runtime.test.ts` 和 `cdp_bridge.rs::injection_script_applies_fast_service_tier_contract`。
 
-模型聚合目录由 `aggregate_catalog.rs` 生成 `cpx-<供应商ID>/<模型名>`，协议代理解析到对应成员后使用真实模型名；未知绑定和无前缀模型拒绝进入模型聚合池。成员目录沿用各自窗口与元数据；官方登录成员通过 `official_login.rs` 获取凭据，再由 `model_catalog.rs` 拉取官方可见模型。注入目录读取仍使用缓存设置并受供应商总开关控制。验证见 aggregate_catalog 单测、`protocol_proxy.rs` 聚合回归、`auto-compact.test.ts` 与 `model-reasoning.test.ts`。
+模型聚合目录由 `aggregate_catalog.rs` 生成。`aggregate.defaultRelayId` 指定默认成员，其模型使用裸名发布；其他成员使用 `cpx-<供应商ID>/<模型名>`。裸名请求交给默认成员，未知成员前缀报错；单个成员不可用时只隔离该成员。成员目录沿用各自窗口与元数据，补齐 `base_instructions`，并检查公共配置的 `multi_agent_v2` 兼容性。官方登录成员通过 `official_login.rs` 获取凭据，再由 `model_catalog.rs` 拉取官方可见模型。
+
+`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 在原生模型菜单按供应商折叠；组内继续使用个人版自然排序，折叠偏好按供应商保存。单供应商保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。
