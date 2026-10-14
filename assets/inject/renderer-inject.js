@@ -817,6 +817,126 @@
     }
     return { start, stop, snapshot, begin };
   }
+  function patchCodexPlusGitWorkerPerformance(worker) {
+    if (worker?.workerId !== "git" || typeof worker.request !== "function"
+        || !(worker.allEventListeners instanceof Set)) return null;
+    const original = worker.request;
+    const entries = new Map();
+    let revision = 0, disposed = false;
+    const invalidate = () => { revision += 1; entries.clear(); };
+    const clone = (value) => structuredClone(value);
+
+    function waitForEntry(entry, signal) {
+      entry.waiters += 1;
+      return new Promise((resolve, reject) => {
+        let finished = false;
+        const finish = (callback, value) => {
+          if (finished) return;
+          finished = true;
+          signal?.removeEventListener("abort", abort);
+          entry.waiters -= 1;
+          callback(value);
+        };
+        const abort = () => {
+          finish(reject, new DOMException("Git 查询已取消", "AbortError"));
+          if (!entry.settled && entry.waiters === 0) {
+            if (entries.get(entry.key) === entry) entries.delete(entry.key);
+            entry.controller.abort();
+          }
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+        entry.promise.then((value) => {
+          try { finish(resolve, clone(value)); } catch (error) { finish(reject, error); }
+        }, (error) => finish(reject, error));
+      });
+    }
+
+    const patched = function codexPlusGitPerformanceRequest(request) {
+      const params = request?.params;
+      // watchForGitInit 会安装监听；只合并无副作用的本机仓库识别。
+      if (disposed || request?.method !== "stable-metadata" || !params?.cwd
+          || params.watchForGitInit === true || !["durable", "local"].includes(params.hostConfig?.id)
+          || request.signal?.aborted) {
+        invalidate();
+        return Reflect.apply(original, this, arguments);
+      }
+      const key = JSON.stringify([params.cwd, params.hostConfig, params.watchForGitInit]);
+      let entry = entries.get(key);
+      if (entry?.settled && entry.expiresAt <= Date.now()) {
+        entries.delete(key);
+        entry = null;
+      }
+      if (!entry) {
+        const currentRevision = revision;
+        entry = { key, controller: new AbortController(), waiters: 0, settled: false, expiresAt: 0 };
+        const created = entry;
+        entries.set(key, created);
+        if (entries.size > 64) entries.delete(entries.keys().next().value);
+        created.promise = Promise.resolve().then(() => original.call(worker, { ...request, signal: created.controller.signal })).then((value) => {
+          created.settled = true;
+          const valid = value && typeof value.root === "string" && typeof value.commonDir === "string";
+          if (!disposed && currentRevision === revision && valid && entries.get(key) === created) {
+            created.expiresAt = Date.now() + 2000;
+          } else if (entries.get(key) === created) entries.delete(key);
+          return value;
+        }, (error) => {
+          created.settled = true;
+          if (entries.get(key) === created) entries.delete(key);
+          throw error;
+        });
+      }
+      return waitForEntry(entry, request.signal);
+    };
+    worker.request = patched;
+    worker.allEventListeners.add(invalidate);
+    window.addEventListener("focus", invalidate);
+    document.addEventListener("visibilitychange", invalidate);
+    return () => {
+      disposed = true;
+      invalidate();
+      if (worker.request === patched) worker.request = original;
+      worker.allEventListeners.delete(invalidate);
+      window.removeEventListener("focus", invalidate);
+      document.removeEventListener("visibilitychange", invalidate);
+    };
+  }
+
+  let codexPlusGitPerformanceInstalling = false;
+  let codexPlusGitPerformanceRetryAt = 0;
+  async function installCodexPlusGitPerformance() {
+    if (codexPlusGitPerformanceInstalling || window.__codexPlusGitPerformanceCleanup || codexPlusScanDisposed
+        || codexPlusBackendSettings.enhancementsEnabled === false || !codexPlusIsWindowsPlatform
+        || Date.now() < codexPlusGitPerformanceRetryAt) return;
+    codexPlusGitPerformanceInstalling = true;
+    codexPlusGitPerformanceRetryAt = Date.now() + 30000;
+    try {
+      const module = await loadOptionalCodexAppModule("app-shared-");
+      if (codexPlusScanDisposed || codexPlusBackendSettings.enhancementsEnabled === false || !module) return;
+      // 导出名随构建变化，按已核对的 worker 工厂结构识别。
+      const factories = Object.values(module).filter((candidate) => {
+        if (typeof candidate !== "function") return false;
+        const source = String(candidate);
+        return /case\s*[`'"]git[`'"]/.test(source) && /case\s*[`'"]computer-use[`'"]/.test(source)
+          && source.includes("new ") && source.includes(".set(");
+      });
+      if (factories.length !== 1) {
+        codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
+        return;
+      }
+      const cleanup = patchCodexPlusGitWorkerPerformance(factories[0]("git"));
+      codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
+      if (cleanup) window.__codexPlusGitPerformanceCleanup = () => {
+        cleanup();
+        window.__codexPlusGitPerformanceCleanup = null;
+        codexPlusGitPerformanceRetryAt = 0;
+      };
+    } catch {
+      // 宿主不具备这套客户端时沿用原生查询。
+    } finally {
+      codexPlusGitPerformanceInstalling = false;
+    }
+  }
   function installStyle() {
     const existingStyle = document.getElementById(styleId);
     if (existingStyle?.dataset.codexDeleteStyleVersion === codexDeleteStyleVersion) return;
@@ -5347,6 +5467,8 @@
       const includedNativeModels = codexPlusBackendSettings.codexAppIncludeNativeModels !== false;
       codexPlusBackendSettings = { ...codexPlusBackendSettings, ...settings };
       codexPlusBackendSettingsLoaded = true;
+      window.__codexPlusConversationPerformance?.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false);
+      if (codexPlusBackendSettings.enhancementsEnabled === false) window.__codexPlusGitPerformanceCleanup?.();
       if (includedNativeModels !== (codexPlusBackendSettings.codexAppIncludeNativeModels !== false)) refreshCodexModelQueries();
     } catch (_) {
       return false;
@@ -5390,8 +5512,9 @@
     syncBackendSettingsInFlight = true;
     try {
       const previousConversationView = !!codexPlusSettings().conversationView;
+      const previousSettings = JSON.stringify(codexPlusBackendSettings);
       const loaded = await loadBackendSettingsState();
-      if (loaded) {
+      if (loaded && previousSettings !== JSON.stringify(codexPlusBackendSettings)) {
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
@@ -5425,6 +5548,8 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    window.__codexPlusConversationPerformance?.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false);
+    if (codexPlusBackendSettings.enhancementsEnabled === false) window.__codexPlusGitPerformanceCleanup?.();
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
@@ -5496,25 +5621,32 @@
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
-        node.textContent = `Codex++ ${codexPlusVersion}`;
+        const text = `Codex++ ${codexPlusVersion}`;
+        if (node.textContent !== text) node.textContent = text;
       });
     }
     const labelFallback = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，自动修复中" : status === "checking" ? "正在检查后端…" : "未连接";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
-      label.dataset.status = status;
-      label.textContent = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
+      if (label.dataset.status !== status) label.dataset.status = status;
+      const text = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
+      if (label.textContent !== text) label.textContent = text;
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
-      indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (indicator.dataset.status !== status) indicator.dataset.status = status;
+      const title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (indicator.title !== title) indicator.title = title;
     });
     const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
     if (sidebarStatus) {
-      sidebarStatus.dataset.status = status;
-      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (sidebarStatus.dataset.status !== status) sidebarStatus.dataset.status = status;
+      const title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (sidebarStatus.title !== title) sidebarStatus.title = title;
     }
-    refreshCodexServiceTierControls();
+    if (renderBackendStatus.__lastStatus !== status) {
+      renderBackendStatus.__lastStatus = status;
+      refreshCodexServiceTierControls();
+    }
   }
 
   function withBackendTimeout(request) {
@@ -13683,13 +13815,15 @@
   }
 
   function scheduleConversationViewAlign(frames = 16) {
-    if (document.hidden || !codexPlusSettings().conversationView || conversationViewState.rafId) return;
+    if (document.hidden || (typeof codexPlusScanComposing !== "undefined" && codexPlusScanComposing)
+        || !codexPlusSettings().conversationView || conversationViewState.rafId) return;
     conversationViewState.settleFramesLeft = Math.min(16, Math.max(1, frames));
     conversationViewState.stableFrames = 0;
     conversationViewState.lastGeometry = null;
     const tick = () => {
       conversationViewState.rafId = 0;
-      if (document.hidden || !codexPlusSettings().conversationView) return;
+      if (document.hidden || (typeof codexPlusScanComposing !== "undefined" && codexPlusScanComposing)
+          || !codexPlusSettings().conversationView) return;
       const finishTiming = window.__codexPlusPerf?.begin("layout");
       let geometry;
       try { geometry = conversationViewAlignNow(); } finally { finishTiming?.(); }
@@ -15446,6 +15580,7 @@
   function scanLightweight(work = codexPlusAllScanWork) {
     installStyle();
     if (work.shell || work.models) {
+      if (typeof installCodexPlusGitPerformance === "function") void installCodexPlusGitPerformance();
       installCodexServiceTierDispatcherPatch();
       installCodexAppServerClientPrototypePatch();
       installCodexRemoteSessionRecoveryListener();
@@ -16192,7 +16327,7 @@
 
   function scan(work = codexPlusAllScanWork) {
     if (codexPlusScanDisposed) return;
-    if (document.hidden) {
+    if (document.hidden || (typeof codexPlusScanComposing !== "undefined" && codexPlusScanComposing)) {
       Object.assign(codexPlusPendingScanWork, work);
       return;
     }
@@ -16840,6 +16975,7 @@
       "[data-codex-archive-delete-all]",
       '[data-message-author-role]',
       '[data-testid="conversation-turn"]',
+      '[data-content-search-turn-key]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       selectors.conversationViewScrollContainer,
@@ -16872,17 +17008,25 @@
   }
 
   function isChatContentMutation(mutation) {
-    const target = mutation.target;
-    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], main .prose')) return false;
-    const boundaries = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [role="menu"], [role="dialog"], [role="listbox"]`;
+    const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+    if (!target?.closest?.('[data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], main .prose')) return false;
+    const boundaries = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key], [role="menu"], [role="dialog"], [role="listbox"]`;
     return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) => node.nodeType === 1
       && (node.matches?.(boundaries) || node.querySelector?.(boundaries)));
+  }
+
+  function isComposerContentMutation(mutation) {
+    const target = mutation.target?.nodeType === 3 ? mutation.target.parentElement : mutation.target;
+    if (!target?.closest?.('[contenteditable="true"], textarea, input, .ProseMirror')) return false;
+    // 输入框重建仍要安装增强；组词和文字编辑不需要刷新会话、菜单或侧栏。
+    return ![...mutation.addedNodes, ...mutation.removedNodes].some((node) => node.nodeType === 1
+      && node.matches?.('[contenteditable="true"], textarea, input, [role="menu"], [role="dialog"], [role="listbox"]'));
   }
 
   function shouldScheduleScan(mutations) {
     if (!mutations) return true;
     return mutations.some((mutation) => {
-      if (isChatContentMutation(mutation)) return false;
+      if (isComposerContentMutation(mutation) || isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
       const changedNodes = [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)];
@@ -16901,7 +17045,7 @@
     window.__codexSessionDeleteScanPending = false;
     clearTimeout(window.__codexSessionDeleteScanTimer);
     window.__codexSessionDeleteScanTimer = null;
-    if (document.hidden) return;
+    if (document.hidden || codexPlusScanComposing) return;
     const work = codexPlusPendingScanWork;
     codexPlusPendingScanWork = {};
     scan(work);
@@ -16913,12 +17057,13 @@
   let codexPlusDeferredScanFrame = 0;
   let codexPlusScanRevision = 0;
   let codexPlusScanDisposed = false;
+  let codexPlusScanComposing = false;
 
   function scanWorkForMutations(mutations) {
     if (!mutations) return { ...codexPlusAllScanWork };
     const work = {};
     const sidebar = `${selectors.sidebarThread}, aside.app-shell-left-panel, nav[data-app-navigation-rail], [data-codex-archive-page-row]`;
-    const conversation = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"]`;
+    const conversation = `${selectors.conversationViewScrollContainer}, ${selectors.conversationViewFooter}, [data-codex-composer-root], [data-message-author-role], [data-testid="conversation-turn"], [data-content-search-turn-key]`;
     for (const mutation of mutations) {
       if (!shouldScheduleScan([mutation])) continue;
       const nodes = [mutation.target, ...mutation.addedNodes, ...mutation.removedNodes].filter((node) => node.nodeType === 1 && !isExtensionUiNode(node));
@@ -16943,9 +17088,9 @@
   function scheduleScan(mutations) {
     if (codexPlusScanDisposed) return;
     const work = scanWorkForMutations(mutations);
-    if (!Object.keys(work).length) return;
+    if (!Object.keys(work).length && !Object.keys(codexPlusPendingScanWork).length) return;
     Object.assign(codexPlusPendingScanWork, work);
-    if (document.hidden) {
+    if (document.hidden || codexPlusScanComposing) {
       window.__codexSessionDeleteLastMutations = null;
       return;
     }
@@ -16988,6 +17133,22 @@
     } else scheduleScan();
   }
 
+  function onCodexPlusScanComposition(event) {
+    if (event.type === "compositionstart") {
+      codexPlusScanComposing = true;
+      cancelDeferredScan();
+      clearTimeout(window.__codexSessionDeleteScanTimer);
+      window.__codexSessionDeleteScanTimer = null;
+      window.__codexSessionDeleteScanPending = false;
+      if (conversationViewState.rafId) cancelAnimationFrame(conversationViewState.rafId);
+      conversationViewState.rafId = 0;
+    } else if (codexPlusScanComposing) {
+      codexPlusScanComposing = false;
+      if (Object.keys(codexPlusPendingScanWork).length) scheduleScan([]);
+      if (typeof scheduleConversationViewAlign === "function") scheduleConversationViewAlign();
+    }
+  }
+
   window.__codexPlusScanCleanup = () => {
     codexPlusScanDisposed = true;
     cancelDeferredScan();
@@ -17000,6 +17161,10 @@
     document.removeEventListener("visibilitychange", onCodexPlusScanVisibility);
     document.removeEventListener("click", onCodexPlusScanNavigation, true);
     document.removeEventListener("keydown", onCodexPlusScanNavigation, true);
+    document.removeEventListener("compositionstart", onCodexPlusScanComposition, true);
+    document.removeEventListener("compositionend", onCodexPlusScanComposition, true);
+    window.removeEventListener("blur", onCodexPlusScanComposition);
+    window.__codexPlusGitPerformanceCleanup?.();
     window.removeEventListener("popstate", onCodexPlusScanNavigation);
     window.removeEventListener("hashchange", onCodexPlusScanNavigation);
     window.navigation?.removeEventListener?.("currententrychange", onCodexPlusScanNavigation);
@@ -17007,6 +17172,9 @@
   document.addEventListener("visibilitychange", onCodexPlusScanVisibility);
   document.addEventListener("click", onCodexPlusScanNavigation, true);
   document.addEventListener("keydown", onCodexPlusScanNavigation, true);
+  document.addEventListener("compositionstart", onCodexPlusScanComposition, true);
+  document.addEventListener("compositionend", onCodexPlusScanComposition, true);
+  window.addEventListener("blur", onCodexPlusScanComposition);
   window.addEventListener("popstate", onCodexPlusScanNavigation);
   window.addEventListener("hashchange", onCodexPlusScanNavigation);
   window.navigation?.addEventListener?.("currententrychange", onCodexPlusScanNavigation);

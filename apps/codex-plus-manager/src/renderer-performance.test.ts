@@ -249,6 +249,64 @@ test("输入法组合按键不会被当成会话导航", () => {
   assert.equal(app.time.timers.size, 0);
 });
 
+test("输入法组词期间暂停已有扫描，结束后合并补扫，失焦释放状态", () => {
+  const app = scanRuntime();
+  app.api.scheduleScan([mutationFor("sidebar")]);
+  app.document.emit("compositionstart");
+  app.time.advance(500);
+  app.api.scheduleScan([mutationFor("conversation")]);
+  app.api.scan({ menus: true });
+  assert.equal(app.runs.length, 0);
+  assert.equal(app.time.frames.size + app.time.timers.size, 0);
+  app.document.emit("compositionend");
+  app.time.advance(200); app.time.tick();
+  assert.equal(app.runs.length, 2);
+  assert.ok(app.runs[1].work.sidebar && app.runs[1].work.conversation && app.runs[1].work.menus);
+  app.document.emit("compositionstart");
+  app.api.scheduleScan([mutationFor("sidebar")]);
+  app.window.emit("blur"); app.time.advance(200);
+  assert.equal(app.runs.length, 3);
+  app.api.dispose();
+  assert.equal(app.document.listeners.get("compositionstart")?.size, 0);
+});
+
+test("编辑文字不扫描，输入框和菜单挂载仍刷新", () => {
+  const check = compile(source("isComposerContentMutation"), {}, "isComposerContentMutation");
+  const editor = { closest: () => ({}) };
+  const span = { nodeType: 1, matches: () => false };
+  const menu = { nodeType: 1, matches: () => true };
+  assert.equal(check({ target: editor, addedNodes: [span], removedNodes: [] }), true);
+  assert.equal(check({ target: { nodeType: 3, parentElement: editor }, addedNodes: [], removedNodes: [] }), true);
+  assert.equal(check({ target: editor, addedNodes: [menu], removedNodes: [] }), false);
+  assert.equal(check({ target: { closest: () => null }, addedNodes: [menu], removedNodes: [] }), false);
+});
+
+test("相同心跳状态不重复写入DOM或刷新Fast控件，新挂载节点仍更新", () => {
+  let writes = 0, refreshes = 0;
+  function node(): any {
+    const values: Record<string, any> = {};
+    return new Proxy({ dataset: new Proxy({}, { set(target, key, value) { writes++; Reflect.set(target, key, value); return true; } }) }, {
+      get(target, key) { return key === "dataset" ? target.dataset : values[String(key)]; },
+      set(_target, key, value) { writes++; values[String(key)] = value; return true; },
+    });
+  }
+  let label = node(); const indicator = node(), sidebar = node(), version = node();
+  const render = compile(source("renderBackendStatus"), {
+    window: {}, CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD: 3, codexPlusBridgeFailureCount: 0,
+    codexPlusBackendStatus: { status: "ok", version: "1.7.7" }, codexPlusVersion: "", codexPlusSidebarNavId: "nav",
+    document: { querySelector: (selector: string) => selector.includes("sidebar") ? sidebar : label,
+      querySelectorAll: (selector: string) => selector.includes("version") ? [version] : [indicator] },
+    refreshCodexServiceTierControls: () => { refreshes++; },
+  }, "renderBackendStatus");
+  render(); const firstWrites = writes;
+  render(); render();
+  assert.equal(writes, firstWrites);
+  assert.equal(refreshes, 1);
+  label = node(); render();
+  assert.equal(label.textContent, "后端已连接");
+  assert.ok(writes > firstWrites);
+});
+
 test("稳定对齐在三帧停止，持续变化最多16帧，隐藏不调度", () => {
   const time = clock(), state: any = { rafId: 0 }, document = { hidden: false };
   let frames = 0, moving = false;

@@ -16,11 +16,19 @@
 
 `codexAppForceChineseLocale` 默认关闭，启用后由 `00-prelude.js::installCodexPlusForceChineseLocale` 写入原生 `localeOverride` 并补充语言包探测；关闭时只还原本工具写入且用户未另改的值。`81-capacity-auto-retry.js` 处理容量错误，`codexAppCapacityAutoRetry` 默认关闭，间隔和次数保存在注入页设置中；`82-boot-shell-recovery.js` 对长时间未挂载的启动壳执行有界刷新。`codexAppActivityOverlayRight` 默认关闭，`98-avatar-overlay-layout.js` 负责活动浮层右侧布局，均经同一 manifest 拼装入口安装。
 
-注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，因此按输入身份缓存（后端设置对象、`__CODEX_PLUS_DREAM_SKIN_THEME__` 全局），缓存命中时不再读 `localStorage` 也不再 `JSON.parse`；本地设置写入与皮肤原地更新处显式调用 `invalidateCodexPlusSettingsCache()`。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
+注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，缓存键包含 `localStorage` 原文、后端设置对象和 `__CODEX_PLUS_DREAM_SKIN_THEME__` 身份；命中时不重复 `JSON.parse`，仍合并当前后端设置。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
 
 扫描调度由 `98-scan-schedule.js` 保持唯一入口，200 ms 内合并侧栏、会话、菜单、壳层及模型任务；未知宿主结构完整刷新兜底。消息正文的无关变化不刷新整套增强，延迟扫描只保留一帧。导航、隐藏和重新注入会取消旧任务；隐藏期间只记脏状态，恢复后补扫一次，供应商心跳和原生后台任务不受影响。
 
+输入框内的文字编辑不触发增强扫描；输入框或菜单挂载仍刷新。输入法组词期间取消增强扫描和会话对齐帧，结束或窗口失焦后合并补扫；不拦截原生输入事件。悬浮球回答观察忽略输入框内变化，隐藏期间不做变更分类。心跳继续检查连接与配置，配置未变时不重绘增强，连接状态文案和侧栏标记只在值改变时写入。
+
+`assets/inject/conversation-performance.js` 由 `assets.rs` 经同一注入入口加载，识别 Codex 主页面和 ChatGPT 普通聊天页面。每个会话窗格达到 40 条已挂载消息时，对历史消息使用 `content-visibility:auto` 与实测逻辑块高度，最新两条保持原生渲染。不删除消息或 React 节点，不隐藏正文；跳过原生虚拟化、绝对定位及可能改变外边距折叠的节点。浏览器搜索、选择与辅助功能仍可访问历史内容。隐藏、输入法组词时暂停，重新注入及关闭增强总开关会还原本工具写入的样式。该优化减少挂载后的布局和绘制，不能消除宿主历史读取或 React 首次构建的耗时。
+
+Windows 的 `03-native-performance.js` 从宿主 `app-shared-*` 模块按结构识别 Git worker 工厂；识别失败沿用原生行为，不改压缩导出名。合并同一目录和主机配置的 `stable-metadata` 查询，成功的仓库根目录与公共 Git 目录缓存 2 秒，最多 64 项；失败和非仓库结果不缓存。Git 事件、其他 Git 请求、窗口聚焦和可见性变化使缓存失效。一个调用取消不影响其他等待者，所有等待者取消时才取消共享请求。远程主机、初始化监听和写操作不合并；关闭增强或重新注入还原客户端方法并移除监听。宿主 worker 内部独立轮询与进程创建不在该补丁控制范围内。
+
 会话居中缓存仍连接的内容、输入框节点，结构或可见性变化时重新定位；正文内部变化交给尺寸观察，不每帧全页查找。两次连续几何结果稳定后停止，单轮最多 16 帧；侧栏、窗口尺寸及布局过渡结束后可补对齐，保持批量几何读取和样式写入。性能采样入口见[运行实现](runtime.md#会话切换性能诊断)。
+
+性能回归见 `native-performance.test.ts`、`renderer-performance.test.ts` 与现有注入测试。Windows Chromium 页面验证涵盖长历史高度、搜索、选择、滚动到底和停用还原；这些夹具结果不代表真实 ChatGPT/Codex 客户端已修复。macOS、Linux 的原生运行行为及用户长会话仍需实测。
 
 ## 悬浮球
 

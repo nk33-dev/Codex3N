@@ -32,8 +32,9 @@
     syncBackendSettingsInFlight = true;
     try {
       const previousConversationView = !!codexPlusSettings().conversationView;
+      const previousSettings = JSON.stringify(codexPlusBackendSettings);
       const loaded = await loadBackendSettingsState();
-      if (loaded) {
+      if (loaded && previousSettings !== JSON.stringify(codexPlusBackendSettings)) {
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
@@ -67,6 +68,8 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    window.__codexPlusConversationPerformance?.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false);
+    if (codexPlusBackendSettings.enhancementsEnabled === false) window.__codexPlusGitPerformanceCleanup?.();
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
@@ -138,25 +141,32 @@
     if (codexPlusBackendStatus.version) {
       codexPlusVersion = codexPlusBackendStatus.version;
       document.querySelectorAll("[data-codex-plus-version]").forEach((node) => {
-        node.textContent = `Codex++ ${codexPlusVersion}`;
+        const text = `Codex++ ${codexPlusVersion}`;
+        if (node.textContent !== text) node.textContent = text;
       });
     }
     const labelFallback = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，自动修复中" : status === "checking" ? "正在检查后端…" : "未连接";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
-      label.dataset.status = status;
-      label.textContent = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
+      if (label.dataset.status !== status) label.dataset.status = status;
+      const text = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
+      if (label.textContent !== text) label.textContent = text;
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
-      indicator.dataset.status = status;
-      indicator.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (indicator.dataset.status !== status) indicator.dataset.status = status;
+      const title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (indicator.title !== title) indicator.title = title;
     });
     const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
     if (sidebarStatus) {
-      sidebarStatus.dataset.status = status;
-      sidebarStatus.title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (sidebarStatus.dataset.status !== status) sidebarStatus.dataset.status = status;
+      const title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      if (sidebarStatus.title !== title) sidebarStatus.title = title;
     }
-    refreshCodexServiceTierControls();
+    if (renderBackendStatus.__lastStatus !== status) {
+      renderBackendStatus.__lastStatus = status;
+      refreshCodexServiceTierControls();
+    }
   }
 
   function withBackendTimeout(request) {
