@@ -12,6 +12,8 @@
 
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
+`codexAppUsageStatusLine` 默认开启，`83-usage-statusline.js` 在输入框下方显示生成速度、缓存命中率和上下文占用；通过内置 `/thread-usage-live` 路由只读取最近用量事件，不加入第三方拓展白名单。速度包含工具执行时间；缓存命中率为缓存输入 Token / 输入 Token，上下文占用按 Codex 会话记录中的模型窗口计算。`codexAppStandaloneQuotaUnlock` 默认关闭，独立额度解锁与供应商总开关分开保存。两项开关均沿用增强页手动保存。验证见 `usage-statusline.test.ts`、`standalone_quota_settings.rs`、`native_api_quota_gate.rs` 与 `bridge_routes.rs`。
+
 增强页与注入面板使用中文标题、说明；产品名、协议与命令保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。远程 Zed、Upstream 工作树适配、原生菜单汉化、快速启动及增强模式选择已随上游撤下，原生 SSH、工作树和会话分享保持可用。
 
 `codexAppForceChineseLocale` 默认关闭，启用后由 `00-prelude.js::installCodexPlusForceChineseLocale` 写入原生 `localeOverride` 并补充语言包探测；关闭时只还原本工具写入且用户未另改的值。`81-capacity-auto-retry.js` 处理容量错误，`codexAppCapacityAutoRetry` 默认关闭，间隔和次数保存在注入页设置中；`82-boot-shell-recovery.js` 对长时间未挂载的启动壳执行有界刷新。`codexAppActivityOverlayRight` 默认关闭，`98-avatar-overlay-layout.js` 负责活动浮层右侧布局，均经同一 manifest 拼装入口安装。
