@@ -106,8 +106,15 @@ test("App 列表切换接线先同步配置，再传递同步结果和旧供应�
   };
   visit(tree);
   assert.ok(callback);
-  const js = ts.transpileModule(`const switchFromList = ${callback.getText(tree)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const old = { activeRelayId: "a", relayBaseUrl: "old", relayApiKey: "old-key", activeAggregateRelayId: "old-aggregate" } as BackendSettings;
+  let definition: ts.Expression | undefined;
+  const findDefinition = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(tree) === "switchRelayProfileFromList") definition = node.initializer;
+    ts.forEachChild(node, findDefinition);
+  };
+  findDefinition(tree);
+  assert.ok(definition);
+  const js = ts.transpileModule(`const switchRelayProfileFromList = ${definition.getText(tree)}; const switchFromList = ${callback.getText(tree)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const old = { relayProfilesEnabled: true, activeRelayId: "a", relayBaseUrl: "old", relayApiKey: "old-key", activeAggregateRelayId: "old-aggregate" } as BackendSettings;
   const synced = { ...old, activeRelayId: "b", relayBaseUrl: "new", relayApiKey: "new-key", activeAggregateRelayId: "" };
   const order: string[] = [];
   const invoke = new Function("normalized", "syncLegacyRelayFields", "actions", js + "return switchFromList;")(

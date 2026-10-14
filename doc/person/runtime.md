@@ -33,11 +33,17 @@
 
 ## 配置和安装维护
 
-- 启动链路在 `launcher.rs` 通过 `LaunchTimeline` 更新 `status.rs` 的 `phase/progress`，旧状态文件仍可读取。启动器的 `LauncherHooks::run_provider_sync` 同步失败时记录诊断并继续索引修复和启动。
+- 启动链路在 `launcher.rs` 通过 `LaunchTimeline` 更新 `status.rs` 的 `phase/progress`，旧状态文件仍可读取。启动器的 `LauncherHooks::run_provider_sync` 同步失败时记录诊断并继续启动；自动消息索引修复在注入完成后进入后台执行。
 - `src-tauri/src/main.rs` 提供唯一 GUI 二进制 `codex-plus-plus`；`apps/codex-plus-launcher` 作为库提供 `start`、`stop`、`shutdown` 和 `resume_if_running`。连续启动复用 session，重启依次停止 Codex、清理嵌入运行时并确认原生浏览器恢复，退出应用等待自有服务清理。保存的有效应用路径优先；MSIX 激活先核对包注册，再使用解析出的 AUMID 构造命令。
 - macOS 打包唯一入口为 `scripts/installer/macos/build-universal.sh`：分别编译 x64/arm64，用 `lipo` 合并并验证双架构，再调用 `package-dmg.sh`。CI 和 Release 都产出 universal DMG；个人仓库沿用 ad-hoc 签名，未经过 Apple 公证。脚本仍支持通过 `MACOS_SIGNING_IDENTITY` 和 `MACOS_NOTARY_PROFILE` 启用正式签名与公证。
 
 验证：启动器同步降级测试、核心 `app_paths.rs` / `watcher.rs` / `status.rs` 单测，以及 `tests/launcher.rs`、`tests/updater.rs`；DMG 生命周期由 `macos-dmg.test.ts` 执行模拟磁盘命令，真实双架构构建和 bundle 检查由 macOS CI 执行。
+
+安装维护页通过 `set_watcher_enabled` 统一开机启动开关，保留检查和修复快捷方式。macOS 写入用户 LaunchAgent，卸载使用 `launchctl bootout` 后删除 plist；Windows 沿用已有启动项管理，Linux 显示不支持。管理器移除 `install_entrypoints` / `uninstall_entrypoints` IPC 注册，外链只由 `commands/external_url.rs` 注册。
+
+`codexAppAutoTakeover` 默认关闭，`codexAppAutoTakeoverWhenActive` 默认为 `defer`；macOS 的自动接管守护由 `src-tauri/src/auto_takeover.rs` 启停，通过启动器 `session_snapshot()` 判断已有受管会话。维护页状态查询接入 `use-manager-lifecycle.ts` 的可见性队列，每 3 秒更新；离页、隐藏或关闭开关即停止，旧响应不提交。验证见 `auto-takeover.test.ts`、`manager-window-lifecycle.test.ts`、核心 `auto_takeover` 单测；真实 macOS 接管与 LaunchAgent 行为仍需在该平台验证。
+
+上游新增的设置字段与聚合默认成员字段分别维护在 `provider-types.ts` 和 `lib/default-settings.ts`；`App.tsx` 使用同一类型和默认值。`SettingsStore::load` 的重入保护在解密后执行，嵌套读取保留解密与格式校验，只跳过归一化；`load_cached` 继续复用个人版缓存。验证见 `settings_load_recursion.rs` 与设置缓存、加密回归。
 
 - 设置写入采用跨进程锁和唯一临时文件；损坏内容会报错并保留原件，禁止静默回退默认值或覆盖用户配置，保存时保护已有供应商列表。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
 - **只读热路径用 `SettingsStore::load_cached()`**：按路径缓存 `Arc<BackendSettings>`，失效依据是 `mtime + len`；本进程 `save`/`update` 落盘后直接清条目，不依赖时间戳精度（Windows 系统时钟粒度约 15.6ms，同刻度连写会撞指纹）。代理各入口、启动器看门狗与注入脚本构造、`read_codex_model_catalog` 已切过去；**读-改-写路径（`relay_switch`、`provider_import`、`connect`）必须继续用 `load()`**，拿到过期快照会丢字段。
