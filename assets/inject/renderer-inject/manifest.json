@@ -33,7 +33,7 @@
     {
       "name": "30-service-tier.js",
       "description": "服务等级（service tier）读写、线程覆盖与控件同步",
-      "lines": 1062
+      "lines": 1064
     },
     {
       "name": "40-backend-settings.js",
@@ -93,7 +93,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1104
+      "lines": 1033
     },
     {
       "name": "91-extension-api.js",

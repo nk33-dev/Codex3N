@@ -76,6 +76,13 @@ test("auto-takeover switch is visible in the maintenance screen", () => {
 const payloadSource = () =>
   readFileSync(path.join(root, "src-tauri/src/auto_takeover.rs"), "utf8");
 
+test("auto-takeover reports Windows support consistently with its input collector", () => {
+  const source = payloadSource();
+  assert.match(source, /platform_supported: cfg!\(any\(target_os = "macos", windows\)\)/);
+  assert.match(source, /let platform_supported = cfg!\(any\(target_os = "macos", windows\)\)/);
+  assert.ok(appSource.includes('t("自动接管目前只支持 macOS 与 Windows。")'));
+});
+
 test("auto-takeover status fields stay aligned with the Rust payload", () => {
   // 前端按 camelCase 读，Rust 侧靠 rename_all 转换——两者必须同时存在，
   // 少一个就会出现「状态行永远空白」这类静默失效。

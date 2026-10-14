@@ -86,17 +86,17 @@ test("Fast UI and request filtering share explicit declarations, including denia
 
 test("a responsive-only composer footer supplies the Fast badge placement without a provider button", () => {
   const source = fragment("90-action-groups.js");
-  const footer = { children: [] as unknown[], parentElement: null, textContent: "", matches: (selector: string) => selector.includes("[data-composer-footer-responsive]"), querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 100, top: 600, width: 600, height: 30 }) };
-  const button = { visible: true };
-  const group = { children: [button], textContent: "", firstChild: button };
+  const footer = { children: [] as unknown[], parentElement: null, matches: (selector: string) => selector.includes("[data-composer-footer-responsive]"), querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 100, top: 600, width: 600, height: 30 }) };
+  const group = { parentElement: footer, display: "flex", matches: () => false, querySelector: () => null, querySelectorAll: () => [button] };
+  const button = { visible: true, parentElement: group };
   footer.children = [group];
   const composer = { querySelectorAll: (selector: string) => selector.includes("[data-composer-footer-responsive]") ? [footer] : [], matches: () => false };
   const context = vm.createContext({ document: { querySelectorAll: () => [footer] },
     codexServiceTierComposerFooterSelector: ".composer-footer, [data-composer-footer-responsive]",
-    codexServiceTierBadgeVisibleElement: () => true, codexServiceTierKnownProviderNames: () => [],
-    codexServiceTierBadgeAnchor: () => null, codexServiceTierBadgeText: () => "",
+    codexServiceTierBadgeVisibleElement: () => true, isExtensionUiNode: () => false,
+    getComputedStyle: (node: { display: string }) => ({ display: node.display }),
   });
-  vm.runInContext(["codexServiceTierVisibleComposerFooters", "codexServiceTierComposerScore", "codexServiceTierBestComposerFooter", "codexServiceTierComposerFooter", "codexServiceTierBadgeFooterGroup", "codexServiceTierBadgePlacement"].map((name) => extract(source, name)).join("\n"), context);
+  vm.runInContext(["codexServiceTierVisibleComposerFooters", "codexServiceTierBestComposerFooter", "codexServiceTierComposerFooter", "codexServiceTierBadgePlacement"].map((name) => extract(source, name)).join("\n"), context);
   assert.equal(context.codexServiceTierBadgePlacement(composer).parent, group);
   const withoutFooter = { ...composer, querySelectorAll: () => [] };
   assert.equal(context.codexServiceTierBadgePlacement(withoutFooter), null, "another pane's footer is never the fallback");

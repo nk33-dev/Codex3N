@@ -41,7 +41,7 @@
 
 安装维护页通过 `set_watcher_enabled` 统一开机启动开关，保留检查和修复快捷方式。macOS 写入用户 LaunchAgent，卸载使用 `launchctl bootout` 后删除 plist；Windows 沿用已有启动项管理，Linux 显示不支持。管理器移除 `install_entrypoints` / `uninstall_entrypoints` IPC 注册，外链只由 `commands/external_url.rs` 注册。
 
-`codexAppAutoTakeover` 默认关闭，`codexAppAutoTakeoverWhenActive` 默认为 `defer`；macOS 的自动接管守护由 `src-tauri/src/auto_takeover.rs` 启停，通过启动器 `session_snapshot()` 判断已有受管会话。维护页状态查询接入 `use-manager-lifecycle.ts` 的可见性队列，每 3 秒更新；离页、隐藏或关闭开关即停止，旧响应不提交。验证见 `auto-takeover.test.ts`、`manager-window-lifecycle.test.ts`、核心 `auto_takeover` 单测；真实 macOS 接管与 LaunchAgent 行为仍需在该平台验证。
+`codexAppAutoTakeover` 默认关闭，`codexAppAutoTakeoverWhenActive` 默认为 `defer`；macOS 与 Windows 的自动接管守护由 `src-tauri/src/auto_takeover.rs` 启停，通过启动器 `session_snapshot()` 判断已有受管会话。平台支持状态与输入采集使用同一目标判据。开关位于“安装维护”页，状态查询接入 `use-manager-lifecycle.ts` 的可见性队列，每 3 秒更新；离页、隐藏或关闭开关即停止，旧响应不提交。验证见 `auto-takeover.test.ts`、`manager-window-lifecycle.test.ts`、核心 `auto_takeover` 单测；真实平台的退出重开及登录项行为需单独验证。
 
 上游新增的设置字段与聚合默认成员字段分别维护在 `provider-types.ts` 和 `lib/default-settings.ts`；`App.tsx` 使用同一类型和默认值。`SettingsStore::load` 的重入保护在解密后执行，嵌套读取保留解密与格式校验，只跳过归一化；`load_cached` 继续复用个人版缓存。验证见 `settings_load_recursion.rs` 与设置缓存、加密回归。
 

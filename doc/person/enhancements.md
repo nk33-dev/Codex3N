@@ -10,6 +10,8 @@
 
 增强页分为常用增强、语音输入、下一步建议三个标签，开关统一只改草稿；顶部显示保存状态与保存按钮，点击保存后同步配置。Stepwise、回答大纲和桌宠开关也不偷偷提交整个表单，避免部分自动保存、部分手动保存造成保存栏闪烁。
 
+总开关、保存栏与标签随页面滚动，避免覆盖功能分组标题。“自动接管官方 App”开关位于管理器的“安装维护”页。
+
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
 `codexAppUsageStatusLine` 默认开启，`83-usage-statusline.js` 在输入框下方显示生成速度、缓存命中率和上下文占用；通过内置 `/thread-usage-live` 路由只读取最近用量事件，不加入第三方拓展白名单。速度包含工具执行时间；缓存命中率为缓存输入 Token / 输入 Token，上下文占用按 Codex 会话记录中的模型窗口计算。`codexAppStandaloneQuotaUnlock` 默认关闭，独立额度解锁与供应商总开关分开保存。两项开关均沿用增强页手动保存。验证见 `usage-statusline.test.ts`、`standalone_quota_settings.rs`、`native_api_quota_gate.rs` 与 `bridge_routes.rs`。
@@ -21,6 +23,8 @@
 注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，缓存键包含 `localStorage` 原文、后端设置对象和 `__CODEX_PLUS_DREAM_SKIN_THEME__` 身份；命中时不重复 `JSON.parse`，仍合并当前后端设置。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
 
 扫描调度由 `98-scan-schedule.js` 保持唯一入口，200 ms 内合并侧栏、会话、菜单、壳层及模型任务；未知宿主结构完整刷新兜底。消息正文的无关变化不刷新整套增强，延迟扫描只保留一帧。导航、隐藏和重新注入会取消旧任务；隐藏期间只记脏状态，恢复后补扫一次，供应商心跳和原生后台任务不受影响。
+
+服务模式徽章由 `90-action-groups.js::codexServiceTierBadgePlacement` 插在当前输入工具栏的原生模型选择器前；穿过提示与普通包裹层，保持同一 flex 行。旧版只在唯一 footer 的可见按钮组内兜底，不能确认布局时跳过；不按供应商文字匹配草稿、项目栏或编辑区。加载时显示“读取中”，状态不变时不重写文字与属性。侧栏操作组、更多菜单及工具提示也纳入扫描排除，避免自己的 DOM 更新触发增强扫描。验证见 `service-tier-badge.test.ts`。
 
 输入框内的文字编辑不触发增强扫描；输入框或菜单挂载仍刷新。输入法组词期间取消增强扫描和会话对齐帧，结束或窗口失焦后合并补扫；不拦截原生输入事件。悬浮球回答观察忽略输入框内变化，隐藏期间不做变更分类。心跳继续检查连接与配置，配置未变时不重绘增强，连接状态文案和侧栏标记只在值改变时写入。
 
@@ -49,6 +53,10 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 悬浮面板隐藏时取消回答扫描计时器，恢复后补扫一次；停止运行会移除可见性监听。已发出的建议请求与设置同步继续沿用原生命周期和过期结果校验。
 
 ## 管理器市场布局
+
+皮肤页在增强关闭、皮肤关闭或暂停时显示“Codex 原生外观”，已保存主题仅保留在编辑区，不标记为当前运行。社区与市场的卡片共用 `App.tsx::DreamSkinPreview`，直接显示各主题封面，加载失败显示占位；更换地址后允许重新加载，不以平台内置图片冒充其他主题。远程封面的 CSP 白名单见[安全边界](security.md#管理器-webview)。
+
+皮肤状态与封面恢复回归见 `dream-skin-ui.test.ts`、`dream-skin.test.ts`。Windows Chromium 验证真实 React 组件和管理器 CSP，并用当前 Codex 输入框的 DOM 副本检查 900、600、400 像素宽度下的徽章位置和重复刷新；网络检查确认两个来源的封面返回图片。上述验证不涉及官方 App 退出重开，macOS 原生运行及完整长会话性能仍需实测。
 
 脚本市场通过 `App.tsx::UserScriptsScreen` 从 `user_scripts` 映射市场 ID 到本地 `user:` key，`MarketScriptCard` 用原 `deleteUserScript` 操作卸载。插件修复进度是估算值，封顶 92% 后显示等待后端结果。
 
