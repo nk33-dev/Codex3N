@@ -1056,13 +1056,15 @@
   }
 
   function scheduleConversationViewAlign(frames = 16) {
-    if (document.hidden || !codexPlusSettings().conversationView || conversationViewState.rafId) return;
+    if (document.hidden || (typeof codexPlusScanComposing !== "undefined" && codexPlusScanComposing)
+        || !codexPlusSettings().conversationView || conversationViewState.rafId) return;
     conversationViewState.settleFramesLeft = Math.min(16, Math.max(1, frames));
     conversationViewState.stableFrames = 0;
     conversationViewState.lastGeometry = null;
     const tick = () => {
       conversationViewState.rafId = 0;
-      if (document.hidden || !codexPlusSettings().conversationView) return;
+      if (document.hidden || (typeof codexPlusScanComposing !== "undefined" && codexPlusScanComposing)
+          || !codexPlusSettings().conversationView) return;
       const finishTiming = window.__codexPlusPerf?.begin("layout");
       let geometry;
       try { geometry = conversationViewAlignNow(); } finally { finishTiming?.(); }

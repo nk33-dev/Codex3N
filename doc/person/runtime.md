@@ -78,6 +78,7 @@
 ## 注入脚本
 
 - renderer 的源码入口是 `assets/inject/renderer-inject/manifest.json` 所列分片，沿用上游结构；`node scripts/assemble-renderer-inject.mjs` 生成 `assets/inject/renderer-inject.js`，`--check` 校验漂移。`crates/codex-plus-core/src/assets.rs` 的 `RENDERER_SCRIPT` 用 `include_str!` 内联该产物，修改分片后须重新生成并一起提交。
+- `conversation-performance.js` 是同一 `injection_script_with_settings` 的独立页面性能运行时，使用启动设置 `__CODEX_PLUS_PERFORMANCE_ENABLED__` 初始化；Codex 后端设置同步和乐观开关更新调用其 `setEnabled`。普通 ChatGPT 页面不会进入 Codex 增强 IIFE。Git worker 性能补丁、输入法门控和会话渲染规则见[界面增强](enhancements.md#增强设置保存)。
 - 悬浮球的 `assets/inject/floating-panel/**` 是上游**既有**分片，沿用不变，由 `assets.rs` 的 `STEPWISE_SCRIPT` 用 `concat!` 拼装。分片不是模块：不带 `import` / `export`、不带自己的 IIFE 外壳，运行入口只有 `assets.rs` 一处。分片顺序**有意义**：整份脚本共享一个 IIFE 作用域，`const` / `let` 存在 TDZ。renderer 的粘贴修复块在 IIFE 之外（`"})();\n"` 之后），放进 IIFE 会随早返回守卫一起被跳过。
 - `.gitattributes` 已把 `assets/inject/**/*.js` 固定为 LF；这些文件被 `include_str!` 内联，换行变化会改变注入内容。
 - 前端按标记切片注入源码的回归测试统一走 `apps/codex-plus-manager/src/inject-fragments.ts`：`readRendererInjectSource` 读取生成产物，`readStepwiseSource` 按顺序拼回悬浮球分片。`renderer-inject.test.ts` 校验 renderer 分片与产物逐字节一致；`inject-fragments.test.ts` 校验悬浮球清单与 `assets.rs` 顺序及完整语法。

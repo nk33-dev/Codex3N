@@ -7952,6 +7952,7 @@ base_url = "https://example.invalid/v1"
         )
         .unwrap();
         let settings = BackendSettings {
+            relay_profiles_enabled: true,
             active_relay_id: "aggregate".to_string(),
             active_aggregate_relay_id: "aggregate".to_string(),
             relay_profiles: vec![

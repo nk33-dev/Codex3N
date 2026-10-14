@@ -21,7 +21,7 @@ it("keeps background-resume scan scheduling bounded and independent of retired f
   );
   const scan = view.match(/^  function scan\(work = codexPlusAllScanWork\) \{[^]*?^  \}/m)?.[0];
   assert.ok(scan);
-  assert.match(scan, /if \(document\.hidden\)/);
+  assert.match(scan, /if \(document\.hidden\b/);
   assert.match(scan, /if \(codexPlusDeferredScanFrame\) return/);
   assert.match(scan, /revision !== codexPlusScanRevision/);
   assert.match(scan, /requestAnimationFrame/);
@@ -552,10 +552,10 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
       setAttribute: (name: string, value: string) => { attributes[name] = value; },
     };
     let menuRefreshes = 0;
-    const refresh = new Function("document", "codexPlusBackendSettings", "syncStepwisePanel", "runScanStep", "syncCodexPlusTypingEffects", "renderCodexPlusMenu", "scan",
+    const refresh = new Function("window", "document", "codexPlusBackendSettings", "syncStepwisePanel", "runScanStep", "syncCodexPlusTypingEffects", "renderCodexPlusMenu", "scan",
       `${renderer.slice(start, end)}\nreturn refreshCodexPlusBackendToggles;`,
     )(
-      { querySelectorAll: () => [button] }, settings, () => {}, () => {}, () => {},
+      {}, { querySelectorAll: () => [button] }, settings, () => {}, () => {}, () => {},
       () => { menuRefreshes += 1; }, () => {},
     ) as () => void;
     refresh();
@@ -790,6 +790,7 @@ function shouldScheduleScanRuntime(renderer: string) {
   assert.ok(start >= 0 && end > start, "shouldScheduleScan not found in renderer-inject.js");
   const source = renderer.slice(start, end);
   const factory = new Function(
+    "isComposerContentMutation",
     "isChatContentMutation",
     "isExtensionUiNode",
     "nodeSelfOrAncestorMatchesScanRelevance",
@@ -797,6 +798,7 @@ function shouldScheduleScanRuntime(renderer: string) {
     `${source}\nreturn shouldScheduleScan;`,
   );
   return factory(
+    () => false,
     () => false,
     (node: { extension?: boolean }) => Boolean(node?.extension),
     // Codex 的容器（header / 侧栏 nav）本身就是 scan-relevant，这是自喂循环的关键前提。

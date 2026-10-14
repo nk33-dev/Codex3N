@@ -64,8 +64,13 @@ fn aggregate_profile_with_backfilled_config_contents_loads_without_recursing() {
     );
 
     // 归一化仍然生效：成员档案的 base_url/key 等字段可用（这里只要求不崩且档案完整）。
-    let again = SettingsStore::new(path).load().expect("重复 load 同样安全");
+    let store = SettingsStore::new(path);
+    let again = store.load().expect("重复 load 同样安全");
     assert_eq!(again.relay_profiles.len(), 2);
+
+    let cached = store.load_cached();
+    assert_eq!(cached.relay_profiles.len(), 2);
+    assert!(std::sync::Arc::ptr_eq(&cached, &store.load_cached()));
 
     set_settings_path_for_tests(previous);
 }
