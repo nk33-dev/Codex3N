@@ -77,7 +77,7 @@ cargo test --workspace
 
 - CI 的耗时几乎全在 Rust 编译：依赖编译由 `Swatinem/rust-cache` 复用，`cargo-audit` 改用 `taiki-e/install-action` 装预编译二进制（`cargo install` 每次从源码编译约 6 分钟），CI 不再重复 `cargo check`（`cargo test --workspace` 已编译全部目标；本地仍按上面的步骤保留 check）。`release-assets.yml` 的 `verify-tests` 与两个产包 job 同样加了 rust-cache，并把源码编译的 cargo-audit 换掉。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外：发布脚本要求标签提交的那次 push CI 成功，取消会让它永远等不到结果。
 
-- rust-cache 清理 `target` 时会移除 `sherpa-onnx-prebuilt` 中的原生静态库，但可能保留 `sherpa-onnx-sys` 的链接记录。CI 与发布的每个 Rust job 在恢复缓存后执行 `cargo clean -p sherpa-onnx-sys`，让其构建脚本重新准备原生库；macOS 还清理 x64、arm64 目标记录，其余依赖继续复用。
+- rust-cache 清理 `target` 时会移除 `sherpa-onnx-prebuilt` 中的原生静态库，但可能保留空目录和 `sherpa-onnx-sys` 的链接记录。CI 与发布的每个 Rust job 在恢复缓存后删除该原生库目录，并执行 `cargo clean -p sherpa-onnx-sys`（含 release），让其构建脚本重新准备原生库；macOS 还清理 x64、arm64 目标记录，其余依赖继续复用。
 
 - 本地使用 PowerShell 7、CI 同一主版本的 Node 22（直接运行 TypeScript 测试要求至少 22.18）及 Git for Windows Bash。用 `node --version`、`where.exe node.exe`、`where.exe bash.exe` 核对实际程序；测试选取 Git 目录内的 Bash，系统的 WSL `bash.exe` 不能代替它。非默认 Git 安装路径可在当前进程将其 `usr/bin` 加入 `PATH`。
 - 先 `npm ci`，再执行测试、类型检查、安全审计和 `npm run vite:build`；Tauri 编译依赖前端产物，完成后才运行 Rust 门禁。保留完整输出，并在每条原生命令后立即记录 `$LASTEXITCODE`；只看到局部 `test result: ok` 不能证明整个 workspace 通过。

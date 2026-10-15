@@ -94,9 +94,10 @@ jobs:
         with:
           shared-key: release-verify-tests
 
-      # rust-cache 会清理 target 下的原生库，清除 sys 编译记录后由 build.rs 重新准备。
+      # 缓存可能只留下原生库空目录，连同 sys 编译记录清理后由 build.rs 重新准备。
       - name: Refresh sherpa-onnx native libraries
         run: |
+          node -e "require('node:fs').rmSync(require('node:path').join(process.env.GITHUB_WORKSPACE, 'target', 'sherpa-onnx-prebuilt'), {recursive: true, force: true})"
           cargo clean -p sherpa-onnx-sys
           cargo clean -p sherpa-onnx-sys --release
 
@@ -171,9 +172,10 @@ jobs:
         with:
           shared-key: release-windows-installer
 
-      # rust-cache 会清理 target 下的原生库，清除 sys 编译记录后由 build.rs 重新准备。
+      # 缓存可能只留下原生库空目录，连同 sys 编译记录清理后由 build.rs 重新准备。
       - name: Refresh sherpa-onnx native libraries
         run: |
+          node -e "require('node:fs').rmSync(require('node:path').join(process.env.GITHUB_WORKSPACE, 'target', 'sherpa-onnx-prebuilt'), {recursive: true, force: true})"
           cargo clean -p sherpa-onnx-sys
           cargo clean -p sherpa-onnx-sys --release
 
@@ -288,9 +290,10 @@ jobs:
         with:
           shared-key: release-macos-dmg-universal
 
-      # rust-cache 会清理 target 下的原生库，清除 sys 编译记录后由 build.rs 重新准备。
+      # 缓存可能只留下原生库空目录，连同 sys 编译记录清理后由 build.rs 重新准备。
       - name: Refresh sherpa-onnx native libraries
         run: |
+          node -e "require('node:fs').rmSync(require('node:path').join(process.env.GITHUB_WORKSPACE, 'target', 'sherpa-onnx-prebuilt'), {recursive: true, force: true})"
           cargo clean -p sherpa-onnx-sys
           cargo clean -p sherpa-onnx-sys --release
           cargo clean -p sherpa-onnx-sys --release --target x86_64-apple-darwin
