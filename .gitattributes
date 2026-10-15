@@ -4,7 +4,7 @@
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 
-# Claude 的内嵌 PowerShell 脚本使用 UTF-16，按字节转换换行会破坏编码。
+# Claude 的内嵌 PowerShell 资产保留上游原始字节。
 assets/claude-localization/*.ps1 -text
 
 *.sh text eol=lf

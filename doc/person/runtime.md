@@ -8,6 +8,7 @@
 
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描和环境检查进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
+- 工具栏在本地设置初始化后读取，与概览请求并行；语言切换重载仍走 `initializeManager`，回归见 `manager-loading.test.ts`。上游启动 effect 的工具栏修复已由此入口覆盖。
 - `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
 - 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
@@ -126,7 +127,9 @@ macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/mac
 
 多开入口为 `commands.rs::launch_codex_multi_instance`，每个实例隔离 `CODEX_HOME`、SQLite、Electron 用户目录、调试端口和 helper 端口，独立 worker 仍调用同一启动器库。Chat Completions 和搜索历史兼容模式写入实例自己的代理端口；聚合与模型路由配置暂不支持多开。主应用的健康状态由 `runtime_health.rs` 汇总。
 
-实例清单保存在隔离目录的 `instance.json`，`list_codex_multi_instances`、`stop_codex_multi_instance` 与 `restart_codex_multi_instance` 统一注册到 `lib.rs`。多开页的 3 秒刷新复用 `use-manager-lifecycle.ts` 的可见性队列，隐藏或离页后暂停，迟到响应不提交；启动、重启和停止操作完成后按需补读。Windows 清单额外保存 `workerBirthId`，停止 worker 前核对 PID 和创建标识，旧清单缺少标识时不结束 worker。创建清单失败时通过仍持有的 Child 句柄清理子进程。
+实例清单保存在隔离目录的 `instance.json`，`list_codex_multi_instances`、`stop_codex_multi_instance` 与 `restart_codex_multi_instance` 统一注册到 `lib.rs`。多开页的 3 秒刷新复用 `use-manager-lifecycle.ts` 的可见性队列，隐藏或离页后暂停，迟到响应不提交；启动、重启和停止操作完成后按需补读。Windows 清单的 `workerBirthId` 保留十进制字符串格式；创建时从持有的 Child 句柄读取，停止时经核心 `multi_worker.rs` 核对创建时间、可执行文件和精确参数，并用同一进程句柄终止。旧清单缺少标识时不结束 worker。创建清单失败时通过仍持有的 Child 句柄清理子进程。
+
+Windows 安装探测从 MSIX 清单选取桌面应用路径及对应 AUMID，支持 `ChatGPT (Beta).exe`；监控、自动接管和会话清理进程保护使用同一应用名判据。读取不到 Electron 进程参数时跳过接管，防止将 renderer 当主进程。验证见 `app_paths`、`auto_takeover`、`watcher` 和 `multi_worker` 单测。
 
 MCP 保存、删除和导入后通过 `syncLiveContextEntries` 将启用状态同步到 live 配置，供应商总开关与现有保存互斥保持不变。管理页高度与滚动采用上游 `management-screen` 布局，会话维护仍在 `SessionMaintenance` 单次挂载。验证见管理器前端回归、`manager-window-lifecycle.test.ts` 及多开清单 Rust 单测。
 

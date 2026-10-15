@@ -8,6 +8,7 @@
 - 供应商列表依次为直连、模型聚合、协议转换和故障转移。`aggregate.modelAggregationEnabled` 与后端聚合镜像同名字段区分两类，默认关闭；新建时确定类型。模型聚合固定绑定成员，不使用轮转策略与通配符路由。分页只控制展示，保存与切换始终基于完整供应商列表；总开关关闭时点击“使用”显示开启提示。
 - 聚合成员仅在供应商从完整配置中删除时移除，凭据或配置暂时不可用仍保留成员。`aggregate.defaultRelayId` 与聚合镜像的 `defaultRelayId` 保存默认成员，成员移除时同步清理默认指向。
 - 聚合成员支持普通 API 与官方登录账号。`official_login.rs` 从 `authContents` 解析 OAuth 凭据，优先采用同账号 live 登录态，临期刷新并写回快照；401 强制刷新后仅重试一次。命名 Key 仍由原归一化入口处理，接入方式三选一与 Key 列表共用同一编辑区。
+- 聚合配置与镜像的 `syncDefaultMemberLogin` 默认关闭。开启后切换聚合会合并默认官方成员的登录凭据，保留代理 Key；同账号采用 live 更新的 Token，live 已登录其他账号时保留该账号。默认成员没有官方凭据时清理残留登录段。`provider-types.ts` 与 `App.tsx` 的回填、归一化、镜像生成共用此字段；后端入口为 `relay_config.rs` 和 `official_login.rs`，回归见 `aggregate_default_login_sync.rs`。
 - `providerSyncEnabled` 和 `relayProfilesEnabled` 默认关闭；首次导入不应自动启用代理或接管当前配置。
 - 供应商切换从读取当前配置快照开始即锁定操作，完成或失败后释放，避免重复点击排队执行旧切换请求。
 - 设置保存与供应商切换共用互斥检查，重复保存不会排队；保存失败保留草稿，保存/切换的旧响应不覆盖期间产生的新编辑。供应商详情在保存或切换期间禁用编辑、返回和再次操作，销毁后的保存结果不再触发旧页面回调。
@@ -62,3 +63,5 @@
 官方配置统一调用 `relay_config.rs::apply_official_profile_to_home`，净化认证与代理字段后恢复官方非认证设置、公共配置和模型目录。切换失败通过 `SettingsStore::snapshot_raw_bytes` / `restore_raw_snapshot` 恢复精确字节，保留未知字段与密文并失效设置缓存；配置读取、输入序列化、落盘序列化均限制为 16 MiB。旧配置损坏或超限时拒绝覆盖。用例在 `relay_config_safety.rs`、`relay_switch.rs`、settings 单测。
 
 cc-switch 数据库路径 `ccsDbPath` 由共用类型与默认设置提供，后端在 `commands/provider_import.rs::load_ccs_providers` 读取，并返回实际路径和回退原因。
+
+本地 Responses 代理遇到明确拒绝 `custom exec` 的响应时，通过 `responses_exec.rs` 转为 function 工具并重试一次，JSON 与 SSE 响应分别还原为 custom 工具事件。`responses_exec_transport.rs` 管理协商缓存，`responses_exec_sse.rs` 处理流式事件；`protocol_proxy.rs` 与 `launcher.rs` 仍是请求及 HTTP 转发入口，沿用个人版的来源检查和 CORS。验证见 `responses_exec_compatibility.rs` 与 helper 转发测试。

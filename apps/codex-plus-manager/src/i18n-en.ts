@@ -1,6 +1,32 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "检测中…": "Detecting…",
+  "未检测": "Not checked",
+  "未检测到 Claude": "Claude not found",
+  "点击“检测 Claude”读取安装状态；进入此页不会自动检测或修改应用。": "Click Detect Claude to check the installation. Opening this page does not detect or modify the app.",
+  "未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。": "Claude was not found. Install the official app first. Other Codex++ features remain available.",
+  "检测 Claude": "Detect Claude",
+
+  "Claude 增强": "Claude enhancements",
+  "增强功能": "Enhancements",
+  "各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。": "Each enhancement has its own switch. A managed copy is required; restart it to apply changes.",
+  "界面汉化": "Chinese interface",
+  "启动时注入官方中文词表，界面语言切到简体中文；关掉后副本按原语言启动。": "Load the official Chinese catalog at startup and use Simplified Chinese. When disabled, the copy starts in its original language.",
+  "在 Claude 输入框右下角加一个麦克风入口，识别结果只写进输入框、不自动发送。": "Add a microphone at the bottom right of the Claude composer. Transcribed text is inserted without sending.",
+  "副本还没准备：开关会先存下来，等你在右边准备好副本并启动后生效。": "Your choices are saved. Prepare and start the copy on the right to apply them.",
+  "受管副本": "Managed copy",
+  "所有增强的前置条件：官方 Claude.app 与 app.asar 保持原样，功能通过副本和启动时注入生效。": "All enhancements require a managed copy with startup injection. The official Claude.app and app.asar are preserved.",
+  "准备副本": "Prepare copy",
+  "用下面的按钮创建受管副本；官方 Claude.app 与 app.asar 保持原样。": "Create a managed copy with the button below. The official Claude.app and app.asar are preserved.",
+  "启动 Claude 副本": "Start Claude copy",
+  "增强只在副本里生效，官方版和登录态不受影响。": "Enhancements run in the copy. The official app and sign-in state are preserved.",
+  "在左边开启需要的增强": "Enable enhancements on the left",
+  "界面汉化与语音输入各自独立，改动在重启副本后应用。": "Chinese localization and voice input have separate switches. Restart the copy to apply changes.",
+  "更新副本": "Update copy",
+  "重新准备副本": "Rebuild copy",
+  "保留官方 Claude.app 原样，通过受管副本为 Claude 应用增强功能": "Apply Claude enhancements through a managed copy while preserving the official Claude.app",
+
   "当前运行实例": "Running instances",
   "重启 Codex 实例": "Restart Codex instance",
   "主 Codex": "Main Codex",
@@ -22,7 +48,6 @@ export const EN_PLAIN: Record<string, string> = {
   "模型聚合请求仍由本地 Responses 代理转发；OpenAI 身份用于让 ChatGPT Remote 识别会话。": "Model aggregation uses the local Responses proxy; OpenAI identity makes sessions visible to ChatGPT Remote.",
   "未填写模型": "No models specified",
   "Codex多开": "Codex instances",
-  "Claude 汉化": "Claude localization",
   "全局管理": "Global management",
   "创建聚合供应商": "Create aggregate provider",
   "供应商配置模式": "Provider configuration mode",
@@ -48,10 +73,7 @@ export const EN_PLAIN: Record<string, string> = {
   "没有匹配的供应商": "No matching providers",
   "选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。": "Select a provider to open its editor. The API Key and local configuration are written to the current Codex only when saved.",
   "启动独立 Codex 实例": "Start a separate Codex instance",
-  "Claude Code 汉化": "Claude Code localization",
-  "官方 Claude.app 与 app.asar 保持原样，中文通过受管副本和启动时注入实现。": "The official Claude.app and app.asar remain intact. Chinese localization uses a managed copy and startup injection.",
   "官方版本": "Official version",
-  "读取中": "Loading",
   "需要更新": "Update required",
   "已准备": "Ready",
   "未准备": "Not ready",
@@ -60,11 +82,8 @@ export const EN_PLAIN: Record<string, string> = {
   "条": "entries",
   "首次准备会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。": "Initial preparation creates and verifies a separate copy, preserving the official application, login and app.asar. macOS may request Keychain access. Windows starts the separate copy.",
   "准备中…": "Preparing…",
-  "准备汉化副本": "Prepare localized copy",
   "启动中…": "Starting…",
-  "启动中文 Claude": "Start Claude in Chinese",
   "检查副本": "Check copy",
-  "还原语言": "Restore language",
   "新开聊天或重启 Codex++ 后加载已安装插件。": "Open a new chat or restart Codex++ to load installed plugins.",
   "更多操作": "More actions",
   "已启用": "Enabled",
@@ -137,7 +156,6 @@ export const EN_PLAIN: Record<string, string> = {
   "项目目录": "Project directory",
   "模型供应商": "Model provider",
   "为不同供应商启动相互隔离的 Codex 实例": "Start isolated Codex instances for different providers",
-  "保留官方 Claude.app 原样，通过受管副本动态应用中文界面": "Apply Chinese localization through a managed copy while preserving the official Claude.app",
   "可安装": "Available",
   "当前 provider": "current provider",
   "配置": "Config",
@@ -1077,9 +1095,18 @@ export const EN_PLAIN: Record<string, string> = {
   "聚合/中转": "Aggregate/relay",
   "聚合供应商": "Aggregate provider",
   "聚合供应商会在真实对话中轮转成员，请测试成员供应商": "Aggregate providers rotate members in real conversations; test the member providers instead",
-  "聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。": "Aggregate providers only store member and strategy config drawn from existing API providers; once active, requests rotate through the local protocol proxy.",
-  "此聚合会把成员模型合并到 Codex 列表；带供应商前缀的模型固定发送到对应成员，普通模型仍按策略轮转。": "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
-  "聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。": "An aggregate provider needs at least 1 usable member (an API provider or a signed-in official account).",
+  "聚合供应商只保存成员和策略配置，成员来自已有 API 供应商；切为当前后会通过本地协议代理轮转请求。":
+    "Aggregate providers only store member and strategy config drawn from existing API providers; once active, requests rotate through the local protocol proxy.",
+  "此聚合会把成员模型合并到 Codex 列表；带供应商前缀的模型固定发送到对应成员，普通模型仍按策略轮转。":
+    "This aggregate merges member models into the Codex list; prefixed models stay bound to their member, while plain model names still follow the strategy.",
+  "聚合供应商至少需要勾选 1 个可用成员（API 供应商或官方登录账号）。":
+    "An aggregate provider needs at least 1 usable member (an API provider or a signed-in official account).",
+  "把默认成员的官方登录同步到 Codex":
+    "Sync the default member's official login into Codex",
+  "开启后切换到本聚合时，会把默认成员的 ChatGPT 凭据一并写进 Codex（代理 Key 保留），账号在 Codex 里就是登录态。默认成员不是官方登录时无效。":
+    "When enabled, switching to this aggregate also writes the default member's ChatGPT credentials into Codex (the proxy key is kept), so the account shows as signed in. No effect when the default member is not an official login.",
+  "当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。":
+    "The current default member is not an official-login account, so its login cannot be synced into Codex; only official-login members carry ChatGPT credentials.",
   "聚合策略": "Aggregate strategy",
   "故障转移": "Failover",
   "模型聚合": "Model aggregation",
@@ -1312,6 +1339,7 @@ export const EN_PLAIN: Record<string, string> = {
 };
 
 export const EN_TEMPLATE: Record<string, string> = {
+  "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",
   "确定结束“{0}”吗？": "Stop \"{0}\"?",
   "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
   "模型名称重复：{0}": "Duplicate model name: {0}",
