@@ -82,8 +82,10 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 语音输入使用独立的 `dictation` 配置，默认关闭；`enhancementsEnabled` 关闭时暂停录音，服务配置保留。管理器草稿与默认值位于 `dictation-settings.ts`、`provider-types.ts` 和 `lib/default-settings.ts`，Rust `settings.rs` 归一化并加密 `dictation.apiKey`。渲染端唯一入口是 manifest 的 `93-dictation.js`，设置加载成功后经 `runScanStep` 安装，录音界面失败不改变供应商设置加载结果。支持插入、停止并发送、重试和取消；发送前验证当前会话与原生输入框，避免把旧录音发进新会话。旧的 settings/stepwise 导航归一到增强页的下一步建议标签。
 
-`dictation.provider` 支持 `api` 和 `sensevoice`，旧配置默认沿用 API 转写。SenseVoiceSmall INT8 模型由配置页手动下载固定版本并验证 SHA-256，录音入口不触发下载；浏览器将音频转为 16 kHz 单声道 WAV，Rust `dictation.rs` 经 sherpa-onnx 在本机推理。
+`dictation.provider` 支持 `api` 和 `sensevoice`，旧配置默认沿用 API 转写。SenseVoiceSmall INT8 模型由配置页手动下载固定版本并验证 SHA-256，录音入口不触发下载；浏览器将音频转为 16 kHz 单声道 WAV，Rust `dictation.rs` 经 sherpa-onnx 在本机推理。识别器在专用线程串行复用，模型或语言变化时重新校验和加载，PCM 样本直接进入推理；缓存会常驻一份模型内存。
 
-Claude 汉化页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性，再启动并短暂注入中文脚本。Windows 支持普通安装和 MSIX 来源，macOS 副本重新签名；失败保留可用副本，语言还原由同一命令处理。命令只通过 Tauri 注册。
+Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性。`claudeAppLocalization` 和 `claudeAppVoiceInput` 默认开启，分别控制界面汉化与语音入口，重启副本后应用；关闭汉化时恢复已保存的外壳语言。Windows 支持普通安装和 MSIX 来源，macOS 副本重新签名，失败保留可用副本。命令只通过 Tauri 注册。
+
+`assets/claude-localization/page-dictation.js` 适配 Claude Code 与 Cowork 输入框，识别结果只写入输入框；`hook.js` 通过听写 helper 转发请求。`launcher.rs` 在 helper 运行期间保存 `dictation-helper.json`，停止时删除；语音开关关闭时不注入页面入口和调用通道。验证见 `claude-dictation.test.ts`、Claude 本地化与听写单测。
 
 缓存页 `agent-cache.tsx` 通过 Tauri `scan_agent_cache` / `clean_agent_cache` 调用 `agent_cache.rs`。清理只接受后端保存的扫描快照和组 ID，快照 10 分钟到期且只能消费一次；逐文件校验并删除超过 24 小时的白名单缓存，不接收前端文件路径。录音、配置和会话数据不作为缓存清理对象。验证：`dictation-runtime.test.ts`、`enhancement-settings.test.ts`、`agent-cache-model.test.ts`、Rust dictation 与 agent_cache 单测。

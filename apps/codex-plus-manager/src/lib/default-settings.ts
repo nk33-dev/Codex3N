@@ -33,6 +33,8 @@ export const defaultSettings: BackendSettings = {
   codexAppSessionDelete: true,
   codexAppMarkdownExport: true,
   codexAppUsageStatusLine: true,
+  claudeAppVoiceInput: true,
+  claudeAppLocalization: true,
   codexAppSessionShare: true,
   codexAppTypingEffect: "off",
   codexAppPasteFix: false,
