@@ -72,6 +72,12 @@ jobs:
         with:
           shared-key: rust-lint
 
+      # rust-cache 会清理 target 下的原生库，清除 sys 编译记录后由 build.rs 重新准备。
+      - name: Refresh sherpa-onnx native libraries
+        run: |
+          cargo clean -p sherpa-onnx-sys
+          cargo clean -p sherpa-onnx-sys --release
+
       - name: Rust formatting
         run: cargo fmt --all --check
 
@@ -116,6 +122,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-artifacts
+
+      # rust-cache 会清理 target 下的原生库，清除 sys 编译记录后由 build.rs 重新准备。
+      - name: Refresh sherpa-onnx native libraries
+        run: |
+          cargo clean -p sherpa-onnx-sys
+          cargo clean -p sherpa-onnx-sys --release
 
       - name: Install NSIS
         shell: pwsh
@@ -254,6 +266,14 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: macos-dmg-universal
+
+      # rust-cache 会清理 target 下的原生库，清除 sys 编译记录后由 build.rs 重新准备。
+      - name: Refresh sherpa-onnx native libraries
+        run: |
+          cargo clean -p sherpa-onnx-sys
+          cargo clean -p sherpa-onnx-sys --release
+          cargo clean -p sherpa-onnx-sys --release --target x86_64-apple-darwin
+          cargo clean -p sherpa-onnx-sys --release --target aarch64-apple-darwin
 
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
