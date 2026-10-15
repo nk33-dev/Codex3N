@@ -21,6 +21,7 @@ export type RelayAggregateConfig = {
   routes?: RelayAggregateRoute[];
   modelAggregationEnabled?: boolean;
   defaultRelayId?: string;
+  syncDefaultMemberLogin?: boolean;
 };
 
 export type RelayProfile = {
@@ -71,6 +72,7 @@ export type AggregateRelayProfile = {
   sessionProvider?: RelaySessionProvider;
   modelAggregationEnabled?: boolean;
   defaultRelayId?: string;
+  syncDefaultMemberLogin?: boolean;
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
@@ -107,6 +109,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
   codexAppUsageStatusLine: boolean;
+  claudeAppVoiceInput: boolean;
+  claudeAppLocalization: boolean;
   codexAppSessionShare: boolean;
   codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";
   codexAppPasteFix: boolean;

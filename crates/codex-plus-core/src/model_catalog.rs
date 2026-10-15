@@ -426,6 +426,34 @@ fn relay_profile_model_ui_metadata_map(profile: &RelayProfile, models: &[String]
     Value::Object(metadata)
 }
 
+#[cfg(test)]
+mod window_override_tests {
+    use super::*;
+
+    #[test]
+    fn manual_window_precedes_profile_and_builtin_metadata() {
+        let models = vec!["gpt-5.5".to_string(), "vendor-model".to_string()];
+        let profile = RelayProfile {
+            model_windows: r#"{"GPT-5.5[1M]":"1M"}"#.into(),
+            context_window: "128K".into(),
+            ..Default::default()
+        };
+        let metadata = relay_profile_model_ui_metadata_map(&profile, &models);
+        for field in [
+            "contextWindow",
+            "maxContextWindow",
+            "context_window",
+            "max_context_window",
+        ] {
+            assert_eq!(metadata["gpt-5.5"][field], 1_000_000);
+            assert_eq!(metadata["vendor-model"][field], 128_000);
+        }
+        let metadata = relay_profile_model_ui_metadata_map(&RelayProfile::default(), &models);
+        assert!(metadata["gpt-5.5"]["contextWindow"].as_u64().is_some());
+        assert!(metadata.get("vendor-model").is_none());
+    }
+}
+
 pub async fn read_codex_model_catalog_from_home(
     home: &Path,
     env: &HashMap<String, String>,

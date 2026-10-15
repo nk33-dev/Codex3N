@@ -12,6 +12,7 @@
 - 自动压缩比例是「留空 = 不写」：空值表示沿用 Codex 自身的默认压缩行为，不写 `auto_compact_token_limit`，也不由导入回填或失焦补 90%。窗口列是同语义（空 = 用 Codex 默认长度）。只有用户显式填了百分比才落盘。
 - 自动压缩下拉保留空值、预设比例及旧配置中的自定义比例。模型行新增思考等级与默认档，`model-reasoning.ts` 写入同一份 `modelMetadata`；清空档位恢复内置声明，不影响 Fast、窗口或其他元数据。
 - 用户外部 `model_catalog_json` 与每模型覆盖冲突时，保留外部目录并应用顶层上下文、自动压缩兜底值；每模型覆盖在该目录下不可用。
+- Kimi 官方 Responses 目录在应用用户元数据后强制关闭 `supports_search_tool`，聚合成员同样处理；其它来源与 Chat Completions 沿用自身能力声明。入口为 `relay_config.rs::upstream_rejects_tool_search`，覆盖普通目录及 `aggregate_catalog.rs`。
 - 每模型 Fast 可显式声明支持、禁用或继承。私有字段 `codex_plus_fast_support` 保存在供应商元数据中，生成原生目录时转换为 `service_tiers` 与 `additional_speed_tiers`，保留其它档位；注入响应通过 `prioritySupportOverride` 统一界面和请求判断，窗口覆盖仍按原优先级应用。
 - 外部目录路径含未展开变量或指向不存在的文件时，`relay_config.rs` 移除失效指针并走托管目录生成；相对路径按 `CODEX_HOME` 解析，存在的外部目录继续保留。
 - 官方响应和个人版补入的模型使用同一显示排序，新增高版本不会被旧官方条目整体压到后面。
