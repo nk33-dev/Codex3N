@@ -84,7 +84,7 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 `dictation.provider` 支持 `api` 和 `sensevoice`，旧配置默认沿用 API 转写。SenseVoiceSmall INT8 模型由配置页手动下载固定版本并验证 SHA-256，录音入口不触发下载；浏览器将音频转为 16 kHz 单声道 WAV，Rust `dictation.rs` 经 sherpa-onnx 在本机推理。识别器在专用线程串行复用，模型或语言变化时重新校验和加载，PCM 样本直接进入推理；缓存会常驻一份模型内存。
 
-Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性。`claudeAppLocalization` 和 `claudeAppVoiceInput` 默认开启，分别控制界面汉化与语音入口，重启副本后应用；关闭汉化时恢复已保存的外壳语言。Windows 支持普通安装和 MSIX 来源，macOS 副本重新签名，失败保留可用副本。命令只通过 Tauri 注册。
+Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性。页面由用户点击检测，后台探测单个命令最多等待 3 秒、整组最多 15 秒，超时回收子进程；离页后的结果不提交。`claudeAppLocalization` 和 `claudeAppVoiceInput` 默认开启，分别控制界面汉化与语音入口，重启副本后应用；关闭汉化时恢复已保存的外壳语言。Windows 支持普通安装和 MSIX 来源，普通副本以完整应用目录替换，失败时恢复旧目录；macOS 副本重新签名。命令只通过 Tauri 注册，回归见 `claude-localization-screen.test.ts` 和本地化单测。
 
 `assets/claude-localization/page-dictation.js` 适配 Claude Code 与 Cowork 输入框，识别结果只写入输入框；`hook.js` 通过听写 helper 转发请求。`launcher.rs` 在 helper 运行期间保存 `dictation-helper.json`，停止时删除；语音开关关闭时不注入页面入口和调用通道。验证见 `claude-dictation.test.ts`、Claude 本地化与听写单测。
 

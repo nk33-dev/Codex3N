@@ -1,6 +1,13 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "检测中…": "Detecting…",
+  "未检测": "Not checked",
+  "未检测到 Claude": "Claude not found",
+  "点击“检测 Claude”读取安装状态；进入此页不会自动检测或修改应用。": "Click Detect Claude to check the installation. Opening this page does not detect or modify the app.",
+  "未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。": "Claude was not found. Install the official app first. Other Codex++ features remain available.",
+  "检测 Claude": "Detect Claude",
+
   "Claude 增强": "Claude enhancements",
   "增强功能": "Enhancements",
   "各自独立开关，互不影响；副本只是它们共同的前置条件，改动在重启副本后应用。": "Each enhancement has its own switch. A managed copy is required; restart it to apply changes.",
@@ -67,7 +74,6 @@ export const EN_PLAIN: Record<string, string> = {
   "选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。": "Select a provider to open its editor. The API Key and local configuration are written to the current Codex only when saved.",
   "启动独立 Codex 实例": "Start a separate Codex instance",
   "官方版本": "Official version",
-  "读取中": "Loading",
   "需要更新": "Update required",
   "已准备": "Ready",
   "未准备": "Not ready",

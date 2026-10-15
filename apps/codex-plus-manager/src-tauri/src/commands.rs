@@ -48,12 +48,15 @@ pub async fn download_dictation_local_model() -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn claude_localization_status()
--> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
-    ok(
-        "Claude 增强状态已读取。",
-        codex_plus_core::claude_localization::status(),
-    )
+pub async fn claude_localization_status() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(codex_plus_core::claude_localization::status).await {
+        Ok(Ok(status)) => ok(
+            "Claude 增强状态已读取。",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 检测失败：{error}"), json!({})),
+    }
 }
 
 #[tauri::command]
@@ -73,42 +76,42 @@ pub async fn claude_localization_action(action: String) -> CommandResult<Value> 
 }
 
 #[tauri::command]
-pub fn claude_localization_set_voice_input(
-    enabled: bool,
-) -> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
-    match codex_plus_core::claude_localization::set_voice_input(enabled) {
-        Ok(status) => ok(
+pub async fn claude_localization_set_voice_input(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_voice_input(enabled)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ok(
             if enabled {
                 "语音输入已开启。"
             } else {
                 "语音输入已关闭。"
             },
-            status,
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
-        Err(error) => failed(
-            &error.to_string(),
-            codex_plus_core::claude_localization::status(),
-        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
     }
 }
 
 #[tauri::command]
-pub fn claude_localization_set_localization(
-    enabled: bool,
-) -> CommandResult<codex_plus_core::claude_localization::ClaudeLocalizationStatus> {
-    match codex_plus_core::claude_localization::set_localization(enabled) {
-        Ok(status) => ok(
+pub async fn claude_localization_set_localization(enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_localization(enabled)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ok(
             if enabled {
                 "界面汉化已开启。"
             } else {
                 "界面汉化已关闭。"
             },
-            status,
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
-        Err(error) => failed(
-            &error.to_string(),
-            codex_plus_core::claude_localization::status(),
-        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
     }
 }
 
@@ -1207,12 +1210,13 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         }
     };
     let pid = child.id();
+    let worker_birth_id = codex_plus_core::multi_worker::worker_birth_id(&child);
     let instance = CodexMultiInstance {
         instance_id: instance_id.clone(),
         profile_id: profile_id.clone(),
         profile_name: profile.name.clone(),
         pid: Some(pid),
-        worker_birth_id: multi_worker_birth_id(pid),
+        worker_birth_id: worker_birth_id.map(|birth| birth.to_string()),
         debug_port,
         helper_port,
         status: "starting".to_string(),
@@ -1400,7 +1404,7 @@ fn stop_codex_multi_instance_blocking(
     if !codex_plus_core::cdp::endpoint_available(instance.debug_port) {
         if let Some(pid) = instance.pid {
             let options_path = path.join("worker-options.json");
-            let _ = terminate_multi_worker(pid, &options_path);
+            let _ = terminate_multi_worker(pid, &options_path, instance.worker_birth_id.as_deref());
         }
         return ok(
             "该实例当前未在运行，未结束任何 Codex 进程。",
@@ -1435,7 +1439,7 @@ fn stop_codex_multi_instance_blocking(
     let _ = std::fs::remove_file(path.join(MULTI_LAUNCH_RESULT_FILE));
     if let Some(pid) = instance.pid {
         let options_path = path.join("worker-options.json");
-        let _ = terminate_multi_worker(pid, &options_path);
+        let _ = terminate_multi_worker(pid, &options_path, instance.worker_birth_id.as_deref());
     }
     let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
         "manager.multi_instance_stopped",
@@ -1529,31 +1533,20 @@ fn multi_instance_status(running: bool, result: Option<&CodexMultiLaunchResult>)
     }
 }
 
-fn multi_worker_birth_id(pid: u32) -> Option<String> {
-    match codex_plus_core::watcher::inspect_process_instance(pid) {
-        codex_plus_core::watcher::ProcessInstanceState::Running { birth_id, .. } => birth_id,
-        _ => None,
-    }
-}
-
-fn multi_worker_identity_matches(
-    instance: &CodexMultiInstance,
+fn terminate_multi_worker(
     pid: u32,
-    birth_id: Option<&str>,
-) -> bool {
-    instance.pid == Some(pid)
-        && instance
-            .worker_birth_id
-            .as_deref()
-            .is_some_and(|expected| !expected.is_empty() && Some(expected) == birth_id)
-}
-
-fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
-    if pid == std::process::id() || !multi_worker_process_matches(pid, options_path) {
+    options_path: &Path,
+    worker_birth_id: Option<&str>,
+) -> anyhow::Result<()> {
+    if pid == std::process::id() {
         return Ok(());
     }
     #[cfg(unix)]
     {
+        let _ = worker_birth_id;
+        if !multi_worker_process_matches(pid, options_path) {
+            return Ok(());
+        }
         let status = std::process::Command::new("kill")
             .arg(pid.to_string())
             .status()?;
@@ -1561,19 +1554,25 @@ fn terminate_multi_worker(pid: u32, options_path: &Path) -> anyhow::Result<()> {
     }
     #[cfg(windows)]
     {
-        let pid_arg = pid.to_string();
-        // 不带 `/T`：这里只该结束 worker 自己。
-        // `/T` 会连带杀掉整棵子进程树，而 worker 下面挂着 Codex Desktop；
-        // 一旦 manifest 里的 pid 已被系统回收，就会误杀无关进程树
-        // （Windows 分支没有 unix 那样的命令行校验，见 multi_worker_process_matches）。
-        let status = std::process::Command::new("taskkill")
-            .args(["/PID", pid_arg.as_str(), "/F"])
-            .status()?;
-        anyhow::ensure!(status.success(), "结束多开 worker 失败（pid {pid}）");
+        // 创建身份、精确参数与 exe 均验证后，使用同一句柄终止，不再按 PID taskkill。
+        let terminated = codex_plus_core::multi_worker::terminate_verified_worker(
+            pid,
+            options_path,
+            worker_birth_id.and_then(|birth| birth.parse().ok()),
+        )?;
+        if !terminated {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.multi_worker_stop_skipped",
+                json!({ "pid": pid, "reason": "identity_unverified" }),
+            );
+        }
     }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (pid, options_path, worker_birth_id);
     Ok(())
 }
 
+#[cfg(unix)]
 fn multi_worker_process_matches(pid: u32, options_path: &Path) -> bool {
     #[cfg(unix)]
     {
@@ -1586,22 +1585,6 @@ fn multi_worker_process_matches(pid: u32, options_path: &Path) -> bool {
         let command = String::from_utf8_lossy(&output.stdout);
         command.contains("--codex-plus-multi-worker")
             && command.contains(&options_path.to_string_lossy().to_string())
-    }
-    #[cfg(windows)]
-    {
-        // 旧清单没有创建标识时不结束 worker，不能把复用的 PID 当作原实例。
-        let Some(root) = options_path.parent() else {
-            return false;
-        };
-        let Ok(instance) = load_multi_instance_manifest(root) else {
-            return false;
-        };
-        multi_worker_identity_matches(&instance, pid, multi_worker_birth_id(pid).as_deref())
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (pid, options_path);
-        false
     }
 }
 
@@ -7795,12 +7778,22 @@ base_url = "https://example.invalid/v1"
 
     #[test]
     fn aggregate_relay_injection_writes_local_proxy_without_chatgpt_auth() {
+        let _guard = lock_codex_home_for_test();
         let temp = tempfile::tempdir().unwrap();
+        // 只验证旧聚合链路，不读取运行中管理器的真实聚合设置和登录快照。
+        let settings_path = temp.path().join("settings.json");
+        std::fs::write(
+            &settings_path,
+            serde_json::to_vec(&BackendSettings::default()).unwrap(),
+        )
+        .unwrap();
+        let previous = codex_plus_core::paths::set_settings_path_for_tests(Some(settings_path));
 
         let result = apply_aggregate_relay_injection_to_home(
             temp.path(),
             codex_plus_core::settings::RelaySessionProvider::Custom,
         );
+        codex_plus_core::paths::set_settings_path_for_tests(previous);
         let config = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
 
         assert_eq!(result.status, "ok");
@@ -9289,30 +9282,16 @@ model_reasoning_effort = "high"
                 .debug_port,
             9456
         );
-        assert!(multi_worker_identity_matches(
-            &instance,
-            1234,
-            Some("birth-1234")
-        ));
-        assert!(!multi_worker_identity_matches(
-            &instance,
-            1234,
-            Some("reused-pid")
-        ));
-        assert!(!multi_worker_identity_matches(
-            &instance,
-            5678,
-            Some("birth-1234")
-        ));
-        assert!(!multi_worker_identity_matches(&instance, 1234, None));
+        assert_eq!(
+            load_multi_instance_manifest(temp.path())
+                .unwrap()
+                .worker_birth_id,
+            Some("birth-1234".to_string())
+        );
         let mut legacy = serde_json::to_value(&instance).unwrap();
         legacy.as_object_mut().unwrap().remove("workerBirthId");
         let legacy: CodexMultiInstance = serde_json::from_value(legacy).unwrap();
-        assert!(!multi_worker_identity_matches(
-            &legacy,
-            1234,
-            Some("birth-1234")
-        ));
+        assert!(legacy.worker_birth_id.is_none());
     }
 
     // 多开在 Windows 上曾经「窗口没出现、列表却显示运行中」：现在状态由
@@ -9421,6 +9400,7 @@ model_reasoning_effort = "high"
 
         let instance = load_multi_instance_manifest(temp.path()).unwrap();
         assert!(instance.launch_result.is_none());
+        assert!(instance.worker_birth_id.is_none());
         assert_eq!(instance.debug_port, 9456);
     }
 

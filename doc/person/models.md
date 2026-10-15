@@ -15,6 +15,7 @@
 - Kimi 官方 Responses 目录在应用用户元数据后强制关闭 `supports_search_tool`，聚合成员同样处理；其它来源与 Chat Completions 沿用自身能力声明。入口为 `relay_config.rs::upstream_rejects_tool_search`，覆盖普通目录及 `aggregate_catalog.rs`。
 - 每模型 Fast 可显式声明支持、禁用或继承。私有字段 `codex_plus_fast_support` 保存在供应商元数据中，生成原生目录时转换为 `service_tiers` 与 `additional_speed_tiers`，保留其它档位；注入响应通过 `prioritySupportOverride` 统一界面和请求判断，窗口覆盖仍按原优先级应用。
 - 外部目录路径含未展开变量或指向不存在的文件时，`relay_config.rs` 移除失效指针并走托管目录生成；相对路径按 `CODEX_HOME` 解析，存在的外部目录继续保留。
+- 托管目录生成与兼容复制后写入绝对 `model_catalog_json` 路径。启动器在供应商总开关开启时，仅迁移已有 `model-catalogs/<id>.json` 相对指针；缺失文件、软链与用户外部目录保持原样。`model_catalog_paths.rs` 用临时副本覆盖重复迁移、损坏配置和路径边界。
 - 官方响应和个人版补入的模型使用同一显示排序，新增高版本不会被旧官方条目整体压到后面。
 - 生成每个供应商的托管目录时保留原生模型条目；供应商模型排在前面，切换供应商会重建当前目录，不沿用上一份目录。用户显式指定的上下文窗口同时约束实际窗口和能力上限。
 - 原生菜单保留选择能力，不重新插入个人版已去掉的模型管理面板或未测试提示。
