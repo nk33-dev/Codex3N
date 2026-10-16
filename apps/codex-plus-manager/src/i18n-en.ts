@@ -352,7 +352,7 @@ export const EN_PLAIN: Record<string, string> = {
   "使用下一步建议的连接": "Use the next-step suggestion connection",
   "沿用下一步建议页填写的 Base URL、API Key、协议和模型。关闭后可以单独指定服务。": "Reuses the Base URL, API Key, protocol, and model from the next-step suggestions tab. Turn off to set a separate service.",
   "改写规则": "Rewrite instructions",
-  "留空使用内置规则：保留原意和代码、路径等细节，按目标、上下文、要求、预期结果整理，不编造需求。": "Leave blank for the built-in rules: keep the intent and details such as code and paths, organize by goal, context, requirements, and expected result, and add no invented requirements.",
+  "留空使用内置规则：推断真实意图，补充范围、关键功能、技术约束、交付物和验收方式；需要取舍时写明合理假设，保留原文的代码、路径和 @引用。": "Leave blank for the built-in rules: infer the real intent, add scope, key features, technical constraints, deliverables, and how to verify; state reasonable assumptions where a choice is open, and keep code, paths, and @ references from the draft.",
   "超时（秒）": "Timeout (seconds)",
   "草稿含 @文件、技能或附件时只能插入到末尾或复制，避免整段替换时丢失。保存后无需重启 Codex。": "Drafts with @files, skills, or attachments can only be appended or copied so replacement cannot drop them. Changes apply without restarting Codex.",
   "单独配置提示词增强服务时需要填写 Base URL。": "Enter a Base URL to use a separate prompt enhancement service.",
