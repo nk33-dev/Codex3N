@@ -116,6 +116,7 @@ pub fn run() {
             commands::restart_codex_plus,
             commands::load_settings,
             commands::dictation_local_model_status,
+            commands::prompt_enhance_default_system_prompt,
             commands::download_dictation_local_model,
             commands::claude_localization_status,
             commands::claude_localization_action,
