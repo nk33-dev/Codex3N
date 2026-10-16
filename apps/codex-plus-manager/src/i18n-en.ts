@@ -1348,6 +1348,10 @@ export const EN_PLAIN: Record<string, string> = {
   "使用供应商": "Use provider",
   "供应商配置总开关未开启，先在页面顶部开启后再使用。": "Enable provider configuration at the top of the page before using a provider.",
   "入口检查与修复、开机启动与应用路径": "Entrypoint checks and repairs, launch at login and app path",
+  "删除目录已不存在的会话": "Delete sessions whose folder is gone",
+  "删除项目会话": "Delete project sessions",
+  "删除该项目的全部会话": "Delete all sessions in this project",
+  "这个项目没有本地会话。": "This project has no local sessions.",
 };
 
 export const EN_TEMPLATE: Record<string, string> = {
@@ -1374,12 +1378,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已删除 {0} 个会话。": "Deleted {0} session(s).",
   "检查发现 {0} 个对话记录已丢失的本地会话。确认删除数据库记录和索引？删除会创建备份；确认后会再次检查，已恢复的会话将跳过。请保持 Codex 应用关闭。": "Found {0} local sessions whose conversation records are gone. Delete their database records and index entries? A backup will be created. Sessions are checked again after confirmation, and recovered sessions are skipped. Keep Codex closed.",
-  "删除目录已不存在的会话": "Delete sessions whose folder is gone",
   "另有 {0} 个会话的项目目录已不存在（共 {1} 个目录），对话内容仍在。如果只是移动了目录，请取消。确认删除这些会话？删除会创建备份。\n\n{2}{3}": "{0} more sessions belong to project folders that no longer exist ({1} folders); their conversations are still on disk. Cancel if you only moved the folder. Delete these sessions? A backup will be created.\n\n{2}{3}",
   "\n...以及另外 {0} 个目录": "\n...and {0} more folder(s)",
-  "删除项目会话": "Delete project sessions",
-  "删除该项目的全部会话": "Delete all sessions in this project",
-  "这个项目没有本地会话。": "This project has no local sessions.",
   "删除项目“{0}”的全部 {1} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{2}": "Delete all {1} sessions in project \"{0}\"? This removes local database records and rollout files, and creates a backup for each session.\n\n{2}",
   "读取会话索引修复报告失败：{0}": "Failed to read the session index repair report: {0}",
   "{0} 状态": "{0} status",
