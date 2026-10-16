@@ -134,7 +134,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   edited.editor.pmViewDesc.view.state.doc.blocks[0].children[0].text = "原稿加了一句";
   edited.resolve({ status: "ok", text: "增强稿" });
   await editedPending;
-  assert.match(edited.blocker(), /草稿有改动/);
+  assert.match(edited.blocker(), /草稿改过了/);
   assert.equal(edited.apply("replace", "增强稿"), false);
   assert.equal(edited.editor.pmViewDesc.view.dispatched.length, 0);
   assert.equal(edited.apply("append", "增强稿"), true);
@@ -170,7 +170,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   swapView.dispatch(swapView.state.tr.replaceWith(0, 2, [swapView.state.schema.nodes.paragraph.create(null, swapView.state.schema.text("原稿"))]));
   swapped.resolve({ status: "ok", text: "增强稿" });
   await swappedPending;
-  assert.match(swapped.blocker(), /草稿有改动/);
+  assert.match(swapped.blocker(), /草稿改过了/);
   assert.equal(swapped.apply("replace", "增强稿"), false);
 
   // Codex 原生接口：以 Markdown 读写草稿，@文件 以链接形式保留，写回交给 Codex 解析并独立成撤销组。
@@ -201,7 +201,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   `, nativeEdited.context);
   await nativeEdited.start({});
   nativeEdited.context.nativeDraft = "原稿 [@App.tsx](file:///repo/App.tsx/)";
-  assert.match(nativeEdited.blocker(), /草稿有改动/);
+  assert.match(nativeEdited.blocker(), /草稿改过了/);
   assert.equal(nativeEdited.apply("append", "增强稿"), true);
   assert.equal(nativeEdited.context.nativeDraft, "原稿 [@App.tsx](file:///repo/App.tsx/)\n\n增强稿", "append keeps existing references");
 

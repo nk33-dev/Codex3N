@@ -16,7 +16,7 @@
     return String(attrs.label || attrs.name || attrs.path || attrs.text || "");
   }
 
-  // 只有段落、换行和纯文本时才允许整段替换；@文件、技能、附件这类节点替换后会丢。
+  // 直接改 ProseMirror 时，只有段落、换行和纯文本才能整段替换；@文件、技能、附件这类节点会被一起换掉。
   function codexPlusPromptEnhanceRich(view) {
     let rich = false;
     view.state.doc.descendants((node) => {
@@ -28,8 +28,8 @@
     return rich;
   }
 
-  // Codex 输入框登记的 updatePromptText 以 Markdown 读写草稿：@文件、技能等引用序列化成链接，
-  // 写回时由 Codex 重新解析，引用不会丢，并且自带撤销分组。构建间导出名会变，只按能力识别。
+  // 优先用 Codex 输入框登记的 updatePromptText：它按 Markdown 读写草稿，@文件、技能引用以链接形式往返，不会丢。
+  // 压缩后的导出名每个版本都会变，只按函数源码里的特征识别。
   function loadCodexPlusPromptEnhanceNativeApi() {
     if (codexPlusPromptEnhance.nativeApiPromise) return codexPlusPromptEnhance.nativeApiPromise;
     codexPlusPromptEnhance.nativeApiPromise = loadOptionalCodexAppModule("app-initial-").then((module) => {
@@ -76,7 +76,7 @@
     return text.split("\n").map((line) => paragraph.create(null, line ? schema.text(line) : null));
   }
 
-  // replace 覆盖整段草稿，append 追加到末尾。ProseMirror 下都是一次事务，Ctrl+Z 能整体撤回。
+  // replace 覆盖整段草稿，append 追加到末尾。每次写回只占一个撤销步骤：原生接口靠 isolateHistory，ProseMirror 靠单个事务。
   function codexPlusPromptEnhanceWrite(editor, text, mode, native = null) {
     const value = String(text || "").replace(/\r\n?/g, "\n").trim();
     if (!value || !editor?.isConnected || editor.matches?.(':disabled, [readonly], [contenteditable="false"]')
@@ -138,17 +138,17 @@
     return !!target?.editor?.isConnected && window.location.href === target.href;
   }
 
-  // 返回不能整段替换的原因，空串表示可以替换。每次都重新读取当前草稿：生成期间文字可能
-  // 被转成同名的 @文件引用，纯文本投影不变但结构已变，只比较文字会误放行。
+  // 返回不能整段替换的原因，空串表示可以替换。
+  // 每次都重新读当前草稿：生成期间文字可能被转成同名的 @文件引用，读出来的文字没变，结构已经变了。
   function codexPlusPromptEnhanceReplaceBlocker() {
     const target = codexPlusPromptEnhance.target;
     if (!codexPlusPromptEnhanceTargetAlive()) return "输入框或会话已变化，请复制结果后手动粘贴";
     const current = codexPlusPromptEnhanceRead(target.editor, target.native);
     if (!current) return "输入框或会话已变化，请复制结果后手动粘贴";
-    if (current.opaque) return "无法识别这个输入框的结构，可以插入到末尾或复制";
+    if (current.opaque) return "这个输入框不支持整段替换，可以插入到末尾或复制";
     if (target.rich || current.rich) return "草稿里有 @文件、技能或附件，整段替换会丢掉它们，可以插入到末尾或复制";
-    // ProseMirror 文档不可变，任何改动都会换成新对象；原生路径的 Markdown 已包含引用结构。
-    if (current.text !== target.original || current.doc !== target.doc) return "生成期间草稿有改动，为免覆盖，请插入到末尾或复制";
+    // ProseMirror 的 doc 不可变，有过任何事务就是新对象。原生路径没有 doc，引用变化已体现在 Markdown 文本里。
+    if (current.text !== target.original || current.doc !== target.doc) return "生成期间草稿改过了，整段替换会覆盖这些改动，可以插入到末尾或复制";
     return "";
   }
 
