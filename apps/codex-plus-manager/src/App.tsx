@@ -5420,7 +5420,7 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
               <Textarea
                 value={form.promptEnhance.systemPrompt}
                 onChange={(event) => updatePromptEnhance({ systemPrompt: event.currentTarget.value })}
-                placeholder={t("留空使用内置规则：保留原意和代码、路径等细节，按目标、上下文、要求、预期结果整理，不编造需求。")}
+                placeholder={t("留空使用内置规则：推断真实意图，补充范围、关键功能、技术约束、交付物和验收方式；需要取舍时写明合理假设，保留原文的代码、路径和 @引用。")}
                 rows={5}
               />
             </Field>
