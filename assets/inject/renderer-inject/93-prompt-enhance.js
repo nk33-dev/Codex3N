@@ -1,7 +1,7 @@
   // 提示词增强：把输入框草稿交给后端模型改写，预览确认后才写回；取消时输入框保持原样。
   // 输入框定位与 footer 选择复用 93-dictation，两个入口挂在同一个 composer footer 上。
   window.__codexPlusPromptEnhanceRuntime?.dispose?.();
-  const codexPlusPromptEnhance = { phase: "idle", revision: 0, target: null, text: "", error: "" };
+  const codexPlusPromptEnhance = { phase: "idle", revision: 0, target: null, text: "", error: "", nativeApiPromise: null };
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-prompt-enhance"]');
 
   function codexPlusPromptEnhanceEnabled() {
@@ -28,15 +28,46 @@
     return rich;
   }
 
-  function codexPlusPromptEnhanceRead(editor) {
+  // Codex 输入框登记的 updatePromptText 以 Markdown 读写草稿：@文件、技能等引用序列化成链接，
+  // 写回时由 Codex 重新解析，引用不会丢，并且自带撤销分组。构建间导出名会变，只按能力识别。
+  function loadCodexPlusPromptEnhanceNativeApi() {
+    if (codexPlusPromptEnhance.nativeApiPromise) return codexPlusPromptEnhance.nativeApiPromise;
+    codexPlusPromptEnhance.nativeApiPromise = loadOptionalCodexAppModule("app-initial-").then((module) => {
+      const sources = Object.values(module || {}).filter((value) => typeof value === "function")
+        .map((fn) => ({ fn, source: String(fn) })).filter((item) => item.source.length < 3000);
+      const update = sources.find(({ source }) => source.includes(".updatePromptText!=null") && source.includes(".updatePromptText(")
+        && source.includes(".composerId===") && source.includes(".hasText") && !source.includes("occupied"))?.fn;
+      const context = sources.find(({ source }) => source.includes("document.activeElement?.closest")
+        && source.includes("[data-codex-composer-root]") && source.includes("composerId:") && source.includes("root:"))?.fn;
+      return update && context ? { update, context } : null;
+    }).catch(() => null);
+    return codexPlusPromptEnhance.nativeApiPromise;
+  }
+
+  function codexPlusPromptEnhanceNativeText(native) {
+    let text = null;
+    try {
+      // 回调返回 null 时 Codex 不改草稿，只借它拿到序列化后的全文。
+      if (native.api.update(native.composerId, (current) => { text = String(current ?? ""); return null; }) !== true) return null;
+    } catch {
+      return null;
+    }
+    return text;
+  }
+
+  function codexPlusPromptEnhanceRead(editor, native = null) {
+    if (native) {
+      const text = codexPlusPromptEnhanceNativeText(native);
+      return text == null ? null : { text, rich: false };
+    }
     const view = codexPlusDictationView(editor);
     if (view) {
       const { doc } = view.state;
-      return { text: doc.textBetween(0, doc.content.size, "\n", codexPlusPromptEnhanceLeafText), rich: codexPlusPromptEnhanceRich(view) };
+      return { text: doc.textBetween(0, doc.content.size, "\n", codexPlusPromptEnhanceLeafText), rich: codexPlusPromptEnhanceRich(view), doc };
     }
     if (editor instanceof HTMLTextAreaElement) return { text: editor.value, rich: false };
     // 认不出结构的编辑器不做整段替换，只允许插入到末尾和复制。
-    return { text: editor.innerText || editor.textContent || "", rich: true };
+    return { text: editor.innerText || editor.textContent || "", rich: true, opaque: true };
   }
 
   function codexPlusPromptEnhanceParagraphs(schema, text) {
@@ -46,11 +77,22 @@
   }
 
   // replace 覆盖整段草稿，append 追加到末尾。ProseMirror 下都是一次事务，Ctrl+Z 能整体撤回。
-  function codexPlusPromptEnhanceWrite(editor, text, mode) {
+  function codexPlusPromptEnhanceWrite(editor, text, mode, native = null) {
     const value = String(text || "").replace(/\r\n?/g, "\n").trim();
     if (!value || !editor?.isConnected || editor.matches?.(':disabled, [readonly], [contenteditable="false"]')
         || editor.closest?.('[inert], [aria-hidden="true"]')) return false;
     editor.focus();
+    if (native) {
+      const next = (current) => {
+        const kept = String(current ?? "").replace(/\s+$/, "");
+        return mode === "replace" ? value : `${kept}${kept ? "\n\n" : ""}${value}`;
+      };
+      try {
+        return native.api.update(native.composerId, next, { isolateHistory: true }) === true;
+      } catch {
+        return false;
+      }
+    }
     const view = codexPlusDictationView(editor);
     if (view) {
       const { state } = view;
@@ -96,12 +138,17 @@
     return !!target?.editor?.isConnected && window.location.href === target.href;
   }
 
-  // 返回不能整段替换的原因，空串表示可以替换。
+  // 返回不能整段替换的原因，空串表示可以替换。每次都重新读取当前草稿：生成期间文字可能
+  // 被转成同名的 @文件引用，纯文本投影不变但结构已变，只比较文字会误放行。
   function codexPlusPromptEnhanceReplaceBlocker() {
     const target = codexPlusPromptEnhance.target;
     if (!codexPlusPromptEnhanceTargetAlive()) return "输入框或会话已变化，请复制结果后手动粘贴";
-    if (target.rich) return "草稿里有 @文件、技能或附件，整段替换会丢掉它们，可以插入到末尾或复制";
-    if (codexPlusPromptEnhanceRead(target.editor).text !== target.original) return "生成期间草稿有改动，为免覆盖，请插入到末尾或复制";
+    const current = codexPlusPromptEnhanceRead(target.editor, target.native);
+    if (!current) return "输入框或会话已变化，请复制结果后手动粘贴";
+    if (current.opaque) return "无法识别这个输入框的结构，可以插入到末尾或复制";
+    if (target.rich || current.rich) return "草稿里有 @文件、技能或附件，整段替换会丢掉它们，可以插入到末尾或复制";
+    // ProseMirror 文档不可变，任何改动都会换成新对象；原生路径的 Markdown 已包含引用结构。
+    if (current.text !== target.original || current.doc !== target.doc) return "生成期间草稿有改动，为免覆盖，请插入到末尾或复制";
     return "";
   }
 
@@ -130,9 +177,20 @@
     const scope = codexPlusDictationScope(footer);
     const editor = scope && codexPlusDictationEditor(scope);
     if (!editor) { showToast("无法找到可编辑的 Codex 输入框", null); return; }
-    const { text, rich } = codexPlusPromptEnhanceRead(editor);
+    const href = window.location.href;
+    const nativeApi = await loadCodexPlusPromptEnhanceNativeApi();
+    if (!editor.isConnected || window.location.href !== href || codexPlusPromptEnhance.phase === "loading") return;
+    editor.focus();
+    let native = null;
+    try {
+      const context = nativeApi?.context();
+      if (context?.composerId && context.root?.contains(editor)) native = { api: nativeApi, composerId: context.composerId };
+    } catch {}
+    let draft = native ? codexPlusPromptEnhanceRead(editor, native) : null;
+    if (!draft) { native = null; draft = codexPlusPromptEnhanceRead(editor); }
+    const { text, rich, doc } = draft;
     if (!text.trim()) { showToast("先在输入框写下需求，再点增强", null); return; }
-    codexPlusPromptEnhance.target = { editor, href: window.location.href, original: text, rich };
+    codexPlusPromptEnhance.target = { editor, href, original: text, rich, doc, native };
     await requestCodexPlusPromptEnhance();
   }
 
@@ -151,7 +209,8 @@
       const blocker = codexPlusPromptEnhanceReplaceBlocker();
       if (blocker) { showToast(blocker, null); return false; }
     }
-    if (!codexPlusPromptEnhanceWrite(codexPlusPromptEnhance.target.editor, text, mode)) {
+    const { editor, native } = codexPlusPromptEnhance.target;
+    if (!codexPlusPromptEnhanceWrite(editor, text, mode, native)) {
       showToast("写入输入框失败，请复制结果后手动粘贴", null);
       return false;
     }
@@ -230,41 +289,52 @@
     const key = `${state.revision}:${state.phase}`;
     if (panel.dataset.renderKey === key) return;
     panel.dataset.renderKey = key;
+    const header = document.createElement("div");
+    header.className = "codex-plus-prompt-enhance-header";
     const title = document.createElement("strong");
-    title.textContent = "提示词增强";
-    const status = document.createElement("span");
+    title.append(codexPlusPromptEnhanceIcon(), "提示词增强");
+    const close = codexPlusPromptEnhanceButton("close", "×", { title: "取消（Esc）" });
+    close.className = "codex-plus-prompt-enhance-close";
+    close.setAttribute("aria-label", "取消");
+    header.append(title, close);
+    const status = document.createElement("div");
     status.setAttribute("role", "status");
     const actions = document.createElement("div");
     actions.className = "codex-plus-prompt-enhance-actions";
-    const children = [title, status];
+    const children = [header, status];
     if (state.phase === "loading") {
-      status.textContent = "正在优化…";
+      status.className = "is-loading";
+      status.textContent = "正在改写草稿…";
+      const draft = document.createElement("div");
+      draft.className = "codex-plus-prompt-enhance-draft";
+      draft.textContent = state.target?.original || "";
+      children.push(draft);
       actions.append(codexPlusPromptEnhanceButton("close", "取消"));
     } else if (state.phase === "error") {
       status.textContent = state.error;
       status.className = "is-error";
-      actions.append(codexPlusPromptEnhanceButton("retry", "重试", { primary: true }), codexPlusPromptEnhanceButton("close", "关闭"));
+      actions.append(codexPlusPromptEnhanceButton("close", "关闭"), codexPlusPromptEnhanceButton("retry", "重试", { primary: true }));
     } else {
+      // 不能替换时直接不给替换按钮，原因写在状态行里，避免出现一个点不动的灰按钮。
       const blocker = codexPlusPromptEnhanceReplaceBlocker();
-      status.textContent = "可以先修改，确认后再写回输入框";
+      status.textContent = blocker || "可以直接修改，确认后写回输入框";
+      if (blocker) status.className = "is-warning";
       const text = document.createElement("textarea");
       text.value = state.text;
       text.spellcheck = false;
+      text.rows = Math.min(16, Math.max(4, state.text.split("\n").length + 1));
       text.setAttribute("aria-label", "增强后的提示词");
       children.push(text);
-      if (blocker) {
-        const note = document.createElement("p");
-        note.className = "codex-plus-prompt-enhance-note";
-        note.textContent = blocker;
-        children.push(note);
-      }
+      const hint = document.createElement("span");
+      hint.className = "codex-plus-prompt-enhance-hint";
+      hint.textContent = blocker ? "Ctrl+Enter 插入 · Esc 取消" : "Ctrl+Enter 替换 · Esc 取消";
       actions.append(
-        codexPlusPromptEnhanceButton("replace", "替换", { primary: !blocker, disabled: !!blocker, title: blocker || "Ctrl+Enter" }),
-        codexPlusPromptEnhanceButton("append", "插入到末尾", { primary: !!blocker }),
-        codexPlusPromptEnhanceButton("copy", "复制"),
+        hint,
         codexPlusPromptEnhanceButton("retry", "重新生成"),
-        codexPlusPromptEnhanceButton("close", "取消"),
+        codexPlusPromptEnhanceButton("copy", "复制"),
+        codexPlusPromptEnhanceButton("append", "插入到末尾", { primary: !!blocker }),
       );
+      if (!blocker) actions.append(codexPlusPromptEnhanceButton("replace", "替换", { primary: true }));
       requestAnimationFrame(() => { if (text.isConnected) text.focus(); });
     }
     children.push(actions);
@@ -317,17 +387,29 @@
       style.id = "codex-plus-prompt-enhance-style";
       style.dataset.codexPlusExt = "builtin-prompt-enhance";
       style.textContent = `.codex-plus-prompt-enhance-trigger{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;padding:0;margin-inline:2px;border:0;border-radius:8px;background:transparent;color:var(--color-token-text-primary,currentColor);opacity:.9;cursor:pointer}
-        .codex-plus-prompt-enhance-trigger:hover{background:color-mix(in srgb,currentColor 12%,transparent);opacity:1}
+        .codex-plus-prompt-enhance-trigger:hover{background:var(--color-token-interactive-bg-secondary-hover,color-mix(in srgb,currentColor 12%,transparent));opacity:1}
         .codex-plus-prompt-enhance-trigger:disabled{opacity:.4;cursor:default;background:transparent}
+        .codex-plus-prompt-enhance-trigger[aria-busy="true"] svg{animation:codex-plus-prompt-enhance-pulse 1.2s ease-in-out infinite}
         .codex-plus-prompt-enhance-trigger:focus-visible,#codex-plus-prompt-enhance-panel button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
-        #codex-plus-prompt-enhance-panel{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:8px;box-sizing:border-box;padding:12px;overflow:auto;border:1px solid var(--color-token-border-default,#8884);border-radius:12px;background:var(--color-token-bg-primary,var(--background,#252525));color:var(--color-token-text-primary,var(--foreground,#eee));box-shadow:0 8px 28px #0005;font-size:13px}
-        #codex-plus-prompt-enhance-panel [role="status"]{color:var(--color-token-text-secondary,inherit)}
+        @keyframes codex-plus-prompt-enhance-pulse{50%{opacity:.35}}
+        #codex-plus-prompt-enhance-panel{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:10px;box-sizing:border-box;padding:12px 14px 14px;overflow:auto;border:1px solid var(--color-token-border-heavy,#8885);border-radius:16px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));color:var(--color-token-text-primary,#eee);box-shadow:0 12px 32px #0006;font-size:13px;line-height:1.5}
+        .codex-plus-prompt-enhance-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+        .codex-plus-prompt-enhance-header strong{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
+        .codex-plus-prompt-enhance-close{width:24px;height:24px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--color-token-text-tertiary,inherit);font-size:16px;line-height:1;cursor:pointer}
+        .codex-plus-prompt-enhance-close:hover{background:var(--color-token-interactive-bg-secondary-hover,#fff2);color:inherit}
+        #codex-plus-prompt-enhance-panel [role="status"]{color:var(--color-token-text-tertiary,inherit);font-size:12px}
+        #codex-plus-prompt-enhance-panel [role="status"].is-loading{animation:codex-plus-prompt-enhance-pulse 1.2s ease-in-out infinite}
+        #codex-plus-prompt-enhance-panel [role="status"].is-warning{color:var(--color-token-editor-warning-foreground,#ff8549)}
         #codex-plus-prompt-enhance-panel [role="status"].is-error{color:#e5484d;white-space:pre-wrap;word-break:break-word}
-        #codex-plus-prompt-enhance-panel textarea{box-sizing:border-box;width:100%;min-height:120px;max-height:50vh;resize:vertical;padding:8px;border:1px solid var(--color-token-border-light,#8883);border-radius:8px;background:var(--color-token-bg-secondary,transparent);color:inherit;font:inherit;line-height:1.5}
-        .codex-plus-prompt-enhance-note{margin:0;color:var(--color-token-text-secondary,inherit);font-size:12px}
-        .codex-plus-prompt-enhance-actions{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
-        .codex-plus-prompt-enhance-actions button{padding:5px 10px;border:1px solid color-mix(in srgb,currentColor 20%,transparent);border-radius:8px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
-        .codex-plus-prompt-enhance-actions button.is-primary{background:var(--color-token-text-primary,#eee);color:var(--color-token-bg-primary,#222);border-color:transparent}
+        .codex-plus-prompt-enhance-draft{max-height:96px;overflow:auto;padding:8px 10px;border-radius:10px;background:var(--color-token-bg-tertiary,#0002);color:var(--color-token-text-tertiary,inherit);white-space:pre-wrap;word-break:break-word}
+        #codex-plus-prompt-enhance-panel textarea{box-sizing:border-box;width:100%;min-height:96px;max-height:50vh;resize:vertical;padding:10px 12px;border:1px solid var(--color-token-input-border,#8884);border-radius:10px;background:var(--color-token-bg-tertiary,transparent);color:inherit;font:inherit;font-size:14px;line-height:1.6;outline:none}
+        #codex-plus-prompt-enhance-panel textarea:focus{border-color:var(--color-token-text-tertiary,#888)}
+        .codex-plus-prompt-enhance-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px;justify-content:flex-end}
+        .codex-plus-prompt-enhance-hint{margin-right:auto;color:var(--color-token-text-tertiary,inherit);font-size:12px}
+        .codex-plus-prompt-enhance-actions button{height:28px;padding:0 12px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:8px;background:transparent;color:inherit;cursor:pointer;white-space:nowrap}
+        .codex-plus-prompt-enhance-actions button:hover{background:var(--color-token-interactive-bg-secondary-hover,#fff2)}
+        .codex-plus-prompt-enhance-actions button.is-primary{background:var(--color-token-text-primary,#eee);color:var(--color-token-bg-primary,#222);border-color:transparent;font-weight:500}
+        .codex-plus-prompt-enhance-actions button.is-primary:hover{opacity:.9}
         .codex-plus-prompt-enhance-actions button:disabled{opacity:.45;cursor:default}`;
       document.head.append(style);
     }

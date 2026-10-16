@@ -93,7 +93,8 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
 
 (async () => {
   const read = fixture({ lines: ["第一行", "", "第三行"] });
-  assert.deepEqual({ ...read.read(read.editor) }, { text: "第一行\n\n第三行", rich: false });
+  const firstRead = read.read(read.editor);
+  assert.deepEqual({ text: firstRead.text, rich: firstRead.rich }, { text: "第一行\n\n第三行", rich: false });
   const rich = fixture({ extra: [{ type: { name: "mention" }, attrs: { label: "@App.tsx" } }] });
   assert.equal(rich.read(rich.editor).rich, true, "@file chips or attachments must block whole-draft replacement");
 
@@ -145,6 +146,64 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   await richFlow.start({});
   assert.match(richFlow.blocker(), /@文件/);
   assert.equal(richFlow.apply("replace", "增强稿"), false);
+
+  // 生成期间把同名文字转成 @文件引用：纯文本投影不变，但结构变了，必须拒绝整段替换。
+  const converted = fixture({ lines: ["看看 @App.tsx"] });
+  const convertedPending = converted.start({});
+  await flush();
+  converted.editor.pmViewDesc.view.state.doc.blocks[0].children = [
+    { isText: true, type: { name: "text" }, text: "看看 " },
+    { type: { name: "atMention" }, attrs: { label: "@App.tsx", path: "/repo/App.tsx" } },
+  ];
+  converted.resolve({ status: "ok", text: "增强稿" });
+  await convertedPending;
+  assert.equal(converted.read(converted.editor).text, "看看 @App.tsx", "the projected text is unchanged");
+  assert.match(converted.blocker(), /@文件/);
+  assert.equal(converted.apply("replace", "增强稿"), false);
+  assert.equal(converted.editor.pmViewDesc.view.dispatched.length, 0, "a mention added during generation must survive");
+
+  // 任何事务都会换成新文档；即使文字相同也视为改稿。
+  const swapped = fixture({ lines: ["原稿"] });
+  const swappedPending = swapped.start({});
+  await flush();
+  const swapView = swapped.editor.pmViewDesc.view;
+  swapView.dispatch(swapView.state.tr.replaceWith(0, 2, [swapView.state.schema.nodes.paragraph.create(null, swapView.state.schema.text("原稿"))]));
+  swapped.resolve({ status: "ok", text: "增强稿" });
+  await swappedPending;
+  assert.match(swapped.blocker(), /草稿有改动/);
+  assert.equal(swapped.apply("replace", "增强稿"), false);
+
+  // Codex 原生接口：以 Markdown 读写草稿，@文件 以链接形式保留，写回交给 Codex 解析并独立成撤销组。
+  const native = fixture({ lines: ["ignored"], respond: () => ({ status: "ok", text: "增强稿 [@App.tsx](file:///repo/App.tsx/)" }) });
+  vm.runInContext(`
+    var nativeDraft = "看看 [@App.tsx](file:///repo/App.tsx/)", nativeCalls = [];
+    var LB = new Map([[{ isConnected: true }, { composerId: "composer-1", hasText: () => nativeDraft.trim() !== "",
+      updatePromptText: (fn, options) => { const next = fn(nativeDraft); nativeCalls.push({ next, options }); if (next != null) nativeDraft = next; return next == null ? null : {}; } }]]);
+    function uHi(e,t,n){for(let[r,i]of LB)if(i.composerId===e&&r.isConnected&&i.updatePromptText!=null)return i.updatePromptText(e=>t(e,i.hasText?.()??e.trim()!==""),n),true;return false}
+    function wHi(){let e=document.activeElement?.closest("[data-codex-composer-root]");return {composerId:"composer-1",root:{contains:()=>true}}}
+    loadOptionalCodexAppModule = async () => ({ renamedUpdate: uHi, renamedContext: wHi });
+  `, native.context);
+  await native.start({});
+  assert.deepEqual(JSON.parse(JSON.stringify(native.requests[0].payload)), { prompt: "看看 [@App.tsx](file:///repo/App.tsx/)" }, "mentions are sent as markdown links");
+  assert.equal(native.blocker(), "");
+  assert.equal(native.apply("replace", "增强稿 [@App.tsx](file:///repo/App.tsx/)"), true);
+  assert.equal(native.context.nativeDraft, "增强稿 [@App.tsx](file:///repo/App.tsx/)");
+  assert.equal(native.context.nativeCalls.at(-1).options.isolateHistory, true, "replacement is its own undo step");
+  assert.equal(native.editor.pmViewDesc.view.dispatched.length, 0, "native path does not touch ProseMirror directly");
+
+  const nativeEdited = fixture({ respond: () => ({ status: "ok", text: "增强稿" }) });
+  vm.runInContext(`
+    var nativeDraft = "原稿";
+    var LB = new Map([[{ isConnected: true }, { composerId: "c", hasText: () => true, updatePromptText: (fn) => { const next = fn(nativeDraft); if (next != null) nativeDraft = next; return {}; } }]]);
+    function uHi(e,t,n){for(let[r,i]of LB)if(i.composerId===e&&r.isConnected&&i.updatePromptText!=null)return i.updatePromptText(e=>t(e,i.hasText?.()??e.trim()!==""),n),true;return false}
+    function wHi(){let e=document.activeElement?.closest("[data-codex-composer-root]");return {composerId:"c",root:{contains:()=>true}}}
+    loadOptionalCodexAppModule = async () => ({ uHi, wHi });
+  `, nativeEdited.context);
+  await nativeEdited.start({});
+  nativeEdited.context.nativeDraft = "原稿 [@App.tsx](file:///repo/App.tsx/)";
+  assert.match(nativeEdited.blocker(), /草稿有改动/);
+  assert.equal(nativeEdited.apply("append", "增强稿"), true);
+  assert.equal(nativeEdited.context.nativeDraft, "原稿 [@App.tsx](file:///repo/App.tsx/)\n\n增强稿", "append keeps existing references");
 
   // 切换会话后不能写进别的会话。
   const moved = fixture({ respond: () => ({ status: "ok", text: "增强稿" }) });
