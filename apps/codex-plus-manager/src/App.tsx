@@ -5345,6 +5345,15 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
     promptEnhance: { ...form.promptEnhance, ...patch },
   });
   const issue = promptEnhanceSettingsValidationMessage(promptEnhanceSettingsIssue(form.promptEnhance));
+  const [ruleError, setRuleError] = useState("");
+  const fillDefaultRule = async () => {
+    setRuleError("");
+    try {
+      updatePromptEnhance({ systemPrompt: await invoke<string>("prompt_enhance_default_system_prompt") });
+    } catch {
+      setRuleError(t("读取内置规则失败，请重试。"));
+    }
+  };
   return (
     <Panel className="enhance-service-panel">
       <CardHead title={t("提示词增强")} detail={t("把输入框里的草稿改写得更清楚，确认后再写回输入框。")} />
@@ -5424,6 +5433,12 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
                 rows={5}
               />
             </Field>
+            <div className="form-row">
+              <Button type="button" variant="outline" onClick={() => void fillDefaultRule()}>{t("填入内置规则")}</Button>
+              <Button type="button" variant="outline" disabled={!form.promptEnhance.systemPrompt} onClick={() => updatePromptEnhance({ systemPrompt: "" })}>{t("恢复内置规则")}</Button>
+            </div>
+            <p className="field-hint">{t("改写规则可先填入内置规则再改，清空即恢复内置规则。")}</p>
+            {ruleError ? <p className="field-hint" role="alert">{ruleError}</p> : null}
             <Field label={t("超时（秒）")}>
               <Input
                 type="number"
@@ -5437,7 +5452,7 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
           {issue ? <p className="field-hint" role="alert">{issue}</p> : null}
           <div className="hint-line enhance-service-note">
             <Info className="h-4 w-4" />
-            <span>{t("草稿含 @文件、技能或附件时只能插入到末尾或复制，避免整段替换时丢失。保存后无需重启 Codex。")}</span>
+            <span>{t("草稿里的 @文件、技能引用写回后会保留；生成期间改过草稿时只能插入到末尾或复制。保存后无需重启 Codex。")}</span>
           </div>
         </div>
       </CardContent>

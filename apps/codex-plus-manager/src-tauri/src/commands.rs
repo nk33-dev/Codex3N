@@ -38,6 +38,12 @@ pub fn dictation_local_model_status() -> Value {
     codex_plus_core::dictation::local_model_status()
 }
 
+/// 管理器「改写规则」用它填入内置规则，用户在此基础上修改后存进设置。
+#[tauri::command]
+pub fn prompt_enhance_default_system_prompt() -> String {
+    codex_plus_core::prompt_enhance::default_system_prompt().to_string()
+}
+
 /// 只注册为管理器命令，不开放给用户脚本或公开 HTTP 路由。
 #[tauri::command]
 pub async fn download_dictation_local_model() -> CommandResult<Value> {
