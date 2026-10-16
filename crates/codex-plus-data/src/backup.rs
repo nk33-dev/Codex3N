@@ -12,11 +12,15 @@ pub struct BackupStore {
 
 /// 会话删除快照的保留份数。
 ///
-/// 撤销入口是 Codex 界面里 10 秒后自动消失的一次性 toast，更早的快照没有任何
-/// 消费者；而每份快照都把 rollout 全文 base64 内联进 JSON，不设上限时
-/// `backups/` 会随删除次数无上限增长。50 份远超任何一次删除操作会用到的数量
-/// （一次删除最多写入 3 份，多份快照对应同一次撤销）。
+/// 撤销入口是 Codex 界面里 10 秒后自动消失的一次性 toast；而每份快照都把
+/// rollout 全文 base64 内联进 JSON，不设上限时 `backups/` 会随删除次数无上限增长。
 const SESSION_DELETE_BACKUP_KEEP_COUNT: usize = 50;
+
+/// 最近这段时间内的快照不受份数限制。
+///
+/// 批量清理一次会写入几百份快照，只按份数保留会在同一次清理中途删掉前面的备份，
+/// 误删后就无从恢复。
+const SESSION_DELETE_BACKUP_KEEP_SECS: u64 = 7 * 24 * 60 * 60;
 
 impl BackupStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -52,7 +56,10 @@ impl BackupStore {
         )?;
         // 快照已经落盘，清理失败不能反过来让删除操作报错；但也不能静默，
         // 否则磁盘只增不减这件事又没人看得见。
-        if let Err(error) = self.prune(SESSION_DELETE_BACKUP_KEEP_COUNT) {
+        if let Err(error) = self.prune_older_than(
+            SESSION_DELETE_BACKUP_KEEP_COUNT,
+            epoch.saturating_sub(SESSION_DELETE_BACKUP_KEEP_SECS),
+        ) {
             let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                 "session_delete_backup_prune_failed",
                 json!({
@@ -69,6 +76,11 @@ impl BackupStore {
     /// 文件名是 `<epoch>-<uuid>.json`，epoch 定长（10 位），按文件名倒序即按
     /// 时间倒序，不需要读文件内容。
     pub fn prune(&self, keep: usize) -> anyhow::Result<usize> {
+        self.prune_older_than(keep, u64::MAX)
+    }
+
+    /// 保留最近 `keep` 份，以及 epoch 不早于 `keep_since` 的快照。
+    pub fn prune_older_than(&self, keep: usize, keep_since: u64) -> anyhow::Result<usize> {
         let entries = match fs::read_dir(&self.root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -92,6 +104,13 @@ impl BackupStore {
         names.sort_by(|left, right| right.cmp(left));
         let mut removed = 0usize;
         for name in names.into_iter().skip(keep) {
+            let epoch = name
+                .split('-')
+                .next()
+                .and_then(|value| value.parse::<u64>().ok());
+            if epoch.is_some_and(|epoch| epoch >= keep_since) {
+                continue;
+            }
             fs::remove_file(self.root.join(&name)).with_context(|| {
                 format!("failed to prune backup {}", self.root.join(&name).display())
             })?;
@@ -113,5 +132,26 @@ impl BackupStore {
             .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
             .collect();
         self.root.join(format!("{safe}.json"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BackupStore;
+    use std::fs;
+
+    #[test]
+    fn recent_backups_survive_the_count_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for epoch in [100, 200, 300, 400] {
+            fs::write(dir.path().join(format!("{epoch}-x.json")), "{}").unwrap();
+        }
+        let store = BackupStore::new(dir.path());
+        // 只留 1 份，但 200 之后的都在保护期内。
+        assert_eq!(store.prune_older_than(1, 200).unwrap(), 1);
+        assert!(!dir.path().join("100-x.json").exists());
+        assert!(dir.path().join("200-x.json").exists());
+        assert_eq!(store.prune(1).unwrap(), 2);
+        assert!(dir.path().join("400-x.json").exists());
     }
 }

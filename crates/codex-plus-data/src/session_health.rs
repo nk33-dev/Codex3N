@@ -142,7 +142,7 @@ impl<'de> Visitor<'de> for BackupSessionIdVisitor<'_> {
 
 fn backup_session_id(path: &Path) -> anyhow::Result<Option<String>> {
     let mut session_id = None;
-    let mut deserializer = serde_json::Deserializer::from_reader(File::open(path)?);
+    let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(File::open(path)?));
     let result = serde::de::Deserializer::deserialize_map(
         &mut deserializer,
         BackupSessionIdVisitor {
@@ -156,6 +156,17 @@ fn backup_session_id(path: &Path) -> anyhow::Result<Option<String>> {
             Err(error).with_context(|| format!("无法读取恢复备份标识 {}", path.display()))
         }
     }
+}
+
+fn compressed_rollout_path(rollout: &Path) -> PathBuf {
+    let mut path = rollout.as_os_str().to_owned();
+    path.push(".zst");
+    PathBuf::from(path)
+}
+
+/// `rollout-…-<id>.jsonl.zst` 去掉双扩展名后的文件名。
+fn compressed_rollout_stem(path: &Path) -> Option<&str> {
+    path.file_name()?.to_str()?.strip_suffix(".jsonl.zst")
 }
 
 fn directory_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -281,12 +292,19 @@ fn inspect_database(
                     continue;
                 }
                 // 文件损坏、权限错误或临时挂载异常不能等同于不可恢复。
-                match fs::metadata(&rollout) {
-                    Ok(_) => insert_id(protected, &id),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error)
-                            .with_context(|| format!("无法检查会话文件 {}", rollout.display()));
+                // 新版 Codex 会把旧 rollout 压缩成同名 `.jsonl.zst`，数据库里的路径不变。
+                for candidate in [rollout.clone(), compressed_rollout_path(&rollout)] {
+                    match fs::metadata(&candidate) {
+                        Ok(_) => {
+                            insert_id(protected, &id);
+                            break;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("无法检查会话文件 {}", candidate.display())
+                            });
+                        }
                     }
                 }
             }
@@ -308,6 +326,15 @@ fn protect_files(
         }
         if metadata.is_dir() {
             protect_files(&path, home, protected, observed)?;
+        } else if let Some(stem) = compressed_rollout_stem(&path) {
+            // 压缩 rollout 不解压读元数据，标准文件名里的 ID 已足够认领。
+            if let Some(id) = stem
+                .get(stem.len().saturating_sub(36)..)
+                .and_then(normalized_id)
+                && observed.is_none_or(|ids| ids.contains(&id))
+            {
+                protected.insert(id);
+            }
         } else if path.extension().is_some_and(|ext| ext == "jsonl") {
             let filename_id = path
                 .file_stem()
@@ -344,7 +371,7 @@ fn protect_files(
                     continue;
                 }
             }
-            let value: Value = serde_json::from_reader(File::open(&path)?)
+            let value: Value = serde_json::from_reader(BufReader::new(File::open(&path)?))
                 .with_context(|| format!("无法检查恢复备份 {}", path.display()))?;
             // 只有索引或数据库行的备份无法找回对话内容；保留含文件或消息正文的撤销备份。
             let has_files = value["tables"]["__files"].as_array().is_some_and(|files| {

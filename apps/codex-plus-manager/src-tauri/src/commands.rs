@@ -3298,6 +3298,20 @@ fn list_local_sessions_blocking(
 #[serde(rename_all = "camelCase")]
 pub struct InvalidLocalSessionsPayload {
     pub sessions: Vec<codex_plus_data::LocalSession>,
+    /// 对话内容还在、但项目目录已经不存在的会话；删除前需要用户单独确认。
+    #[serde(default)]
+    pub missing_project_sessions: Vec<codex_plus_data::LocalSession>,
+}
+
+/// 只认本机绝对路径；WSL、远程或写法无法判断的目录一律当作存在。
+/// `\\?\C:\…` 写法本身就是绝对路径，`try_exists` 能直接识别。
+fn project_directory_missing(cwd: &str) -> bool {
+    let cwd = cwd.trim();
+    if cwd.is_empty() {
+        return false;
+    }
+    let path = Path::new(cwd);
+    path.is_absolute() && matches!(path.try_exists(), Ok(false))
 }
 
 /// 会话删除相关备份的落盘根目录。
@@ -3325,15 +3339,21 @@ fn test_session_backup_root() -> PathBuf {
         .to_path_buf()
 }
 
+fn invalid_session_blocking_error(blocking_processes: &[u32]) -> Option<anyhow::Error> {
+    (!blocking_processes.is_empty()).then(|| {
+        anyhow::anyhow!(
+            "请先完全退出 Codex、ChatGPT 和 VS Code Codex，再检查无效会话；未落盘的会话不能安全判定。阻塞进程：{blocking_processes:?}"
+        )
+    })
+}
+
 fn invalid_local_sessions_from_home(
     home: &Path,
     backups: &Path,
     blocking_processes: &[u32],
 ) -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
-    if !blocking_processes.is_empty() {
-        anyhow::bail!(
-            "请先完全退出 Codex、ChatGPT 和 VS Code Codex，再检查无效会话；未落盘的会话不能安全判定。阻塞进程：{blocking_processes:?}"
-        );
+    if let Some(error) = invalid_session_blocking_error(blocking_processes) {
+        return Err(error);
     }
     let scan = codex_plus_data::session_health::scan_session_health(home, backups, &[])?;
     let missing: std::collections::HashSet<_> = scan.missing_ids.into_iter().collect();
@@ -3353,6 +3373,30 @@ fn invalid_local_sessions_from_home(
     Ok(candidates.into_values().collect())
 }
 
+fn missing_project_local_sessions_from_home(
+    home: &Path,
+    backups: &Path,
+    exclude: &std::collections::HashSet<String>,
+) -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
+    let mut sessions = BTreeMap::new();
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(home) {
+        let adapter = codex_plus_data::SQLiteStorageAdapter::new(
+            path,
+            codex_plus_data::BackupStore::new(backups),
+        )
+        .with_codex_home(home);
+        for session in adapter.list_local_sessions()? {
+            if !session.archived
+                && !exclude.contains(&session.id)
+                && project_directory_missing(&session.cwd)
+            {
+                sessions.entry(session.id.clone()).or_insert(session);
+            }
+        }
+    }
+    Ok(sessions.into_values().collect())
+}
+
 fn current_invalid_local_sessions() -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
     invalid_local_sessions_from_home(
         &codex_plus_core::codex_sqlite::default_codex_home_dir(),
@@ -3363,11 +3407,22 @@ fn current_invalid_local_sessions() -> anyhow::Result<Vec<codex_plus_data::Local
 
 #[tauri::command]
 pub async fn preview_invalid_local_sessions() -> CommandResult<InvalidLocalSessionsPayload> {
-    match tauri::async_runtime::spawn_blocking(current_invalid_local_sessions).await {
-        Ok(Ok(sessions)) => ok(
-            "无效会话检查完成。",
-            InvalidLocalSessionsPayload { sessions },
-        ),
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        let sessions = current_invalid_local_sessions()?;
+        let exclude = sessions.iter().map(|session| session.id.clone()).collect();
+        let missing_project_sessions = missing_project_local_sessions_from_home(
+            &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+            &session_backup_root(),
+            &exclude,
+        )?;
+        anyhow::Ok(InvalidLocalSessionsPayload {
+            sessions,
+            missing_project_sessions,
+        })
+    })
+    .await;
+    match result {
+        Ok(Ok(payload)) => ok("无效会话检查完成。", payload),
         result => failed(
             &format!(
                 "无效会话检查未完成：{}",
@@ -3379,9 +3434,77 @@ pub async fn preview_invalid_local_sessions() -> CommandResult<InvalidLocalSessi
             ),
             InvalidLocalSessionsPayload {
                 sessions: Vec::new(),
+                missing_project_sessions: Vec::new(),
             },
         ),
     }
+}
+
+/// 只复核单个会话是否仍缺少恢复来源，不重新遍历全部数据库记录。
+fn invalid_session_still_missing(home: &Path, backups: &Path, id: &str) -> anyhow::Result<bool> {
+    let scan =
+        codex_plus_data::session_health::recheck_session_health(home, backups, &[id.to_string()])?;
+    Ok(scan
+        .missing_ids
+        .iter()
+        .any(|missing| missing.eq_ignore_ascii_case(id)))
+}
+
+/// 确认后的清理流程：完整检查只做一次，每个会话删除前再定向复核。
+///
+/// 以前每删一个都重新完整检查，几百个会话要跑几个小时，界面一直停在“正在检查或删除”。
+fn delete_invalid_sessions_with(
+    session_ids: Vec<String>,
+    candidates: impl FnOnce() -> anyhow::Result<Vec<codex_plus_data::LocalSession>>,
+    mut still_missing: impl FnMut(&str) -> anyhow::Result<bool>,
+    mut delete: impl FnMut(codex_plus_data::LocalSession) -> CommandResult<DeleteLocalSessionPayload>,
+) -> Vec<CommandResult<DeleteLocalSessionPayload>> {
+    let requested: std::collections::BTreeSet<_> = session_ids.into_iter().collect();
+    let mut candidates = match candidates() {
+        Ok(candidates) => candidates
+            .into_iter()
+            .map(|session| (session.id.clone(), session))
+            .collect::<std::collections::HashMap<_, _>>(),
+        Err(error) => {
+            return requested
+                .into_iter()
+                .map(|id| invalid_session_delete_failure(id, format!("清理已停止：{error}")))
+                .collect();
+        }
+    };
+    let mut results = Vec::new();
+    let mut stopped_reason: Option<String> = None;
+    for id in requested {
+        if let Some(reason) = &stopped_reason {
+            results.push(invalid_session_delete_failure(
+                id,
+                format!("清理已停止：{reason}"),
+            ));
+            continue;
+        }
+        let Some(session) = candidates.remove(&id) else {
+            results.push(invalid_session_delete_failure(
+                id,
+                "会话已恢复或不属于可安全清理的本地会话，已跳过。".into(),
+            ));
+            continue;
+        };
+        match still_missing(&id) {
+            Ok(true) => results.push(delete(session)),
+            Ok(false) => results.push(invalid_session_delete_failure(
+                id,
+                "会话文件已恢复，已跳过。".into(),
+            )),
+            Err(error) => {
+                stopped_reason = Some(error.to_string());
+                results.push(invalid_session_delete_failure(
+                    id,
+                    format!("清理已停止：{error}"),
+                ));
+            }
+        }
+    }
+    results
 }
 
 fn invalid_session_delete_failure(
@@ -3405,42 +3528,29 @@ fn invalid_session_delete_failure(
 #[tauri::command]
 pub async fn delete_invalid_local_sessions(session_ids: Vec<String>) -> CommandResult<Value> {
     let outcome = tauri::async_runtime::spawn_blocking(move || {
-        let mut results = Vec::new();
-        let mut stopped_reason = None;
-        let requested: std::collections::BTreeSet<_> = session_ids.into_iter().collect();
-        for id in requested {
-            if let Some(reason) = &stopped_reason {
-                results.push(invalid_session_delete_failure(
-                    id,
-                    format!("清理已停止：{reason}"),
-                ));
-                continue;
-            }
-            let candidates = match current_invalid_local_sessions() {
-                Ok(candidates) => candidates,
-                Err(error) => {
-                    stopped_reason = Some(error.to_string());
-                    results.push(invalid_session_delete_failure(
-                        id,
-                        format!("清理已停止：{error}"),
-                    ));
-                    continue;
+        delete_invalid_sessions_with(
+            session_ids,
+            current_invalid_local_sessions,
+            |id| {
+                if let Some(error) = invalid_session_blocking_error(
+                    &codex_plus_core::watcher::find_session_index_cleanup_blocking_processes(),
+                ) {
+                    return Err(error);
                 }
-            };
-            if let Some(session) = candidates.into_iter().find(|session| session.id == id) {
-                results.push(delete_local_session(DeleteLocalSessionRequest {
+                invalid_session_still_missing(
+                    &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+                    &session_backup_root(),
+                    id,
+                )
+            },
+            |session| {
+                delete_local_session(DeleteLocalSessionRequest {
                     session_id: session.id,
                     title: session.title,
                     db_path: Some(session.db_path),
-                }));
-            } else {
-                results.push(invalid_session_delete_failure(
-                    id,
-                    "会话已恢复或不属于可安全清理的本地会话，已跳过。".into(),
-                ));
-            }
-        }
-        results
+                })
+            },
+        )
     })
     .await;
     match outcome {
@@ -3468,6 +3578,76 @@ pub async fn delete_invalid_local_sessions(session_ids: Vec<String>) -> CommandR
         Err(error) => failed(
             &format!("清理已停止，请刷新列表确认；未处理的会话保持不变：{error}"),
             json!({}),
+        ),
+    }
+}
+
+/// 会话列表里的项目路径写法不统一（`\\?\` 前缀、正反斜杠、结尾斜杠、大小写）。
+fn normalized_project_path(path: &str) -> String {
+    let path = path.trim();
+    let path = path
+        .strip_prefix(r"\\?\")
+        .or_else(|| path.strip_prefix("//?/"))
+        .unwrap_or(path);
+    path.replace('\\', "/").trim_end_matches('/').to_lowercase()
+}
+
+fn project_local_sessions_from_home(
+    home: &Path,
+    backups: &Path,
+    project_path: &str,
+) -> anyhow::Result<Vec<codex_plus_data::LocalSession>> {
+    let target = normalized_project_path(project_path);
+    let mut sessions = BTreeMap::new();
+    for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(home) {
+        let adapter = codex_plus_data::SQLiteStorageAdapter::new(
+            path,
+            codex_plus_data::BackupStore::new(backups),
+        )
+        .with_codex_home(home);
+        for session in adapter.list_local_sessions()? {
+            if normalized_project_path(&session.cwd) == target {
+                sessions.entry(session.id.clone()).or_insert(session);
+            }
+        }
+    }
+    Ok(sessions.into_values().collect())
+}
+
+/// 列出某个项目在所有本地会话库里的会话，不受当前分页限制。
+#[tauri::command]
+pub async fn list_project_local_sessions(
+    project_path: String,
+) -> CommandResult<InvalidLocalSessionsPayload> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        project_local_sessions_from_home(
+            &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+            &session_backup_root(),
+            &project_path,
+        )
+    })
+    .await;
+    match result {
+        Ok(Ok(sessions)) => ok(
+            "已读取项目会话。",
+            InvalidLocalSessionsPayload {
+                sessions,
+                missing_project_sessions: Vec::new(),
+            },
+        ),
+        Ok(Err(error)) => failed(
+            &format!("读取项目会话失败：{error}"),
+            InvalidLocalSessionsPayload {
+                sessions: Vec::new(),
+                missing_project_sessions: Vec::new(),
+            },
+        ),
+        Err(error) => failed(
+            &format!("读取项目会话失败：{error}"),
+            InvalidLocalSessionsPayload {
+                sessions: Vec::new(),
+                missing_project_sessions: Vec::new(),
+            },
         ),
     }
 }
@@ -8312,6 +8492,60 @@ base_url = "https://example.invalid/v1"
             );
             assert_eq!(decoded["deletion"]["undo_token"], "backup");
         }
+    }
+
+    #[test]
+    fn invalid_session_cleanup_scans_once_and_rechecks_each_session() {
+        let session = |id: &str| codex_plus_data::LocalSession {
+            id: id.into(),
+            title: id.into(),
+            cwd: String::new(),
+            model_provider: String::new(),
+            archived: false,
+            updated_at_ms: None,
+            rollout_path: String::new(),
+            db_path: "state_5.sqlite".into(),
+        };
+        let mut scans = 0;
+        let mut deleted = Vec::new();
+        let results = delete_invalid_sessions_with(
+            vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            || {
+                scans += 1;
+                Ok(vec![session("a"), session("b"), session("c")])
+            },
+            |id| match id {
+                "b" => Ok(false),
+                "c" => Err(anyhow::anyhow!("Codex 正在运行")),
+                _ => Ok(true),
+            },
+            |session| {
+                deleted.push(session.id.clone());
+                ok(
+                    "已删除",
+                    DeleteLocalSessionPayload {
+                        deletion: DeleteResult {
+                            status: codex_plus_core::models::DeleteStatus::LocalDeleted,
+                            session_id: session.id,
+                            message: String::new(),
+                            undo_token: None,
+                            backup_path: None,
+                        },
+                    },
+                )
+            },
+        );
+        assert_eq!(scans, 1);
+        assert_eq!(deleted, vec!["a"]);
+        let messages = results
+            .iter()
+            .map(|r| r.message.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(messages[0], "已删除");
+        assert!(messages[1].contains("已恢复"));
+        assert!(messages[2].contains("Codex 正在运行"));
+        // 出错后剩下的会话不再处理。
+        assert!(messages[3].contains("清理已停止"));
     }
 
     #[test]

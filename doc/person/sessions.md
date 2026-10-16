@@ -30,15 +30,19 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 - 单删和批删共用备份删除链路。删除涉及 SQLite、rollout、会话索引和新版侧栏目录；计数减少不等于完整成功，部分失败仍须报告。
 - `provider_sync.rs` 的侧栏清理在 `CODEX_HOME/tmp/provider-sync-tombstones.json` 记录删除墓碑，目录修复和 canonical 会话重建均跳过这些 ID；撤销删除时清除对应墓碑。最多保留最近 4096 个 ID，读取失败会退回原修复行为，可能重新出现旧会话。墓碑写入失败记录诊断，删除备份仍由原链路保存。
 - Tauri 返回顶层 `status/message` 表示命令结果，领域结果放在 `deletion` 内，包含 `local_deleted/partial/failed` 和备份信息。不能再扁平化同名字段，否则批删会把成功误报为失败。
-- “删除无效会话”检查全量本地数据库，不只当前页。用户确认后逐项重扫、备份并删除，相关 Codex 应用必须保持退出。
+- “删除无效会话”检查全量本地数据库，不只当前页。确认后只全量扫描一次，再对每个会话用 `recheck_session_health` 单独复核、备份并删除；不能每删一个就全量重扫，否则几百个会话会长时间卡在“处理中”。相关 Codex 应用必须保持退出。
+- 新版 Codex 会把旧 rollout 压缩成 `.jsonl.zst`，数据库仍记录原 `.jsonl` 路径。恢复来源检查必须同时认 `.zst` 文件及其文件名里的 ID，否则有内容的会话会被当成无效误删。
 - 远程、归档、有恢复文件或备份的会话受保护；确认期间恢复的会话跳过，进程重新启动时停止。中途停止仍保留已完成数量和剩余失败原因。
+- 对话内容还在、但项目目录（cwd 为绝对路径且确认不存在）已删除的会话单列为第二类，单独确认后走普通备份删除；目录读取出错、相对路径或已归档的会话不列入。
+- 会话页按项目分组时，组标题右侧可删除整个项目的会话：后端 `list_project_local_sessions` 按规范化路径（去 `\\?\`、统一斜杠、去尾斜杠、忽略大小写）在全部本地库中匹配，前端确认后逐个走普通备份删除。
+- 删除快照保留最近 50 份，且 7 天内的快照不受份数限制，避免一次批量清理中途清掉前面的备份。
 - 清理只针对数据库能列出的本地会话，不承诺清除所有仅存在于侧栏或索引的残留。不要直接使用当前页或隐藏名单作为删除依据。
 
 ## 代码入口
 
 - `assets/inject/renderer-inject.js` 的 `checkAndHideInvalidSessions` 及隐藏状态管理。
 - `crates/codex-plus-core/src/routes.rs`：`/session/health`；`crates/codex-plus-data/src/session_health.rs`：恢复来源检查。
-- `apps/codex-plus-manager/src/App.tsx`：会话管理；`apps/codex-plus-manager/src-tauri/src/commands.rs`：`delete_local_session`、`preview_invalid_local_sessions`、`delete_invalid_local_sessions`。
+- `apps/codex-plus-manager/src/App.tsx`：会话管理；`apps/codex-plus-manager/src-tauri/src/commands.rs`：`delete_local_session`、`preview_invalid_local_sessions`、`delete_invalid_local_sessions`、`list_project_local_sessions`。
 - `crates/codex-plus-data/src/storage.rs` / `backup.rs` / `provider_sync.rs`：删除、撤销、快照限长及索引维护。
 
 ## 回归检查

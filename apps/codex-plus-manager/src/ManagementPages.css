@@ -15,3 +15,4 @@
 .screen.management-screen .mg-page>.mg-content>.mg-matrix,
 .screen.management-screen .mg-page>.mg-content>.mg-skill-list,
 .screen.management-screen .mg-page>.mg-content>.mg-session-list{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto}
+.mg-group-row{display:flex;align-items:stretch;border-bottom:1px solid hsl(var(--border))}.mg-group-row .mg-group-head{flex:1;min-width:0;border-bottom:0}.mg-group-delete{height:auto;width:38px;border-radius:0;color:hsl(var(--muted-foreground))}.mg-group-delete:hover{color:hsl(var(--destructive))}
