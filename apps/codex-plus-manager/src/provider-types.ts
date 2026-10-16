@@ -1,6 +1,7 @@
 import type { WhaleBalanceSettings } from "./whale-settings";
 import type { DreamSkinThemeConfig } from "./dream-skin";
 import type { DictationSettings } from "./dictation-settings";
+import type { PromptEnhanceSettings } from "./prompt-enhance-settings";
 import type { RelayModelRoute } from "./model-routes";
 
 export type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center";
@@ -91,6 +92,7 @@ export type ToolShard = {
 
 export type BackendSettings = WhaleBalanceSettings & {
   dictation: DictationSettings;
+  promptEnhance: PromptEnhanceSettings;
   codexAppPath: string;
   codexAppAutoTakeover: boolean;
   codexAppAutoTakeoverWhenActive: string;

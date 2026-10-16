@@ -130,7 +130,7 @@ fn normalize_navigation(
     }
     match (navigation.page.as_str(), navigation.section.as_deref()) {
         ("settings" | "pluginMarket", None)
-        | ("enhance", None | Some("stepwise" | "dictation"))
+        | ("enhance", None | Some("stepwise" | "dictation" | "promptEnhance"))
         | ("relay", None) => Ok(navigation),
         _ => anyhow::bail!(
             "不支持的管理工具导航：{}/{}",

@@ -14,11 +14,11 @@ function harness() {
   const saved: unknown[] = [], drafts: unknown[] = [];
   const form = { current: { id: "original" } };
   const saving = { current: false }, switching = { current: false };
-  const save = new Function("settingsSavingRef", "relaySwitchingRef", "settingsFormRef", "normalizeSettings", "run", "call", "isSuccessStatus", "setSettings", "setSettingsForm", "showNotice", "t", "dictationSettingsIssue", "dictationSettingsValidationMessage", "whaleBalanceSettingsIssue", "whaleBalanceValidationMessage", compiled + "return saveSettingsValue;")(
+  const save = new Function("settingsSavingRef", "relaySwitchingRef", "settingsFormRef", "normalizeSettings", "run", "call", "isSuccessStatus", "setSettings", "setSettingsForm", "showNotice", "t", "dictationSettingsIssue", "dictationSettingsValidationMessage", "whaleBalanceSettingsIssue", "whaleBalanceValidationMessage", "promptEnhanceSettingsIssue", "promptEnhanceSettingsValidationMessage", compiled + "return saveSettingsValue;")(
     saving, switching, form, (v: unknown) => v, (f: () => unknown) => f(),
     () => new Promise(resolve => pending.push(resolve)), (status: string) => status === "ok",
     (v: unknown) => saved.push(v), (v: unknown) => drafts.push(v), () => {}, (v: string) => v, () => null, (v: unknown) => v,
-    whaleBalanceSettingsIssue, (issue: unknown) => issue,
+    whaleBalanceSettingsIssue, (issue: unknown) => issue, () => null, (v: unknown) => v,
   );
   return { save, pending, saved, drafts, form, saving, switching };
 }

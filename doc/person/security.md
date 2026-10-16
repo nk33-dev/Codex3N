@@ -28,6 +28,6 @@ push CI 分四个并行 job：Windows 上的 `rust-lint` 只跑格式化、`carg
 
 ## 语音服务边界
 
-`dictation.apiKey` 使用既有密钥字段规则加密落盘，桥接只返回 `apiKeyConfigured`；`apiKeyEnv` 保存环境变量名称。语音路由仍先通过 helper 的回环与来源检查，再核对语音 helper token；音频上传限制为 25 MiB，CDP 完整消息及单 frame 限制为 40 MiB。语音失败响应不回显音频、token 或请求中的会话内容。配置存储与内部回滚共用 16 MiB 预算。
+`dictation.apiKey` 使用既有密钥字段规则加密落盘，桥接只返回 `apiKeyConfigured`；`apiKeyEnv` 保存环境变量名称。语音路由仍先通过 helper 的回环与来源检查，再核对语音 helper token；音频上传限制为 25 MiB，CDP 完整消息及单 frame 限制为 40 MiB。语音失败响应不回显音频、token 或请求中的会话内容。提示词增强的 `promptEnhance.apiKey` 同样加密落盘，桥接只返回 `apiKeyConfigured`；`/prompt-enhance/generate` 由 Rust 请求模型，失败信息会遮蔽 Key，也不加入第三方脚本的路由白名单。配置存储与内部回滚共用 16 MiB 预算。
 
 Claude 语音通过主进程 `hook.js` 读取用户状态目录的 `dictation-helper.json`，其中保存本机端口与听写能力令牌；helper 停止时删除。Unix 文件权限为 0600，Windows 沿用用户状态目录权限。该令牌只用于听写路由，页面不接收供应商密钥；关闭 Claude 语音开关后不注册页面 binding。
