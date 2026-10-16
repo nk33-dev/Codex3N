@@ -93,7 +93,9 @@
 管理器 `PluginMarketScreen.tsx` 自行按需读取插件目录，`manager-loading.ts` 的 `pluginMarket` 页面不重复请求。Tauri 命令 `refresh_plugin_market`、`install_plugin_market_item`、`plugin_market_install_status` 注册在 `lib.rs`，桥接 `/plugin-market/*` 由 `routes.rs` 调用 `plugin_market.rs`。Codex 原生插件页通过 `62-plugin-market-adapter.js` 接入同一索引与安装任务，保留原生导航入口。
 
 上游新增设置统一迁入 `provider-types.ts` 和 `lib/default-settings.ts`，`App.tsx` 保留归一化、校验与保存互斥；页面副标题由 `route-subtitle.ts` 提供。插件市场的翻译调用加入 `tools/i18n-verify.mjs` 的扫描清单。
-- Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。
+- Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`routes.rs::is_high_frequency_bridge_path` 列出的秒级轮询路由（`/backend/status`、`/diagnostics/log`、`/settings/get`、`/thread-usage-live`）成功时不写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变。后两者原先每次调用写 4 行，占日志九成。
+- `/settings/get` 经 `SettingsStore::try_load_cached` 按设置文件的 mtime 与长度复用解析结果，5 秒心跳不再每次读盘解密；读失败照常报错且不缓存。读-改-写路径仍用 `load()`。
+- `/thread-usage-live` 按数据库路径与会话 ID 缓存 rollout 路径（最多 256 项），文件仍在时不再开库查询；文件消失后回落查库。
 
 ## 会话切换性能诊断
 

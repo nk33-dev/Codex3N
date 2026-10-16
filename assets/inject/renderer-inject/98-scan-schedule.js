@@ -88,6 +88,9 @@
   }
 
   function runScheduledScan() {
+    // 必须先复位：否则 scheduleScan 一直认为有任务在排队，之后的 DOM 变更全被丢掉，
+    // 只能等导航或窗口隐藏才恢复（启动时入口停在 rail 顶部就是这个原因）。
+    window.__codexSessionDeleteScanPending = false;
     clearTimeout(window.__codexSessionDeleteScanTimer);
     window.__codexSessionDeleteScanTimer = null;
     if (document.hidden || codexPlusScanComposing) return;

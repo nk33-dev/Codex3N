@@ -567,10 +567,22 @@ fn window_activation_request_path() -> std::path::PathBuf {
 
 fn start_window_activation_listener(app: tauri::AppHandle) {
     let path = window_activation_request_path();
+    let stamp = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .ok()
+            .map(|meta| (meta.modified().ok(), meta.len()))
+    };
     let mut previous = std::fs::read(&path).unwrap_or_default();
+    let mut previous_stamp = stamp(&path);
     std::thread::spawn(move || {
         while !SHUTDOWN_STARTED.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(300));
+            // 常驻轮询：文件属性没变就不打开文件，内容比较仍是最终判断。
+            let current_stamp = stamp(&path);
+            if current_stamp == previous_stamp {
+                continue;
+            }
+            previous_stamp = current_stamp;
             let current = std::fs::read(&path).unwrap_or_default();
             if !current.is_empty() && current != previous {
                 previous = current;
