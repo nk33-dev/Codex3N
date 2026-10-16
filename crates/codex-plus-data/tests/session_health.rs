@@ -113,6 +113,46 @@ fn protects_existing_paths_and_rollouts_found_by_filename_or_metadata() {
 }
 
 #[test]
+fn compressed_rollouts_protect_the_thread() {
+    // 新版 Codex 把旧 rollout 压缩成 `.jsonl.zst`，数据库仍记录原 `.jsonl` 路径。
+    let dir = tempdir().unwrap();
+    let db = database(dir.path());
+    let recorded = dir.path().join(format!("sessions/rollout-{LOST}.jsonl"));
+    db.execute(
+        "INSERT INTO threads VALUES (?1, ?2, 0)",
+        [LOST, recorded.to_str().unwrap()],
+    )
+    .unwrap();
+    fs::create_dir_all(recorded.parent().unwrap()).unwrap();
+    fs::write(format!("{}.zst", recorded.display()), b"\x28\xb5\x2f\xfd").unwrap();
+    assert!(missing(dir.path()).is_empty());
+    assert!(
+        recheck_session_health(dir.path(), &dir.path().join("backups"), &[LOST.into()])
+            .unwrap()
+            .missing_ids
+            .is_empty()
+    );
+
+    // 数据库路径已过期时，按压缩文件名里的 ID 认领。
+    let dir = tempdir().unwrap();
+    let db = database(dir.path());
+    db.execute(
+        "INSERT INTO threads VALUES (?1, 'old-path.jsonl', 0)",
+        [LOST],
+    )
+    .unwrap();
+    fs::create_dir_all(dir.path().join("archived_sessions")).unwrap();
+    fs::write(
+        dir.path().join(format!(
+            "archived_sessions/rollout-2026-03-14T10-04-26-{LOST}.jsonl.zst"
+        )),
+        b"\x28\xb5\x2f\xfd",
+    )
+    .unwrap();
+    assert!(missing(dir.path()).is_empty());
+}
+
+#[test]
 fn deletion_backups_preserve_undo_and_reappearing_files_are_rechecked() {
     let dir = tempdir().unwrap();
     let db = database(dir.path());

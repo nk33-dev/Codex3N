@@ -1771,20 +1771,72 @@ export function App() {
   };
 
   const deleteInvalidLocalSessions = async () => {
-    const preview = await run(() => call<CommandResult<{ sessions: LocalSession[] }>>("preview_invalid_local_sessions"));
+    const preview = await run(() => call<CommandResult<{ sessions: LocalSession[]; missingProjectSessions?: LocalSession[] }>>("preview_invalid_local_sessions"));
     if (!preview || !isSuccessStatus(preview.status)) {
       if (preview) showResultNotice(t("删除无效会话"), preview);
       return;
     }
-    if (!preview.sessions.length) {
+    const missingProjectSessions = preview.missingProjectSessions ?? [];
+    if (!preview.sessions.length && !missingProjectSessions.length) {
       showNotice(t("删除无效会话"), t("未发现可安全删除的无效会话。远程、归档和有恢复来源的会话均保留。"), "ok");
       return;
     }
-    const confirmed = await confirmSessionDelete(t("删除无效会话"), tf("检查发现 {0} 个缺少恢复来源的本地会话。确认删除数据库记录和索引？删除会创建备份；确认后会再次检查，已恢复的会话将跳过。请保持 Codex 应用关闭。", [preview.sessions.length]));
-    if (!confirmed) return;
-    const result = await run(() => call<CommandResult<Record<string, unknown>>>("delete_invalid_local_sessions", { sessionIds: preview.sessions.map((session) => session.id) }));
-    if (result) showResultNotice(t("删除无效会话"), result);
+    if (preview.sessions.length) {
+      const confirmed = await confirmSessionDelete(t("删除无效会话"), tf("检查发现 {0} 个对话记录已丢失的本地会话。确认删除数据库记录和索引？删除会创建备份；确认后会再次检查，已恢复的会话将跳过。请保持 Codex 应用关闭。", [preview.sessions.length]));
+      if (confirmed) {
+        const result = await run(() => call<CommandResult<Record<string, unknown>>>("delete_invalid_local_sessions", { sessionIds: preview.sessions.map((session) => session.id) }));
+        if (result) showResultNotice(t("删除无效会话"), result);
+      }
+    }
+    // 项目目录没了但对话内容还在，可能只是移动了目录，单独确认后走普通删除。
+    if (missingProjectSessions.length) {
+      const projects = Array.from(new Set(missingProjectSessions.map((session) => session.cwd)));
+      const listed = projects.slice(0, 6).map((path) => `- ${truncateSessionDeletePreview(path)}`).join("\n");
+      const extra = projects.length > 6 ? tf("\n...以及另外 {0} 个目录", [projects.length - 6]) : "";
+      const confirmed = await confirmSessionDelete(
+        t("删除目录已不存在的会话"),
+        tf("另有 {0} 个会话的项目目录已不存在（共 {1} 个目录），对话内容仍在。如果只是移动了目录，请取消。确认删除这些会话？删除会创建备份。\n\n{2}{3}", [missingProjectSessions.length, projects.length, listed, extra]),
+      );
+      if (confirmed) await deleteSessionsInBatch(t("删除目录已不存在的会话"), missingProjectSessions);
+    }
     await refreshLocalSessions(true, localSessions?.offset ?? 0);
+  };
+
+  const deleteProjectLocalSessions = async (projectPath: string, label: string) => {
+    const listed = await run(() => call<CommandResult<{ sessions: LocalSession[] }>>("list_project_local_sessions", { projectPath }));
+    if (!listed || !isSuccessStatus(listed.status)) {
+      if (listed) showResultNotice(t("删除项目会话"), listed);
+      return;
+    }
+    if (!listed.sessions.length) {
+      showNotice(t("删除项目会话"), t("这个项目没有本地会话。"), "ok");
+      return;
+    }
+    const confirmed = await confirmSessionDelete(
+      t("删除项目会话"),
+      tf("删除项目“{0}”的全部 {1} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{2}", [label, listed.sessions.length, projectPath]),
+    );
+    if (!confirmed) return;
+    await deleteSessionsInBatch(t("删除项目会话"), listed.sessions);
+    await refreshLocalSessions(true, localSessions?.offset ?? 0);
+  };
+
+  const deleteSessionsInBatch = async (title: string, sessions: LocalSession[]) => {
+    let succeeded = 0;
+    const failed: Array<{ label: string; reason: string }> = [];
+    for (const session of sessions) {
+      const result = await run(() => requestDeleteLocalSession(session));
+      if (result && isSuccessStatus(result.status)) {
+        succeeded += 1;
+      } else {
+        failed.push({ label: session.title || session.id, reason: result?.message || t("删除失败") });
+      }
+    }
+    if (failed.length) {
+      showNotice(title, tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map((entry) => `${truncateSessionDeletePreview(entry.label)}（${entry.reason}）`).join(t("、"))]), "failed");
+    } else {
+      showNotice(title, tf("已删除 {0} 个会话。", [succeeded]), "ok");
+    }
   };
 
   const refreshLiveContextEntries = async (silent = false) => {
@@ -3238,6 +3290,7 @@ export function App() {
       deleteLocalSession,
       deleteLocalSessions,
       deleteInvalidLocalSessions,
+      deleteProjectLocalSessions,
       openExternalUrl,
       applyRelayInjection,
       applyPureApiInjection,
@@ -3413,6 +3466,7 @@ export function App() {
               onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
               onDelete={actions.deleteLocalSession}
               onDeleteMany={actions.deleteLocalSessions}
+              onDeleteProject={actions.deleteProjectLocalSessions}
               notify={actions.showMessage}
             />
           ) : null}
@@ -3781,6 +3835,7 @@ export type Actions = {
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   deleteInvalidLocalSessions: () => Promise<void>;
+  deleteProjectLocalSessions: (projectPath: string, label: string) => Promise<void>;
   openExternalUrl: (url: string) => Promise<void>;
   applyRelayInjection: () => Promise<boolean>;
   applyPureApiInjection: () => Promise<boolean>;

@@ -162,6 +162,7 @@ pub fn run() {
             commands::delete_local_session,
             commands::preview_invalid_local_sessions,
             commands::delete_invalid_local_sessions,
+            commands::list_project_local_sessions,
             commands::load_provider_sync_targets,
             commands::repair_session_index,
             commands::load_session_index_repair_report,
