@@ -1,5 +1,6 @@
 import { defaultWhaleBalanceSettings } from "../whale-settings";
 import { defaultDictationSettings } from "../dictation-settings";
+import { defaultPromptEnhanceSettings } from "../prompt-enhance-settings";
 import { t } from "@/i18n";
 
 import { defaultDreamSkinTheme } from "../dream-skin";
@@ -14,6 +15,7 @@ export const emptyContextSelection = (): RelayContextSelection => ({
 export const defaultSettings: BackendSettings = {
   ...defaultWhaleBalanceSettings(),
   dictation: defaultDictationSettings(),
+  promptEnhance: defaultPromptEnhanceSettings(),
   codexAppPath: "",
   codexAppAutoTakeover: false,
   codexAppAutoTakeoverWhenActive: "defer",
