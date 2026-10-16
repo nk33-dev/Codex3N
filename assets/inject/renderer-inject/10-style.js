@@ -2685,7 +2685,8 @@
       attributes: true,
       attributeFilter: ["class", "data-theme", "data-appearance", "data-color-mode"],
     });
-    const timer = setInterval(ensure, 4000);
+    // 定时兜底只在可见时跑；隐藏期间的结构变化由 observer 记下，恢复后照常补齐。
+    const timer = setInterval(() => { if (!document.hidden) ensure(); }, 4000);
     const resizeHandler = scheduleEnsure;
     window.addEventListener("resize", resizeHandler, { passive: true });
 

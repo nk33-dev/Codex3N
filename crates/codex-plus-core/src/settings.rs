@@ -1625,6 +1625,16 @@ impl SettingsStore {
     /// 读-改-写路径（`relay_switch`、`provider_import`、`connect`）必须继续用
     /// `load()`：它们基于读到的快照改完再整体写回，拿到过期快照会丢字段。
     pub fn load_cached(&self) -> Arc<BackendSettings> {
+        // 读失败与 `load().unwrap_or_default()` 的调用点行为一致：给默认设置。
+        self.try_load_cached()
+            .unwrap_or_else(|_| Arc::new(BackendSettings::default()))
+    }
+
+    /// 同 `load_cached`，但读失败时把错误交给调用方，且不缓存失败结果。
+    ///
+    /// 给 `/settings/get` 这类需要区分"读不到"和"默认值"的只读路径用：
+    /// 注入页拿到默认设置会把用户关掉的增强重新打开。
+    pub fn try_load_cached(&self) -> anyhow::Result<Arc<BackendSettings>> {
         let fingerprint = fs::metadata(&self.path)
             .ok()
             .map(|metadata| (metadata.modified().ok(), metadata.len()))
@@ -1634,11 +1644,9 @@ impl SettingsStore {
         if let Some(entry) = cache.get(&self.path)
             && entry.fingerprint == fingerprint
         {
-            return Arc::clone(&entry.settings);
+            return Ok(Arc::clone(&entry.settings));
         }
-        // 读失败与 `load().unwrap_or_default()` 的调用点行为一致：给默认设置，
-        // 并且照常写进缓存——文件没变就不会有不同的结果，文件变了指纹也会变。
-        let settings = Arc::new(self.load().unwrap_or_default());
+        let settings = Arc::new(self.load()?);
         cache.insert(
             self.path.clone(),
             CachedSettings {
@@ -1646,7 +1654,7 @@ impl SettingsStore {
                 settings: Arc::clone(&settings),
             },
         );
-        settings
+        Ok(settings)
     }
 
     pub fn save(&self, settings: &BackendSettings) -> anyhow::Result<()> {

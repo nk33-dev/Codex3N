@@ -201,6 +201,15 @@ test("正文变更不扫描，侧栏变更只安排侧栏任务", () => {
   assert.deepEqual(app.runs[0].work, { sidebar: true });
 });
 
+test("扫描执行后复位排队标记，后续变更还能再安排扫描", () => {
+  const app = scanRuntime();
+  app.api.scheduleScan([mutationFor("sidebar")]); app.time.advance(200);
+  app.api.scheduleScan([mutationFor("sidebar")]);
+  assert.equal(app.time.timers.size, 1, "第二次变更必须重新排一次扫描");
+  app.time.advance(200);
+  assert.equal(app.runs.filter((item) => item.phase === "light").length, 2);
+});
+
 test("已有消息内的流式Markdown节点不触发扫描，菜单和新消息边界仍刷新", () => {
   const check = compile(source("isChatContentMutation"), {
     selectors: { conversationViewScrollContainer: ".thread-scroll-container", conversationViewFooter: "[data-thread-scroll-footer]" },

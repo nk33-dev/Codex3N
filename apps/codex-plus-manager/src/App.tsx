@@ -3034,12 +3034,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (route !== "weixin") return;
-    const timer = window.setInterval(() => void refreshWeixinStatus(true), 2_000);
-    return () => window.clearInterval(timer);
-  }, [route]);
-
-  useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.classList.toggle("light", theme === "light");
     window.localStorage.setItem("codex-plus-theme", theme);
@@ -5192,6 +5186,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
   const [localModelState, setLocalModelState] = useState<DictationLocalModelState | null>(null);
   const [localModelDownloading, setLocalModelDownloading] = useState(false);
   const [localModelError, setLocalModelError] = useState("");
+  const localModelBusy = localModelDownloading || localModelState?.phase === "downloading";
   useEffect(() => {
     if (form.dictation.provider !== "sensevoice") return;
     let active = true;
@@ -5199,9 +5194,10 @@ function DictationSettingsPanel({ form, onFormChange }: {
       .then((state) => { if (active) { setLocalModelState(state); } })
       .catch(() => { if (active) setLocalModelError(t("无法读取本地模型状态，请重试。")); });
     void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, 1000);
+    // 只有下载进度需要每秒刷新；空闲时慢速兜底，窗口隐藏时不读。
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, localModelBusy ? 1000 : 15_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [form.dictation.provider]);
+  }, [form.dictation.provider, localModelBusy]);
   const downloadLocalModel = async () => {
     setLocalModelDownloading(true);
     setLocalModelError("");
@@ -5215,7 +5211,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
       setLocalModelDownloading(false);
     }
   };
-  const downloading = localModelDownloading || localModelState?.phase === "downloading";
+  const downloading = localModelBusy;
   const updateDictation = (patch: Partial<DictationSettings>) => onFormChange({
     ...form,
     dictation: { ...form.dictation, ...patch },

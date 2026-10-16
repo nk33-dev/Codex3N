@@ -1567,3 +1567,32 @@ fn thread_usage_live_reports_missing_sessions_without_history_payload() {
     assert_eq!(value["events"], json!([]));
     assert!(value.get("history").is_none());
 }
+
+#[test]
+fn thread_usage_live_reuses_rollout_path_without_reopening_database() {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("state_5.sqlite");
+    let rollout_path = tmp.path().join("rollout.jsonl");
+    fs::write(&rollout_path, "").unwrap();
+    create_codex_thread_db(&db_path, &rollout_path);
+    let adapter = SQLiteStorageAdapter::new(&db_path, BackupStore::new(tmp.path().join("backups")));
+    let thread = session("local:t1", "Codex Thread");
+    assert_eq!(
+        adapter.codex_thread_usage_live(&thread)["status"],
+        json!("ok")
+    );
+
+    // 库被换成坏文件：命中缓存的路径不能再去开库。
+    fs::write(&db_path, "not a sqlite database").unwrap();
+    assert_eq!(
+        adapter.codex_thread_usage_live(&thread)["status"],
+        json!("ok")
+    );
+
+    // rollout 文件消失后必须回落查库，不能一直报旧路径。
+    fs::remove_file(&rollout_path).unwrap();
+    assert_eq!(
+        adapter.codex_thread_usage_live(&thread)["status"],
+        json!("failed")
+    );
+}

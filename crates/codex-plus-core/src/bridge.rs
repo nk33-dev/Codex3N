@@ -57,9 +57,9 @@ struct CompletedBridgeCall {
     response: Result<Value, String>,
 }
 
-// 高频心跳和诊断上报已有自己的事件，成功时不再重复写两条 CDP 回执日志。
+// 高频轮询路由成功时不再重复写两条 CDP 回执日志。
 fn should_trace_bridge_success(path: Option<&str>) -> bool {
-    !matches!(path, Some("/backend/status" | "/diagnostics/log"))
+    !path.is_some_and(crate::routes::is_high_frequency_bridge_path)
 }
 
 fn next_bridge_generation(target: &str) -> BridgeGeneration {
