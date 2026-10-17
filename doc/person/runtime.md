@@ -2,6 +2,8 @@
 
 记录管理器生命周期、配置安装和注入拼装的当前入口。上游同步与发布步骤见[维护流程](maintenance.md)。
 
+发布脚本在参数声明后统一控制台与管道输出为 UTF-8，中文失败信息不受原控制台代码页影响；`release.test.ts` 覆盖 UTF-8 和 GBK（936）环境下的失败拦截。
+
 管理器路由副标题从 `App.tsx` 经 `route-subtitle.ts` 提供；外链命令从 `commands.rs` 经 `commands/external_url.rs` 注册。两处沿用原入口，不增加独立监听或重复命令。
 
 ## 管理器加载和后台刷新
