@@ -146,3 +146,13 @@ macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-
 低功耗开启时 Git worker 将非仓库与失败查询缓存 30 秒；成功仍为 2 秒，取消不缓存，目录、主机与原生事件失效保持隔离。工厂探测兼容 shared 和 initial 模块，真实 App 已验证安装入口。
 
 维护页按需扫描官方工作区根目录的 `.git`，确认改名时复查记录与指纹，保留备份。测试覆盖 HEAD 新增、目录内容变化、工作区记录移除和 Windows junction；链接与 `.git` 文件不处理。
+
+## 官方 App 子进程清理
+
+`owned_processes` 在受管实例启动或恢复接管时按调试端口认领官方主进程，运行期间每 5 秒采样其后代，身份由 PID、创建时间及映像路径组成；创建时间不完整或父链代际异常时不认领。状态目录的 `owned-app-children` 保存当前身份记录，内容只含进程身份及用途，不保存命令行或会话数据。多开使用自己的状态目录；维护页同时读取已有多开清单对应的身份记录。
+
+`DefaultLaunchHooks::terminate_codex` 和退出等待共用监测器收尾。只有主进程确认退出后，才清理已记录的 `codex app-server` 和 `node` 后代；其他实例、VS Code 进程及 PID 复用后的进程不在清理范围。Windows 校验与终止共用同一原生句柄；进程快照不可用时停止清理。运行期间不自动结束任何进程。
+
+维护页进入时及手动刷新时查询 `codex_child_processes`，显示数量、可读取的工作集内存和连接状态；`cleanup_disconnected_app_servers` 只清理已有归属记录、父进程已消失的 app-server，执行前用户确认。macOS 采样使用 ps 的 PID、PPID、rss、stat、lstart、args，结合退出前记录识别被重挂到 PID 1 的后代；Z 状态只提示需重启官方 App。Linux 暂不提供该功能。
+
+验证包含父链、PID 复用、用途匹配、手动和自动边界的策略测试，以及 Windows 原生进程夹具（官方实例退出后 app-server/node 清理、模拟 VS Code 子进程保留）。真实 macOS 与 Linux 尚未实机验证。

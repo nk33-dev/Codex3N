@@ -103,3 +103,5 @@ Windows 的启动参数区提供 `--disable-direct-composition` 快捷项，保�
 Git worker 的 `stable-metadata` 成功结果继续缓存 2 秒；低功耗开启后，非仓库结果和查询失败缓存 30 秒，取消不缓存。缓存按目录和主机隔离，Git 事件、聚焦、可见性变化和开关切换使其失效。远程请求、监听初始化和写操作继续走原生路径。入口为 renderer 的 `03-native-performance.js`，按已核对的工厂结构依次检查 shared、initial 模块，并复用模块加载缓存；单个不可读取的导出不影响识别。行为测试见 `native-performance.test.ts`。
 
 维护页的异常 Git 扫描只读取 `.codex-global-state.json` 中的本地工作区根目录，支持旧工作区列表及现代 `local-projects[].rootPaths`。缺少 HEAD 的 `.git` 目录先列出，用户确认后重新校验工作区记录和目录指纹，再改名为 `.git.codex3n-empty-<时间戳>`。不递归扫描，不处理 `.git` 文件、链接或检查期间变化的目录。后端入口为 `git_maintenance`，Tauri 命令为 `scan_empty_git_directories`、`quarantine_empty_git_directory`。
+
+维护页显示官方 App 已确认归属的子进程数量、内存和连接状态；运行中手动清理只处理已断开的 app-server。退出清理及平台边界见 [运行实现](runtime.md#官方-app-子进程清理)。
