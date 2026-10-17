@@ -86,7 +86,7 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 `dictation.provider` 支持 `api` 和 `sensevoice`，旧配置默认沿用 API 转写。SenseVoiceSmall INT8 模型由配置页手动下载固定版本并验证 SHA-256，录音入口不触发下载；浏览器将音频转为 16 kHz 单声道 WAV，Rust `dictation.rs` 经 sherpa-onnx 在本机推理。识别器在专用线程串行复用，模型或语言变化时重新校验和加载，PCM 样本直接进入推理；缓存会常驻一份模型内存。
 
-提示词增强使用独立的 `promptEnhance` 配置，默认关闭并受 `enhancementsEnabled` 控制；默认复用下一步建议的连接，也可单独配置服务和改写规则。渲染端唯一入口是 manifest 的 `93-prompt-enhance.js`，复用语音输入的输入框定位，按钮与语音入口挂在同一 footer 上。结果先在可编辑预览框中显示，确认后才写回；草稿含 @文件、技能、附件等非文本节点，或生成期间草稿被修改时，只允许插入到末尾或复制。Rust `prompt_enhance.rs` 复用 `stepwise.rs` 的协议工具；完整说明与验证命令见 `docs/prompt-enhance.md`。
+提示词增强使用独立的 `promptEnhance` 配置，默认关闭并受 `enhancementsEnabled` 控制；默认复用下一步建议的连接，也可单独配置服务和改写规则；内置规则原文在 `assets/prompt-enhance/system-prompt.md`，管理器可一键填入后再改。渲染端唯一入口是 manifest 的 `93-prompt-enhance.js`，复用语音输入的输入框定位，按钮与语音入口挂在同一 footer 上。结果先在可编辑预览框中显示，确认后才写回。写回优先走 Codex 输入框登记的 `updatePromptText`，草稿以 Markdown 读写，@文件和技能引用会保留；拿不到原生接口时才直接改 ProseMirror，这时含非文本节点的草稿只能插入到末尾或复制。确认替换时重新读取草稿，生成期间有改动（含文字转成同名引用）也只能插入或复制。Rust `prompt_enhance.rs` 复用 `stepwise.rs` 的协议工具；完整说明与验证命令见 `docs/prompt-enhance.md`。
 
 Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性。页面由用户点击检测，后台探测单个命令最多等待 3 秒、整组最多 15 秒，超时回收子进程；离页后的结果不提交。`claudeAppLocalization` 和 `claudeAppVoiceInput` 默认开启，分别控制界面汉化与语音入口，重启副本后应用；关闭汉化时恢复已保存的外壳语言。Windows 支持普通安装和 MSIX 来源，普通副本以完整应用目录替换，失败时恢复旧目录；macOS 副本重新签名。命令只通过 Tauri 注册，回归见 `claude-localization-screen.test.ts` 和本地化单测。
 
