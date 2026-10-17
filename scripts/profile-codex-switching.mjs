@@ -101,7 +101,7 @@ if (values.compare) {
         const request = pending.get(id);
         pending.delete(id);
         request?.reject(new Error("诊断请求超时"));
-      }, 5000);
+      }, 30000);
       try {
         const result = await new Promise((resolve, reject) => {
           pending.set(id, { resolve, reject });

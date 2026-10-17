@@ -375,7 +375,7 @@ test("布局观察忽略消息内部变化，新面板和被替换节点使缓�
 test("RPC计时复用原请求，正常完成和异常均结束计时", () => {
   for (const name of ["patchAppServerModelRequestClient", "installCodexAppServerClientPrototypePatch"]) {
     const body = source(name);
-    assert.match(body, /__codexPlusPerf\?\.begin\(requestMethod, true\)/);
+    assert.match(body, /__codexPlusPerf\?\.begin\(requestMethod, true, /);
     assert.match(body, /finally\s*\{\s*finishTiming\?\.\(\)/);
   }
 });
@@ -416,4 +416,23 @@ test("对照工具按版本、类别和冷热状态合并批次，缺失注入�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("thread/list诊断只记录参数等值分组和执行区间，按主机统计重叠", () => {
+  const app = perfRuntime(); app.api.start();
+  const first = app.api.begin("thread/list", true, { host: "ssh:secret-host", params: { cwd: "private/path", cursor: "private-cursor" } });
+  app.time.advance(100);
+  const second = app.api.begin("thread/list", true, { host: "ssh:secret-host", params: { cursor: "private-cursor", cwd: "private/path" } });
+  const third = app.api.begin("thread/list", true, { host: "other-host", params: { cwd: "private/path", cursor: "private-cursor" } });
+  first(); app.time.advance(30); second(); third();
+  const report = app.api.stop();
+  assert.equal(report.rpcOverlaps, 1);
+  assert.equal(report.rpcRequests.length, 3);
+  assert.equal(report.rpcRequests[0].paramsFingerprint, report.rpcRequests[1].paramsFingerprint);
+  assert.equal(report.rpcRequests[0].endMs, 100);
+  assert.equal(report.rpcRequests[1].startMs, 100);
+  assert.equal(report.rpcRequests[1].endMs, 130);
+  assert.ok(!/secret-host|private.path|private-cursor|other-host/.test(JSON.stringify(report)));
+  app.api.start(); assert.equal(app.api.snapshot().rpcRequests.length, 0);
 });

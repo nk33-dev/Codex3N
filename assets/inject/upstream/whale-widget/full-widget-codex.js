@@ -17308,7 +17308,7 @@ function pollLastTurn() {
       .catch(function () {})
   } catch (err) {}
 }
-setInterval(function () { pollLastTurn(); pollWaitState() }, 1000)
+codexWhaleHost.startPolling()
 }
 // 主界面检测通过（或稍后由 MutationObserver 检测到）后执行挂件初始化；非主界面不启动
 try { dshwTryStart(true) } catch (err) {}

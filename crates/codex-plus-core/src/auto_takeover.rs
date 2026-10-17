@@ -37,6 +37,38 @@ pub const BACKOFF_CAP_MS: u64 = 30 * 60 * 1000;
 pub const RESTART_WINDOW_MS: u64 = 60 * 60 * 1000;
 pub const MAX_RESTARTS_PER_WINDOW: usize = 6;
 
+/// 心跳只检查停止和唤醒，昂贵探测按独立截止时间执行。时间由调用方提供，便于验证睡眠跳变。
+#[derive(Debug, Default)]
+pub struct ProbeSchedule {
+    next_ms: u64,
+    last_ms: Option<u64>,
+}
+
+impl ProbeSchedule {
+    pub fn heartbeat(&mut self, now_ms: u64) -> bool {
+        let woke = self
+            .last_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) > 90_000);
+        self.last_ms = Some(now_ms);
+        if woke {
+            self.force();
+        }
+        woke
+    }
+    pub fn due(&self, now_ms: u64) -> bool {
+        now_ms >= self.next_ms
+    }
+    pub fn complete(&mut self, started_ms: u64, interval: Duration) {
+        self.next_ms = started_ms.saturating_add(interval.as_millis() as u64);
+    }
+    pub fn force(&mut self) {
+        self.next_ms = 0;
+    }
+    pub fn wait(&self, now_ms: u64, cap: Duration) -> Duration {
+        Duration::from_millis(self.next_ms.saturating_sub(now_ms)).min(cap)
+    }
+}
+
 /// 一个 App 实例的代际键。`lstart` 用来防 PID 复用与换代误伤。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstanceKey {
@@ -201,16 +233,105 @@ pub struct DesktopProbe {
 /// 探测官方 App 的实时状态（只读：枚举进程 + 探测回环端口，无任何副作用）。
 pub fn probe_desktop_app_state(app_dir: &Path, requested_port: u16) -> DesktopProbe {
     let actual_port = crate::ports::select_packaged_codex_debug_port(requested_port);
-    let app = probe_desktop_app(app_dir);
-    let current_pid = match &app {
-        AppProbe::Running(key) => Some(key.pid),
-        _ => None,
-    };
+    let (app, other_instance) = desktop_snapshot(app_dir, actual_port);
     DesktopProbe {
         app,
         cdp_ready: crate::cdp::endpoint_available(actual_port),
         actual_port,
-        other_instance: has_other_desktop_instance(app_dir, actual_port, current_pid),
+        other_instance,
+    }
+}
+
+#[derive(Debug)]
+struct SnapshotInstance {
+    key: InstanceKey,
+    port: Option<u16>,
+}
+
+fn classify_desktop_snapshot(
+    snapshot: Option<Vec<SnapshotInstance>>,
+    port: u16,
+) -> (AppProbe, bool) {
+    let Some(instances) = snapshot else {
+        return (AppProbe::Unknown, true);
+    };
+    let Some(first) = instances.first() else {
+        return (AppProbe::NotRunning, false);
+    };
+    let other = instances
+        .iter()
+        .skip(1)
+        .any(|process| process.port != Some(port));
+    (AppProbe::Running(first.key.clone()), other)
+}
+
+fn desktop_snapshot(app_dir: &Path, port: u16) -> (AppProbe, bool) {
+    #[cfg(windows)]
+    {
+        let expected = crate::app_paths::build_codex_executable(app_dir);
+        let Ok(processes) = crate::windows_integration::try_enumerate_processes() else {
+            return classify_desktop_snapshot(None, port);
+        };
+        let mut instances = Vec::new();
+        for process in processes {
+            if process.process_id == std::process::id() {
+                continue;
+            }
+            if process
+                .exe_file
+                .eq_ignore_ascii_case(&expected.file_name().unwrap_or_default().to_string_lossy())
+                && process.executable_path.is_none()
+            {
+                return classify_desktop_snapshot(None, port);
+            }
+            if !windows_executable_matches(&process, &expected) {
+                continue;
+            }
+            let Some(command_line) =
+                crate::windows_integration::process_command_line(process.process_id)
+            else {
+                return classify_desktop_snapshot(None, port);
+            };
+            if windows_command_line_is_electron_child(&process.exe_file, &command_line) {
+                continue;
+            }
+            let Some(started) = crate::windows_integration::process_birth_id(process.process_id)
+                .and_then(crate::windows_integration::process_started_at_secs_from_birth_id)
+            else {
+                return classify_desktop_snapshot(None, port);
+            };
+            instances.push(SnapshotInstance {
+                key: InstanceKey::new(process.process_id, started.to_string()),
+                port: crate::watcher::debug_port_from_command_line(&command_line),
+            });
+        }
+        classify_desktop_snapshot(Some(instances), port)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let expected = crate::app_paths::build_codex_executable(app_dir)
+            .to_string_lossy()
+            .to_string();
+        let Ok((all, matching)) = crate::watcher::macos_desktop_snapshot(Some(port)) else {
+            return classify_desktop_snapshot(None, port);
+        };
+        let instances = all
+            .into_iter()
+            .filter(|process| process.executable == expected)
+            .map(|process| SnapshotInstance {
+                port: matching
+                    .iter()
+                    .any(|candidate| candidate.pid == process.pid)
+                    .then_some(port),
+                key: InstanceKey::new(process.pid, process.lstart),
+            })
+            .collect();
+        classify_desktop_snapshot(Some(instances), port)
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = (app_dir, port);
+        (AppProbe::Unknown, false)
     }
 }
 
@@ -220,32 +341,7 @@ pub fn probe_desktop_app_state(app_dir: &Path, requested_port: u16) -> DesktopPr
 /// 不在这里判断「有没有被接管」——那由 `cdp::endpoint_available` 与
 /// `SessionSnapshot` 负责，混在一起会让两种失败无法区分。
 pub fn probe_desktop_app(app_dir: &Path) -> AppProbe {
-    #[cfg(target_os = "macos")]
-    {
-        let expected = crate::app_paths::build_codex_executable(app_dir)
-            .to_string_lossy()
-            .to_string();
-        // 不带端口过滤：主进程可能在跑但没带调试端口（正是要接管的场景）。
-        let processes = crate::watcher::find_macos_codex_desktop_main_processes(None);
-        return match processes
-            .into_iter()
-            .find(|process| process.executable == expected)
-        {
-            Some(process) => {
-                AppProbe::Running(InstanceKey::new(process.pid, process.lstart.clone()))
-            }
-            None => AppProbe::NotRunning,
-        };
-    }
-    #[cfg(windows)]
-    {
-        return probe_windows_desktop_app(app_dir);
-    }
-    #[cfg(not(any(target_os = "macos", windows)))]
-    {
-        let _ = app_dir;
-        AppProbe::Unknown
-    }
+    desktop_snapshot(app_dir, 0).0
 }
 
 #[cfg(windows)]
@@ -316,38 +412,6 @@ fn windows_command_line_is_electron_child(executable_name: &str, command_line: &
         };
     }
     false
-}
-
-#[cfg(windows)]
-fn probe_windows_desktop_app(app_dir: &Path) -> AppProbe {
-    let expected = crate::app_paths::build_codex_executable(app_dir);
-    let self_pid = std::process::id();
-    for process in crate::windows_integration::enumerate_processes() {
-        if process.process_id == self_pid {
-            continue;
-        }
-        if !windows_executable_matches(&process, &expected) {
-            continue;
-        }
-        match windows_is_electron_child(&process) {
-            Some(true) => continue,
-            // 无法排除 renderer/crashpad 时，不对不明归属进程发起接管。
-            None => return AppProbe::Unknown,
-            Some(false) => {}
-        }
-        // 实例代际：用进程启动时刻（秒）。Windows 上也用于「本次不接管」的比对。
-        let incarnation = match crate::watcher::inspect_process_instance(process.process_id) {
-            crate::watcher::ProcessInstanceState::Running {
-                started_at_secs, ..
-            } => started_at_secs.unwrap_or_default(),
-            _ => 0,
-        };
-        return AppProbe::Running(InstanceKey::new(
-            process.process_id,
-            incarnation.to_string(),
-        ));
-    }
-    AppProbe::NotRunning
 }
 
 /// 要求官方 App 退出，返回是否真的退出了。
@@ -882,5 +946,72 @@ mod tests {
         assert_eq!(ActivePolicy::parse("defer"), ActivePolicy::Defer);
         assert_eq!(ActivePolicy::parse("immediate"), ActivePolicy::Immediate);
         assert_eq!(ActivePolicy::Immediate.as_str(), "immediate");
+    }
+}
+
+#[cfg(test)]
+mod sampling_tests {
+    use super::*;
+    #[test]
+    fn heartbeat_does_not_shorten_idle_probe_interval() {
+        for (interval, expected) in [(2_000, 30), (10_000, 6)] {
+            let mut schedule = ProbeSchedule::default();
+            let mut probes = 0;
+            for now in (0..60_000).step_by(2_000) {
+                assert!(!schedule.heartbeat(now));
+                if schedule.due(now) {
+                    probes += 1;
+                    schedule.complete(now, Duration::from_millis(interval));
+                }
+                assert!(schedule.wait(now, Duration::from_secs(2)) <= Duration::from_secs(2));
+            }
+            assert_eq!(probes, expected);
+            schedule.force();
+            assert!(schedule.due(60_000));
+        }
+    }
+    #[test]
+    fn wake_resets_deadline_once_and_failed_snapshots_remain_unknown() {
+        let mut schedule = ProbeSchedule::default();
+        schedule.heartbeat(0);
+        schedule.complete(0, Duration::from_secs(10));
+        assert!(schedule.heartbeat(100_000));
+        assert!(schedule.due(100_000));
+        assert!(!schedule.heartbeat(102_000));
+        assert_eq!(
+            classify_desktop_snapshot(None, 9229),
+            (AppProbe::Unknown, true)
+        );
+        assert_eq!(
+            classify_desktop_snapshot(Some(vec![]), 9229),
+            (AppProbe::NotRunning, false)
+        );
+    }
+    #[test]
+    fn snapshot_preserves_generations_and_excludes_our_port_from_other_instances() {
+        let snapshot = |second_port| {
+            vec![
+                SnapshotInstance {
+                    key: InstanceKey::new(10, "generation-a"),
+                    port: None,
+                },
+                SnapshotInstance {
+                    key: InstanceKey::new(20, "generation-b"),
+                    port: Some(second_port),
+                },
+            ]
+        };
+        assert_eq!(
+            classify_desktop_snapshot(Some(snapshot(9229)), 9229),
+            (
+                AppProbe::Running(InstanceKey::new(10, "generation-a")),
+                false
+            )
+        );
+        assert!(classify_desktop_snapshot(Some(snapshot(9230)), 9229).1);
+        assert_ne!(
+            InstanceKey::new(10, "generation-a"),
+            InstanceKey::new(10, "generation-b")
+        );
     }
 }
