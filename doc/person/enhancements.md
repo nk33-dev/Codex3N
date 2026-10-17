@@ -101,3 +101,5 @@ Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版�
 Windows 的启动参数区提供 `--disable-direct-composition` 快捷项，保存后需重启官方 App，效果取决于显卡。MSIX 多开 wrapper 同样透传额外参数，按 Windows argv 和 cmd 两层转义，使用 UTF-8 代码页及关闭延迟展开。
 
 Git worker 的 `stable-metadata` 成功结果继续缓存 2 秒；低功耗开启后，非仓库结果和查询失败缓存 30 秒，取消不缓存。缓存按目录和主机隔离，Git 事件、聚焦、可见性变化和开关切换使其失效。远程请求、监听初始化和写操作继续走原生路径。入口为 renderer 的 `03-native-performance.js`，按已核对的工厂结构依次检查 shared、initial 模块，并复用模块加载缓存；单个不可读取的导出不影响识别。行为测试见 `native-performance.test.ts`。
+
+维护页的异常 Git 扫描只读取 `.codex-global-state.json` 中的本地工作区根目录，支持旧工作区列表及现代 `local-projects[].rootPaths`。缺少 HEAD 的 `.git` 目录先列出，用户确认后重新校验工作区记录和目录指纹，再改名为 `.git.codex3n-empty-<时间戳>`。不递归扫描，不处理 `.git` 文件、链接或检查期间变化的目录。后端入口为 `git_maintenance`，Tauri 命令为 `scan_empty_git_directories`、`quarantine_empty_git_directory`。

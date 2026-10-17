@@ -7173,8 +7173,43 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  const [gitCandidates, setGitCandidates] = useState<Array<{ workspace: string; fingerprint: string }> | null>(null);
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitMessage, setGitMessage] = useState("");
+  const [gitConfirm, setGitConfirm] = useState<string | null>(null);
+  async function scanGit() {
+    setGitBusy(true); setGitMessage(""); setGitConfirm(null);
+    try { setGitCandidates(await invoke<Array<{ workspace: string; fingerprint: string }>>("scan_empty_git_directories")); }
+    catch (error) { setGitMessage(String(error)); }
+    finally { setGitBusy(false); }
+  }
+  async function quarantineGit(candidate: { workspace: string; fingerprint: string }) {
+    setGitBusy(true); setGitMessage("");
+    try {
+      const backup = await invoke<string>("quarantine_empty_git_directory", { candidate });
+      setGitCandidates((items) => items?.filter((item) => item.workspace !== candidate.workspace) ?? null);
+      setGitMessage(backup); setGitConfirm(null);
+    } catch (error) { setGitMessage(String(error)); }
+    finally { setGitBusy(false); }
+  }
   return (
     <>
+      <Panel>
+        <CardHead title={t("异常 Git 目录")} detail={t("只检查官方 App 记录的本地工作区。缺少 HEAD 的 .git 目录可改名保留。")}/>
+        <CardContent>
+          <Button disabled={gitBusy} variant="secondary" onClick={() => void scanGit()}>{t("扫描 Git 目录")}</Button>
+          {gitCandidates?.length === 0 ? <p>{t("未发现异常 Git 目录")}</p> : null}
+          {gitCandidates?.map((candidate) => <div className="settings-block" key={candidate.workspace}>
+            <code>{candidate.workspace}</code>
+            {gitConfirm === candidate.workspace ? <>
+              <p>{t("将 .git 改名为带时间戳的备份目录，文件会保留。确认此目录不是正在使用的仓库后再继续。")}</p>
+              <Button disabled={gitBusy} onClick={() => void quarantineGit(candidate)}>{t("改名保留")}</Button>
+              <Button variant="secondary" disabled={gitBusy} onClick={() => setGitConfirm(null)}>{t("取消")}</Button>
+            </> : <Button variant="secondary" disabled={gitBusy} onClick={() => setGitConfirm(candidate.workspace)}>{t("处理目录")}</Button>}
+          </div>)}
+          {gitMessage ? <p role="status">{gitMessage}</p> : null}
+        </CardContent>
+      </Panel>
       <Panel>
         <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
         <CardContent>
