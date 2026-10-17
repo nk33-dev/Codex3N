@@ -168,3 +168,24 @@ macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-
 
 最后一个真实隔离实例退出前记录到 1 个 codex 子进程，退出后该进程已消失；同次检查的其他 41 个 node/codex 进程仍存活，验收 launcher 随后退出。该实例没有真实会话，因此只证明此次空闲退出与进程隔离结果。
 
+
+## 低功耗后续验收
+
+完整数据服务的隔离入口为 `cargo run -p codex-plus-launcher --example whale_power_probe -- <官方 App 目录> <系统临时目录> <调试端口> [--whale]`；核心库的 `low_power_probe` example 继续用于不依赖业务数据服务的启动与清理验证。二者都要求显式设置隔离的 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，前者的 `--whale` 仅开启测试实例挂件。
+
+切换诊断沿现有原生 RPC 包装采集请求标识、方法、主机等值组、参数等值组和起止时刻。分组只在单轮采样内有效，不导出参数、路径、主机名或会话正文；最多保留 2048 条请求。`rpcOverlaps` 只统计同主机、同参数、1 秒内发起且执行区间重叠的 `thread/list`。诊断请求允许等待繁忙页面最多 30 秒，采样窗口仍为 60 秒。无有效 RPC 记录时不据此判断重复请求。
+
+
+Windows 官方 App 26.1013.3656.0 的三轮 60 秒采样分别捕获 `thread/list` 11、16、8 次，另有 `thread/read` 10、11、6 次；未发现同主机、同参数且执行区间重叠的 `thread/list`，因此保留原生请求。三轮切换记录分别为 2、3、1 条，内容绘制均未获可见确认，不能据此报告切换耗时改善。
+
+`owned_process_probe` 提供 Windows 退出验证：`cargo run -p codex-plus-core --example owned_process_probe -- <官方 App 目录> <系统临时目录> <调试端口>` 等待确认归属的主进程退出；追加 `--terminate` 经 `DefaultLaunchHooks::terminate_codex` 验证主动退出，必须显式设置该临时目录下的 `CODEX_PLUS_STATE_DIR`。两条路径均先记录子进程身份，保护范围按创建时间和可执行文件核对，不能按名称结束进程。
+
+2026-10-17 的采样原始资料位于系统临时目录 `codex3n-low-power-followup`，包括调用基线、三轮 RPC 元数据、Git 进程计数、GPU 原始采样及各检查日志。第一次窗口关闭实验只关闭了窗口，主进程仍存活；独立退出监测确认主进程退出后，其 1 个 app-server 已清理。GPU 设置请求超时的早期样本已标记为无效对照。真实睡眠唤醒、自动接管成功率及触发延迟尚未实测，不能以可控时钟测试替代。
+
+
+真实 VS Code 共存验收：通过已安装的 `openai.chatgpt` 扩展和独立 VS Code 用户目录激活原生 app-server，不发送消息。主动退出经 `DefaultLaunchHooks::terminate_codex` 执行，测试实例的 1 个 app-server 已清理，4 个受保护进程全部保留，其中包括真实 VS Code Codex 进程。另一次隔离实例打开 4 个会话副本后结束确认归属的主进程，独立 `ChildMonitor` 清理其 1 个 app-server，6 个受保护进程全部保留，包括真实 VS Code Codex 进程和另一官方实例。两次均核对 PID、创建时间、路径和父链；这不替代真实系统睡眠唤醒与自动接管延迟验收。
+
+本轮 Windows 完整门禁为 Rust 格式检查、workspace 编译和测试、管理器类型检查、完整前端测试（852 通过、1 跳过）、Vite 构建及两套注入产物一致性。DMG 打包模拟在 Windows 繁忙环境曾超过原有 15 秒上限，测试超时调整为 120 秒后完整测试通过；生产打包重试次数保持原值。
+
+
+临时清理状态：隔离 App 及其验收监听已结束；自动审批以 `blocked by policy` 拦截了关闭测试 VS Code 窗口和删除临时 `live/codex-home/auth.json` 的命令，凭据副本与测试 VS Code 窗口保留，未把这两项记为已清理。原始检查资料继续保留，清理时只处理本轮临时目录。

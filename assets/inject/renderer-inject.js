@@ -1916,6 +1916,8 @@
   function createCodexPlusPerformanceDiagnostics(options = {}) {
     const now = () => performance.now();
     const rpcMethods = new Set(["thread/list", "thread/read", "thread/resume", "thread/turns/list", "thread/turns/items/list", "turn/start", "skills/list", "plugin/list"]);
+    const parameterGroups = new Map(), hostGroups = new Map();
+    let rpcSerial = 0;
     const phases = new Set(["scanLightweight", "scanDeferred", "layout", "floatingScan"]);
     const rowSelector = "[data-app-action-sidebar-thread-id]";
     const contentSelector = ".thread-scroll-container [data-content-search-turn-key], .thread-scroll-container [data-message-author-role], .thread-scroll-container [data-testid='conversation-turn']";
@@ -1988,6 +1990,7 @@
       finishSwitch("unconfirmed");
       report.durationMs = Math.min(60000, Math.round(now() - startedAt));
       report.active = false;
+      parameterGroups.clear(); hostGroups.clear();
       report.versions = {
         official: version(options.officialVersion?.()),
         injected: version(window.__CODEX_PLUS_VERSION__),
@@ -2007,10 +2010,10 @@
     function start(durationMs = 60000) {
       stop();
       startedAt = now();
-      serial = 0;
+      serial = 0; rpcSerial = 0; parameterGroups.clear(); hostGroups.clear();
       report = {
         schema: 1, active: true, durationMs: 0,
-        versions: {}, switches: [], spans: {},
+        versions: {}, switches: [], spans: {}, rpcRequests: [], rpcOverlaps: 0, rpcDropped: 0,
         longTasks: { count: 0, totalMs: 0, maxMs: 0 },
         capabilities: { contentVisibility: "dom-two-frames", rpcTiming: false, injectionTiming: false, longTasks: false },
         missing: ["rpcTiming", "injectionTiming", "requestQueueTiming", "processResources"],
@@ -2028,7 +2031,16 @@
       timer = setTimeout(stop, Math.min(60000, Math.max(1, Number(durationMs) || 60000)));
       return snapshot();
     }
-    function begin(name, rpc = false) {
+    function canonical(value) {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+      return value;
+    }
+    function group(map, key, prefix) {
+      if (!map.has(key)) map.set(key, prefix + (map.size + 1));
+      return map.get(key);
+    }
+    function begin(name, rpc = false, metadata = null) {
       if (!active || now() - startedAt >= 60000 || !(rpc ? rpcMethods : phases).has(name)) return null;
       if (rpc) {
         report.capabilities.rpcTiming = true;
@@ -2038,10 +2050,24 @@
         report.missing = report.missing.filter((item) => item !== "injectionTiming");
       }
       const current = report, at = now();
+      let request = null;
+      if (rpc && metadata) {
+        if (report.rpcRequests.length >= 2048) report.rpcDropped += 1;
+        else try {
+          // 只导出本轮内的等值分组，不导出参数、路径、主机名或会话内容。
+          const paramsFingerprint = group(parameterGroups, JSON.stringify(canonical(metadata.params ?? null)), "params:");
+          const host = group(hostGroups, String(metadata.host || "local"), "host:");
+          const startMs = Math.round((at - startedAt) * 10) / 10;
+          report.rpcOverlaps += report.rpcRequests.filter((entry) => name === "thread/list" && entry.method === name && entry.host === host && entry.paramsFingerprint === paramsFingerprint && entry.endMs === null && startMs - entry.startMs <= 1000).length;
+          request = { id: ++rpcSerial, method: name, host, paramsFingerprint, startMs, endMs: null };
+          report.rpcRequests.push(request);
+        } catch { report.rpcDropped += 1; }
+      }
       let completed = false;
       return () => {
         if (completed || !active || current !== report || now() - startedAt > 60000) return;
         completed = true;
+        if (request) request.endMs = Math.round((now() - startedAt) * 10) / 10;
         const key = rpc ? `rpc:${name}` : name;
         const span = report.spans[key] ||= { count: 0, totalMs: 0, maxMs: 0 };
         const elapsed = now() - at;
@@ -12552,7 +12578,7 @@
         nextParams,
         options
       );
-      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true);
+      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true, { params: nextParams, host: modelResponseHostId(nextParams, client) });
       let result;
       try {
         result = await originalSendRequest(method, nextParams, options);
@@ -12757,7 +12783,7 @@
         nextParams,
         options
       );
-      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true);
+      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true, { params: nextParams, host: modelResponseHostId(nextParams, client) });
       let result;
       try {
         result = await originalSendRequest.call(client, method, nextParams, options);
