@@ -189,3 +189,52 @@ test("会话 id 只认 composer 上的实时标识，新会话草稿视为无会
   assert.equal(codexPlusUsageThreadId(card("short")), "");
   assert.equal(codexPlusUsageThreadId(undefined), "");
 });
+
+test("用量接口失败显示错误并减慢重试，恢复后清除失败状态", async () => {
+  const node = {};
+  const state = { disposed: false, inFlight: false, threadId: "thread-1234", failures: 0, node };
+  let result: Record<string, unknown> = { status: "failed", message: "Thread not found" };
+  const delays: number[] = [];
+  const renders: Array<{ snapshot: unknown; failed: boolean }> = [];
+  const diagnostics: unknown[] = [];
+  const deps = {
+    codexPlusUsageState: state,
+    codexPlusUsageEnabled: () => true,
+    codexPlusUsageComposerCard: () => ({}),
+    codexPlusUsageThreadId: () => "thread-1234",
+    codexPlusUsageInstallStyle() {},
+    codexPlusUsageEnsureNode: () => node,
+    codexPlusUsageSnapshot: (events: unknown[]) => events.length ? { stale: false } : null,
+    codexPlusUsageSchedule: (delay: number) => delays.push(delay),
+    codexPlusUsageRender: (snapshot: unknown, failed = false) => renders.push({ snapshot, failed }),
+    codexPlusUsageShow() {},
+    codexPlusUsageHide: () => assert.fail("错误状态应保持可见"),
+    postJson: async () => result,
+    document: { hidden: false },
+    sendCodexPlusDiagnostic: (...args: unknown[]) => diagnostics.push(args),
+    codexPlusUsageFailureLimit: 5,
+    codexPlusUsageIdleIntervalMs: 5000,
+    codexPlusUsageActiveIntervalMs: 1200,
+    codexPlusUsageWarmupIntervalMs: 2500,
+  };
+  const tick = new Function(...Object.keys(deps), [
+    declaration("codexPlusUsageRefresh"), declaration("codexPlusUsageTick"), "return codexPlusUsageTick;",
+  ].join("\n"))(...Object.values(deps));
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(state.failures, 6, "业务失败不能重置失败计数");
+  assert.equal(state.inFlight, false);
+  assert.deepEqual(delays, [5000, 5000, 5000, 5000, 30000, 30000]);
+  assert.ok(renders.every(render => render.failed));
+  assert.equal(diagnostics.length, 2);
+
+  result = { status: "ok", events: [] };
+  await tick();
+  assert.equal(state.failures, 0);
+  assert.equal(renders.at(-1)?.failed, false, "成功但尚无数据应显示等待状态");
+  assert.equal(delays.at(-1), 2500);
+
+  result = { status: "ok", events: [event(0, 100)] };
+  await tick();
+  assert.deepEqual(renders.at(-1)?.snapshot, { stale: false });
+  assert.equal(delays.at(-1), 1200);
+});

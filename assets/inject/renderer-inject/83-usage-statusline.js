@@ -67,6 +67,8 @@
       #${codexPlusUsageStatusLineId} .codex-plus-usage-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-variant-numeric:tabular-nums;transition:opacity .2s}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-value{font-weight:500}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-item svg{flex:0 0 auto;opacity:.8}
+      #${codexPlusUsageStatusLineId} [hidden]{display:none}
+      #${codexPlusUsageStatusLineId} .codex-plus-usage-notice{font-size:12px;color:var(--color-token-text-secondary,#999)}
       /* 本轮结束超过阈值只淡化速度：缓存命中与上下文占用仍然是当前值，不该跟着变灰。 */
       #${codexPlusUsageStatusLineId}[data-stale="true"] .codex-plus-usage-item[data-usage="speed"]{opacity:.55}
     `;
@@ -135,6 +137,10 @@
       context: codexPlusUsageItem(node, "context", "context", ring.svg),
       ring: ring.ring,
     };
+    parts.notice = document.createElement("span");
+    parts.notice.className = "codex-plus-usage-notice";
+    parts.notice.hidden = true;
+    node.appendChild(parts.notice);
     codexPlusUsageState.parts = parts;
     return parts;
   }
@@ -256,8 +262,8 @@
     };
   }
 
-  /** `snapshot` 为 null 时渲染占位符：会话已确定但还没有第一条 token 事件。 */
-  function codexPlusUsageRender(snapshot) {
+  /** 首次用量尚未写出和读取失败分别提示，避免一直显示空读数。 */
+  function codexPlusUsageRender(snapshot, failed = false) {
     const node = codexPlusUsageState.node;
     if (!node?.isConnected) return;
     const parts = codexPlusUsageState.parts || codexPlusUsageBuild(node);
@@ -269,9 +275,17 @@
     const stale = snapshot?.stale === true;
     const contextWindow = snapshot?.modelContextWindow || 0;
     // 指纹一样就不写 DOM：每秒一次无意义赋值会让 Codex 的 MutationObserver 空转。
-    const fingerprint = [speed, cache, context, stale, contextWindow].join("|");
+    const fingerprint = [speed, cache, context, stale, contextWindow, failed].join("|");
     if (fingerprint === codexPlusUsageState.lastFingerprint) return;
     codexPlusUsageState.lastFingerprint = fingerprint;
+    const chinese = (document.documentElement?.lang || navigator.language || "").toLowerCase().startsWith("zh");
+    const notice = failed
+      ? (chinese ? "用量读取失败，稍后重试" : "Usage unavailable · retrying")
+      : (chinese ? "等待用量数据" : "Waiting for usage");
+    node.dataset.status = failed ? "failed" : (snapshot ? "ok" : "waiting");
+    parts.notice.hidden = !!snapshot;
+    parts.notice.textContent = notice;
+    [parts.speed, parts.cache, parts.context].forEach((part) => { part.item.hidden = !snapshot; });
 
     parts.speed.value.textContent = text.speed(speed);
     parts.cache.value.textContent = text.cache(cache);
@@ -281,13 +295,13 @@
       parts.ring.setAttribute("stroke-dasharray", `${filled.toFixed(2)} ${codexPlusUsageRingCircumference}`);
     }
     node.dataset.stale = String(stale);
-    node.setAttribute("title", [
+    node.setAttribute("title", snapshot ? [
       `生成速度 ${format(speed)} tok/s`,
       `缓存命中 ${format(cache)}`,
       `上下文占用 ${format(context)}`,
       contextWindow > 0 ? `窗口 ${contextWindow}` : "",
-    ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}：${text.speed(speed)}，${text.cache(cache)}，${context}`);
+    ].filter(Boolean).join(" · ") : notice);
+    node.setAttribute("aria-label", snapshot ? `${text.aria}：${text.speed(speed)}，${text.cache(cache)}，${context}` : notice);
   }
 
   function codexPlusUsageSchedule(delay) {
@@ -307,8 +321,10 @@
     codexPlusUsageState.inFlight = true;
     try {
       const result = await postJson("/thread-usage-live", { session_id: threadId });
+      if (result?.status !== "ok" || !Array.isArray(result.events)) {
+        throw new Error(result?.message || "无法读取会话用量");
+      }
       codexPlusUsageState.failures = 0;
-      if (result?.status !== "ok" || !Array.isArray(result.events)) return null;
       return result.events;
     } finally {
       codexPlusUsageState.inFlight = false;
@@ -344,6 +360,7 @@
     // 换会话时清掉上一个会话的读数，避免把旧数字挂在新会话上。
     if (codexPlusUsageState.threadId !== threadId && codexPlusUsageState.node === node) {
       codexPlusUsageState.threadId = threadId;
+      codexPlusUsageState.failures = 0;
       codexPlusUsageState.lastFingerprint = "";
     }
     let events = null;
@@ -351,7 +368,7 @@
       events = await codexPlusUsageRefresh(threadId);
     } catch (error) {
       codexPlusUsageState.failures += 1;
-      if (codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
+      if (codexPlusUsageState.failures === 1 || codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
         sendCodexPlusDiagnostic("usage_statusline_bridge_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
@@ -359,6 +376,10 @@
       }
     }
     if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageEnabled() || codexPlusUsageState.threadId !== threadId) {
+      codexPlusUsageSchedule(0);
+      return;
+    }
     const snapshot = events ? codexPlusUsageSnapshot(events) : null;
     if (snapshot) {
       codexPlusUsageShow(node);
@@ -367,10 +388,10 @@
       codexPlusUsageSchedule(snapshot.stale ? codexPlusUsageIdleIntervalMs : codexPlusUsageActiveIntervalMs);
       return;
     }
-    if (codexPlusUsageState.failures >= codexPlusUsageFailureLimit) {
-      // 桥接连续失败：整条隐藏，退到慢轮询，等宿主恢复。
-      codexPlusUsageHide();
-      codexPlusUsageSchedule(30000);
+    if (codexPlusUsageState.failures > 0) {
+      codexPlusUsageShow(node);
+      codexPlusUsageRender(null, true);
+      codexPlusUsageSchedule(codexPlusUsageState.failures >= codexPlusUsageFailureLimit ? 30000 : codexPlusUsageIdleIntervalMs);
       return;
     }
     // 会话已经确定、只是还没写出 token 事件（新会话第一轮）：先显示占位符，
