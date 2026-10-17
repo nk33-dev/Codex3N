@@ -23,7 +23,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2851
+      "lines": 2882
     },
     {
       "name": "20-menu.js",
@@ -33,12 +33,12 @@
     {
       "name": "30-service-tier.js",
       "description": "服务等级（service tier）读写、线程覆盖与控件同步",
-      "lines": 1068
+      "lines": 1074
     },
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1949
+      "lines": 1957
     },
     {
       "name": "50-navigation.js",
@@ -88,12 +88,12 @@
     {
       "name": "83-usage-statusline.js",
       "description": "输入框下方用量状态栏：生成速度、缓存命中率与上下文占用",
-      "lines": 400
+      "lines": 421
     },
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1033
+      "lines": 1039
     },
     {
       "name": "91-extension-api.js",

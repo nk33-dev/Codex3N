@@ -345,7 +345,7 @@
   const styleId = "codex-delete-style";
   // 改 10-style.js 里的任何 CSS 都要把它 +1：installStyle 靠这个版本号判断
   // 页面里已有的 <style> 是否过期，不升的话新样式在旧标签存在时会被直接跳过。
-  const codexDeleteStyleVersion = "33";
+  const codexDeleteStyleVersion = "34";
   const codexPlusMenuId = "codex-plus-menu";
   const codexPlusMenuFloatingClass = "codex-plus-menu-floating";
   const codexPlusSidebarNavId = "codex-plus-sidebar-nav";
@@ -376,7 +376,7 @@
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
-  const codexServiceTierBadgeVersion = "4";
+  const codexServiceTierBadgeVersion = "5";
   let codexPlusVersion = window.__CODEX_PLUS_VERSION__ || "unknown";
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   let lastSessionActionTrigger = null;
@@ -3462,10 +3462,13 @@
         border-radius: var(--border-radius-md, 6px);
         background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
-        font-family: inherit;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
         font-size: 13px;
-        line-height: 16px;
-        padding: 6px 8px;
+        line-height: 20px;
+        padding: 10px 12px;
+        max-width: min(300px, calc(100vw - 32px));
+        white-space: pre-line;
+        overflow-wrap: anywhere;
         box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
       }
       .codex-delete-confirm-overlay,
@@ -3588,15 +3591,22 @@
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="degraded"],
       .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
       .${codexServiceTierBadgeClass} {
-        height: 24px;
-        border-color: var(--codex-plus-border);
-        border-radius: var(--border-radius-lg, 8px);
-        background: var(--codex-plus-bg-secondary);
-        color: var(--codex-plus-text-secondary);
-        font-family: inherit;
+        order: -1;
+        height: var(--height-token-button-composer, 28px);
+        min-width: 0;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-token-text-tertiary, var(--codex-plus-text-secondary));
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
+        font-size: 13px;
+        font-weight: 500;
+        padding: 0 8px;
+        transition: background-color .12s, color .12s;
       }
-      .${codexServiceTierBadgeClass}:hover { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); }
-      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
+      .${codexServiceTierBadgeClass}:hover { border-color: transparent; background: var(--color-token-bg-primary-ghost-hover, var(--codex-plus-bg-hover)); color: var(--codex-plus-text); }
+      .${codexServiceTierBadgeClass}:focus-visible { outline: 2px solid var(--codex-plus-focus); outline-offset: 2px; }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: transparent; background: var(--color-token-interactive-bg-secondary-hover, var(--codex-plus-bg-hover)); color: var(--color-token-text-primary, var(--codex-plus-text)); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
       .codex-plus-ad-card { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-secondary); }
@@ -3639,6 +3649,7 @@
         min-width: 0;
         margin: 0 auto;
         container: codex-plus-settings / inline-size;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
       }
       .codex-plus-settings > .codex-plus-modal-header {
         width: 100%;
@@ -3725,9 +3736,24 @@
         gap: 8px;
       }
       .codex-plus-settings .codex-plus-service-tier-control {
-        flex: 0 1 300px;
+        width: 100%;
+        max-width: none;
         min-width: 0;
+        gap: 14px;
+        justify-items: stretch;
       }
+      .codex-plus-settings .codex-plus-service-tier-section { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; gap: 18px; padding: 20px 0; }
+      .codex-plus-settings .codex-plus-service-tier-section > .codex-plus-service-tier-control { max-width: none; }
+      .codex-plus-service-tier-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+      .codex-plus-service-tier-heading > :first-child { min-width: 0; }
+      .codex-plus-service-tier-heading .codex-plus-service-tier-status { flex: 0 1 auto; padding-top: 2px; line-height: 18px; }
+      .codex-plus-service-tier-group { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 16px; }
+      .codex-plus-settings .codex-plus-service-tier-thread-label { color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-settings .codex-plus-service-tier-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 10px; background: var(--codex-plus-bg-hover); }
+      .codex-plus-settings .codex-plus-service-tier-thread-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); opacity: 1; }
+      .codex-plus-settings .codex-plus-service-tier-actions .codex-plus-service-tier-button { min-height: 34px; padding: 6px 10px; border-color: transparent; background: transparent; color: var(--codex-plus-text-secondary); font-weight: 500; }
+      .codex-plus-settings .codex-plus-service-tier-actions .codex-plus-service-tier-button[data-active="true"] { border-color: var(--codex-plus-border); background: var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary)); color: var(--codex-plus-text); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+      .codex-plus-service-tier-help { margin: 0 0 0 100px; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 18px; }
       .codex-plus-settings .codex-plus-service-tier-status { overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
@@ -3863,6 +3889,11 @@
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] { flex-wrap: wrap; }
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > :first-child { flex-basis: 100%; }
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > .codex-plus-service-tier-control { flex-basis: 100%; max-width: 100%; }
+        .codex-plus-service-tier-heading { flex-direction: column; gap: 8px; }
+        .codex-plus-service-tier-group { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+        .codex-plus-settings .codex-plus-service-tier-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .codex-plus-settings .codex-plus-service-tier-thread-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .codex-plus-service-tier-help { margin-left: 0; }
       }
       /* 拓展与推荐内容使用原生插件页面的导航、标题和轻量列表布局。 */
       .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) {
@@ -5778,16 +5809,17 @@
     effectiveServiceTier = codexServiceTierState.effectiveServiceTier,
     serviceTierSource = codexServiceTierState.serviceTierSource
   ) {
+    const label = (mode) => mode === "fast" ? "Fast" : (mode === "standard" ? "Standard" : "继承设置");
     if (codexServiceTierState.status === "loading") return "正在读取…";
     if (codexServiceTierState.status === "failed") return "读取失败";
     if (controlMode === "inherit") {
       if (effectiveServiceTier == null) return "继承 Codex 默认设置：默认";
-      return `${serviceTierInheritSourceLabel(serviceTierSource)}：${effectiveMode}`;
+      return `${serviceTierInheritSourceLabel(serviceTierSource)} · ${label(effectiveMode)}`;
     }
     if (controlMode === "global-standard") return "全局 Standard";
     if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (threadMode === "inherit") return `默认模式 · ${label(defaultMode)}`;
+    return `当前会话 · ${label(threadMode)}`;
   }
 
   function readThreadServiceTierState() {
@@ -5993,19 +6025,19 @@
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const inheritedDefault = codexServiceTierState.controlMode === "inherit" && codexServiceTierState.effectiveServiceTier == null;
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
-      ? `当前 thread：${codexServiceTierState.threadMode}`
+      ? `当前会话 · ${codexServiceTierState.threadMode === "fast" ? "Fast" : "Standard"}`
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
-      `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型；使用 service_tier=\"priority\"，实际支持与计费由供应商决定，可在模型配置中明确声明。`,
+      scope,
+      "点击切换 Standard / Fast。",
+      "Fast 优先处理，支持情况与费用由供应商决定。",
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+      return { tier: "unsupported", label: "不支持", title: "当前模型不支持 Fast，使用 Standard。\n可在供应商的模型配置中查看 Fast 支持情况。" };
     }
-    if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
+    if (effectiveMode === "fast") return { tier: "fast", label: "Fast", title };
     if (inheritedDefault) return { tier: "default", label: "默认", title };
-    return { tier: "standard", label: "standard", title };
+    return { tier: "standard", label: "Standard", title };
   }
 
   function refreshCodexServiceTierBadges() {
@@ -6015,7 +6047,9 @@
       const disabled = String(!!state.disabled);
       if (node.dataset.disabled !== disabled) node.dataset.disabled = disabled;
       if (node.textContent !== state.label) node.textContent = state.label;
-      if (node.title !== state.title) node.title = state.title;
+      if (node.dataset.codexActionLabel !== state.title) node.dataset.codexActionLabel = state.title;
+      if (node.dataset.codexTooltipPlacement !== "top") node.dataset.codexTooltipPlacement = "top";
+      if (node.hasAttribute?.("title")) node.removeAttribute("title");
       if (node.getAttribute("aria-label") !== state.title) node.setAttribute("aria-label", state.title);
       if (node.getAttribute("aria-disabled") !== disabled) node.setAttribute("aria-disabled", disabled);
     });
@@ -6030,7 +6064,7 @@
     const fastAvailability = codexServiceTierFastAvailability();
     const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
     const fastTitle = fastAvailability.supported
-      ? "Fast：使用 service_tier=\"priority\""
+      ? "Fast 优先处理，费用由供应商决定"
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
@@ -6062,7 +6096,7 @@
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      button.title = "当前会话沿用默认模式";
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -6072,6 +6106,9 @@
       button.disabled = fastDisabled;
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
       button.title = fastTitle;
+    });
+    document.querySelectorAll(".codex-plus-service-tier-button").forEach((button) => {
+      button.setAttribute("aria-pressed", button.dataset.active === "true" ? "true" : "false");
     });
     refreshCodexServiceTierBadges();
   }
@@ -8082,25 +8119,33 @@
               <h2 class="codex-plus-settings-section-title">模型与服务</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+                  <div><div class="codex-plus-row-title">服务模式切换</div><div class="codex-plus-row-description">在输入框显示 Standard / Fast 切换按钮。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
                 </div>
-                <div class="codex-plus-row" data-codex-service-tier-controls="true">
-                  <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+                <div class="codex-plus-row codex-plus-service-tier-section" data-codex-service-tier-controls="true">
+                  <div class="codex-plus-service-tier-heading">
+                    <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">沿用 Codex 设置，或为全部会话与当前会话选择模式。</div></div>
+                    <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading" role="status">正在读取…</div>
+                  </div>
                   <div class="codex-plus-service-tier-control">
-                    <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
-                    <div class="codex-plus-service-tier-actions">
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+                    <div class="codex-plus-service-tier-group">
+                      <span class="codex-plus-service-tier-thread-label" id="codex-plus-tier-default-label">默认模式</span>
+                      <div class="codex-plus-service-tier-actions" role="group" aria-labelledby="codex-plus-tier-default-label">
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承设置</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">Standard</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">Fast</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">按会话设置</button>
+                      </div>
                     </div>
-                    <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                      <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                    <div class="codex-plus-service-tier-group">
+                      <span class="codex-plus-service-tier-thread-label" id="codex-plus-tier-thread-label">当前会话</span>
+                      <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions" role="group" aria-labelledby="codex-plus-tier-thread-label">
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true">使用默认</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true">Standard</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true">Fast</button>
+                      </div>
                     </div>
+                    <p class="codex-plus-service-tier-help">Fast 的支持情况与费用由供应商决定；不支持时使用 Standard。</p>
                   </div>
                 </div>
               </div>
@@ -15254,6 +15299,8 @@
       #${codexPlusUsageStatusLineId} .codex-plus-usage-item{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-variant-numeric:tabular-nums;transition:opacity .2s}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-value{font-weight:500}
       #${codexPlusUsageStatusLineId} .codex-plus-usage-item svg{flex:0 0 auto;opacity:.8}
+      #${codexPlusUsageStatusLineId} [hidden]{display:none}
+      #${codexPlusUsageStatusLineId} .codex-plus-usage-notice{font-size:12px;color:var(--color-token-text-secondary,#999)}
       /* 本轮结束超过阈值只淡化速度：缓存命中与上下文占用仍然是当前值，不该跟着变灰。 */
       #${codexPlusUsageStatusLineId}[data-stale="true"] .codex-plus-usage-item[data-usage="speed"]{opacity:.55}
     `;
@@ -15322,6 +15369,10 @@
       context: codexPlusUsageItem(node, "context", "context", ring.svg),
       ring: ring.ring,
     };
+    parts.notice = document.createElement("span");
+    parts.notice.className = "codex-plus-usage-notice";
+    parts.notice.hidden = true;
+    node.appendChild(parts.notice);
     codexPlusUsageState.parts = parts;
     return parts;
   }
@@ -15443,8 +15494,8 @@
     };
   }
 
-  /** `snapshot` 为 null 时渲染占位符：会话已确定但还没有第一条 token 事件。 */
-  function codexPlusUsageRender(snapshot) {
+  /** 首次用量尚未写出和读取失败分别提示，避免一直显示空读数。 */
+  function codexPlusUsageRender(snapshot, failed = false) {
     const node = codexPlusUsageState.node;
     if (!node?.isConnected) return;
     const parts = codexPlusUsageState.parts || codexPlusUsageBuild(node);
@@ -15456,9 +15507,17 @@
     const stale = snapshot?.stale === true;
     const contextWindow = snapshot?.modelContextWindow || 0;
     // 指纹一样就不写 DOM：每秒一次无意义赋值会让 Codex 的 MutationObserver 空转。
-    const fingerprint = [speed, cache, context, stale, contextWindow].join("|");
+    const fingerprint = [speed, cache, context, stale, contextWindow, failed].join("|");
     if (fingerprint === codexPlusUsageState.lastFingerprint) return;
     codexPlusUsageState.lastFingerprint = fingerprint;
+    const chinese = (document.documentElement?.lang || navigator.language || "").toLowerCase().startsWith("zh");
+    const notice = failed
+      ? (chinese ? "用量读取失败，稍后重试" : "Usage unavailable · retrying")
+      : (chinese ? "等待用量数据" : "Waiting for usage");
+    node.dataset.status = failed ? "failed" : (snapshot ? "ok" : "waiting");
+    parts.notice.hidden = !!snapshot;
+    parts.notice.textContent = notice;
+    [parts.speed, parts.cache, parts.context].forEach((part) => { part.item.hidden = !snapshot; });
 
     parts.speed.value.textContent = text.speed(speed);
     parts.cache.value.textContent = text.cache(cache);
@@ -15468,13 +15527,13 @@
       parts.ring.setAttribute("stroke-dasharray", `${filled.toFixed(2)} ${codexPlusUsageRingCircumference}`);
     }
     node.dataset.stale = String(stale);
-    node.setAttribute("title", [
+    node.setAttribute("title", snapshot ? [
       `生成速度 ${format(speed)} tok/s`,
       `缓存命中 ${format(cache)}`,
       `上下文占用 ${format(context)}`,
       contextWindow > 0 ? `窗口 ${contextWindow}` : "",
-    ].filter(Boolean).join(" · "));
-    node.setAttribute("aria-label", `${text.aria}：${text.speed(speed)}，${text.cache(cache)}，${context}`);
+    ].filter(Boolean).join(" · ") : notice);
+    node.setAttribute("aria-label", snapshot ? `${text.aria}：${text.speed(speed)}，${text.cache(cache)}，${context}` : notice);
   }
 
   function codexPlusUsageSchedule(delay) {
@@ -15494,8 +15553,10 @@
     codexPlusUsageState.inFlight = true;
     try {
       const result = await postJson("/thread-usage-live", { session_id: threadId });
+      if (result?.status !== "ok" || !Array.isArray(result.events)) {
+        throw new Error(result?.message || "无法读取会话用量");
+      }
       codexPlusUsageState.failures = 0;
-      if (result?.status !== "ok" || !Array.isArray(result.events)) return null;
       return result.events;
     } finally {
       codexPlusUsageState.inFlight = false;
@@ -15531,6 +15592,7 @@
     // 换会话时清掉上一个会话的读数，避免把旧数字挂在新会话上。
     if (codexPlusUsageState.threadId !== threadId && codexPlusUsageState.node === node) {
       codexPlusUsageState.threadId = threadId;
+      codexPlusUsageState.failures = 0;
       codexPlusUsageState.lastFingerprint = "";
     }
     let events = null;
@@ -15538,7 +15600,7 @@
       events = await codexPlusUsageRefresh(threadId);
     } catch (error) {
       codexPlusUsageState.failures += 1;
-      if (codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
+      if (codexPlusUsageState.failures === 1 || codexPlusUsageState.failures === codexPlusUsageFailureLimit) {
         sendCodexPlusDiagnostic("usage_statusline_bridge_failed", {
           errorName: error?.name || "",
           errorMessage: error?.message || String(error),
@@ -15546,6 +15608,10 @@
       }
     }
     if (codexPlusUsageState.disposed) return;
+    if (!codexPlusUsageEnabled() || codexPlusUsageState.threadId !== threadId) {
+      codexPlusUsageSchedule(0);
+      return;
+    }
     const snapshot = events ? codexPlusUsageSnapshot(events) : null;
     if (snapshot) {
       codexPlusUsageShow(node);
@@ -15554,10 +15620,10 @@
       codexPlusUsageSchedule(snapshot.stale ? codexPlusUsageIdleIntervalMs : codexPlusUsageActiveIntervalMs);
       return;
     }
-    if (codexPlusUsageState.failures >= codexPlusUsageFailureLimit) {
-      // 桥接连续失败：整条隐藏，退到慢轮询，等宿主恢复。
-      codexPlusUsageHide();
-      codexPlusUsageSchedule(30000);
+    if (codexPlusUsageState.failures > 0) {
+      codexPlusUsageShow(node);
+      codexPlusUsageRender(null, true);
+      codexPlusUsageSchedule(codexPlusUsageState.failures >= codexPlusUsageFailureLimit ? 30000 : codexPlusUsageIdleIntervalMs);
       return;
     }
     // 会话已经确定、只是还没写出 token 事件（新会话第一轮）：先显示占位符，
@@ -15631,6 +15697,7 @@
   }
 
   function hideActionButtonTooltip() {
+    document.querySelectorAll('[aria-describedby="codex-plus-action-tooltip"]').forEach((node) => node.removeAttribute("aria-describedby"));
     document.querySelectorAll(`.${actionTooltipClass}`).forEach((node) => node.remove());
   }
 
@@ -15701,8 +15768,12 @@
     hideActionButtonTooltip();
     const tooltip = document.createElement("div");
     tooltip.className = actionTooltipClass;
+    tooltip.id = "codex-plus-action-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.dataset.codexPlusExt = "action-tooltip";
     tooltip.textContent = label;
     document.body.appendChild(tooltip);
+    button.setAttribute("aria-describedby", tooltip.id);
     const buttonRect = button.getBoundingClientRect();
     const tooltipRect = tooltip.getBoundingClientRect();
     const gap = 8;
@@ -15710,10 +15781,8 @@
       window.innerWidth - tooltipRect.width - 8,
       Math.max(8, buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2),
     );
-    const top = Math.min(
-      window.innerHeight - tooltipRect.height - 8,
-      buttonRect.bottom + gap,
-    );
+    const preferAbove = button.dataset.codexTooltipPlacement === "top" || buttonRect.bottom + gap + tooltipRect.height > window.innerHeight - 8;
+    const top = preferAbove ? buttonRect.top - gap - tooltipRect.height : buttonRect.bottom + gap;
     tooltip.style.left = `${left}px`;
     tooltip.style.top = `${Math.max(8, top)}px`;
   }
@@ -16279,17 +16348,8 @@
     const footer = composer ? codexServiceTierComposerFooter(composer) : null;
     if (!footer) return null;
     // 新版 footer 同时包含编辑器和工具栏；供应商文字可能出现在草稿或项目栏里。
-    const model = footer.querySelector('[data-codex-intelligence-trigger]');
+    const model = footer.querySelector('[data-codex-intelligence-trigger], [data-composer-navigation-target="reasoning"]');
     let anchor = model && codexServiceTierBadgeVisibleElement(model) ? model : null;
-    if (!anchor) {
-      const groups = Array.from(footer.children).filter((child) =>
-        !child.matches?.('[data-codex-service-tier-badge="true"]')
-        && !child.matches?.('[contenteditable="true"], textarea, input')
-        && !child.querySelector?.('[contenteditable="true"], textarea, input')
-        && codexServiceTierBadgeVisibleElement(child));
-      anchor = groups.reverse().flatMap((group) => Array.from(group.querySelectorAll('button')))
-        .find((button) => !isExtensionUiNode(button) && codexServiceTierBadgeVisibleElement(button)) || null;
-    }
     if (!anchor) return null;
     // 模型按钮可能套有 Tooltip 或普通 div，徽章与整个包裹层一起放进原生 flex 行。
     while (anchor.parentElement && anchor.parentElement !== footer
@@ -16298,7 +16358,9 @@
     }
     const parent = anchor.parentElement;
     if (!parent || !/^(inline-)?flex$/.test(getComputedStyle(parent).display)) return null;
-    return { parent, before: anchor };
+    // 模型组里的上下文圆环也由 React 更新，始终放在组首，避免重排后跨到圆环另一侧。
+    const before = Array.from(parent.children).find((child) => !child.matches('[data-codex-service-tier-badge="true"]')) || anchor;
+    return { parent, before };
   }
 
   function wireCodexServiceTierBadge(badge) {
@@ -16306,14 +16368,21 @@
     badge.dataset.codexServiceTierBadgeWired = codexServiceTierBadgeVersion;
     badge.setAttribute("role", "button");
     badge.setAttribute("tabindex", "0");
+    badge.addEventListener("pointerenter", () => showActionButtonTooltip(badge));
+    badge.addEventListener("pointerleave", hideActionButtonTooltip);
+    badge.addEventListener("focus", () => showActionButtonTooltip(badge));
+    badge.addEventListener("blur", hideActionButtonTooltip);
     badge.addEventListener("click", (event) => {
+      hideActionButtonTooltip();
       event.preventDefault();
       event.stopPropagation();
       if (badge.dataset.disabled === "true") return;
       toggleCodexServiceTierFromBadge();
     });
     badge.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { hideActionButtonTooltip(); return; }
       if (event.key !== "Enter" && event.key !== " ") return;
+      hideActionButtonTooltip();
       event.preventDefault();
       event.stopPropagation();
       if (badge.dataset.disabled === "true") return;
@@ -16330,7 +16399,9 @@
     const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
     if (!composer || !placement?.parent) {
-      existingBadges.forEach((badge) => badge.remove());
+      existingBadges.forEach((badge) => {
+        if (!composer?.contains(badge)) badge.remove();
+      });
       return;
     }
     let badge = existingBadges.find((node) => node.closest?.(codexServiceTierComposerFooterSelector) || node.closest?.("button") == null) || existingBadges[0];
@@ -16353,6 +16424,7 @@
   }
 
   function removeCodexServiceTierBadges() {
+    if (document.querySelector('[data-codex-service-tier-badge="true"][aria-describedby]')) hideActionButtonTooltip();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((badge) => badge.remove());
   }
 

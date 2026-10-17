@@ -3740,7 +3740,7 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("toggleCodexServiceTierFromBadge"));
     assert!(script.contains("wireCodexServiceTierBadge"));
     assert!(script.contains("codexServiceTierBadgePlacement"));
-    assert!(script.contains("footer.querySelector('[data-codex-intelligence-trigger]')"));
+    assert!(script.contains("footer.querySelector('[data-codex-intelligence-trigger], [data-composer-navigation-target=\"reasoning\"]')"));
     assert!(script.contains("codexServiceTierFindComposerEl"));
     assert!(script.contains("codexServiceTierVisibleComposerFooters"));
     assert!(script.contains("codexServiceTierBestComposerFooter"));
@@ -3756,9 +3756,9 @@ fn injection_script_exposes_fast_service_tier_control() {
     assert!(script.contains("resolveInheritedServiceTier"));
     assert!(script.contains("getConfigTomlServiceTier"));
     assert!(script.contains("catalog.service_tier"));
-    assert!(script.contains("service_tier=\\\"priority\\\""));
-    assert!(script.contains("Fast 仅支持"));
-    assert!(script.contains("当前 thread"));
+    assert!(script.contains("codexFastServiceTierValue()"));
+    assert!(script.contains("Fast 优先处理，支持情况与费用由供应商决定。"));
+    assert!(script.contains("当前会话"));
     assert!(script.contains("standard"));
     assert!(script.contains("fast"));
     assert!(script.contains("[\"setting-storage-\", \"app-initial-\"]"));
@@ -3868,14 +3868,14 @@ fn injection_script_applies_fast_service_tier_contract() {
     );
 
     assert_eq!(cases["inheritUnsetStatus"], "继承 Codex 默认设置：默认");
-    assert_eq!(cases["inheritFastStatus"], "继承 Codex 默认设置：fast");
+    assert_eq!(cases["inheritFastStatus"], "继承 Codex 默认设置 · Fast");
     assert_eq!(
         cases["inheritStandardStatus"],
-        "继承 Codex 默认设置：standard"
+        "继承 Codex 默认设置 · Standard"
     );
     assert_eq!(
         cases["inheritConfigTomlFastStatus"],
-        "继承 config.toml：fast"
+        "继承 config.toml · Fast"
     );
     assert_eq!(cases["resolvedConfigTomlTier"]["configServiceTier"], "fast");
     assert_eq!(
