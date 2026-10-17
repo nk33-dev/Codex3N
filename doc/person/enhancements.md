@@ -14,7 +14,7 @@
 
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
-`codexAppUsageStatusLine` 默认开启，`83-usage-statusline.js` 在输入框下方显示生成速度、缓存命中率和上下文占用；通过内置 `/thread-usage-live` 路由只读取最近用量事件，不加入第三方拓展白名单。速度包含工具执行时间；缓存命中率为缓存输入 Token / 输入 Token，上下文占用按 Codex 会话记录中的模型窗口计算。`codexAppStandaloneQuotaUnlock` 默认关闭，独立额度解锁与供应商总开关分开保存。两项开关均沿用增强页手动保存。验证见 `usage-statusline.test.ts`、`standalone_quota_settings.rs`、`native_api_quota_gate.rs` 与 `bridge_routes.rs`。
+`codexAppUsageStatusLine` 默认开启，`83-usage-statusline.js` 在输入框下方显示生成速度、缓存命中率和上下文占用；通过内置 `/thread-usage-live` 路由只读取最近用量事件，不加入第三方拓展白名单。新旧会话库并存时，`storage.rs::codex_thread_rollout` 按候选库顺序只读查找当前会话和有效 rollout，失败后继续查下一库；用量历史共用这一查找逻辑。尚无事件时显示“等待用量数据”，读取失败单独提示并记录诊断，连续失败五次后每 30 秒重试，成功后恢复正常轮询。速度包含工具执行时间；缓存命中率为缓存输入 Token / 输入 Token，上下文占用按 Codex 会话记录中的模型窗口计算。`codexAppStandaloneQuotaUnlock` 默认关闭，独立额度解锁与供应商总开关分开保存。两项开关均沿用增强页手动保存。验证见 `usage-statusline.test.ts`、数据层 `storage_adapter.rs`、`standalone_quota_settings.rs`、`native_api_quota_gate.rs` 与 `bridge_routes.rs`。
 
 增强页与注入面板使用中文标题、说明；产品名、协议与命令保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。远程 Zed、Upstream 工作树适配、原生菜单汉化、快速启动及增强模式选择已随上游撤下，原生 SSH、工作树和会话分享保持可用。
 
@@ -26,7 +26,9 @@
 
 图标栏入口由 `40-backend-settings.js::codexPlusRailInsertAnchor` 定位：优先插在自动化等非固定入口之后；启动时宿主先只渲染主页和自定义，自动化约晚 1 秒出现，这段时间退到主页那一项之后，下一轮侧栏扫描再挪到自动化后面。没有任何原生入口时暂不插入。第三方拓展入口（`92-extension-host.js::refreshCodexPlusRailNavigation`）共用该锚点。位置已正确时不写 DOM。验证见 `rail-navigation.test.ts`。
 
-服务模式徽章由 `90-action-groups.js::codexServiceTierBadgePlacement` 插在当前输入工具栏的原生模型选择器前；穿过提示与普通包裹层，保持同一 flex 行。旧版只在唯一 footer 的可见按钮组内兜底，不能确认布局时跳过；不按供应商文字匹配草稿、项目栏或编辑区。加载时显示“读取中”，状态不变时不重写文字与属性。侧栏操作组、更多菜单及工具提示也纳入扫描排除，避免自己的 DOM 更新触发增强扫描。验证见 `service-tier-badge.test.ts`。
+服务模式按钮由 `90-action-groups.js::codexServiceTierBadgePlacement` 定位当前输入工具栏的原生模型选择器，穿过提示与普通包裹层，固定在模型组首、上下文圆环之前；仅识别模型选择器与 reasoning 导航标记，模型暂未挂载时保留当前输入区内的按钮。按钮沿用原生工具栏的透明背景、圆角与主题色，加载时显示“读取中”，状态不变时不重写文字与属性。悬停及键盘聚焦复用侧栏提示组件，支持换行、屏幕边界定位及 Escape 关闭；说明只展示当前作用范围、切换动作与费用提示。“模型与服务”设置区按默认模式和当前会话分组，沿用原有服务模式与覆盖逻辑。侧栏操作组、更多菜单及工具提示也纳入扫描排除，避免自己的 DOM 更新触发增强扫描。验证见 `service-tier-badge.test.ts`、`fast-support.test.ts`。
+
+实机验证范围：Windows 已验证真实会话的跨库用量读取，以及应用内隔离预览的深浅主题、420px 窄窗口、提示边界、键盘切换、开关状态与连续扫描。用量栏的等待、失败与恢复显示均在该预览中验证；macOS、Linux 尚未实机验证。
 
 输入框内的文字编辑不触发增强扫描；输入框或菜单挂载仍刷新。输入法组词期间取消增强扫描和会话对齐帧，结束或窗口失焦后合并补扫；不拦截原生输入事件。悬浮球回答观察忽略输入框内变化，隐藏期间不做变更分类。心跳继续检查连接与配置，配置未变时不重绘增强，连接状态文案和侧栏标记只在值改变时写入。
 

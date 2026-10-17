@@ -1553,6 +1553,71 @@ fn thread_usage_live_reads_only_the_tail_of_the_rollout() {
 }
 
 #[test]
+fn thread_usage_finds_rollout_in_another_allowed_database() {
+    for scenario in [
+        "absent",
+        "missing-thread",
+        "empty-path",
+        "missing-rollout",
+        "unsupported",
+        "unreadable",
+    ] {
+        let tmp = tempdir().unwrap();
+        let primary = tmp.path().join("primary.sqlite");
+        let fallback = tmp.path().join("fallback.sqlite");
+        let rollout = tmp.path().join("rollout.jsonl");
+        fs::write(&rollout, "").unwrap();
+        create_codex_thread_db(&fallback, &rollout);
+        match scenario {
+            "absent" => {}
+            "unsupported" => create_supported_db(&primary),
+            "unreadable" => fs::write(&primary, "invalid sqlite").unwrap(),
+            _ => {
+                create_codex_thread_db(&primary, &tmp.path().join("missing.jsonl"));
+                let db = Connection::open(&primary).unwrap();
+                if scenario == "missing-thread" {
+                    db.execute("DELETE FROM threads", []).unwrap();
+                } else if scenario == "empty-path" {
+                    db.execute("UPDATE threads SET rollout_path = ''", [])
+                        .unwrap();
+                }
+            }
+        }
+        let adapter =
+            SQLiteStorageAdapter::new(&primary, BackupStore::new(tmp.path().join("backups")))
+                .with_allowed_db_paths([fallback.clone()]);
+        let thread = session("local:t1", "Codex Thread");
+        for result in [
+            adapter.codex_thread_usage_live(&thread),
+            adapter.codex_thread_usage_history(&thread),
+        ] {
+            assert_eq!(result["status"], json!("ok"), "{scenario}: {result}");
+            assert_eq!(result["rollout_path"], json!(rollout.to_string_lossy()));
+        }
+        if scenario == "absent" {
+            assert!(!primary.exists(), "只读查询不能创建缺失的数据库");
+        }
+    }
+}
+
+#[test]
+fn thread_usage_keeps_primary_database_precedence() {
+    let tmp = tempdir().unwrap();
+    let primary = tmp.path().join("primary.sqlite");
+    let fallback = tmp.path().join("fallback.sqlite");
+    let rollout = tmp.path().join("primary.jsonl");
+    let other = tmp.path().join("fallback.jsonl");
+    fs::write(&rollout, "").unwrap();
+    fs::write(&other, "").unwrap();
+    create_codex_thread_db(&primary, &rollout);
+    create_codex_thread_db(&fallback, &other);
+    let adapter = SQLiteStorageAdapter::new(&primary, BackupStore::new(tmp.path().join("backups")))
+        .with_allowed_db_paths([fallback]);
+    let result = adapter.codex_thread_usage_live(&session("local:t1", "Codex Thread"));
+    assert_eq!(result["rollout_path"], json!(rollout.to_string_lossy()));
+}
+
+#[test]
 fn thread_usage_live_reports_missing_sessions_without_history_payload() {
     let tmp = tempdir().unwrap();
     let db_path = tmp.path().join("state_5.sqlite");

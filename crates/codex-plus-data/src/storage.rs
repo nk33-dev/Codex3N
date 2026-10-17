@@ -467,24 +467,46 @@ impl SQLiteStorageAdapter {
 
     /// 解析会话对应的 rollout 文件。
     ///
-    /// `Unavailable` 里已经是可直接返回前端的失败对象：语义是「本地没有这个会话的
-    /// 历史」，不是后端故障，所以不走 anyhow；真正的 IO / SQLite 故障走 Err。
+    /// 任一候选库找到有效文件就返回；全部失败时将各库原因合并到 `Unavailable`。
     fn codex_thread_rollout(&self, session: &SessionRef) -> anyhow::Result<CodexThreadRollout> {
-        if !self.db_path.exists() {
+        let mut failures = Vec::new();
+        // 新旧目录可能同时存在；数据库可读不代表它包含当前会话。
+        for db_path in &self.allowed_db_paths {
+            match self.codex_thread_rollout_from_db(session, db_path) {
+                Ok(ready @ CodexThreadRollout::Ready { .. }) => return Ok(ready),
+                Ok(CodexThreadRollout::Unavailable(value)) => {
+                    failures.push(value["message"].as_str().unwrap_or_default().to_string());
+                }
+                Err(error) => failures.push(format!("{}：{error}", db_path.display())),
+            }
+        }
+        Ok(CodexThreadRollout::Unavailable(json!({
+            "status": "failed",
+            "session_id": normalize_codex_thread_id(&session.session_id),
+            "message": failures.join("；"),
+        })))
+    }
+
+    fn codex_thread_rollout_from_db(
+        &self,
+        session: &SessionRef,
+        db_path: &Path,
+    ) -> anyhow::Result<CodexThreadRollout> {
+        if !db_path.is_file() {
             return Ok(CodexThreadRollout::Unavailable(json!({
                 "status": "failed",
                 "session_id": session.session_id,
-                "message": self.database_not_found_message(),
+                "message": format!("Database not found: {}", db_path.display()),
             })));
         }
-        let db = Connection::open(&self.db_path)?;
+        let db = Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         if schema_kind(&db)? != Some(SchemaKind::CodexThreads)
             || !has_columns(&db, "threads", &["rollout_path"])?
         {
             return Ok(CodexThreadRollout::Unavailable(json!({
                 "status": "failed",
                 "session_id": session.session_id,
-                "message": "Unsupported local storage schema",
+                "message": format!("Unsupported local storage schema: {}", db_path.display()),
             })));
         }
         let thread_id = normalize_codex_thread_id(&session.session_id);
@@ -499,7 +521,7 @@ impl SQLiteStorageAdapter {
             return Ok(CodexThreadRollout::Unavailable(json!({
                 "status": "failed",
                 "session_id": thread_id,
-                "message": "Thread rollout path is empty",
+                "message": format!("Thread not found or rollout path is empty: {}", db_path.display()),
             })));
         };
         let rollout = PathBuf::from(&rollout_path);

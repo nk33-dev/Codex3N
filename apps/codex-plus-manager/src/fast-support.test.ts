@@ -86,9 +86,10 @@ test("Fast UI and request filtering share explicit declarations, including denia
 
 test("a responsive-only composer footer supplies the Fast badge placement without a provider button", () => {
   const source = fragment("90-action-groups.js");
-  const footer = { children: [] as unknown[], parentElement: null, matches: (selector: string) => selector.includes("[data-composer-footer-responsive]"), querySelector: () => null, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 100, top: 600, width: 600, height: 30 }) };
-  const group = { parentElement: footer, display: "flex", matches: () => false, querySelector: () => null, querySelectorAll: () => [button] };
-  const button = { visible: true, parentElement: group };
+  const footer = { children: [] as unknown[], parentElement: null, matches: (selector: string) => selector.includes("[data-composer-footer-responsive]"), querySelector: () => button, querySelectorAll: () => [], getBoundingClientRect: () => ({ left: 100, top: 600, width: 600, height: 30 }) };
+  const group = { parentElement: footer, display: "flex", children: [] as unknown[], matches: () => false, querySelector: () => null, querySelectorAll: () => [button] };
+  const button = { visible: true, parentElement: group, matches: () => false };
+  group.children = [button];
   footer.children = [group];
   const composer = { querySelectorAll: (selector: string) => selector.includes("[data-composer-footer-responsive]") ? [footer] : [], matches: () => false };
   const context = vm.createContext({ document: { querySelectorAll: () => [footer] },

@@ -1263,25 +1263,33 @@
               <h2 class="codex-plus-settings-section-title">模型与服务</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">Fast 按钮</div><div class="codex-plus-row-description">显示服务模式切换按钮；Fast 仅支持 ${codexServiceTierFastModelListLabel()}，其他模型按 Standard 发送。</div></div>
+                  <div><div class="codex-plus-row-title">服务模式切换</div><div class="codex-plus-row-description">在输入框显示 Standard / Fast 切换按钮。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="serviceTierControls"><span></span></button>
                 </div>
-                <div class="codex-plus-row" data-codex-service-tier-controls="true">
-                  <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">继承优先读取 Codex 应用内设置，其次读取 config.toml 的 service_tier；全局模式覆盖全部 thread；自定义允许按 thread 覆盖。</div></div>
+                <div class="codex-plus-row codex-plus-service-tier-section" data-codex-service-tier-controls="true">
+                  <div class="codex-plus-service-tier-heading">
+                    <div><div class="codex-plus-row-title">服务模式</div><div class="codex-plus-row-description">沿用 Codex 设置，或为全部会话与当前会话选择模式。</div></div>
+                    <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading" role="status">正在读取…</div>
+                  </div>
                   <div class="codex-plus-service-tier-control">
-                    <div class="codex-plus-service-tier-status" data-codex-service-tier-status="true" data-status="loading">正在读取…</div>
-                    <div class="codex-plus-service-tier-actions">
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">全局 Standard</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">全局 Fast</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">自定义</button>
+                    <div class="codex-plus-service-tier-group">
+                      <span class="codex-plus-service-tier-thread-label" id="codex-plus-tier-default-label">默认模式</span>
+                      <div class="codex-plus-service-tier-actions" role="group" aria-labelledby="codex-plus-tier-default-label">
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-inherit="true">继承设置</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-standard="true">Standard</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-fast="true">Fast</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-custom="true">按会话设置</button>
+                      </div>
                     </div>
-                    <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions">
-                      <span class="codex-plus-service-tier-thread-label">当前 thread 覆盖</span>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true" title="当前 thread 不单独覆盖，继承 Codex 默认设置">继承</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true" title="仅当前 thread 使用 Standard，并切到自定义模式">Standard</button>
-                      <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true" title="仅当前 thread 使用 Fast，并切到自定义模式">Fast</button>
+                    <div class="codex-plus-service-tier-group">
+                      <span class="codex-plus-service-tier-thread-label" id="codex-plus-tier-thread-label">当前会话</span>
+                      <div class="codex-plus-service-tier-actions codex-plus-service-tier-thread-actions" role="group" aria-labelledby="codex-plus-tier-thread-label">
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-inherit="true">使用默认</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-standard="true">Standard</button>
+                        <button type="button" class="codex-plus-service-tier-button" data-codex-service-tier-thread-fast="true">Fast</button>
+                      </div>
                     </div>
+                    <p class="codex-plus-service-tier-help">Fast 的支持情况与费用由供应商决定；不支持时使用 Standard。</p>
                   </div>
                 </div>
               </div>

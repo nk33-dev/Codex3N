@@ -44,6 +44,7 @@
   }
 
   function hideActionButtonTooltip() {
+    document.querySelectorAll('[aria-describedby="codex-plus-action-tooltip"]').forEach((node) => node.removeAttribute("aria-describedby"));
     document.querySelectorAll(`.${actionTooltipClass}`).forEach((node) => node.remove());
   }
 
@@ -114,8 +115,12 @@
     hideActionButtonTooltip();
     const tooltip = document.createElement("div");
     tooltip.className = actionTooltipClass;
+    tooltip.id = "codex-plus-action-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.dataset.codexPlusExt = "action-tooltip";
     tooltip.textContent = label;
     document.body.appendChild(tooltip);
+    button.setAttribute("aria-describedby", tooltip.id);
     const buttonRect = button.getBoundingClientRect();
     const tooltipRect = tooltip.getBoundingClientRect();
     const gap = 8;
@@ -123,10 +128,8 @@
       window.innerWidth - tooltipRect.width - 8,
       Math.max(8, buttonRect.left + buttonRect.width / 2 - tooltipRect.width / 2),
     );
-    const top = Math.min(
-      window.innerHeight - tooltipRect.height - 8,
-      buttonRect.bottom + gap,
-    );
+    const preferAbove = button.dataset.codexTooltipPlacement === "top" || buttonRect.bottom + gap + tooltipRect.height > window.innerHeight - 8;
+    const top = preferAbove ? buttonRect.top - gap - tooltipRect.height : buttonRect.bottom + gap;
     tooltip.style.left = `${left}px`;
     tooltip.style.top = `${Math.max(8, top)}px`;
   }
@@ -692,17 +695,8 @@
     const footer = composer ? codexServiceTierComposerFooter(composer) : null;
     if (!footer) return null;
     // 新版 footer 同时包含编辑器和工具栏；供应商文字可能出现在草稿或项目栏里。
-    const model = footer.querySelector('[data-codex-intelligence-trigger]');
+    const model = footer.querySelector('[data-codex-intelligence-trigger], [data-composer-navigation-target="reasoning"]');
     let anchor = model && codexServiceTierBadgeVisibleElement(model) ? model : null;
-    if (!anchor) {
-      const groups = Array.from(footer.children).filter((child) =>
-        !child.matches?.('[data-codex-service-tier-badge="true"]')
-        && !child.matches?.('[contenteditable="true"], textarea, input')
-        && !child.querySelector?.('[contenteditable="true"], textarea, input')
-        && codexServiceTierBadgeVisibleElement(child));
-      anchor = groups.reverse().flatMap((group) => Array.from(group.querySelectorAll('button')))
-        .find((button) => !isExtensionUiNode(button) && codexServiceTierBadgeVisibleElement(button)) || null;
-    }
     if (!anchor) return null;
     // 模型按钮可能套有 Tooltip 或普通 div，徽章与整个包裹层一起放进原生 flex 行。
     while (anchor.parentElement && anchor.parentElement !== footer
@@ -711,7 +705,9 @@
     }
     const parent = anchor.parentElement;
     if (!parent || !/^(inline-)?flex$/.test(getComputedStyle(parent).display)) return null;
-    return { parent, before: anchor };
+    // 模型组里的上下文圆环也由 React 更新，始终放在组首，避免重排后跨到圆环另一侧。
+    const before = Array.from(parent.children).find((child) => !child.matches('[data-codex-service-tier-badge="true"]')) || anchor;
+    return { parent, before };
   }
 
   function wireCodexServiceTierBadge(badge) {
@@ -719,14 +715,21 @@
     badge.dataset.codexServiceTierBadgeWired = codexServiceTierBadgeVersion;
     badge.setAttribute("role", "button");
     badge.setAttribute("tabindex", "0");
+    badge.addEventListener("pointerenter", () => showActionButtonTooltip(badge));
+    badge.addEventListener("pointerleave", hideActionButtonTooltip);
+    badge.addEventListener("focus", () => showActionButtonTooltip(badge));
+    badge.addEventListener("blur", hideActionButtonTooltip);
     badge.addEventListener("click", (event) => {
+      hideActionButtonTooltip();
       event.preventDefault();
       event.stopPropagation();
       if (badge.dataset.disabled === "true") return;
       toggleCodexServiceTierFromBadge();
     });
     badge.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { hideActionButtonTooltip(); return; }
       if (event.key !== "Enter" && event.key !== " ") return;
+      hideActionButtonTooltip();
       event.preventDefault();
       event.stopPropagation();
       if (badge.dataset.disabled === "true") return;
@@ -743,7 +746,9 @@
     const placement = composer ? codexServiceTierBadgePlacement(composer) : null;
     const existingBadges = Array.from(document.querySelectorAll(`[data-codex-service-tier-badge="true"]`));
     if (!composer || !placement?.parent) {
-      existingBadges.forEach((badge) => badge.remove());
+      existingBadges.forEach((badge) => {
+        if (!composer?.contains(badge)) badge.remove();
+      });
       return;
     }
     let badge = existingBadges.find((node) => node.closest?.(codexServiceTierComposerFooterSelector) || node.closest?.("button") == null) || existingBadges[0];
@@ -766,6 +771,7 @@
   }
 
   function removeCodexServiceTierBadges() {
+    if (document.querySelector('[data-codex-service-tier-badge="true"][aria-describedby]')) hideActionButtonTooltip();
     document.querySelectorAll(`[data-codex-service-tier-badge="true"]`).forEach((badge) => badge.remove());
   }
 
