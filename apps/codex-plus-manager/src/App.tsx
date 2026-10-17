@@ -7173,6 +7173,29 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  type ChildProcessReport = { supported: boolean; processes: Array<{ pid: number; kind: string; memoryBytes: number | null; disconnected: boolean; zombie: boolean; canCleanup: boolean }> };
+  const [childProcesses, setChildProcesses] = useState<ChildProcessReport | null>(null);
+  const [childBusy, setChildBusy] = useState(false);
+  const [childMessage, setChildMessage] = useState("");
+  const [childConfirm, setChildConfirm] = useState(false);
+  const childRevision = useRef(0);
+  useEffect(() => {
+    void refreshChildren();
+    return () => { childRevision.current += 1; };
+  }, []);
+  async function refreshChildren(cleanup = false) {
+    const revision = ++childRevision.current;
+    setChildBusy(true); setChildMessage("");
+    try {
+      const terminated = cleanup ? await invoke<number[]>("cleanup_disconnected_app_servers") : null;
+      const report = await invoke<ChildProcessReport>("codex_child_processes");
+      if (revision !== childRevision.current) return;
+      setChildProcesses(report);
+      if (terminated) setChildMessage(terminated.length ? t("清理完成") : t("未结束进程，请刷新后检查归属状态"));
+      setChildConfirm(false);
+    } catch (error) { if (revision === childRevision.current) setChildMessage(String(error)); }
+    finally { if (revision === childRevision.current) setChildBusy(false); }
+  }
   const [gitCandidates, setGitCandidates] = useState<Array<{ workspace: string; fingerprint: string }> | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitMessage, setGitMessage] = useState("");
@@ -7194,6 +7217,25 @@ function MaintenanceScreen({
   }
   return (
     <>
+      <Panel>
+        <CardHead title={t("官方 App 子进程")} detail={t("退出后自动清理已确认归属的残留进程；运行中只清理你手动确认的断开连接。")}/>
+        <CardContent>
+          {childProcesses?.supported === false ? <p>{t("当前平台不支持子进程清理")}</p> : <>
+            <p>{t("进程数量")}：{childProcesses?.processes.length ?? "—"} · {t("内存")}：{childProcesses && childProcesses.processes.every((item) => item.memoryBytes !== null) ? formatBytes(childProcesses.processes.reduce((total, item) => total + (item.memoryBytes ?? 0), 0)) : "—"}</p>
+            {childProcesses?.processes.map((item) => <div key={item.pid}><code>{item.pid} {item.kind}</code> · {item.memoryBytes === null ? "—" : formatBytes(item.memoryBytes)} · {item.zombie ? t("需重启官方 App") : item.disconnected ? t("已断开") : t("运行中")}</div>)}
+            <Toolbar>
+              <Button variant="secondary" disabled={childBusy} onClick={() => void refreshChildren()}>{t("刷新")}</Button>
+              <Button variant="secondary" disabled={childBusy || !childProcesses?.processes.some((item) => item.canCleanup)} onClick={() => setChildConfirm(true)}>{t("清理已断开的 app-server")}</Button>
+            </Toolbar>
+            {childConfirm ? <div role="alert">
+              <p>{t("结束已确认归属且父进程已退出的 app-server，进行中的请求可能中断。")}</p>
+              <Button disabled={childBusy} onClick={() => void refreshChildren(true)}>{t("清理已断开的 app-server")}</Button>
+              <Button variant="secondary" disabled={childBusy} onClick={() => setChildConfirm(false)}>{t("取消")}</Button>
+            </div> : null}
+          </>}
+          {childMessage ? <p role="status">{childMessage}</p> : null}
+        </CardContent>
+      </Panel>
       <Panel>
         <CardHead title={t("异常 Git 目录")} detail={t("只检查官方 App 记录的本地工作区。缺少 HEAD 的 .git 目录可改名保留。")}/>
         <CardContent>

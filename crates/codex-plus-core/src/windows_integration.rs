@@ -407,6 +407,103 @@ pub fn process_birth_id(process_id: u32) -> Option<u64> {
 }
 
 #[cfg(windows)]
+pub(crate) fn process_memory_bytes(process_id: u32) -> Option<u64> {
+    use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    let handle = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            process_id,
+        )
+        .ok()?
+    };
+    let _guard = HandleGuard(handle);
+    let mut counters = PROCESS_MEMORY_COUNTERS::default();
+    unsafe {
+        GetProcessMemoryInfo(
+            handle,
+            &mut counters,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+        .ok()?;
+    }
+    Some(counters.WorkingSetSize as u64)
+}
+
+#[cfg(windows)]
+pub(crate) fn command_line_arguments(command_line: &str) -> Option<Vec<String>> {
+    use windows::Win32::Foundation::{HLOCAL, LocalFree};
+    use windows::Win32::UI::Shell::CommandLineToArgvW;
+    let wide = wide_null(command_line);
+    let mut count = 0;
+    let argv = unsafe { CommandLineToArgvW(PCWSTR(wide.as_ptr()), &mut count) };
+    if argv.is_null() {
+        return None;
+    }
+    let result = unsafe { std::slice::from_raw_parts(argv, count as usize) }
+        .iter()
+        .map(|value| unsafe { value.to_string() }.ok())
+        .collect();
+    unsafe { LocalFree(HLOCAL(argv.cast())) };
+    result
+}
+
+/// 创建时间、映像和用途校验与终止共用同一句柄，避免检查后的 PID 复用。
+#[cfg(windows)]
+pub(crate) fn terminate_owned_child(
+    process_id: u32,
+    birth_id: u64,
+    executable: &std::path::Path,
+    kind: &str,
+) -> bool {
+    if process_id == std::process::id() {
+        return false;
+    }
+    let Ok(handle) = (unsafe {
+        OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            process_id,
+        )
+    }) else {
+        return false;
+    };
+    let _guard = HandleGuard(handle);
+    if process_birth_id_from_handle(handle) != Some(birth_id)
+        || process_image_path_from_handle(handle).as_deref() != Some(executable)
+    {
+        return false;
+    }
+    let Some(args) =
+        process_command_line_from_handle(handle).and_then(|line| command_line_arguments(&line))
+    else {
+        return false;
+    };
+    if crate::owned_processes::child_kind(executable, &args) != Some(kind) {
+        return false;
+    }
+    unsafe { TerminateProcess(handle, 0) }.is_ok()
+}
+
+#[cfg(windows)]
+pub(crate) fn descendant_process_ids(processes: &[WindowsProcessInfo], root: u32) -> Vec<u32> {
+    let mut parents = std::collections::HashSet::from([root]);
+    loop {
+        let size = parents.len();
+        for process in processes {
+            if process.process_id != root && parents.contains(&process.parent_process_id) {
+                parents.insert(process.process_id);
+            }
+        }
+        if parents.len() == size {
+            break;
+        }
+    }
+    parents.remove(&root);
+    parents.into_iter().collect()
+}
+
+#[cfg(windows)]
 fn process_birth_id_from_handle(handle: HANDLE) -> Option<u64> {
     let mut creation_time = FILETIME::default();
     let mut exit_time = FILETIME::default();

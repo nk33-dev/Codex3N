@@ -1,6 +1,17 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "未结束进程，请刷新后检查归属状态": "No processes stopped. Refresh to check process ownership.",
+  "清理完成": "Cleanup completed",
+  "结束已确认归属且父进程已退出的 app-server，进行中的请求可能中断。": "Stop confirmed app-server children whose parents have exited. Active requests may be interrupted.",
+  "清理已断开的 app-server": "Clean up disconnected app-server processes",
+  "已断开": "Disconnected",
+  "需重启官方 App": "Restart the official app",
+  "内存": "Memory",
+  "进程数量": "Process count",
+  "当前平台不支持子进程清理": "Child process cleanup is not supported on this platform",
+  "退出后自动清理已确认归属的残留进程；运行中只清理你手动确认的断开连接。": "Automatically clean up confirmed app children after exit. While running, only clean up disconnected processes you confirm.",
+  "官方 App 子进程": "Official app child processes",
   "异常 Git 目录": "Invalid Git directories",
   "只检查官方 App 记录的本地工作区。缺少 HEAD 的 .git 目录可改名保留。": "Check local workspaces recorded by the official app. A .git directory without HEAD can be renamed and preserved.",
   "扫描 Git 目录": "Scan Git directories",
@@ -8,6 +19,7 @@ export const EN_PLAIN: Record<string, string> = {
   "将 .git 改名为带时间戳的备份目录，文件会保留。确认此目录不是正在使用的仓库后再继续。": "Rename .git to a timestamped backup, preserving its files. Confirm this is not a repository in use before continuing.",
   "改名保留": "Rename and preserve",
   "处理目录": "Review directory",
+
   "低功耗模式": "Low power mode",
   "减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。": "Reduce looping animations and cache failed or non-repository Git queries for 30 seconds. Applies after saving.",
   "关闭 DirectComposition": "Disable DirectComposition",

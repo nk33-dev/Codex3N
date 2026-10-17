@@ -455,6 +455,7 @@ pub trait LaunchHooks: Send + Sync {
 #[derive(Default)]
 pub struct DefaultLaunchHooks {
     child: Mutex<Option<Child>>,
+    child_monitor: Mutex<Option<crate::owned_processes::ChildMonitor>>,
     helper: Mutex<Option<HelperRuntime>>,
     bridge_watchdog: Mutex<Option<BridgeWatchdogRuntime>>,
     bridge_reinjector: Mutex<Option<BridgeReinjector>>,
@@ -1239,6 +1240,17 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
         instance: &LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
+        if let Some(previous) = self.child_monitor.lock().await.take() {
+            previous.finish().await;
+        }
+        *self.child_monitor.lock().await = crate::owned_processes::ChildMonitor::start(
+            debug_port,
+            instance
+                .state_dir
+                .clone()
+                .unwrap_or_else(crate::paths::default_app_state_dir),
+            crate::app_paths::build_codex_executable(app_dir),
+        );
         let launch_extra_args = normalize_codex_extra_args(extra_args);
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
@@ -1431,6 +1443,22 @@ impl LaunchHooks for DefaultLaunchHooks {
         retry_injection(debug_port, helper_port).await
     }
     async fn capture_injected_launch_identity(&self, debug_port: u16) {
+        let mut monitor = self.child_monitor.lock().await;
+        if monitor.is_none() {
+            if let Ok(settings) = SettingsStore::default().try_load_cached()
+                && let Some(app_dir) = crate::app_paths::resolve_codex_app_dir_with_saved(
+                    None,
+                    Some(settings.codex_app_path.as_str()),
+                )
+            {
+                *monitor = crate::owned_processes::ChildMonitor::start(
+                    debug_port,
+                    crate::paths::default_app_state_dir(),
+                    crate::app_paths::build_codex_executable(&app_dir),
+                );
+            }
+        }
+        drop(monitor);
         #[cfg(windows)]
         {
             let mut identity = self.packaged_launch_identity.lock().await;
@@ -1571,71 +1599,78 @@ impl LaunchHooks for DefaultLaunchHooks {
         launch: &CodexLaunch,
         debug_port: u16,
     ) -> anyhow::Result<()> {
-        match launch {
-            CodexLaunch::Process { .. } => {
-                if let Some(mut child) = self.child.lock().await.take() {
-                    let _ = child.wait().await;
+        let result = async {
+            match launch {
+                CodexLaunch::Process { .. } => {
+                    if let Some(mut child) = self.child.lock().await.take() {
+                        let _ = child.wait().await;
+                    }
                 }
-            }
-            CodexLaunch::PackagedActivation { process_id, .. } => {
-                #[cfg(windows)]
-                {
-                    let executable = self
-                        .packaged_executable
-                        .lock()
-                        .await
-                        .take()
-                        .context("missing packaged Codex executable identity")?;
-                    let activation = self.packaged_activation_process.lock().await.take();
-                    let identity = self
-                        .packaged_launch_identity
-                        .lock()
-                        .await
-                        .take()
-                        .unwrap_or_default();
-                    return wait_for_windows_packaged_exit(
-                        &executable,
-                        *process_id,
-                        activation,
-                        identity,
-                        debug_port,
-                    )
-                    .await;
-                }
-                #[cfg(not(windows))]
-                if let Some(process_id) = process_id {
-                    if let Err(error) = wait_for_windows_process_id(*process_id).await {
-                        let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "launcher.packaged_process_wait_failed_nonfatal",
-                            serde_json::json!({
-                                "process_id": process_id,
-                                "message": format!("{error:#}")
-                            }),
-                        );
+                CodexLaunch::PackagedActivation { process_id, .. } => {
+                    #[cfg(windows)]
+                    {
+                        let executable = self
+                            .packaged_executable
+                            .lock()
+                            .await
+                            .take()
+                            .context("missing packaged Codex executable identity")?;
+                        let activation = self.packaged_activation_process.lock().await.take();
+                        let identity = self
+                            .packaged_launch_identity
+                            .lock()
+                            .await
+                            .take()
+                            .unwrap_or_default();
+                        return wait_for_windows_packaged_exit(
+                            &executable,
+                            *process_id,
+                            activation,
+                            identity,
+                            debug_port,
+                        )
+                        .await;
+                    }
+                    #[cfg(not(windows))]
+                    if let Some(process_id) = process_id {
+                        if let Err(error) = wait_for_windows_process_id(*process_id).await {
+                            let _ = crate::diagnostic_log::append_diagnostic_log(
+                                "launcher.packaged_process_wait_failed_nonfatal",
+                                serde_json::json!({
+                                    "process_id": process_id,
+                                    "message": format!("{error:#}")
+                                }),
+                            );
+                        }
                     }
                 }
             }
-        }
-        // Another Codex process must not keep this launcher holding the native
-        // browser monitor. Directly owned processes and this debug port can.
-        //
-        // 单次探测失败不足以判定退出：macOS 的 `ps` 采样和 `/json` 探测都会在
-        // 进程换代/监听重建的空档里瞬断，而这里一旦返回就会关掉 helper，让写死在
-        // config.toml 里的 57321 失去对端（见 PackagedExitGrace 的注释）。
-        // 传入 Some(...) 包一层，是因为该宽限在 Windows 那条路径上把「进程身份
-        // 未知」表示为 None，语义是回落到 cdp_available。
-        let mut exit_grace = PackagedExitGrace::default();
-        loop {
-            let target_alive = owned_launcher_target_alive(
-                launcher_owned_process_alive(launch, debug_port),
-                crate::cdp::endpoint_available(debug_port),
-            );
-            if !exit_grace.keep_waiting(Some(target_alive), false, std::time::Instant::now()) {
-                break;
+            // Another Codex process must not keep this launcher holding the native
+            // browser monitor. Directly owned processes and this debug port can.
+            //
+            // 单次探测失败不足以判定退出：macOS 的 `ps` 采样和 `/json` 探测都会在
+            // 进程换代/监听重建的空档里瞬断，而这里一旦返回就会关掉 helper，让写死在
+            // config.toml 里的 57321 失去对端（见 PackagedExitGrace 的注释）。
+            // 传入 Some(...) 包一层，是因为该宽限在 Windows 那条路径上把「进程身份
+            // 未知」表示为 None，语义是回落到 cdp_available。
+            let mut exit_grace = PackagedExitGrace::default();
+            loop {
+                let target_alive = owned_launcher_target_alive(
+                    launcher_owned_process_alive(launch, debug_port),
+                    crate::cdp::endpoint_available(debug_port),
+                );
+                if !exit_grace.keep_waiting(Some(target_alive), false, std::time::Instant::now()) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            Ok(())
         }
-        Ok(())
+        .await;
+        if let Some(monitor) = self.child_monitor.lock().await.take() {
+            monitor.finish().await;
+        }
+        result
     }
 
     async fn shutdown_helper(&self, _helper_port: u16) {
@@ -1681,6 +1716,9 @@ impl LaunchHooks for DefaultLaunchHooks {
             CodexLaunch::PackagedActivation {
                 process_id: None, ..
             } => {}
+        }
+        if let Some(monitor) = self.child_monitor.lock().await.take() {
+            monitor.finish().await;
         }
     }
 }
