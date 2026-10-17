@@ -13,7 +13,7 @@
     {
       "name": "02-performance.js",
       "description": "按需性能采样、切换可见性与耗时汇总",
-      "lines": 139
+      "lines": 165
     },
     {
       "name": "03-native-performance.js",
