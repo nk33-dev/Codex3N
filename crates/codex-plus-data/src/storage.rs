@@ -4,11 +4,12 @@ use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, ToSql};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 mod session_paging;
 pub use session_paging::{LocalSessionPage, LocalSessionPager};
@@ -396,6 +397,43 @@ impl SQLiteStorageAdapter {
         SessionRef::new(id, row_title.unwrap_or_else(|| title.to_string())).ok()
     }
 
+    /// 用量栏专用的 rollout 解析：命中缓存且文件仍在时不打开数据库。
+    ///
+    /// 用量栏运行中每 1.2 秒请求一次，原先每次都要开连接、查 schema、查路径。
+    /// 会话的 rollout 路径创建后就不变；文件被删或移走时 `is_file` 失败，回落到查库。
+    fn codex_thread_rollout_cached(
+        &self,
+        session: &SessionRef,
+    ) -> anyhow::Result<CodexThreadRollout> {
+        let thread_id = normalize_codex_thread_id(&session.session_id);
+        let key = (self.db_path.clone(), thread_id.clone());
+        let cached = lock_rollout_path_cache().get(&key).cloned();
+        if let Some(rollout_path) = cached {
+            let rollout = PathBuf::from(&rollout_path);
+            if rollout.is_file() {
+                return Ok(CodexThreadRollout::Ready {
+                    thread_id,
+                    rollout_path,
+                    rollout,
+                });
+            }
+        }
+        let resolved = self.codex_thread_rollout(session)?;
+        let mut cache = lock_rollout_path_cache();
+        match &resolved {
+            CodexThreadRollout::Ready { rollout_path, .. } => {
+                if cache.len() >= ROLLOUT_PATH_CACHE_LIMIT && !cache.contains_key(&key) {
+                    cache.clear();
+                }
+                cache.insert(key, rollout_path.clone());
+            }
+            CodexThreadRollout::Unavailable(_) => {
+                cache.remove(&key);
+            }
+        }
+        Ok(resolved)
+    }
+
     /// 解析会话对应的 rollout 文件。
     ///
     /// `Unavailable` 里已经是可直接返回前端的失败对象：语义是「本地没有这个会话的
@@ -495,7 +533,7 @@ impl SQLiteStorageAdapter {
             }
             value
         };
-        match self.codex_thread_rollout(session) {
+        match self.codex_thread_rollout_cached(session) {
             Err(err) => with_events(json!({
                 "status": "failed",
                 "session_id": session.session_id,
@@ -1146,6 +1184,17 @@ fn read_rollout_usage_history(rollout_path: &Path, thread_id: &str) -> anyhow::R
     }
 
     Ok(history)
+}
+
+/// 用量栏 rollout 路径缓存的上限；超过就整表清空，下次按需重建。
+const ROLLOUT_PATH_CACHE_LIMIT: usize = 256;
+
+fn lock_rollout_path_cache() -> std::sync::MutexGuard<'static, HashMap<(PathBuf, String), String>> {
+    static CACHE: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// `SQLiteStorageAdapter::codex_thread_rollout` 的结果。

@@ -211,14 +211,24 @@ pub trait BridgeDataService: Send + Sync {
     }
 }
 
+/// 注入页按秒级轮询的路由：成功时不写逐请求日志，失败照常记录。
+///
+/// 心跳每 5 秒取设置、用量栏运行中每 1.2 秒取一次用量，原先每次调用要写 4 行，
+/// 占诊断日志九成，还把有用的事件挤出压缩窗口。
+pub(crate) fn is_high_frequency_bridge_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/backend/status" | "/diagnostics/log" | "/settings/get" | "/thread-usage-live"
+    )
+}
+
 pub async fn handle_bridge_request(
     ctx: BridgeContext,
     path: &str,
     payload: Value,
 ) -> serde_json::Value {
     let started = Instant::now();
-    // 高频心跳和诊断上报已有独立事件，只在失败时补路由级记录。
-    let trace_request = !matches!(path, "/backend/status" | "/diagnostics/log");
+    let trace_request = !is_high_frequency_bridge_path(path);
     if trace_request {
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "bridge.request",
@@ -522,7 +532,8 @@ impl CoreSettingsService {
 #[async_trait]
 impl BridgeSettingsService for CoreSettingsService {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
-        self.store.load()
+        // 注入页心跳每 5 秒取一次设置；文件没变就复用上次解析解密的结果。
+        Ok(self.store.try_load_cached()?.as_ref().clone())
     }
 
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings> {
@@ -552,7 +563,7 @@ impl BridgeSettingsService for CoreSettingsService {
         if let Some(app_dir) = self.app_dir.as_deref() {
             return Ok(crate::app_paths::codex_app_version(app_dir).unwrap_or_default());
         }
-        let settings = self.store.load().unwrap_or_default();
+        let settings = self.store.load_cached();
         let app_dir = crate::app_paths::resolve_codex_app_dir_with_saved(
             None,
             Some(settings.codex_app_path.as_str()),

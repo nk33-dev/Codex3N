@@ -18,12 +18,12 @@
     {
       "name": "03-native-performance.js",
       "description": "Git 仓库识别请求合并与短时缓存",
-      "lines": 120
+      "lines": 215
     },
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2850
+      "lines": 2851
     },
     {
       "name": "20-menu.js",
@@ -38,7 +38,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1928
+      "lines": 1949
     },
     {
       "name": "50-navigation.js",
@@ -103,7 +103,7 @@
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 319
+      "lines": 316
     },
     {
       "name": "93-dictation.js",
@@ -138,7 +138,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 265
+      "lines": 269
     },
     {
       "name": "98-avatar-overlay-layout.js",

@@ -35,6 +35,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# 子进程和异常输出统一用 UTF-8，避免中文在 GBK 控制台或重定向时乱码。
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = [Console]::OutputEncoding
+
 # 写死仓库：本仓库存在 upstream 远端，gh 默认会解析到上游仓库。
 $Repo = "nk33-dev/Codex3N"
 $Branch = "personal"

@@ -9,7 +9,7 @@ const source = await readFile(new URL("../../../scripts/release.ps1", import.met
 const head = "1111111111111111111111111111111111111111";
 const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
-async function runRelease(scenario: string, skipChecks = true) {
+async function runRelease(scenario: string, skipChecks = true, codePage = 65001) {
   const parent = resolve(tmpdir());
   const dir = await mkdtemp(join(parent, "codex3n release 回归-"));
   try {
@@ -26,6 +26,8 @@ async function runRelease(scenario: string, skipChecks = true) {
     // 在独立 PowerShell 进程中替换外部命令，断言真实发布脚本的执行顺序。
     await writeFile(join(dir, "driver.ps1"), `
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(${codePage})
+$OutputEncoding = [Console]::OutputEncoding
 $fixtureRoot = ${quote(dir)}
 $scenario = ${quote(scenario)}
 $runJson = ${quote(JSON.stringify(runs))}
@@ -99,12 +101,13 @@ test("发布复用同一提交已成功的 CI，查询显式限定个人仓库�
   assert.match(result.trace, /git tag -a v1\.2\.3-3n\.1[\s\S]*git push --atomic origin[\s\S]*gh release create v1\.2\.3-3n\.1 --repo nk33-dev\/Codex3N/);
 });
 
-for (const scenario of ["local-failure", "dirty"]) {
-  test(`发布在本地检查后停止：${scenario}`, async () => {
-    const result = await runRelease(scenario, false);
+for (const codePage of [65001, 936]) for (const scenario of ["local-failure", "dirty"]) {
+  test(`发布在本地检查后停止（代码页 ${codePage}）：${scenario}`, async () => {
+    const result = await runRelease(scenario, false, codePage);
     assert.notEqual(result.status, 0, result.stdout);
     assert.match(result.trace, /cargo fmt/);
     assert.match(result.stderr, scenario === "dirty" ? /未提交改动/ : /执行失败/);
+    assert.doesNotMatch(result.stderr, /\uFFFD/);
     assert.doesNotMatch(result.trace, /git tag -a|git push|gh release create/);
   });
 }
