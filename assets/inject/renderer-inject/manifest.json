@@ -18,7 +18,7 @@
     {
       "name": "03-native-performance.js",
       "description": "Git 仓库识别请求合并与短时缓存",
-      "lines": 120
+      "lines": 201
     },
     {
       "name": "10-style.js",
@@ -38,7 +38,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1947
+      "lines": 1949
     },
     {
       "name": "50-navigation.js",
@@ -138,7 +138,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 268
+      "lines": 269
     },
     {
       "name": "98-avatar-overlay-layout.js",

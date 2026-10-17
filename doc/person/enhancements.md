@@ -93,3 +93,9 @@ Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版�
 `assets/claude-localization/page-dictation.js` 适配 Claude Code 与 Cowork 输入框，识别结果只写入输入框；`hook.js` 通过听写 helper 转发请求。`launcher.rs` 在 helper 运行期间保存 `dictation-helper.json`，停止时删除；语音开关关闭时不注入页面入口和调用通道。验证见 `claude-dictation.test.ts`、Claude 本地化与听写单测。
 
 缓存页 `agent-cache.tsx` 通过 Tauri `scan_agent_cache` / `clean_agent_cache` 调用 `agent_cache.rs`。清理只接受后端保存的扫描快照和组 ID，快照 10 分钟到期且只能消费一次；逐文件校验并删除超过 24 小时的白名单缓存，不接收前端文件路径。录音、配置和会话数据不作为缓存清理对象。验证：`dictation-runtime.test.ts`、`enhancement-settings.test.ts`、`agent-cache-model.test.ts`、Rust dictation 与 agent_cache 单测。
+
+## 低功耗与 Git 维护
+
+`codexAppLowPower` 默认关闭，由管理器增强页保存。开启后，bridge 在同一目标的设置响应中应用 `prefers-reduced-motion: reduce`，注入运行时暂停无限循环的 CSS 动画；有限动画和过渡继续运行。关闭总开关或低功耗开关时还原动画与媒体覆盖，页面隐藏时停止动画扫描。设置读取失败保持原状态，CDP 不支持媒体模拟时记录 `low_power.media_failed`。
+
+Windows 的启动参数区提供 `--disable-direct-composition` 快捷项，保存后需重启官方 App，效果取决于显卡。MSIX 多开 wrapper 同样透传额外参数，按 Windows argv 和 cmd 两层转义，使用 UTF-8 代码页及关闭延迟展开。

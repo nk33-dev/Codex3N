@@ -43,6 +43,7 @@ export const defaultSettings: BackendSettings = {
   codexAppForceChineseLocale: false,
   codexAppNativeBrowserRequireIdentification: false,
   codexAppThreadIdBadge: false,
+  codexAppLowPower: false,
   codexAppConversationView: false,
   codexAppThreadScrollRestore: true,
   codexAppNativeMenuPlacement: true,

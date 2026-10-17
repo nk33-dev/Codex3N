@@ -214,6 +214,7 @@
     document.removeEventListener("compositionend", onCodexPlusScanComposition, true);
     window.removeEventListener("blur", onCodexPlusScanComposition);
     window.__codexPlusGitPerformanceCleanup?.();
+    window.__codexPlusLowPowerAnimations?.setEnabled(false);
     window.removeEventListener("popstate", onCodexPlusScanNavigation);
     window.removeEventListener("hashchange", onCodexPlusScanNavigation);
     window.navigation?.removeEventListener?.("currententrychange", onCodexPlusScanNavigation);

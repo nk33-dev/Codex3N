@@ -3717,6 +3717,7 @@ async fn launch_packaged_multi_instance(
         &user_data_dir,
         actual_port,
         &known_ports,
+        extra_args,
     )?;
     match crate::packaged_launch::activate_in_package_context(&app_user_model_id, &wrapper_path)
         .await
@@ -4675,7 +4676,7 @@ fn command_line_arguments(args: &[String]) -> String {
         .join(" ")
 }
 
-fn quote_windows_argument(arg: &str) -> String {
+pub(crate) fn quote_windows_argument(arg: &str) -> String {
     if !arg.is_empty() && !arg.bytes().any(|byte| matches!(byte, b' ' | b'\t' | b'"')) {
         return arg.to_string();
     }

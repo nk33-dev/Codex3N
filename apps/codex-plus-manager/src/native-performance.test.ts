@@ -216,3 +216,24 @@ test("多会话各自保留最新两条，宿主虚拟化和外边距折叠保�
   assert.equal(app.turns[87].style.getPropertyValue("content-visibility"), "auto");
   app.api.stop();
 });
+
+test("低功耗只暂停循环动画，恢复原样式并释放监听", () => {
+  const window = events(), document = Object.assign(events(), { hidden: false, documentElement: {}, getAnimations: () => animations });
+  class Animation { effect: any; playState = "running"; constructor(target: any, iterations: number, pseudoElement: string | null = null) { this.effect = { target, pseudoElement, getTiming: () => ({ iterations }) }; } pause() { this.playState = "paused"; } play() { this.playState = "running"; } }
+  const values = new Map<string, string>();
+  const node = { style: { getPropertyValue: (k: string) => values.get(k) || "", getPropertyPriority: () => "", setProperty: (k: string, v: string) => values.set(k, v), removeProperty: (k: string) => values.delete(k) } };
+  const loop = new Animation(node, Infinity), finite = new Animation(node, 1), pseudo = new Animation(node, Infinity, "::before");
+  const animations: any[] = [loop, finite, pseudo, { effect: { target: node, getTiming: () => ({ iterations: Infinity }) } }];
+  let callback: Function = () => {}, disconnected = false;
+  const api = compile(functionSource(renderer, "createCodexPlusLowPowerAnimations"), {
+    window, document, CSSAnimation: Animation,
+    MutationObserver: class { constructor(_cb: Function) {} observe() {} disconnect() { disconnected = true; } },
+    getComputedStyle: () => ({ animationIterationCount: "infinite, 1", animationName: "spin, enter", animationPlayState: "running, running" }),
+    requestAnimationFrame: (fn: Function) => { callback = fn; return 1; }, cancelAnimationFrame: () => {},
+  }, "createCodexPlusLowPowerAnimations")();
+  api.setEnabled(true); callback();
+  assert.equal(values.get("animation-play-state"), "paused, running");
+  assert.equal(finite.playState, "running"); assert.equal(pseudo.playState, "paused");
+  api.setEnabled(false); assert.equal(values.size, 0); assert.equal(pseudo.playState, "running");
+  assert.ok(disconnected); assert.equal(document.listeners.get("animationstart")?.size, 0);
+});

@@ -118,3 +118,84 @@
       codexPlusGitPerformanceInstalling = false;
     }
   }
+
+  function createCodexPlusLowPowerAnimations() {
+    const saved = new Map(), pseudoAnimations = new Map();
+    let observer = null, frame = 0, enabled = false;
+    const restore = (node, state) => {
+      if (node.style.getPropertyValue("animation-play-state") === state.applied) {
+        if (state.value) node.style.setProperty("animation-play-state", state.value, state.priority);
+        else node.style.removeProperty("animation-play-state");
+      }
+    };
+    function refresh() {
+      frame = 0;
+      if (!enabled || document.hidden) return;
+      // 暂停会改写计算样式；先还原再读取，避免旧的循环槽位影响新的有限动画。
+      observer?.disconnect();
+      for (const [node, state] of saved) restore(node, state);
+      saved.clear();
+      const targets = new Set();
+      for (const animation of document.getAnimations()) {
+        if (typeof CSSAnimation === "undefined" || !(animation instanceof CSSAnimation)
+            || animation.effect?.getTiming().iterations !== Infinity) continue;
+        const node = animation.effect.target;
+        if (!node?.style) continue;
+        if (animation.effect.pseudoElement) {
+          if (!pseudoAnimations.has(animation) && animation.playState === "running") {
+            pseudoAnimations.set(animation, true);
+            animation.pause();
+          }
+        } else targets.add(node);
+      }
+      for (const [node, state] of saved) {
+        if (!targets.has(node)) { restore(node, state); saved.delete(node); }
+      }
+      for (const node of targets) {
+        const computed = getComputedStyle(node);
+        const iterations = computed.animationIterationCount.split(",").map((s) => s.trim());
+        const names = computed.animationName.split(",");
+        const states = computed.animationPlayState.split(",").map((s) => s.trim());
+        let state = saved.get(node);
+        if (!state) {
+          state = { value: node.style.getPropertyValue("animation-play-state"), priority: node.style.getPropertyPriority("animation-play-state"), applied: "" };
+          saved.set(node, state);
+        }
+        const applied = names.map((_, i) => iterations[i % iterations.length] === "infinite" ? "paused" : states[i % states.length]).join(", ");
+        state.applied = applied;
+        if (node.style.getPropertyValue("animation-play-state") !== applied) node.style.setProperty("animation-play-state", applied, "important");
+      }
+      for (const [animation] of pseudoAnimations) {
+        if (animation.effect?.getTiming().iterations !== Infinity && animation.playState === "paused") animation.play();
+        if (animation.effect?.getTiming().iterations !== Infinity || animation.playState === "idle" || animation.playState === "finished") pseudoAnimations.delete(animation);
+      }
+      observer?.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style"] });
+    }
+    const schedule = () => { if (enabled && !document.hidden && !frame) frame = requestAnimationFrame(refresh); };
+    function setEnabled(next) {
+      if (enabled === next) return;
+      enabled = next;
+      if (enabled) {
+        observer = new MutationObserver(schedule);
+        observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style"] });
+        document.addEventListener("animationstart", schedule, true);
+        document.addEventListener("visibilitychange", schedule);
+        schedule();
+      } else {
+        observer?.disconnect(); observer = null;
+        cancelAnimationFrame(frame); frame = 0;
+        document.removeEventListener("animationstart", schedule, true);
+        document.removeEventListener("visibilitychange", schedule);
+        for (const [node, state] of saved) restore(node, state);
+        saved.clear();
+        for (const [animation] of pseudoAnimations) if (animation.playState === "paused") animation.play();
+        pseudoAnimations.clear();
+      }
+    }
+    return { setEnabled };
+  }
+
+  function syncCodexPlusLowPower() {
+    window.__codexPlusLowPowerAnimations ||= createCodexPlusLowPowerAnimations();
+    window.__codexPlusLowPowerAnimations.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false && codexPlusBackendSettings.codexAppLowPower === true);
+  }

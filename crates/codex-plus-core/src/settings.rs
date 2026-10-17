@@ -655,6 +655,8 @@ pub struct BackendSettings {
     pub codex_app_typing_effect: String,
     #[serde(rename = "codexAppThreadIdBadge", default)]
     pub codex_app_thread_id_badge: bool,
+    #[serde(rename = "codexAppLowPower", default)]
+    pub codex_app_low_power: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
     #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
@@ -864,6 +866,7 @@ impl Default for BackendSettings {
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
+            codex_app_low_power: false,
             codex_app_conversation_view: false,
             codex_app_thread_scroll_restore: true,
             codex_app_native_menu_placement: true,
@@ -2235,6 +2238,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         );
     }
     merge_bool_setting(target, source, "codexAppThreadIdBadge");
+    merge_bool_setting(target, source, "codexAppLowPower");
     merge_bool_setting(target, source, "codexAppConversationView");
     merge_bool_setting(target, source, "codexAppThreadScrollRestore");
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
@@ -5355,5 +5359,28 @@ experimental_bearer_token = "sk-existing""#
         let reloaded = store.load().unwrap();
         assert!(reloaded.codex_app_auto_takeover);
         assert_eq!(reloaded.codex_app_auto_takeover_when_active, "immediate");
+    }
+}
+
+#[cfg(test)]
+mod low_power_tests {
+    use super::*;
+    #[test]
+    fn low_power_defaults_off_and_survives_settings_updates() {
+        assert!(!BackendSettings::default().codex_app_low_power);
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        store.save(&BackendSettings::default()).unwrap();
+        let updated = store
+            .update(serde_json::json!({ "codexAppLowPower": true }))
+            .unwrap();
+        assert!(updated.codex_app_low_power);
+        assert!(store.load().unwrap().codex_app_low_power);
+        assert!(
+            !store
+                .update(serde_json::json!({ "codexAppLowPower": false }))
+                .unwrap()
+                .codex_app_low_power
+        );
     }
 }

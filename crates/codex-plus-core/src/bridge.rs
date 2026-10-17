@@ -1257,6 +1257,15 @@ pub async fn install_bridge(
                 _ = tokio::time::sleep(BRIDGE_GENERATION_POLL_INTERVAL) => {}
             }
         }
+        if bridge_generation_is_current(&generation) && session.low_power == Some(true) {
+            let _ = session
+                .send_command(
+                    next_message_id(),
+                    "Emulation.setEmulatedMedia",
+                    json!({ "features": [] }),
+                )
+                .await;
+        }
         session
             .remove_registered_scripts(&registered_script_ids)
             .await;
@@ -1342,6 +1351,7 @@ struct CdpSession<S> {
     socket: S,
     responses: HashMap<u64, Value>,
     binding_calls: VecDeque<Value>,
+    low_power: Option<bool>,
     paused_events: VecDeque<(Value, usize, u64)>,
     paused_event_bytes: usize,
     pause_epoch: u64,
@@ -1363,6 +1373,7 @@ where
             socket,
             responses: HashMap::new(),
             binding_calls: VecDeque::new(),
+            low_power: None,
             paused_events: VecDeque::new(),
             paused_event_bytes: 0,
             pause_epoch: 0,
@@ -1647,6 +1658,40 @@ where
             return Ok(());
         }
 
+        if matches!(
+            completed.path.as_deref(),
+            Some("/settings/get" | "/settings/set")
+        ) && let Ok(result) = &completed.response
+            && let Some(enabled) = result.get("codexAppLowPower").and_then(Value::as_bool)
+        {
+            let enabled = enabled
+                && result.get("enhancementsEnabled").and_then(Value::as_bool) != Some(false);
+            if self.low_power != Some(enabled) {
+                let features = if enabled {
+                    json!([{ "name": "prefers-reduced-motion", "value": "reduce" }])
+                } else {
+                    json!([])
+                };
+                match self
+                    .send_command(
+                        next_message_id(),
+                        "Emulation.setEmulatedMedia",
+                        json!({ "features": features }),
+                    )
+                    .await
+                {
+                    Ok(response) if response.get("error").is_none() => {
+                        self.low_power = Some(enabled)
+                    }
+                    _ => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "low_power.media_failed",
+                            json!({ "enabled": enabled }),
+                        );
+                    }
+                }
+            }
+        }
         let trace_success = should_trace_bridge_success(completed.path.as_deref());
         match completed.response {
             Ok(result) => {
@@ -2682,5 +2727,60 @@ mod websocket_size_tests {
         assert!(received.is_text());
         assert_eq!(received.len(), payload_bytes);
         sender.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod low_power_tests {
+    use super::*;
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+
+    #[tokio::test]
+    async fn settings_apply_media_once_per_change_and_clear_the_override() {
+        let (client, server) = tokio::io::duplex(16384);
+        let mut session =
+            CdpSession::new(WebSocketStream::from_raw_socket(client, Role::Client, None).await);
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let task = tokio::spawn(async move {
+            let mut media = Vec::new();
+            for _ in 0..8 {
+                let message = server.next().await.unwrap().unwrap();
+                let command: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+                if command["method"] == "Emulation.setEmulatedMedia" {
+                    media.push(command["params"]["features"].clone());
+                }
+                server
+                    .send(Message::Text(
+                        json!({ "id": command["id"], "result": {} })
+                            .to_string()
+                            .into(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+            media
+        });
+        for (i, enabled) in [false, false, true, true, false].into_iter().enumerate() {
+            session
+                .finish_binding_call(CompletedBridgeCall {
+                    request_id: i.to_string(),
+                    generation: None,
+                    path: Some("/settings/get".into()),
+                    response: Ok(
+                        json!({ "codexAppLowPower": enabled, "enhancementsEnabled": true }),
+                    ),
+                })
+                .await
+                .unwrap();
+        }
+        let media = task.await.unwrap();
+        assert_eq!(
+            media,
+            vec![
+                json!([]),
+                json!([{"name":"prefers-reduced-motion","value":"reduce"}]),
+                json!([])
+            ]
+        );
     }
 }

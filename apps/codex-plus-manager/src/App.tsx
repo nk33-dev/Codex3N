@@ -5721,6 +5721,7 @@ function EnhanceScreen({
                   />
                 </div>
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
+                <FeatureToggle title={t("低功耗模式")} detail={t("减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。")} checked={form.codexAppLowPower} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppLowPower", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
                 <FeatureToggle title={t("用量状态栏")} detail={t("在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。")} checked={form.codexAppUsageStatusLine} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUsageStatusLine", value)} />
@@ -7534,6 +7535,12 @@ function SettingsScreen({
                 />
               </Field>
               <p className="field-hint">{t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")}</p>
+              {isWindowsPlatform ? <>
+                <Button variant="secondary" disabled={form.codexExtraArgs.includes("--disable-direct-composition")} onClick={() => onFormChange({ ...form, codexExtraArgs: [...form.codexExtraArgs, "--disable-direct-composition"] })}>
+                  {t("关闭 DirectComposition")}
+                </Button>
+                <p className="field-hint">{t("添加 --disable-direct-composition，效果因显卡而异，需重启官方 App。")}</p>
+              </> : null}
             </CardContent>
           </Panel>
         </>
