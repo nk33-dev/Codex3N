@@ -18,7 +18,7 @@
     {
       "name": "03-native-performance.js",
       "description": "Git 仓库识别请求合并与短时缓存",
-      "lines": 201
+      "lines": 215
     },
     {
       "name": "10-style.js",

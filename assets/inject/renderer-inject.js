@@ -2052,12 +2052,12 @@
     }
     return { start, stop, snapshot, begin };
   }
-  function patchCodexPlusGitWorkerPerformance(worker) {
+  function patchCodexPlusGitWorkerPerformance(worker, lowPowerEnabled = () => false) {
     if (worker?.workerId !== "git" || typeof worker.request !== "function"
         || !(worker.allEventListeners instanceof Set)) return null;
     const original = worker.request;
     const entries = new Map();
-    let revision = 0, disposed = false;
+    let revision = 0, disposed = false, lastLowPower = lowPowerEnabled();
     const invalidate = () => { revision += 1; entries.clear(); };
     const clone = (value) => structuredClone(value);
 
@@ -2088,6 +2088,8 @@
     }
 
     const patched = function codexPlusGitPerformanceRequest(request) {
+      const lowPower = lowPowerEnabled();
+      if (lowPower !== lastLowPower) { invalidate(); lastLowPower = lowPower; }
       const params = request?.params;
       // watchForGitInit 会安装监听；只合并无副作用的本机仓库识别。
       if (disposed || request?.method !== "stable-metadata" || !params?.cwd
@@ -2111,13 +2113,16 @@
         created.promise = Promise.resolve().then(() => original.call(worker, { ...request, signal: created.controller.signal })).then((value) => {
           created.settled = true;
           const valid = value && typeof value.root === "string" && typeof value.commonDir === "string";
-          if (!disposed && currentRevision === revision && valid && entries.get(key) === created) {
-            created.expiresAt = Date.now() + 2000;
+          if (!disposed && currentRevision === revision && (valid || lowPower) && entries.get(key) === created) {
+            created.expiresAt = Date.now() + (valid ? 2000 : 30000);
           } else if (entries.get(key) === created) entries.delete(key);
           return value;
         }, (error) => {
           created.settled = true;
-          if (entries.get(key) === created) entries.delete(key);
+          if (!disposed && currentRevision === revision && lowPower && error?.name !== "AbortError"
+              && !created.controller.signal.aborted && entries.get(key) === created) {
+            created.expiresAt = Date.now() + 30000;
+          } else if (entries.get(key) === created) entries.delete(key);
           throw error;
         });
       }
@@ -2146,20 +2151,29 @@
     codexPlusGitPerformanceInstalling = true;
     codexPlusGitPerformanceRetryAt = Date.now() + 30000;
     try {
-      const module = await loadOptionalCodexAppModule("app-shared-");
-      if (codexPlusScanDisposed || codexPlusBackendSettings.enhancementsEnabled === false || !module) return;
-      // 导出名随构建变化，按已核对的 worker 工厂结构识别。
-      const factories = Object.values(module).filter((candidate) => {
-        if (typeof candidate !== "function") return false;
-        const source = String(candidate);
-        return /case\s*[`'"]git[`'"]/.test(source) && /case\s*[`'"]computer-use[`'"]/.test(source)
-          && source.includes("new ") && source.includes(".set(");
-      });
-      if (factories.length !== 1) {
-        codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
+      let factory = null, loaded = false;
+      // 两代宿主分别导出在 shared 和 initial 中，沿用已有模块缓存及失败冷却。
+      for (const hint of ["app-shared-", "app-initial-"]) {
+        const module = await loadOptionalCodexAppModule(hint);
+        if (codexPlusScanDisposed || codexPlusBackendSettings.enhancementsEnabled === false) return;
+        if (!module) continue;
+        loaded = true;
+        const factories = Object.values(module).filter((candidate) => {
+          if (typeof candidate !== "function") return false;
+          try {
+            const source = String(candidate);
+            return /case\s*[`'"]git[`'"]/.test(source) && /case\s*[`'"]computer-use[`'"]/.test(source)
+              && source.includes("new ") && source.includes(".set(");
+          } catch { return false; }
+        });
+        if (factories.length > 1) { codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY; return; }
+        if (factories.length === 1) { factory = factories[0]; break; }
+      }
+      if (!factory) {
+        if (loaded) codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
         return;
       }
-      const cleanup = patchCodexPlusGitWorkerPerformance(factories[0]("git"));
+      const cleanup = patchCodexPlusGitWorkerPerformance(factory("git"), () => codexPlusBackendSettings.codexAppLowPower === true);
       codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
       if (cleanup) window.__codexPlusGitPerformanceCleanup = () => {
         cleanup();
