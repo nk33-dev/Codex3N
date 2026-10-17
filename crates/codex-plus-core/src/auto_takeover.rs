@@ -295,10 +295,8 @@ fn desktop_snapshot(app_dir: &Path, port: u16) -> (AppProbe, bool) {
             if windows_command_line_is_electron_child(&process.exe_file, &command_line) {
                 continue;
             }
-            let crate::watcher::ProcessInstanceState::Running {
-                started_at_secs: Some(started),
-                ..
-            } = crate::watcher::inspect_process_instance(process.process_id)
+            let Some(started) = crate::windows_integration::process_birth_id(process.process_id)
+                .and_then(crate::windows_integration::process_started_at_secs_from_birth_id)
             else {
                 return classify_desktop_snapshot(None, port);
             };
