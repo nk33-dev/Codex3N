@@ -9714,3 +9714,31 @@ model_reasoning_effort = "high"
         assert!(config.contains("[mcp_servers.node_repl]"));
     }
 }
+
+#[tauri::command]
+pub async fn scan_empty_git_directories()
+-> Result<Vec<codex_plus_core::git_maintenance::EmptyGitDirectory>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        codex_plus_core::git_maintenance::scan(
+            &codex_plus_core::codex_home::default_codex_home_dir(),
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn quarantine_empty_git_directory(
+    candidate: codex_plus_core::git_maintenance::EmptyGitDirectory,
+) -> Result<PathBuf, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::git_maintenance::quarantine(
+            &codex_plus_core::codex_home::default_codex_home_dir(),
+            &candidate,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())
+}

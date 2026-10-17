@@ -1,6 +1,13 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "异常 Git 目录": "Invalid Git directories",
+  "只检查官方 App 记录的本地工作区。缺少 HEAD 的 .git 目录可改名保留。": "Check local workspaces recorded by the official app. A .git directory without HEAD can be renamed and preserved.",
+  "扫描 Git 目录": "Scan Git directories",
+  "未发现异常 Git 目录": "No invalid Git directories found",
+  "将 .git 改名为带时间戳的备份目录，文件会保留。确认此目录不是正在使用的仓库后再继续。": "Rename .git to a timestamped backup, preserving its files. Confirm this is not a repository in use before continuing.",
+  "改名保留": "Rename and preserve",
+  "处理目录": "Review directory",
   "低功耗模式": "Low power mode",
   "减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。": "Reduce looping animations and cache failed or non-repository Git queries for 30 seconds. Applies after saving.",
   "关闭 DirectComposition": "Disable DirectComposition",
