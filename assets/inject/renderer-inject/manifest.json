@@ -111,9 +111,19 @@
       "lines": 583
     },
     {
+      "name": "93-prompt-enhance-context.js",
+      "description": "提示词增强的输入框与本机目录绑定",
+      "lines": 100
+    },
+    {
       "name": "93-prompt-enhance.js",
       "description": "提示词增强：读取草稿、后端改写、预览确认后替换或追加",
-      "lines": 462
+      "lines": 874
+    },
+    {
+      "name": "93-prompt-library.js",
+      "description": "提示词收藏快捷取用与主动反馈",
+      "lines": 254
     },
     {
       "name": "94-typing-effects.js",

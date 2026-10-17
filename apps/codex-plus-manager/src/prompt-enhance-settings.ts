@@ -1,5 +1,15 @@
+export type PromptEnhanceContextSettings = {
+  enabled: boolean;
+  project: boolean;
+  instructions: boolean;
+  directory: boolean;
+  manifests: boolean;
+};
+
 export type PromptEnhanceSettings = {
   enabled: boolean;
+  rewriteEnabled: boolean;
+  grillEnabled: boolean;
   useStepwiseConnection: boolean;
   baseUrl: string;
   apiKey: string;
@@ -7,6 +17,9 @@ export type PromptEnhanceSettings = {
   protocol: string;
   model: string;
   systemPrompt: string;
+  grillSystemPrompt: string;
+  defaultMode: "rewrite" | "grill";
+  context: PromptEnhanceContextSettings;
   timeoutSeconds: number;
 };
 
@@ -17,6 +30,8 @@ const protocols = new Set(["chat_completions", "responses", "anthropic_messages"
 export function defaultPromptEnhanceSettings(): PromptEnhanceSettings {
   return {
     enabled: false,
+    rewriteEnabled: true,
+    grillEnabled: true,
     useStepwiseConnection: true,
     baseUrl: "",
     apiKey: "",
@@ -24,6 +39,9 @@ export function defaultPromptEnhanceSettings(): PromptEnhanceSettings {
     protocol: "chat_completions",
     model: "",
     systemPrompt: "",
+    grillSystemPrompt: "",
+    defaultMode: "rewrite",
+    context: { enabled: false, project: false, instructions: false, directory: false, manifests: false },
     timeoutSeconds: 60,
   };
 }
@@ -35,6 +53,8 @@ export function normalizePromptEnhanceSettings(value: Partial<PromptEnhanceSetti
   const timeout = value?.timeoutSeconds;
   return {
     enabled: value?.enabled === true,
+    rewriteEnabled: value?.rewriteEnabled !== false,
+    grillEnabled: value?.grillEnabled !== false,
     useStepwiseConnection: value?.useStepwiseConnection !== false,
     baseUrl: text(value?.baseUrl).replace(/\/+$/, ""),
     apiKey: text(value?.apiKey),
@@ -42,6 +62,15 @@ export function normalizePromptEnhanceSettings(value: Partial<PromptEnhanceSetti
     protocol: protocols.has(protocol) ? protocol : defaults.protocol,
     model: text(value?.model),
     systemPrompt: text(value?.systemPrompt),
+    grillSystemPrompt: text(value?.grillSystemPrompt),
+    defaultMode: value?.defaultMode === "grill" ? "grill" : "rewrite",
+    context: {
+      enabled: value?.context?.enabled === true,
+      project: value?.context?.project === true,
+      instructions: value?.context?.instructions === true,
+      directory: value?.context?.directory === true,
+      manifests: value?.context?.manifests === true,
+    },
     timeoutSeconds: typeof timeout === "number" && Number.isFinite(timeout)
       ? Math.min(300, Math.max(5, Math.round(timeout)))
       : defaults.timeoutSeconds,
@@ -50,7 +79,7 @@ export function normalizePromptEnhanceSettings(value: Partial<PromptEnhanceSetti
 
 // 复用下一步建议连接时不校验本组字段，由后端按那一组配置报错。
 export function promptEnhanceSettingsIssue(settings: PromptEnhanceSettings): PromptEnhanceSettingsIssue | null {
-  if (!settings.enabled || settings.useStepwiseConnection) return null;
+  if (!settings.enabled || (!settings.rewriteEnabled && !settings.grillEnabled) || settings.useStepwiseConnection) return null;
   if (!settings.baseUrl.trim()) return "baseUrl";
   if (!settings.model.trim()) return "model";
   return null;

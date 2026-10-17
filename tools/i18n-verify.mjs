@@ -21,6 +21,7 @@ const ts = require("typescript");
 
 const SRC_FILES = [
   "src/App.tsx",
+  "src/prompt-tools.tsx",
   "src/PluginMarketScreen.tsx",
   "src/ManagementPages.tsx",
   "src/ManagementExtra.tsx",

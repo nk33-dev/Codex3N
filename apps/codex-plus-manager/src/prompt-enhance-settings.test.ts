@@ -41,3 +41,39 @@ test("separate connection requires base URL and model only when enabled", () => 
   assert.equal(promptEnhanceSettingsIssue({ ...base, useStepwiseConnection: true }), null);
   assert.equal(promptEnhanceSettingsIssue({ ...base, enabled: false }), null);
 });
+
+
+test("context and grill defaults preserve old settings and normalize independently", () => {
+  const old = normalizePromptEnhanceSettings({ enabled: true, systemPrompt: "个人规则" });
+  assert.equal(old.defaultMode, "rewrite");
+  assert.equal(old.grillSystemPrompt, "");
+  assert.deepEqual(old.context, { enabled: false, project: false, instructions: false, directory: false, manifests: false });
+  const settings = normalizePromptEnhanceSettings({
+    defaultMode: "grill", grillSystemPrompt: "  先确认目标  ",
+    context: { enabled: true, project: true, instructions: false, directory: true, manifests: false },
+  });
+  assert.equal(settings.defaultMode, "grill");
+  assert.equal(settings.grillSystemPrompt, "先确认目标");
+  assert.equal(settings.context.directory, true);
+  assert.equal(settings.context.instructions, false);
+  assert.deepEqual(normalizePromptEnhanceSettings(JSON.parse(JSON.stringify(settings))), settings);
+  assert.equal(normalizePromptEnhanceSettings(JSON.parse('{"defaultMode":"unknown","context":{"enabled":"true"}}')).defaultMode, "rewrite");
+  assert.equal(normalizePromptEnhanceSettings(JSON.parse('{"context":{"enabled":"true"}}')).context.enabled, false);
+});
+
+test("independent modes retain context choices and do not require a model when both are off", () => {
+  const old = normalizePromptEnhanceSettings({ enabled: true });
+  assert.equal(old.rewriteEnabled, true);
+  assert.equal(old.grillEnabled, true);
+  for (const rewriteEnabled of [false, true]) for (const grillEnabled of [false, true]) {
+    const settings = normalizePromptEnhanceSettings({ enabled: true, useStepwiseConnection: false,
+      rewriteEnabled, grillEnabled, defaultMode: "grill",
+      context: { enabled: true, project: true, instructions: true, directory: true, manifests: true } });
+    assert.equal(settings.rewriteEnabled, rewriteEnabled);
+    assert.equal(settings.grillEnabled, grillEnabled);
+    assert.equal(settings.defaultMode, "grill");
+    assert.equal(settings.context.directory, true);
+    assert.equal(promptEnhanceSettingsIssue(settings), rewriteEnabled || grillEnabled ? "baseUrl" : null);
+    assert.deepEqual(normalizePromptEnhanceSettings(JSON.parse(JSON.stringify(settings))), settings);
+  }
+});
