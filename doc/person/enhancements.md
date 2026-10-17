@@ -99,3 +99,5 @@ Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版�
 `codexAppLowPower` 默认关闭，由管理器增强页保存。开启后，bridge 在同一目标的设置响应中应用 `prefers-reduced-motion: reduce`，注入运行时暂停无限循环的 CSS 动画；有限动画和过渡继续运行。关闭总开关或低功耗开关时还原动画与媒体覆盖，页面隐藏时停止动画扫描。设置读取失败保持原状态，CDP 不支持媒体模拟时记录 `low_power.media_failed`。
 
 Windows 的启动参数区提供 `--disable-direct-composition` 快捷项，保存后需重启官方 App，效果取决于显卡。MSIX 多开 wrapper 同样透传额外参数，按 Windows argv 和 cmd 两层转义，使用 UTF-8 代码页及关闭延迟展开。
+
+Git worker 的 `stable-metadata` 成功结果继续缓存 2 秒；低功耗开启后，非仓库结果和查询失败缓存 30 秒，取消不缓存。缓存按目录和主机隔离，Git 事件、聚焦、可见性变化和开关切换使其失效。远程请求、监听初始化和写操作继续走原生路径。入口为 renderer 的 `03-native-performance.js`，按已核对的工厂结构依次检查 shared、initial 模块，并复用模块加载缓存；单个不可读取的导出不影响识别。行为测试见 `native-performance.test.ts`。
