@@ -113,7 +113,7 @@
     {
       "name": "93-prompt-enhance.js",
       "description": "提示词增强：读取草稿、后端改写、预览确认后替换或追加",
-      "lines": 380
+      "lines": 462
     },
     {
       "name": "94-typing-effects.js",
