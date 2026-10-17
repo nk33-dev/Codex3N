@@ -700,18 +700,34 @@ fn parse_macos_process_line(line: &str) -> Option<MacosProcessLine> {
 pub fn find_macos_codex_desktop_main_processes(
     debug_port: Option<u16>,
 ) -> Vec<MacosDesktopProcess> {
-    let Ok(output) = std::process::Command::new("ps")
+    macos_desktop_snapshot(debug_port)
+        .map(|(_, matching)| matching)
+        .unwrap_or_default()
+}
+
+/// 同一份 ps 输出同时用于实例和端口归属判断，命令失败时保留错误。
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_desktop_snapshot(
+    debug_port: Option<u16>,
+) -> anyhow::Result<(Vec<MacosDesktopProcess>, Vec<MacosDesktopProcess>)> {
+    let output = std::process::Command::new("ps")
         .args(["-axo", "pid=,uid=,lstart=,args="])
-        .output()
-    else {
-        return Vec::new();
-    };
-    macos_desktop_main_processes_from_snapshot(
-        String::from_utf8_lossy(&output.stdout).lines(),
+        .output()?;
+    anyhow::ensure!(output.status.success(), "无法读取官方 App 进程快照");
+    let text = String::from_utf8(output.stdout)?;
+    let all = macos_desktop_main_processes_from_snapshot(
+        text.lines(),
+        None,
+        None,
+        read_macos_bundle_identifier,
+    );
+    let matching = macos_desktop_main_processes_from_snapshot(
+        text.lines(),
         None,
         debug_port,
         read_macos_bundle_identifier,
-    )
+    );
+    Ok((all, matching))
 }
 
 #[cfg(test)]
@@ -1529,7 +1545,7 @@ fn codex_process_ids_for_debug_port(
 ///
 /// 按整词解析而不是子串匹配：`--remote-debugging-port=9229` 不能被端口 922 命中。
 #[cfg(any(windows, test))]
-fn debug_port_from_command_line(command_line: &str) -> Option<u16> {
+pub(crate) fn debug_port_from_command_line(command_line: &str) -> Option<u16> {
     let mut tokens = command_line
         .split_whitespace()
         .map(|token| token.trim_matches('"'));

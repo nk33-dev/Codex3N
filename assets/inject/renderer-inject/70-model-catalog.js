@@ -796,7 +796,7 @@
         nextParams,
         options
       );
-      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true);
+      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true, { params: nextParams, host: modelResponseHostId(nextParams, client) });
       let result;
       try {
         result = await originalSendRequest(method, nextParams, options);
@@ -1001,7 +1001,7 @@
         nextParams,
         options
       );
-      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true);
+      const finishTiming = window.__codexPlusPerf?.begin(requestMethod, true, { params: nextParams, host: modelResponseHostId(nextParams, client) });
       let result;
       try {
         result = await originalSendRequest.call(client, method, nextParams, options);

@@ -17,12 +17,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use codex_plus_core::auto_takeover::{
-    ActivePolicy, AppProbe, InstanceKey, SessionSnapshot, TakeoverDecision, TakeoverInputs,
-    backoff_delay_ms, push_restart, restarts_in_window,
+    ActivePolicy, AppProbe, InstanceKey, ProbeSchedule, SessionSnapshot, TakeoverDecision,
+    TakeoverInputs, backoff_delay_ms, push_restart, restarts_in_window,
 };
 use codex_plus_core::diagnostic_log::append_diagnostic_log;
 use codex_plus_core::settings::SettingsStore;
@@ -30,7 +30,7 @@ use codex_plus_core::status::StatusStore;
 use serde::Serialize;
 use serde_json::json;
 
-/// 线程 tick 上限：实际间隔由判据给出（活跃 2s / 静默 10s），这里只做心跳。
+/// 停止和唤醒检查间隔，昂贵探测另按策略截止时间执行。
 const TICK_CAP: Duration = Duration::from_millis(2_000);
 /// 刚接管后的强制静默期：launcher 会话启动期间不再做任何判定。
 const POST_TAKEOVER_QUIET: Duration = Duration::from_secs(10);
@@ -97,8 +97,6 @@ struct Inner {
     our_launch_at: Option<Instant>,
     /// 最近一次系统唤醒（睡眠/唤醒后给 CDP 恢复宽限）。
     last_wake_at: Option<Instant>,
-    /// 上一次 tick 的单调时钟，用来识别挂起（睡眠后 Instant 会跳）。
-    last_tick: Option<Instant>,
     /// 守护线程启动时刻，用于启动静默期。
     started_at: Option<Instant>,
     platform_supported: bool,
@@ -107,6 +105,7 @@ struct Inner {
 static INNER: OnceLock<Mutex<Inner>> = OnceLock::new();
 static STOP: AtomicBool = AtomicBool::new(true);
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static CONTROL: (Mutex<u64>, Condvar) = (Mutex::new(0), Condvar::new());
 
 fn inner() -> &'static Mutex<Inner> {
     INNER.get_or_init(|| {
@@ -136,10 +135,21 @@ fn log_event(event: &str, detail: serde_json::Value) {
 
 /// 当前配置是否开启自动接管。
 pub fn is_enabled() -> bool {
-    SettingsStore::default()
-        .load()
-        .map(|settings| settings.codex_app_auto_takeover)
+    takeover_settings()
+        .map(|(enabled, _)| enabled)
         .unwrap_or(false)
+}
+
+fn takeover_settings() -> Result<(bool, ActivePolicy), String> {
+    SettingsStore::default()
+        .try_load_cached()
+        .map(|settings| {
+            (
+                settings.codex_app_auto_takeover,
+                ActivePolicy::parse(&settings.codex_app_auto_takeover_when_active),
+            )
+        })
+        .map_err(|error| error.to_string())
 }
 
 /// 启动守护线程（幂等）。设置里没开就什么都不做。
@@ -148,10 +158,17 @@ pub fn start_supervisor() {
         with_inner(|state| state.state = "disabled");
         return;
     }
+    start_enabled_supervisor();
+}
+
+fn start_enabled_supervisor() {
+    let mut revision = CONTROL.0.lock().unwrap_or_else(|error| error.into_inner());
+    STOP.store(false, Ordering::Release);
+    *revision = revision.wrapping_add(1);
+    CONTROL.1.notify_all();
     if RUNNING.swap(true, Ordering::AcqRel) {
         return;
     }
-    STOP.store(false, Ordering::Release);
     with_inner(|state| {
         state.started_at = Some(Instant::now());
         state.state = "probing";
@@ -177,7 +194,10 @@ pub fn start_supervisor() {
 
 /// 请求停止守护线程（用户关掉开关或程序退出）。线程会在下一次 tick 自行退出。
 pub fn stop_supervisor() {
+    let mut revision = CONTROL.0.lock().unwrap_or_else(|error| error.into_inner());
     STOP.store(true, Ordering::Release);
+    *revision = revision.wrapping_add(1);
+    CONTROL.1.notify_all();
     with_inner(|state| {
         state.state = "disabled";
         state.last_reason = Some("stopped".to_string());
@@ -238,20 +258,20 @@ pub fn take_over_now() -> Result<(), String> {
     if !inputs.restart_budget_left_for_manual() {
         return Err("一小时内接管次数已达上限，已停止自动重试。".to_string());
     }
-    spawn_takeover(inputs.actual_port);
+    spawn_takeover(inputs.actual_port, false, &inputs.app);
     Ok(())
 }
 
 /// 只读状态快照，给前端。
 pub fn payload() -> AutoTakeoverPayload {
-    let enabled = is_enabled();
+    let (enabled, policy) = takeover_settings().unwrap_or((false, ActivePolicy::Defer));
     with_inner(|state| {
         let restarts_last_hour = restarts_in_window(&state.restart_history_ms, now_ms()) as u32;
         AutoTakeoverPayload {
             state: state.state,
             enabled,
             platform_supported: state.platform_supported,
-            active_policy: active_policy().as_str(),
+            active_policy: policy.as_str(),
             last_takeover_at_ms: state.last_takeover_at_ms,
             last_reason: state.last_reason.clone(),
             last_error: state.last_error.clone(),
@@ -267,13 +287,6 @@ pub fn payload() -> AutoTakeoverPayload {
     })
 }
 
-fn active_policy() -> ActivePolicy {
-    SettingsStore::default()
-        .load()
-        .map(|settings| ActivePolicy::parse(&settings.codex_app_auto_takeover_when_active))
-        .unwrap_or(ActivePolicy::Defer)
-}
-
 // ---------------------------------------------------------------- 探针线程
 
 fn supervisor_loop() {
@@ -281,39 +294,45 @@ fn supervisor_loop() {
         "takeover.probe_decision",
         json!({ "decision": "start", "platformSupported": cfg!(any(target_os = "macos", windows)) }),
     );
-    while !STOP.load(Ordering::Acquire) {
-        let tick_started = Instant::now();
-        let interval = tick();
-        let elapsed = tick_started.elapsed();
-        let sleep_for = interval.saturating_sub(elapsed).min(TICK_CAP);
-        std::thread::sleep(sleep_for);
+    let epoch = Instant::now();
+    let mut schedule = ProbeSchedule::default();
+    let mut observed_revision = 0;
+    loop {
+        let revision = CONTROL.0.lock().unwrap_or_else(|error| error.into_inner());
+        if STOP.load(Ordering::Acquire) {
+            with_inner(|state| state.state = "disabled");
+            RUNNING.store(false, Ordering::Release);
+            break;
+        }
+        if *revision != observed_revision {
+            schedule.force();
+            observed_revision = *revision;
+        }
+        drop(revision);
+        let now = epoch.elapsed().as_millis() as u64;
+        if schedule.heartbeat(now) {
+            with_inner(|state| state.last_wake_at = Some(Instant::now()));
+            log_event("takeover.wake_detected", json!({}));
+        }
+        if schedule.due(now) {
+            schedule.complete(now, tick());
+        }
+        let wait = schedule.wait(epoch.elapsed().as_millis() as u64, TICK_CAP);
+        let revision = CONTROL.0.lock().unwrap_or_else(|error| error.into_inner());
+        if *revision == observed_revision && !STOP.load(Ordering::Acquire) {
+            drop(
+                CONTROL
+                    .1
+                    .wait_timeout(revision, wait)
+                    .unwrap_or_else(|error| error.into_inner()),
+            );
+        }
     }
-    with_inner(|state| {
-        state.state = "disabled";
-    });
-    RUNNING.store(false, Ordering::Release);
     log_event("takeover.supervisor_stopped", json!({}));
 }
 
 /// 一次探测 + 决策。返回下一次 tick 的间隔。
 fn tick() -> Duration {
-    // 睡眠/唤醒检测：挂起期间 Instant 会跳跃，这里把它当作「刚唤醒」，
-    // 给 CDP 一段恢复宽限，避免唤醒瞬间误重启。
-    let now = Instant::now();
-    let woke = with_inner(|state| {
-        let woke = state
-            .last_tick
-            .is_some_and(|last| now.duration_since(last) > Duration::from_secs(90));
-        state.last_tick = Some(now);
-        if woke {
-            state.last_wake_at = Some(now);
-        }
-        woke
-    });
-    if woke {
-        log_event("takeover.wake_detected", json!({}));
-    }
-
     // 刚发起接管后的静默期：launcher 会话正在启动，这期间不做任何判定，
     // 免得在它自己拉起的实例上再叠一次动作。
     let quiet = with_inner(|state| {
@@ -349,8 +368,8 @@ fn tick() -> Duration {
     let decision = codex_plus_core::auto_takeover::decide(&inputs);
     publish(&inputs, decision);
 
-    if decision.is_takeover() {
-        spawn_takeover(inputs.actual_port);
+    if decision.is_takeover() && !STOP.load(Ordering::Acquire) {
+        spawn_takeover(inputs.actual_port, true, &inputs.app);
     }
     inputs.probe_interval()
 }
@@ -360,7 +379,11 @@ fn publish(inputs: &TakeoverInputs, decision: TakeoverDecision) {
     let reason = decision.reason();
     let changed = with_inner(|state| {
         state.actual_debug_port = Some(inputs.actual_port);
-        state.app_running = Some(matches!(inputs.app, AppProbe::Running(_)));
+        state.app_running = match inputs.app {
+            AppProbe::Running(_) => Some(true),
+            AppProbe::NotRunning => Some(false),
+            AppProbe::Unknown => None,
+        };
         state.session_owned = inputs.session.owned;
         state.session_status = inputs.session.status.clone();
         state.state = match decision {
@@ -408,7 +431,7 @@ fn publish(inputs: &TakeoverInputs, decision: TakeoverDecision) {
 // ---------------------------------------------------------------- 输入采集
 
 fn collect_inputs() -> Result<TakeoverInputs, String> {
-    let mut state = with_inner(|state| {
+    let state = with_inner(|state| {
         (
             state.last_attempt,
             state.our_launch_at,
@@ -419,32 +442,32 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
         )
     });
     let platform_supported = cfg!(any(target_os = "macos", windows));
-    let enabled = is_enabled();
+    let settings = SettingsStore::default()
+        .try_load_cached()
+        .map_err(|error| error.to_string())?;
+    let enabled = settings.codex_app_auto_takeover;
+    let active_policy = ActivePolicy::parse(&settings.codex_app_auto_takeover_when_active);
     let session_snapshot = codex_plus_launcher::session_snapshot();
     let latest = StatusStore::default().load_latest().ok().flatten();
     let actual_port = session_snapshot
         .debug_port
         .or_else(|| latest.as_ref().and_then(|status| status.debug_port))
         .unwrap_or_else(default_debug_port);
-    let app_dir = resolve_app_dir(latest.as_ref());
+    let app_dir = resolve_app_dir_from_settings(latest.as_ref(), &settings.codex_app_path);
 
-    let app = match app_dir.as_deref() {
-        Some(app_dir) => probe_desktop_app(app_dir),
-        None => AppProbe::Unknown,
-    };
-    let cdp_ready = codex_plus_core::cdp::endpoint_available(actual_port);
-    let current_pid = match &app {
-        AppProbe::Running(key) => Some(key.pid),
-        _ => None,
-    };
-    let multi_instance_running = app_dir.as_deref().is_some_and(|app_dir| {
-        codex_plus_core::auto_takeover::has_other_desktop_instance(
-            app_dir,
-            actual_port,
-            current_pid,
-        )
-    }) || multi_instance_running();
-    let user_active = user_seems_active();
+    let probe = app_dir.as_deref().map(|app_dir| {
+        codex_plus_core::auto_takeover::probe_desktop_app_state(app_dir, actual_port)
+    });
+    let (app, cdp_ready, other_instance) = probe
+        .map(|probe| (probe.app, probe.cdp_ready, probe.other_instance))
+        .unwrap_or((AppProbe::Unknown, false, true));
+    let multi_instance_running = other_instance || multi_instance_running();
+    let user_active = matches!(app, AppProbe::Running(_))
+        && !session_snapshot.owned
+        && !cdp_ready
+        && !multi_instance_running
+        && active_policy == ActivePolicy::Defer
+        && user_seems_active();
 
     let session = SessionSnapshot {
         owned: session_snapshot.owned,
@@ -480,7 +503,7 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
             .map(|instant| now.duration_since(instant).as_millis() as u64),
         consecutive_failures: state.3,
         user_active,
-        active_policy: active_policy(),
+        active_policy,
         paused_instance: state.5.clone(),
         restart_history_ms: state.4.clone(),
         now_ms: now_ms(),
@@ -500,10 +523,6 @@ fn probe_desktop_app(app_dir: &Path) -> AppProbe {
 fn current_instance() -> Option<InstanceKey> {
     let latest = StatusStore::default().load_latest().ok().flatten();
     let app_dir = resolve_app_dir(latest.as_ref())?;
-    let port = latest
-        .as_ref()
-        .and_then(|status| status.debug_port)
-        .unwrap_or_else(default_debug_port);
     match probe_desktop_app(&app_dir) {
         AppProbe::Running(key) => Some(key),
         _ => None,
@@ -511,12 +530,19 @@ fn current_instance() -> Option<InstanceKey> {
 }
 
 fn resolve_app_dir(latest: Option<&codex_plus_core::status::LaunchStatus>) -> Option<PathBuf> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().try_load_cached().ok()?;
+    resolve_app_dir_from_settings(latest, &settings.codex_app_path)
+}
+
+fn resolve_app_dir_from_settings(
+    latest: Option<&codex_plus_core::status::LaunchStatus>,
+    saved_path: &str,
+) -> Option<PathBuf> {
     codex_plus_core::app_paths::resolve_codex_app_dir_with_saved(
         latest
             .and_then(|status| status.codex_app.as_deref())
             .map(Path::new),
-        Some(settings.codex_app_path.as_str()),
+        Some(saved_path),
     )
 }
 
@@ -594,19 +620,10 @@ fn user_seems_active() -> bool {
 
 // ---------------------------------------------------------------- 执行动作
 
-/// 退出前再确认一次当前实例（拿到 (pid, 启动时刻) 代际键）。
-fn probe_app_before_exit() -> AppProbe {
-    match resolve_app_dir(StatusStore::default().load_latest().ok().flatten().as_ref()) {
-        Some(app_dir) => codex_plus_core::auto_takeover::probe_desktop_app(&app_dir),
-        None => AppProbe::Unknown,
-    }
-}
-
 /// 请官方 App 退出并确认它真的退了。
 ///
-/// 失败不是致命的：launcher 的 macOS 分支自己带「已有实例就重启」的逻辑，
-/// 这里只是把「先退出」提前并做代际校验，避免 `open -W -a` 对运行中的 App 不传参。
-fn quiesce_desktop_app(app_dir: &Path, instance: &InstanceKey) {
+/// 只有原实例确认退出才继续启动；换代、探测失败或退出超时均放弃本次接管。
+fn quiesce_desktop_app(app_dir: &Path, instance: &InstanceKey, port: u16, automatic: bool) -> bool {
     log_event(
         "takeover.quitting",
         json!({
@@ -618,29 +635,48 @@ fn quiesce_desktop_app(app_dir: &Path, instance: &InstanceKey) {
     let _ = codex_plus_core::auto_takeover::request_desktop_exit(app_dir, instance, true);
     let mut outcome = "exited";
     let mut forced = false;
-    if !wait_for_instance_exit(app_dir, instance, EXIT_GRACE) {
+    let exited = wait_for_instance_exit(app_dir, instance, EXIT_GRACE, automatic);
+    if exited.is_none() {
+        return false;
+    }
+    if exited == Some(false) {
+        let fresh = codex_plus_core::auto_takeover::probe_desktop_app_state(app_dir, port);
+        if fresh.other_instance || fresh.app != AppProbe::Running(instance.clone()) {
+            return false;
+        }
         // 优雅关闭无效（自动化授权被拒 / 未响应 AppleEvent / 进程卡住）。
         // 强制结束是否可接受是产品决策，这里与 macOS 侧既有语义保持一致地做一次，
         // 并把代价写进诊断日志。
         forced = true;
         let _ = codex_plus_core::auto_takeover::request_desktop_exit(app_dir, instance, false);
-        if !wait_for_instance_exit(app_dir, instance, EXIT_FORCE_GRACE) {
-            outcome = "still_running";
+        match wait_for_instance_exit(app_dir, instance, EXIT_FORCE_GRACE, automatic) {
+            Some(true) => {}
+            Some(false) => outcome = "still_running",
+            None => return false,
         }
     }
     log_event(
         "takeover.exit_result",
         json!({ "pid": instance.pid, "outcome": outcome, "forced": forced }),
     );
+    outcome == "exited"
 }
 
 /// 等实例真正退出。**代际必須匹配**：用户在空档里又手动启动了一次的话，
 /// pid / 启动时刻都会变，那就直接放弃本次接管，绝不对他的新实例动手。
-fn wait_for_instance_exit(app_dir: &Path, instance: &InstanceKey, budget: Duration) -> bool {
+fn wait_for_instance_exit(
+    app_dir: &Path,
+    instance: &InstanceKey,
+    budget: Duration,
+    automatic: bool,
+) -> Option<bool> {
     let deadline = Instant::now() + budget;
     loop {
+        if automatic && STOP.load(Ordering::Acquire) {
+            return None;
+        }
         match codex_plus_core::auto_takeover::probe_desktop_app(app_dir) {
-            AppProbe::NotRunning => return true,
+            AppProbe::NotRunning => return Some(true),
             AppProbe::Running(current) => {
                 if current.pid != instance.pid || current.lstart != instance.lstart {
                     log_event(
@@ -650,13 +686,13 @@ fn wait_for_instance_exit(app_dir: &Path, instance: &InstanceKey, budget: Durati
                             "currentPid": current.pid,
                         }),
                     );
-                    return true;
+                    return None;
                 }
             }
             AppProbe::Unknown => {}
         }
         if Instant::now() >= deadline {
-            return false;
+            return Some(false);
         }
         std::thread::sleep(EXIT_POLL);
     }
@@ -664,7 +700,8 @@ fn wait_for_instance_exit(app_dir: &Path, instance: &InstanceKey, budget: Durati
 
 /// 发起一次接管。宽限期**在这里**打点（早于 `start()`），否则启动失败时下一轮
 /// 探针会立刻二次接管。
-fn spawn_takeover(actual_port: u16) {
+fn spawn_takeover(actual_port: u16, automatic: bool, expected_app: &AppProbe) {
+    let expected_app = expected_app.clone();
     let started_at = Instant::now();
     // 这次到底是「重启官方 App」还是「附着到已带端口的实例」？
     // 后者不动用户窗口，不能算进重启额度，也不能记成重启（否则日志与预算都会失真）。
@@ -705,15 +742,36 @@ fn spawn_takeover(actual_port: u16) {
                 return;
             }
         };
+        if automatic && (!is_enabled() || STOP.load(Ordering::Acquire)) {
+            return;
+        }
         let latest = StatusStore::default().load_latest().ok().flatten();
         let app_dir = resolve_app_dir(latest.as_ref());
         // 需要重启时先请官方 App 退出：macOS 走 AppleEvent quit，Windows 走 taskkill。
         // 只在真的没有调试端口时才做——已有端口的实例交给 launcher 复用，不动用户窗口。
-        if restarting
-            && let (Some(app_dir), AppProbe::Running(instance)) =
-                (app_dir.as_deref(), probe_app_before_exit())
-        {
-            quiesce_desktop_app(app_dir, &instance);
+        if restarting {
+            let Some(app_dir) = app_dir.as_deref() else {
+                return;
+            };
+            let fresh =
+                codex_plus_core::auto_takeover::probe_desktop_app_state(app_dir, actual_port);
+            if fresh.other_instance || fresh.app != expected_app {
+                log_event(
+                    "takeover.skipped",
+                    json!({"reason":"instance_or_scope_changed"}),
+                );
+                return;
+            }
+            let AppProbe::Running(instance) = fresh.app else {
+                return;
+            };
+            if !fresh.cdp_ready && !quiesce_desktop_app(app_dir, &instance, actual_port, automatic)
+            {
+                return;
+            }
+        }
+        if automatic && (!is_enabled() || STOP.load(Ordering::Acquire)) {
+            return;
         }
         let request = crate::commands::LaunchRequest {
             app_path: app_dir
@@ -785,6 +843,21 @@ fn persist_paused_instance(key: &InstanceKey) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rapid_disable_enable_keeps_one_worker_and_stop_wakes_it() {
+        start_enabled_supervisor();
+        stop_supervisor();
+        start_enabled_supervisor();
+        assert!(RUNNING.load(Ordering::Acquire));
+        assert!(!STOP.load(Ordering::Acquire));
+        stop_supervisor();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while RUNNING.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!RUNNING.load(Ordering::Acquire));
+    }
 
     #[test]
     fn default_debug_port_is_a_loopback_port() {

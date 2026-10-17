@@ -121,7 +121,8 @@ async function runScenario(scenario: string) {
       cwd: dir,
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8",
-      timeout: 15_000,
+      // Windows 的 Git Bash 在有界重试中反复启动文本工具，繁忙时整条失败清理路径可能超过一分钟。
+      timeout: 120_000,
       env: { ...process.env, BASH_ENV: "", SCENARIO: scenario },
     });
     assert.ifError(result.error);

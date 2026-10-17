@@ -46,6 +46,11 @@
 
 `codexAppAutoTakeover` 默认关闭，`codexAppAutoTakeoverWhenActive` 默认为 `defer`；macOS 与 Windows 的自动接管守护由 `src-tauri/src/auto_takeover.rs` 启停，通过启动器 `session_snapshot()` 判断已有受管会话。平台支持状态与输入采集使用同一目标判据。开关位于“安装维护”页，状态查询接入 `use-manager-lifecycle.ts` 的可见性队列，每 3 秒更新；离页、隐藏或关闭开关即停止，旧响应不提交。验证见 `auto-takeover.test.ts`、`manager-window-lifecycle.test.ts`、核心 `auto_takeover` 单测；真实平台的退出重开及登录项行为需单独验证。
 
+自动接管的轻量心跳与进程探测独立调度：心跳最多间隔 2 秒，昂贵采集按策略的活跃 2 秒、静默 10 秒截止时间执行。设置保存会唤醒守护线程，快速关闭再开启继续保持单线程，停止可立即唤醒等待。每轮只取得一份缓存设置，用于开关、策略和 App 目录；仅在裸启动实例确实可能需要接管且采用 `defer` 策略时扫描活跃会话文件。
+
+`probe_desktop_app_state` 在一次平台快照内判断主实例、端口与多开。Windows 的 `try_enumerate_processes` 和 macOS 的快照入口保留采集失败；无法读取命令行或实例代际时返回 `Unknown`，管理器 `appRunning` 为 `null`。手动接管、唤醒和退出前重新采样，保留原有宽限期、退避和重启额度。
+
+
 上游新增的设置字段与聚合默认成员字段分别维护在 `provider-types.ts` 和 `lib/default-settings.ts`；`App.tsx` 使用同一类型和默认值。`SettingsStore::load` 的重入保护在解密后执行，嵌套读取保留解密与格式校验，只跳过归一化；`load_cached` 继续复用个人版缓存。验证见 `settings_load_recursion.rs` 与设置缓存、加密回归。
 
 - 设置写入采用跨进程锁和唯一临时文件；损坏内容会报错并保留原件，禁止静默回退默认值或覆盖用户配置，保存时保护已有供应商列表。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
@@ -162,3 +167,31 @@ macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-
 实机验收入口为 `cargo run -p codex-plus-core --example low_power_probe -- <官方 App 目录> <系统临时目录> <调试端口>`。它要求显式隔离 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，只在临时目录保存配置与 Electron 数据。运行中的二进制应复制到临时目录，避免占用共享 target 影响后续编译。原始本机日志保存在系统临时目录的 `codex3n-low-power-checks`、`codex3n-low-power-live`，不含会话正文；GPU、Git 与导航结果见 [增强业务](enhancements.md#低功耗与-git-维护)。真实多会话退出及真实 VS Code 共存场景未验证，Windows 原生夹具的模拟 Code 进程不能代替该结论。
 
 最后一个真实隔离实例退出前记录到 1 个 codex 子进程，退出后该进程已消失；同次检查的其他 41 个 node/codex 进程仍存活，验收 launcher 随后退出。该实例没有真实会话，因此只证明此次空闲退出与进程隔离结果。
+
+
+## 低功耗后续验收
+
+完整数据服务的隔离入口为 `cargo run -p codex-plus-launcher --example whale_power_probe -- <官方 App 目录> <系统临时目录> <调试端口> [--whale]`；核心库的 `low_power_probe` example 继续用于不依赖业务数据服务的启动与清理验证。二者都要求显式设置隔离的 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，前者的 `--whale` 仅开启测试实例挂件。
+
+切换诊断沿现有原生 RPC 包装采集请求标识、方法、主机等值组、参数等值组和起止时刻。分组只在单轮采样内有效，不导出参数、路径、主机名或会话正文；最多保留 2048 条请求。`rpcOverlaps` 只统计同主机、同参数、1 秒内发起且执行区间重叠的 `thread/list`。诊断请求允许等待繁忙页面最多 30 秒，采样窗口仍为 60 秒。无有效 RPC 记录时不据此判断重复请求。
+
+
+Windows 官方 App 26.1013.3656.0 的三轮 60 秒采样分别捕获 `thread/list` 11、16、8 次，另有 `thread/read` 10、11、6 次；未发现同主机、同参数且执行区间重叠的 `thread/list`，因此保留原生请求。三轮切换记录分别为 2、3、1 条，内容绘制均未获可见确认，不能据此报告切换耗时改善。
+
+`owned_process_probe` 提供 Windows 退出验证：`cargo run -p codex-plus-core --example owned_process_probe -- <官方 App 目录> <系统临时目录> <调试端口>` 等待确认归属的主进程退出；追加 `--terminate` 经 `DefaultLaunchHooks::terminate_codex` 验证主动退出，必须显式设置该临时目录下的 `CODEX_PLUS_STATE_DIR`。两条路径均先记录子进程身份，保护范围按创建时间和可执行文件核对，不能按名称结束进程。
+
+2026-10-17 的采样原始资料位于系统临时目录 `codex3n-low-power-followup`，包括调用基线、三轮 RPC 元数据、Git 进程计数、GPU 原始采样及各检查日志。第一次窗口关闭实验只关闭了窗口，主进程仍存活；独立退出监测确认主进程退出后，其 1 个 app-server 已清理。GPU 设置请求超时的早期样本已标记为无效对照。真实睡眠唤醒、自动接管成功率及触发延迟尚未实测，不能以可控时钟测试替代。
+
+
+真实 VS Code 共存验收：通过已安装的 `openai.chatgpt` 扩展和独立 VS Code 用户目录激活原生 app-server，不发送消息。主动退出经 `DefaultLaunchHooks::terminate_codex` 执行，测试实例的 1 个 app-server 已清理，4 个受保护进程全部保留，其中包括真实 VS Code Codex 进程。另一次隔离实例打开 4 个会话副本后结束确认归属的主进程，独立 `ChildMonitor` 清理其 1 个 app-server，6 个受保护进程全部保留，包括真实 VS Code Codex 进程和另一官方实例。两次均核对 PID、创建时间、路径和父链；这不替代真实系统睡眠唤醒与自动接管延迟验收。
+
+本轮 Windows 完整门禁为 Rust 格式检查、workspace 编译和测试、管理器类型检查、完整前端测试（853 通过、1 跳过）、Vite 构建及两套注入产物一致性。DMG 打包模拟在 Windows 繁忙环境曾超过原有 15 秒上限，测试超时调整为 120 秒后完整测试通过；生产打包重试次数保持原值。
+
+
+临时清理状态：隔离 App 及其验收监听已结束；自动审批以 `blocked by policy` 拦截了关闭测试 VS Code 窗口和删除临时 `live/codex-home/auth.json` 的命令，凭据副本与测试 VS Code 窗口保留，未把这两项记为已清理。原始检查资料继续保留，清理时只处理本轮临时目录。
+
+
+合并最新 `personal` 的用量与服务模式提交后，注入产物、类型检查、Vite 构建及前端全量测试再次通过（853 通过、1 跳过）。Rust 复验保留两次失败原始日志：共享 target 的测试程序曾被占用而无法执行；一次默认诊断路径测试读到其他用例的临时状态目录。前者与跨工作区并行构建有关，后者为既有进程级环境覆盖测试的并发隔离缺项，未通过重置用户目录规避。
+
+
+上述合并版本随后独立执行 `cargo test --workspace` 全量通过，最终退出码 0；日志为 `merged-workspace-retry.log`。格式和 workspace 编译通过；失败尝试继续保留，便于复查并行测试稳定性。
