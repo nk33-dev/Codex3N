@@ -7,7 +7,8 @@ const fragment = (name: string) => readFileSync(new URL(`../../../assets/inject/
 const source = fragment("96-whale-compat.js") + "\n" + fragment("97-whale-widget.js");
 type Listener = (event: any) => void;
 function fixture({ enabled = true, legacy = null as any, savedConfig = true } = {}) {
-  let now = 100000, serial = 0, on = enabled, sessionId = "session-one", profileId = "profile-one", sizeSaves = 0;
+  let now = 100000, serial = 0, on = enabled, sessionId = "session-one", profileId = "profile-one", hostId = "local", sizeSaves = 0;
+  const deadlines = new Map<number, number>();
   const timers = new Map<number, () => void>(), storage = new Map<string, string>(), requests: any[] = [], dispatcherListeners = new Map<string, Listener[]>();
   if (legacy) storage.set("codexPlus.whaleWidget.v1", JSON.stringify(legacy));
   class Element {
@@ -50,15 +51,26 @@ function fixture({ enabled = true, legacy = null as any, savedConfig = true } = 
   };
   class ClockDate extends Date { static now() { return now; } }
   const context = createContext({ window, document, console, Response, Event, Uint8Array, URL, atob, fetch, Date: ClockDate, globalThis: undefined,
-    codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: {}, codexPlusSettings: () => ({ whaleWidget: on }), currentSessionRef: () => ({ session_id: sessionId }), codexRemoteSessionActiveProfile: () => ({ id: profileId }), registerCodexPlusExtensionSelector: () => true,
+    codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: {}, codexPlusSettings: () => ({ whaleWidget: on }), currentSessionRef: () => ({ session_id: sessionId, host_id: hostId }), codexRemoteSessionActiveProfile: () => ({ id: profileId }), registerCodexPlusExtensionSelector: () => true,
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
     postJson: (path: string, payload: any) => { requests.push({ path, payload }); return responder(path, payload); },
-    setTimeout: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, clearTimeout: (id: number) => timers.delete(id), requestAnimationFrame: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, cancelAnimationFrame: (id: number) => timers.delete(id),
+    setTimeout: (callback: () => void, delay = 0) => { const id = ++serial; timers.set(id, callback); deadlines.set(id, now + delay); return id; }, clearTimeout: (id: number) => { timers.delete(id); deadlines.delete(id); }, requestAnimationFrame: (callback: () => void) => { const id = ++serial; timers.set(id, callback); return id; }, cancelAnimationFrame: (id: number) => timers.delete(id),
   });
   const inject = () => runInContext(`(()=>{${source}\nwindow.fixture={sync:syncCodexPlusWhaleWidget,state:codexPlusWhaleState,create:createCodexPlusWhaleFullRuntime};})()`, context);
   inject();
   const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
-  return { window, document, body, head, timers, storage, requests, audioContexts, observers, history, session, full, context, settle, inject, get state() { return window.fixture.state; }, get runtime() { return window.fixture.state.runtime; }, create() { return window.fixture.create(); }, sync() { window.fixture.sync(); }, enable(value: boolean) { on = value; window.fixture.sync(); }, profile(value: string) { profileId = value; window.fixture.sync(); }, thread(value: string) { sessionId = value; window.fixture.sync(); }, emit(method: string, params: any, id?: string) { for (const callback of dispatcherListeners.get(method) || []) callback(id ? { id, params } : params); }, get sizeSaves() { return sizeSaves; }, responder(fn: any) { responder = fn; }, tick(ms: number) { now += ms; }, dispatcherListeners };
+  return { window, document, body, head, timers, storage, requests, audioContexts, observers, history, session, full, context, settle, inject, get state() { return window.fixture.state; }, get runtime() { return window.fixture.state.runtime; }, create() { return window.fixture.create(); }, sync() { window.fixture.sync(); }, enable(value: boolean) { on = value; window.fixture.sync(); }, profile(value: string) { profileId = value; window.fixture.sync(); }, thread(value: string) { sessionId = value; window.fixture.sync(); }, emit(method: string, params: any, id?: string) { for (const callback of dispatcherListeners.get(method) || []) callback(id ? { id, params } : params); }, get sizeSaves() { return sizeSaves; }, responder(fn: any) { responder = fn; }, tick(ms: number) { now += ms; }, dispatcherListeners,
+    host(value: string) { hostId = value; window.fixture.sync(); },
+    async advance(ms: number) {
+      const until = now + ms;
+      for (let steps = 0; steps < 2000; steps++) {
+        const next = [...deadlines].filter(([id, due]) => timers.has(id) && due <= until).sort((a, b) => a[1] - b[1])[0];
+        if (!next) break;
+        now = next[1]; const callback = timers.get(next[0]); timers.delete(next[0]); deadlines.delete(next[0]); callback?.(); await settle();
+      }
+      now = until; await settle();
+    },
+  };
 }
 function settingsFixture() {
   const style = fragment("10-style.js");
@@ -270,4 +282,61 @@ test("turning statistics off discards both pending log summaries", async () => {
   await runtime.fetch("/dsh-whale/size.json", { method: "PUT", body: JSON.stringify({ codexStatsOn: false }) });
   resolveHistory(f.history); resolveSession(f.session); await Promise.all([history, session]);
   assert.equal(runtime.state.history, null); assert.equal(runtime.state.session, null); assert.equal(runtime.host.tokens("today"), "—"); runtime.dispose();
+});
+
+
+test("idle fallback polls twice per minute and generation keeps the five second fallback", async () => {
+  for (const [status, expected] of [["completed", 2], ["running", 12]]) {
+    const f = fixture(); f.session.lastTurn.status = status; f.sync(); await f.settle();
+    f.runtime.host.startPolling(); await f.advance(59999);
+    assert.equal(f.requests.filter((r) => r.path === "/whale/session").length, expected);
+    f.enable(false);
+    assert.equal(f.timers.size, 0);
+  }
+});
+
+test("missing summaries cool down and a later rollout is discovered", async () => {
+  const f = fixture(); let available = false;
+  f.responder(async (path: string, payload: any) => path === "/whale/session" ? available ? f.session : { status: "unavailable" } : { status: 200, body: f.full[payload.path] || {} });
+  f.sync(); await f.settle(); f.runtime.host.startPolling(); await f.advance(9999);
+  assert.equal(f.requests.filter((r) => r.path === "/whale/session").length, 1);
+  available = true; await f.advance(1);
+  assert.equal(f.requests.filter((r) => r.path === "/whale/session").length, 2);
+  assert.equal(f.runtime.state.session.status, "ok"); f.enable(false);
+});
+
+test("switching away and back rejects old same-id and old-host responses", async () => {
+  const f = fixture(); f.sync(); await f.settle();
+  let finish: any;
+  f.responder(() => new Promise((resolve) => { finish = resolve; }));
+  f.runtime.state.sessionAt = 0;
+  const old = f.runtime.session(); await f.settle();
+  f.thread("session-two"); f.thread("session-one");
+  finish(f.session); await old;
+  assert.equal(f.runtime.state.session, null);
+  const stale = f.runtime.fetch("/dsh-whale/wait.json"); await f.settle();
+  f.host("remote:ssh"); finish(f.session);
+  await assert.rejects(stale, /取消/);
+  assert.equal(f.runtime.state.session, null); f.enable(false);
+});
+
+test("hidden polling resumes immediately and late hidden results cannot repaint", async () => {
+  const f = fixture(); f.session.lastTurn.status = "completed"; f.sync(); await f.settle();
+  f.runtime.host.startPolling(); await f.advance(0);
+  const before = f.requests.length; f.document.hidden = true; f.runtime.pause(true);
+  await f.advance(60000); assert.equal(f.requests.length, before);
+  f.document.hidden = false; f.runtime.pause(false); await f.advance(0);
+  assert.equal(f.requests.filter((r) => r.path === "/whale/session").length, 2);
+  f.enable(false); assert.equal(f.timers.size, 0);
+});
+
+
+test("completion while hidden is reconciled once on restore", async () => {
+  const f = fixture(); f.sync(); await f.settle(); f.runtime.host.startPolling(); await f.advance(0);
+  const seq = f.runtime.state.seq;
+  f.runtime.pause(true); f.session.lastTurn.status = "completed";
+  f.runtime.pause(false); await f.advance(0);
+  assert.equal(f.runtime.state.seq, seq + 1);
+  await f.runtime.poll(true); await f.settle();
+  assert.equal(f.runtime.state.seq, seq + 1); f.enable(false);
 });

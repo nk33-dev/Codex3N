@@ -19672,6 +19672,13 @@
 
   function createCodexPlusWhaleFullRuntime() {
     const state = { disposed: false, paused: document.hidden === true, timers: new Map(), rafs: new Map(), observers: new Set(), nodes: new Set(), listeners: [], audio: new Set(), pending: new Set(), media: new Map(), objectUrls: new Set(), subscriptions: [], dispatcher: null, sessionId: "", session: null, sessionAt: 0, sessionPending: null, history: null, historyAt: 0, historyPrices: "", historyPending: null, models: [], relayProfiles: [], turn: null, completed: new Set(), seq: 0, pendingWait: null, completion: null, controls: null, serial: 0 };
+    state.generation = 0;
+    state.polling = false;
+    state.pollTimer = null;
+    state.pollTask = null;
+    const diagnostics = window.__CODEX_PLUS_PERF_DIAGNOSTICS__ === true ? { sessionCalls: 0, sessionHits: 0, sessionJoined: 0, sessionRequests: 0, polls: 0 } : null;
+    if (diagnostics) state.diagnostics = diagnostics;
+    const count = (key) => { if (diagnostics) diagnostics[key] += 1; };
     const isolated = Object.create(null);
     const wrappedMedia = new WeakSet();
     const storage = {
@@ -19749,6 +19756,8 @@
     function context() {
       const ref = currentSessionRef() || {}, id = String(ref.session_id || ""), host = String(ref.host_id || "local");
       if (id !== state.sessionId || host !== state.sessionHost) {
+        state.generation += 1;
+        state.nativeUsage = null; state.nativeTurnAt = 0; state.pollTask = null;
         state.sessionId = id; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.turn = null; state.pendingWait = null; state.lastTurnResult = null; state.lastTurnPending = null;
       }
       state.sessionHost = host; state.sessionRef = ref; state.remote = host !== "local";
@@ -19770,16 +19779,48 @@
       state.codexStatsOn = enabled; state.statRevision += 1;
       state.history = null; state.historyAt = 0; state.historyPending = null; state.session = null; state.sessionAt = 0; state.sessionPending = null; state.lastTurnResult = null; state.lastTurnPending = null;
     }
+    function sessionDelay() {
+      if (state.session?.status === "unavailable") return 10000;
+      return !state.session || state.turn?.status === "running" ? 5000 : 30000;
+    }
+    function queuePoll(delay = 0) {
+      if (!state.polling || !active() || state.paused) return;
+      if (state.pollTimer !== null) clearTimer(state.pollTimer);
+      state.pollTimer = schedule(() => { state.pollTimer = null; void poll(); }, delay, false, []);
+    }
+    async function poll(force = false) {
+      if (!active() || state.paused || !state.controls) return;
+      context();
+      if (force) state.sessionAt = 0;
+      if (state.pollTask) return state.pollTask;
+      const generation = state.generation;
+      count("polls");
+      const task = session().catch(() => null).then(() => {
+        if (!active() || state.paused || generation !== state.generation) return;
+        state.controls?.pollLastTurn?.(); state.controls?.pollWaitState?.();
+      }).finally(() => {
+        if (state.pollTask === task) { state.pollTask = null; queuePoll(sessionDelay()); }
+      });
+      state.pollTask = task;
+      return task;
+    }
+    function syncContext() {
+      const generation = state.generation;
+      context();
+      if (generation !== state.generation) queuePoll();
+    }
     async function session() {
+      count("sessionCalls");
       const id = context();
       if (!id) return null;
       if (state.codexStatsOn === false || state.remote) return { status: "ok", sessionId: id, title: state.sessionRef?.title || "", lastTurn: state.turn, total: state.nativeUsage?.total || null, today: null, rateLimits: [] };
-      if (state.session && Date.now() - state.sessionAt < 5000) return state.session;
-      if (state.sessionPending) return state.sessionPending;
+      if (state.session && state.sessionAt && Date.now() - state.sessionAt < sessionDelay()) { count("sessionHits"); return state.session; }
+      if (state.sessionPending) { count("sessionJoined"); return state.sessionPending; }
       const baseline = !state.session && !state.turn;
-      const statRevision = state.statRevision;
+      const statRevision = state.statRevision, generation = state.generation;
+      count("sessionRequests");
       const pending = bridge("/whale/session", { ...state.sessionRef, session_id: id }).then((data) => {
-        if (!active() || context() !== id || statRevision !== state.statRevision || state.codexStatsOn === false || state.remote) return null;
+        if (!active() || state.paused || context() !== id || generation !== state.generation || statRevision !== state.statRevision || state.codexStatsOn === false || state.remote) return null;
         state.session = data; state.sessionAt = Date.now();
         if (data?.status === "ok" && !(Date.now() - (state.nativeTurnAt || 0) < 10000 && state.turn?.id === data.lastTurn?.id && state.turn.status === "completed" && data.lastTurn.status === "running")) observe(data.lastTurn, baseline);
         return data;
@@ -19837,6 +19878,8 @@
         const data = payload?.params || payload || {}, turn = data.turn || data;
         const thread = String(data.threadId || data.thread_id || data.conversationId || "").replace(/^local:/, "");
         if (!thread || thread !== context().replace(/^local:/, "")) return;
+        const host = data.hostId || data.host_id;
+        if (host && String(host) !== state.sessionHost) return;
         if (method === "thread/tokenUsage/updated") {
           state.nativeUsage = data.tokenUsage || null;
           if (state.turn && data.tokenUsage?.last) state.turn.usage = data.tokenUsage.last;
@@ -19850,6 +19893,7 @@
           state.pendingWait = null;
           state.sessionAt = 0;
           void state.controls?.pollLastTurn?.();
+          queuePoll();
         } else {
           state.pendingWait = { id: String(payload?.id || data.requestId || data.itemId || data.id || ""), itemId: String(data.itemId || ""), kind: method.includes("requestUserInput") || method === "mcpServer/elicitation/request" ? "question" : "approval" };
           void state.controls?.pollWaitState?.();
@@ -19870,7 +19914,10 @@
       for (const key of ["message", "request", "payload", "data", "notification"]) if (value[key] && typeof value[key] === "object") nativeEnvelope(value[key], depth + 1);
     }
     async function lastTurn() {
+      context();
+      const generation = state.generation;
       await session().catch(() => null);
+      if (!active() || state.paused || generation !== state.generation) return { status: 200, body: { ok: false } };
       if (state.lastTurnResult?.body?.seq === state.seq) return state.lastTurnResult;
       if (state.lastTurnPending) return state.lastTurnPending;
       const seq = state.seq;
@@ -19887,7 +19934,8 @@
         const currencies = Object.keys(totals);
         if (currencies.length === 1) { currency = currencies[0]; amount = totals[currency]; }
         const result = { status: 200, body: { ok: true, seq, turn, amount, currency, usage, estimated: amount !== null } };
-        if (active() && state.seq === seq) state.lastTurnResult = result;
+        if (!active() || state.paused || generation !== state.generation) return { status: 200, body: { ok: false } };
+        if (state.seq === seq) state.lastTurnResult = result;
         return result;
         })().finally(() => { if (state.lastTurnPending === pending) state.lastTurnPending = null; });
         state.lastTurnPending = pending; return pending;
@@ -19959,8 +20007,10 @@
       let body = {};
       if (options.body) { try { body = JSON.parse(options.body); } catch { throw new Error("无效挂件请求"); } }
       if (options.signal?.aborted) throw new Error("挂件请求已取消");
+      context();
+      const generation = state.generation;
       const result = await compatibilityJson(parsed.pathname, method, query, body);
-      if (!active() || options.signal?.aborted) throw new Error("挂件请求已取消");
+      if (!active() || state.paused || generation !== state.generation || options.signal?.aborted) throw new Error("挂件请求已取消");
       if (result?.builtinFragmentId) {
         const uri = codexPlusWhaleFullBuiltin("/dsh-whale/audio-fragment.wav?id=" + encodeURIComponent(result.builtinFragmentId));
         if (!uri) throw new Error("内置音频缺失");
@@ -20033,6 +20083,7 @@
     audio.prototype = window.Audio?.prototype || Object.prototype;
     const host = {
       active, state, tokens: toTokens,
+      startPolling() { state.polling = true; queuePoll(); },
       attach(node) { if (active()) state.nodes.add(node); },
       detach(node) { state.nodes.delete(node); },
       initialSound() { return state.startupConfig?.sound !== false; },
@@ -20144,12 +20195,14 @@
         for (const observer of state.observers) observer.native.disconnect();
         for (const cancel of [...state.pending]) cancel();
         for (const audio of state.audio) { try { void audio.suspend?.().catch?.(() => {}); } catch {} }
-        state.turn = null; state.sessionAt = 0; state.pendingWait = null;
+        state.generation += 1; state.pollTask = null; state.sessionPending = null; state.lastTurnPending = null;
+        if (state.pollTimer !== null) clearTimer(state.pollTimer); state.pollTimer = null;
+        state.session = null; state.sessionAt = 0; state.pendingWait = null;
       } else {
         for (const [id, timer] of state.timers) arm(id, timer);
         for (const [id, frame] of state.rafs) frame.native = requestAnimationFrame((time) => { state.rafs.delete(id); if (active() && !state.paused) frame.callback(time); });
         for (const observer of state.observers) for (const [target, options] of observer.records) observer.native.observe(target, options);
-        context(); subscribe(); void state.controls?.refresh?.(false);
+        context(); subscribe(); queuePoll(); void state.controls?.refresh?.(false);
       }
     }
     function dispose() {
@@ -20173,7 +20226,7 @@
     listen(window, "codex-message-from-view", (event) => nativeEnvelope(event.detail), true);
     // 设置迁移和首次读取在异步等待中也要记录短任务，绑定原 UI 后统一由 seq 消费。
     subscribe();
-    return { state, environment, host, active, pause, dispose, initialize, fetch: fetchCompat, context, session, history, observe, subscribe, nativeEnvelope, prices };
+    return { state, environment, host, active, pause, dispose, initialize, fetch: fetchCompat, context, syncContext, poll, session, history, observe, subscribe, nativeEnvelope, prices };
   }
   // 完整版鲸鱼由上游原始引擎 + Codex 数据适配层组成；默认关闭。
   window.__codexPlusWhaleWidgetRuntime?.dispose?.();
@@ -20207,7 +20260,7 @@
     if (codexPlusWhaleState.profile !== profile) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; }
     codexPlusWhaleState.profile = profile;
     if (codexPlusWhaleState.runtime) {
-      codexPlusWhaleState.runtime.context();
+      codexPlusWhaleState.runtime.syncContext();
       codexPlusWhaleState.runtime.subscribe();
       codexPlusWhaleState.runtime.pause(document.hidden === true);
       return;
