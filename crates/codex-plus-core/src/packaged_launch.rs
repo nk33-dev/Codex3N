@@ -178,6 +178,7 @@ pub fn build_wrapper_script(
     user_data_dir: &Path,
     debug_port: u16,
     known_ports: &[u16],
+    extra_args: &[String],
 ) -> anyhow::Result<String> {
     let port = select_debug_port(debug_port, known_ports).ok_or_else(|| {
         anyhow::anyhow!("找不到可用的回环调试端口（请求 {debug_port}，候选 {known_ports:?}）")
@@ -197,7 +198,8 @@ pub fn build_wrapper_script(
     let mut script = String::new();
     script.push_str("@echo off\r\n");
     // 只 setlocal，不开 delayedexpansion：路径里的 `!` 在 delayedexpansion 下会被吃掉。
-    script.push_str("setlocal\r\n");
+    script.push_str("setlocal DisableDelayedExpansion\r\n");
+    script.push_str("chcp 65001 >nul\r\n");
     script.push_str(&format!("set \"CODEX_HOME={codex_home_literal}\"\r\n"));
     script.push_str(&format!(
         "set \"CODEX_SQLITE_HOME={sqlite_home_literal}\"\r\n"
@@ -209,11 +211,16 @@ pub fn build_wrapper_script(
         // 失败（ACL 拒绝）时 cmd 只打印错误并继续下一行，不影响启动。
         script.push_str(&format!("cd /d \"{dir}\"\r\n"));
     }
+    let extra_arguments = extra_args
+        .iter()
+        .map(|arg| batch_argument(arg))
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .join(" ");
     // `start` 的第一个参数是窗口标题，必须是空标题，否则含空格的 exe 路径会被当成标题。
     // `/b` 不新建控制台窗口；`start` 立即返回，cmd 退出后应用继续跑。
     script.push_str(&format!(
         "start \"\" /b \"{executable_literal}\" --remote-debugging-port={port} \
-         --remote-allow-origins=http://127.0.0.1:{port} --user-data-dir=\"{user_data_dir_literal}\"\r\n"
+         --remote-allow-origins=http://127.0.0.1:{port} --user-data-dir=\"{user_data_dir_literal}\" {extra_arguments}\r\n"
     ));
     script.push_str("endlocal\r\n");
     Ok(script)
@@ -238,6 +245,7 @@ pub fn prepare_wrapper_script(
     user_data_dir: &Path,
     debug_port: u16,
     known_ports: &[u16],
+    extra_args: &[String],
 ) -> anyhow::Result<PathBuf> {
     let script = build_wrapper_script(
         state_dir,
@@ -247,6 +255,7 @@ pub fn prepare_wrapper_script(
         user_data_dir,
         debug_port,
         known_ports,
+        extra_args,
     )?;
     write_wrapper_script(state_dir, &script)
 }
@@ -482,6 +491,29 @@ fn batch_path_literal(path: &Path) -> anyhow::Result<String> {
     Ok(path_text(path)?.replace('%', "%%"))
 }
 
+// 先按 Windows argv 转义，再只保护 cmd 引号外的元字符；百分号在批处理中总会展开。
+fn batch_argument(value: &str) -> anyhow::Result<String> {
+    if value.contains(['\r', '\n', '\0']) {
+        bail!("启动参数包含不可见控制字符");
+    }
+    let quoted = crate::launcher::quote_windows_argument(value);
+    let mut inside = false;
+    let mut result = String::new();
+    for ch in quoted.chars() {
+        if ch == '"' {
+            inside = !inside;
+        }
+        if ch == '%' {
+            result.push('%');
+        }
+        if !inside && matches!(ch, '&' | '|' | '<' | '>' | '^' | '(' | ')') {
+            result.push('^');
+        }
+        result.push(ch);
+    }
+    Ok(result)
+}
+
 /// 路径 → 字符串，并挡掉无法安全拼进脚本的字符。
 fn path_text(path: &Path) -> anyhow::Result<String> {
     let text = path.to_string_lossy();
@@ -532,6 +564,70 @@ mod tests {
     use std::net::{Ipv4Addr, TcpListener};
     use std::thread;
 
+    #[test]
+    fn wrapper_forwards_extra_arguments() {
+        let port = free_port();
+        let script = build_wrapper_script(
+            Path::new("state"),
+            Path::new("app.exe"),
+            Path::new("home"),
+            Path::new("sqlite"),
+            Path::new("data"),
+            port,
+            &[],
+            &[
+                "--disable-direct-composition".into(),
+                "--label=中文 abc".into(),
+            ],
+        )
+        .unwrap();
+        assert!(script.contains("--disable-direct-composition"));
+        assert!(script.contains("\"--label=中文 abc\""));
+        assert!(batch_argument("bad\narg").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn extra_arguments_round_trip_through_real_cmd() {
+        let temp = tempfile::tempdir().unwrap();
+        let driver = temp.path().join("capture.mjs");
+        let output = temp.path().join("args.json");
+        std::fs::write(&driver, "import {writeFileSync} from 'node:fs'; writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3))); ").unwrap();
+        let arguments = [
+            "--disable-direct-composition",
+            "--label=中文 a b",
+            "--percent=100%PATH%",
+            "--chars=!x!&|<>^()",
+            "--quoted=\"a&b\"",
+            "C:\\尾部 空格\\",
+            "",
+        ];
+        let quoted = arguments
+            .iter()
+            .map(|arg| batch_argument(arg).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = format!(
+            "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\nnode \"{}\" \"{}\" {quoted}\r\n",
+            driver.display(),
+            output.display()
+        );
+        let path = temp.path().join("arguments.cmd");
+        std::fs::write(&path, script).unwrap();
+        let result = std::process::Command::new("cmd.exe")
+            .args(["/d", "/c"])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let actual: Vec<String> = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(actual, arguments);
+    }
+
     const AUMID: &str = "OpenAI.Codex_2p2nqsd0c76g0!App";
     /// Windows 形式的路径只在字面量断言里用：macOS 上 `Path::parent()` 按 `/` 切分，
     /// 对 `C:\a\b.exe` 取不到目录，所以涉及 `cd /d` 的用例一律用 `/` 分隔的路径。
@@ -564,12 +660,13 @@ mod tests {
             user_data_dir,
             port,
             &[],
+            &[],
         )
         .unwrap();
 
         assert!(script.starts_with("@echo off\r\n"));
         assert!(script.ends_with("endlocal\r\n"));
-        assert!(script.contains("setlocal\r\n"));
+        assert!(script.contains("setlocal DisableDelayedExpansion\r\n"));
         assert!(script.contains("set \"CODEX_HOME=/Users/a b/.codex\"\r\n"));
         assert!(script.contains("set \"CODEX_SQLITE_HOME=/Users/a b/.codex-sqlite\"\r\n"));
         assert!(script.contains(&format!(
@@ -605,6 +702,7 @@ mod tests {
             Path::new(r"C:\Users\a b\AppData\Local\Codex++\instance 1\user data"),
             free_port(),
             &[],
+            &[],
         )
         .unwrap();
 
@@ -625,6 +723,7 @@ mod tests {
             Path::new(r"C:\user data"),
             9401,
             &[],
+            &[],
         )
         .unwrap();
 
@@ -643,6 +742,7 @@ mod tests {
             Path::new(r"C:\user data"),
             9401,
             &[],
+            &[],
         )
         .unwrap_err();
 
@@ -658,6 +758,7 @@ mod tests {
             Path::new("sqlite"),
             Path::new("user-data"),
             9401,
+            &[],
             &[],
         )
         .unwrap();
@@ -681,6 +782,7 @@ mod tests {
             Path::new("/user-data"),
             busy_port,
             &[free_port],
+            &[],
         )
         .unwrap();
 
@@ -754,6 +856,7 @@ mod tests {
             Path::new("/sqlite"),
             Path::new("/user data"),
             port,
+            &[],
             &[],
         )
         .unwrap();

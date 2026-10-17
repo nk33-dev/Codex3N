@@ -140,3 +140,5 @@ MCP 保存、删除和导入后通过 `syncLiveContextEntries` 将启用状态�
 Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。签名与独立 helper 启动回归使用本机 clang 编译的普通 Mach-O，验证重新签名后的执行与源 app 完整性。
 
 macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-plus` 与 `codex-plus-legacy-shim` 通用二进制，名称从实际 DMG 派生，并通过解压完整性检查。发布附件补跑从 `personal` 的工作流执行，源码仍检出目标标签，保留标签提交。
+
+低功耗模式复用目标页面的 CDP bridge 设置减少动画偏好，关闭时清除媒体覆盖；无限 CSS 动画的暂停状态由渲染端在停用、重载和卸载时还原。Windows MSIX 多开 wrapper 透传额外参数，实测覆盖中文、空格、批处理特殊字符与空参数。

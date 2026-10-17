@@ -35,6 +35,7 @@
       const previousSettings = JSON.stringify(codexPlusBackendSettings);
       const loaded = await loadBackendSettingsState();
       if (loaded && previousSettings !== JSON.stringify(codexPlusBackendSettings)) {
+        if (typeof syncCodexPlusLowPower === "function") syncCodexPlusLowPower();
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
@@ -68,6 +69,7 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    if (typeof syncCodexPlusLowPower === "function") syncCodexPlusLowPower();
     window.__codexPlusConversationPerformance?.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false);
     if (codexPlusBackendSettings.enhancementsEnabled === false) window.__codexPlusGitPerformanceCleanup?.();
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
