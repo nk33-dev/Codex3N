@@ -128,7 +128,7 @@
     {
       "name": "96-whale-compat.js",
       "description": "Codex full whale host and bridge adapters",
-      "lines": 533
+      "lines": 586
     },
     {
       "name": "97-whale-widget.js",

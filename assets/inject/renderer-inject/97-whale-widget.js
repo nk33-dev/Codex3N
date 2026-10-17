@@ -30,7 +30,7 @@
     if (codexPlusWhaleState.profile !== profile) { codexPlusWhaleStop(); codexPlusWhaleState.failedUntil = 0; }
     codexPlusWhaleState.profile = profile;
     if (codexPlusWhaleState.runtime) {
-      codexPlusWhaleState.runtime.context();
+      codexPlusWhaleState.runtime.syncContext();
       codexPlusWhaleState.runtime.subscribe();
       codexPlusWhaleState.runtime.pause(document.hidden === true);
       return;

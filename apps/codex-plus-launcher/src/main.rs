@@ -1364,10 +1364,12 @@ fn require_completed_provider_sync(
     anyhow::bail!("provider sync did not complete ({status:?}): {message}")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct LauncherDataService {
     db_path: PathBuf,
     backup_dir: PathBuf,
+    whale_adapter:
+        std::sync::Mutex<Option<(Vec<PathBuf>, PathBuf, codex_plus_data::SQLiteStorageAdapter)>>,
 }
 
 impl Default for LauncherDataService {
@@ -1375,6 +1377,7 @@ impl Default for LauncherDataService {
         Self {
             db_path: default_codex_db_path(),
             backup_dir: codex_plus_core::paths::default_app_state_dir().join("backups"),
+            whale_adapter: std::sync::Mutex::new(None),
         }
     }
 }
@@ -1455,7 +1458,7 @@ impl BridgeDataService for LauncherDataService {
     }
 
     async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
-        let adapter = self.storage_adapter();
+        let adapter = self.whale_storage_adapter();
         tokio::task::spawn_blocking(move || {
             codex_plus_data::whale_usage::session_summary(&adapter, &session)
         })
@@ -1552,6 +1555,38 @@ impl BridgeDataService for LauncherDataService {
 }
 
 impl LauncherDataService {
+    fn whale_storage_adapter(&self) -> codex_plus_data::SQLiteStorageAdapter {
+        self.whale_storage_adapter_for(
+            self.candidate_db_paths(),
+            codex_plus_core::codex_sqlite::default_codex_home_dir(),
+        )
+    }
+
+    fn whale_storage_adapter_for(
+        &self,
+        paths: Vec<PathBuf>,
+        home: PathBuf,
+    ) -> codex_plus_data::SQLiteStorageAdapter {
+        let mut cached = self
+            .whale_adapter
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((previous_paths, previous_home, adapter)) = cached.as_ref()
+            && *previous_paths == paths
+            && *previous_home == home
+        {
+            return adapter.clone();
+        }
+        let adapter = codex_plus_data::SQLiteStorageAdapter::new(
+            self.db_path.clone(),
+            codex_plus_data::BackupStore::new(self.backup_dir.clone()),
+        )
+        .with_allowed_db_paths(paths.clone())
+        .with_codex_home(&home);
+        *cached = Some((paths, home, adapter.clone()));
+        adapter
+    }
+
     fn candidate_db_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.db_path.clone()];
         for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
@@ -2662,6 +2697,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn whale_requests_share_negative_cache_and_storage_scope_changes_invalidate_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join("sessions")).unwrap();
+        let service = LauncherDataService {
+            db_path: home.join("state.sqlite"),
+            backup_dir: temp.path().join("backups"),
+            whale_adapter: std::sync::Mutex::new(None),
+        };
+        let id = "019a11b9-193d-7c32-a71e-ae11fd3be78f";
+        let session = SessionRef::new(id, "fixture").unwrap();
+        let first = service.whale_storage_adapter_for(vec![], home.clone());
+        assert_eq!(
+            codex_plus_data::whale_usage::session_summary(&first, &session)["status"],
+            "unavailable"
+        );
+        let record = format!(
+            "{}\n{}\n",
+            json!({"type":"session_meta","payload":{"id":id}}),
+            json!({"type":"turn_context","payload":{"turn_id":"fixture-turn","model":"fixture-model"}})
+        );
+        std::fs::write(
+            home.join("sessions").join(format!("rollout-{id}.jsonl")),
+            &record,
+        )
+        .unwrap();
+        let second = service.whale_storage_adapter_for(vec![], home.clone());
+        assert_eq!(
+            codex_plus_data::whale_usage::session_summary(&second, &session)["message"],
+            "未找到本机会话记录"
+        );
+        let refreshed =
+            service.whale_storage_adapter_for(vec![home.join("new-state.sqlite")], home);
+        assert_ne!(
+            codex_plus_data::whale_usage::session_summary(&refreshed, &session)["status"],
+            "unavailable"
+        );
+    }
+
     #[tokio::test]
     async fn watchdog_reuses_bridge_context_with_data_service() {
         let test_dir = std::env::temp_dir().join(format!(
@@ -2674,6 +2749,7 @@ mod tests {
             data: Arc::new(LauncherDataService {
                 db_path: test_dir.join("state.sqlite"),
                 backup_dir: test_dir.join("backups"),
+                whale_adapter: std::sync::Mutex::new(None),
             }),
             runtime: Arc::new(LauncherRuntimeService::new(
                 9229,

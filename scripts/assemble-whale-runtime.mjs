@@ -72,6 +72,7 @@ patch("state.isPeak = !!data.isPeak", "state.peakSupported = data.peakSupported 
 patch("function bubblePeakText(m) {", "function bubblePeakText(m) {\n  if (state.peakSupported !== true) return '未配置峰谷'");
 patch("function bubbleCountdownText() {", "function bubbleCountdownText() {\n  if (state.peakSupported !== true) return '未配置峰谷'");
 patch("express()\nrender()\napplySoundSet()", "codexWhaleHost.bind({ root: root, menu: menuBox, refresh: refresh, showBubble: showBubble, playTaskEndSound: playTaskEndSound, pollWaitState: pollWaitState, pollLastTurn: pollLastTurn, openSoundSettings: openSoundSettingsPanel, openBubbleEditor: openBubbleEditor, openResources: openResManager })\nexpress()\nrender()\napplySoundSet()");
+patch("setInterval(function () { pollLastTurn(); pollWaitState() }, 1000)", "codexWhaleHost.startPolling()");
 // 只改 Codex 适配说明；DeepSeek 作为可选厂商模板仍保留原名称。
 source = source.replaceAll("DeepSeek（内置）", "当前供应商").replaceAll("DeepSeek 账户余额", "当前供应商账户余额").replaceAll("配置 DeepSeek API key", "配置当前供应商 API").replaceAll("DSH 数据目录", "Codex++ 数据目录").replaceAll("按本机 DSH 会话", "按本机 Codex 会话").replaceAll("DeepSeek 余额", "Codex 用量");
 const generated = "// 此文件由 scripts/assemble-whale-runtime.mjs 从上游完整源码生成，请修改生成器。\n" + source;
