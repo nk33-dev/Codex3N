@@ -2,6 +2,8 @@ const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const vm = require("node:vm");
 const dictationSource = readFileSync(`${__dirname}/renderer-inject/93-dictation.js`, "utf8");
+const contextSource = readFileSync(`${__dirname}/renderer-inject/93-prompt-enhance-context.js`, "utf8");
+const librarySource = readFileSync(`${__dirname}/renderer-inject/93-prompt-library.js`, "utf8");
 const source = readFileSync(`${__dirname}/renderer-inject/93-prompt-enhance.js`, "utf8");
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
@@ -38,7 +40,7 @@ function proseMirror(lines, extra = []) {
 }
 
 function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], extra = [], respond } = {}) {
-  const requests = [], toasts = [], events = [], appended = [];
+  const requests = [], toasts = [], events = [], appended = [], responseResolvers = [];
   let resolveResponse;
   class Textarea {
     constructor(value) { this._value = value; this.dataset = {}; this.isConnected = true; }
@@ -68,7 +70,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const window = { location: { href: "app://-/thread/one" }, innerWidth: 1200, innerHeight: 800, addEventListener() {}, removeEventListener() {} };
   const context = vm.createContext({
     window, document, navigator: {}, HTMLTextAreaElement: Textarea, Event, console, crypto: { randomUUID: () => "id" },
-    requestAnimationFrame: () => {}, setInterval, clearInterval, setTimeout,
+    requestAnimationFrame: () => {}, setInterval, clearInterval, setTimeout, clearTimeout,
     registerCodexPlusExtensionSelector() {}, visibleElement: () => true, isExtensionUiNode: () => false,
     codexPlusBackendSettingsLoaded: true,
     codexPlusBackendSettings: { promptEnhance: { enabled: true }, dictation: { enabled: false } },
@@ -76,19 +78,22 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     postJson: async (path, payload) => {
       requests.push({ path, payload });
       if (respond) return respond(payload);
-      return new Promise(resolve => { resolveResponse = resolve; });
+      return new Promise(resolve => { resolveResponse = resolve; responseResolvers.push(resolve); });
     },
   });
-  vm.runInContext(`${dictationSource}\n${source}\n globalThis.testApi = {
+  vm.runInContext(`${dictationSource}\n${contextSource}\n${source}\n${librarySource}\n globalThis.testApi = {
     state: codexPlusPromptEnhance, read: codexPlusPromptEnhanceRead, write: codexPlusPromptEnhanceWrite,
     start: startCodexPlusPromptEnhance, apply: applyCodexPlusPromptEnhance, close: closeCodexPlusPromptEnhance,
     blocker: codexPlusPromptEnhanceReplaceBlocker, enabled: codexPlusPromptEnhanceEnabled,
+    request: requestCodexPlusPromptEnhance, guard: guardCodexPlusPromptEnhance,
+    modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite, feedback: saveCodexPlusPromptFeedback,
+    round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
   };`, context);
   context.renderCodexPlusPromptEnhance = () => {};
   // 跳过 DOM 布局查询，直接把 footer 映射到测试输入框。
   context.codexPlusDictationScope = () => ({});
   context.codexPlusDictationEditor = () => editor;
-  return { ...context.testApi, context, editor, requests, toasts, events, resolve: value => resolveResponse(value) };
+  return { ...context.testApi, context, editor, requests, toasts, events, responseResolvers, resolve: value => resolveResponse(value) };
 }
 
 (async () => {
@@ -242,6 +247,195 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   disabled.context.codexPlusBackendSettings.promptEnhance.enabled = true;
   disabled.context.codexPlusBackendSettings.enhancementsEnabled = false;
   assert.equal(disabled.enabled(), false, "the master enhancement switch pauses prompt enhance");
+
+  const question = (id = "goal") => ({ id, title: "目标", question: "覆盖哪些功能？",
+    options: [{ label: "管理图书", description: "先完成图书增删改查" }, { label: "包含借阅", description: "同时处理借还流程" }], recommended: 0 });
+  const grill = fixture({ respond: payload => payload.forceFinal ? { status: "ok", kind: "final", text: "最终提示词" }
+    : { status: "ok", kind: "questions", questions: [question()] } });
+  await grill.start({}, "grill");
+  assert.equal(grill.state.phase, "questions");
+  assert.equal(grill.state.history.length, 0);
+  assert.equal(grill.round().answers.length, 0, "recommendations are not silently accepted");
+  await grill.request();
+  assert.equal(grill.requests.length, 1, "unanswered rounds require confirmation");
+  grill.state.answers.goal = { selected: 0 };
+  await grill.request();
+  assert.equal(grill.state.history.length, 1);
+  assert.equal(grill.state.answers.goal, undefined, "each new round needs fresh confirmation");
+  grill.state.answers.goal = { custom: true, text: "图书管理和导出" };
+  await grill.request();
+  assert.equal(grill.state.history.length, 2);
+  assert.equal(grill.requests[2].payload.history[1].answers[0].answer, "图书管理和导出");
+  grill.state.answers.goal = { selected: 1 };
+  await grill.request();
+  assert.equal(grill.requests[3].payload.forceFinal, true);
+  assert.equal(grill.requests[3].payload.history.length, 3);
+  assert.equal(grill.state.phase, "result");
+  assert.equal(grill.state.text, "最终提示词");
+
+  let failOnce = true;
+  const retry = fixture({ respond: payload => payload.history?.length && failOnce
+    ? (failOnce = false, { status: "failed", message: "超时" })
+    : { status: "ok", kind: "questions", questions: [question()] } });
+  await retry.start({}, "grill");
+  retry.state.answers.goal = { custom: true, text: "已填写的答案" };
+  await retry.request();
+  assert.equal(retry.state.phase, "error");
+  assert.equal(retry.state.answers.goal.text, "已填写的答案");
+  await retry.request({ retry: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(retry.requests[1].payload)), JSON.parse(JSON.stringify(retry.requests[2].payload)));
+  assert.equal(retry.state.history.length, 1, "retry does not append the round twice");
+
+  const direct = fixture({ respond: payload => payload.forceFinal ? { status: "ok", text: "直接结果" }
+    : { status: "ok", kind: "questions", questions: [question("one"), question("two")] } });
+  await direct.start({}, "grill");
+  direct.state.answers.one = { selected: 1 };
+  await direct.request({ forceFinal: true });
+  assert.equal(direct.state.phase, "result");
+  assert.equal(direct.requests[1].payload.history[0].answers.length, 1, "direct generation uses only confirmed answers");
+
+  const changed = fixture();
+  const changing = changed.start({}, "grill");
+  await flush();
+  changed.editor.pmViewDesc.view.state.doc.blocks[0].children[0].text = "新草稿";
+  changed.resolve({ status: "ok", kind: "questions", questions: [question()] });
+  await changing;
+  assert.equal(changed.state.phase, "stale");
+  const changeRevision = changed.state.revision;
+  await changed.request({ forceFinal: true });
+  assert.equal(changed.requests.length, 1, "changed drafts pause the old interview");
+  assert.ok(changed.state.revision >= changeRevision);
+  changed.close();
+  const restarted = changed.start({}, "grill");
+  await flush();
+  assert.equal(changed.requests[1].payload.prompt, "新草稿");
+  assert.equal(changed.requests[1].payload.history.length, 0);
+  changed.resolve({ status: "ok", text: "结果" });
+  await restarted;
+
+  const late = fixture();
+  const lateRun = late.start({}, "grill");
+  await flush();
+  late.context.window.location.href = "app://-/thread/another";
+  late.resolve({ status: "ok", kind: "questions", questions: [question()] });
+  await lateRun;
+  assert.equal(late.state.phase, "stale");
+  assert.equal(late.state.questions.length, 0);
+
+  const superseded = fixture();
+  const supersededStart = superseded.start({}, "grill");
+  await flush();
+  const oldResponse = superseded.responseResolvers[0];
+  // 直接生成在旧请求返回前递增 revision，只采用最后一次请求。
+  const directWhileLoading = superseded.request({ forceFinal: true });
+  await flush();
+  assert.equal(superseded.requests[1].payload.forceFinal, true);
+  superseded.resolve({ status: "ok", text: "直接生成结果" });
+  await directWhileLoading;
+  oldResponse({ status: "ok", kind: "questions", questions: [question()] });
+  await supersededStart;
+  assert.equal(superseded.state.text, "直接生成结果");
+  assert.equal(superseded.state.phase, "result");
+  assert.equal(superseded.state.history.length, 0);
+
+  const specialId = fixture({ respond: () => ({ status: "ok", kind: "questions", questions: [question("__proto__")] }) });
+  await specialId.start({}, "grill");
+  assert.equal(specialId.round().answers.length, 0);
+  specialId.state.answers["__proto__"] = { selected: 1 };
+  assert.equal(specialId.round().answers[0].answer, "包含借阅");
+
+  const withContext = fixture({ respond: () => ({ status: "ok", text: "结果", context: { enabled: true, sections: [] } }) });
+  withContext.context.codexPlusBackendSettings.promptEnhance.context = { enabled: true, project: true };
+  withContext.editor.__reactFiber$test = { memoizedProps: { conversationId: "thread-one", hostId: "local", cwd: "D:/project" },
+    memoizedState: { memoizedState: { current: { get() {}, value: { routeKind: "local-thread", conversationId: "thread-one", hostId: "local" } } } } };
+  await withContext.start({});
+  assert.equal(withContext.requests[0].payload.workingDirectory, "D:/project");
+  assert.equal(withContext.requests[0].payload.sessionId, "thread-one");
+  assert.equal(withContext.requests[0].payload.hostId, "local");
+  withContext.editor.__reactFiber$test.memoizedProps.cwd = "D:/different";
+  assert.equal(withContext.apply("append", "结果"), false, "same-URL project changes cannot receive an old result");
+
+  const remote = fixture({ respond: () => ({ status: "ok", text: "结果" }) });
+  remote.context.codexPlusBackendSettings.promptEnhance.context = { enabled: true, project: true };
+  remote.editor.__reactFiber$test = { memoizedProps: { conversationId: "remote", hostId: "ssh:test", cwd: "D:/private" },
+    memoizedState: { memoizedState: { current: { get() {}, value: { routeKind: "local-thread", conversationId: "remote", hostId: "ssh:test" } } } } };
+  await remote.start({});
+  assert.equal(remote.requests[0].payload.workingDirectory, "");
+  assert.match(remote.state.project.reason, /远程/);
+
+  const blank = fixture();
+  blank.editor.__reactFiber$test = { memoizedProps: { composerId: "composer-new", hostId: "local", cwd: "D:/new-project" } };
+  assert.equal(blank.location(blank.editor, "composer-new").workingDirectory, "D:/new-project");
+  assert.equal(blank.location(blank.editor, "unrelated").workingDirectory, undefined);
+
+  const home = fixture();
+  home.editor.__reactFiber$test = { memoizedState: { memoizedState: { current: { get() {}, value: {
+    routeKind: "home", projectContext: { hostId: "local", projectId: "D:/home-project" },
+  } } } } };
+  assert.equal(home.location(home.editor).workingDirectory, "D:/home-project");
+  home.editor.__reactFiber$test.memoizedState.memoizedState.current.value.projectContext.projectId = "project-opaque-id";
+  assert.equal(home.location(home.editor).workingDirectory, undefined, "opaque project IDs cannot become filesystem paths");
+
+  const metadata = fixture();
+  metadata.context.codexPlusBackendSettings.promptEnhance.context = { enabled: true, project: true };
+  metadata.editor.__reactFiber$test = { memoizedProps: { conversationId: "thread-one", hostId: "local" },
+    memoizedState: { memoizedState: { current: { get() {}, value: { routeKind: "local-thread", conversationId: "thread-one", hostId: "local" } } } } };
+  const metaCalls = [];
+  metadata.context.nativeHostClient = host => ({ sendRequest: async (method, params) => {
+    metaCalls.push({ host, method, params }); return { thread: { id: "thread-one", cwd: "D:/metadata" } };
+  } });
+  const project = await metadata.project({ editor: metadata.editor, href: metadata.context.window.location.href });
+  assert.equal(project.workingDirectory, "D:/metadata");
+  assert.equal(metaCalls[0].params.includeTurns, false);
+  assert.equal(metaCalls[0].host, "local");
+
+  const switches = fixture({ respond: () => ({ status: "ok", text: "结果" }) });
+  switches.context.codexPlusBackendSettings.promptEnhance.rewriteEnabled = false;
+  await switches.start({});
+  assert.equal(switches.state.mode, "grill", "disabled defaults fall back to the available mode");
+  assert.equal(switches.requests[0].payload.mode, "grill");
+  switches.context.codexPlusBackendSettings.promptEnhance.grillEnabled = false;
+  assert.equal(switches.enabled(), false);
+  await switches.request(); assert.equal(switches.requests.length, 1);
+
+  const scene = fixture({ respond: () => ({ status: "ok", text: "结果", metadata: { mode: "grill", scenario: "general", model: "test", systemPrompt: "规则" } }) });
+  await scene.start({}, "grill");
+  scene.state.history = [{ questions: [question()], answers: [{ questionId: "goal", answer: "答案" }] }];
+  scene.state.text = "编辑过的结果"; scene.state.scenario = "bugfix";
+  scene.context.window.confirm = () => false;
+  await scene.request({ regenerate: true, forceFinal: true });
+  assert.equal(scene.requests.length, 1); assert.equal(scene.state.text, "编辑过的结果");
+  scene.context.window.confirm = () => true;
+  await scene.request({ regenerate: true, forceFinal: true });
+  assert.equal(scene.requests[1].payload.scenario, "bugfix");
+  assert.equal(scene.requests[1].payload.history.length, 0);
+  assert.equal(scene.requests[1].payload.forceFinal, false, "new grill scenarios restart questions");
+
+  const favorites = fixture({ lines: ["草稿"], respond: () => ({ status: "ok" }) });
+  favorites.library.target = { editor: favorites.editor, href: favorites.context.window.location.href, original: "草稿", rich: false, doc: favorites.editor.pmViewDesc.view.state.doc };
+  const item = { id: "saved", body: "收藏正文" };
+  favorites.context.navigator.clipboard = { writeText: async text => { assert.equal(text, "收藏正文"); } };
+  await favorites.useFavorite(item, "copy");
+  assert.equal(favorites.requests[0].path, "/prompt-enhance/library/use");
+  favorites.editor.pmViewDesc.view.state.doc.blocks[0].children[0].text = "新草稿";
+  await favorites.useFavorite(item, "replace");
+  assert.equal(favorites.editor.pmViewDesc.view.dispatched.length, 0, "favorites cannot replace changed drafts");
+  assert.equal(favorites.requests.length, 1, "rejected writes do not count as recent use");
+  favorites.context.window.location.href = "app://-/thread/other";
+  await favorites.useFavorite(item, "append");
+  assert.equal(favorites.editor.pmViewDesc.view.dispatched.length, 0, "favorites cannot append to another session");
+
+  const explicit = fixture({ respond: () => ({ status: "ok", text: "生成结果", metadata: { mode: "rewrite", scenario: "general", model: "test", systemPrompt: "规则" } }) });
+  await explicit.start({});
+  assert.equal(explicit.requests.length, 1, "generation does not automatically save feedback");
+  explicit.state.text = "编辑结果";
+  explicit.context.postJson = async (path, payload) => { explicit.requests.push({ path, payload }); return { status: "ok" }; };
+  await explicit.feedback({ querySelector: () => null });
+  assert.equal(explicit.requests[1].path, "/prompt-enhance/feedback/save");
+  assert.equal(explicit.requests[1].payload.generated, "生成结果");
+  assert.equal(explicit.requests[1].payload.edited, "编辑结果");
+  assert.equal(explicit.requests[1].payload.metadata.model, "test");
+  assert.equal(explicit.requests[1].payload.history.length, 0);
 
   console.log("prompt enhance read, preview, replace, append, cancel and stale-draft contracts passed");
 })().catch(error => { console.error(error); process.exit(1); });
