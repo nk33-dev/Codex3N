@@ -44,6 +44,50 @@ pub fn prompt_enhance_default_system_prompt() -> String {
     codex_plus_core::prompt_enhance::default_system_prompt().to_string()
 }
 
+#[tauri::command]
+pub fn prompt_enhance_default_grill_system_prompt() -> String {
+    codex_plus_core::prompt_enhance::default_grill_system_prompt().to_string()
+}
+
+#[tauri::command]
+pub async fn prompt_tools_request(action: String, payload: Value) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::prompt_enhance::store::execute(
+            &codex_plus_core::prompt_enhance::store::default_path(),
+            &action,
+            payload,
+        )
+    })
+    .await
+    .unwrap_or_else(|_| json!({"status":"failed","message":"收藏或反馈操作失败，请重试"}))
+}
+
+#[tauri::command]
+pub async fn prompt_tools_export_file(kind: String, path: String, payload: Value) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !["library", "feedback"].contains(&kind.as_str()) {
+            return json!({"status":"failed","message":"未知导出内容"});
+        }
+        let result = codex_plus_core::prompt_enhance::store::execute(
+            &codex_plus_core::prompt_enhance::store::default_path(),
+            &format!("{kind}/export"),
+            payload,
+        );
+        if result["status"] != "ok" {
+            return result;
+        }
+        let saved = serde_json::to_vec_pretty(&result["document"])
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| codex_plus_core::settings::atomic_write(Path::new(&path), &bytes));
+        match saved {
+            Ok(()) => json!({"status":"ok"}),
+            Err(_) => json!({"status":"failed","message":"导出失败，请重新选择保存位置"}),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| json!({"status":"failed","message":"导出失败，请重试"}))
+}
+
 /// 只注册为管理器命令，不开放给用户脚本或公开 HTTP 路由。
 #[tauri::command]
 pub async fn download_dictation_local_model() -> CommandResult<Value> {
