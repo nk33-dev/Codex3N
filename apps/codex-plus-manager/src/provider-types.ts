@@ -119,6 +119,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppForceChineseLocale: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppThreadIdBadge: boolean;
+  codexAppLowPower: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
   codexAppNativeMenuPlacement: boolean;

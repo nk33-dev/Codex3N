@@ -2,6 +2,8 @@
 
 记录管理器生命周期、配置安装和注入拼装的当前入口。上游同步与发布步骤见[维护流程](maintenance.md)。
 
+发布脚本在参数声明后统一控制台与管道输出为 UTF-8，中文失败信息不受原控制台代码页影响；`release.test.ts` 覆盖 UTF-8 和 GBK（936）环境下的失败拦截。
+
 管理器路由副标题从 `App.tsx` 经 `route-subtitle.ts` 提供；外链命令从 `commands.rs` 经 `commands/external_url.rs` 注册。两处沿用原入口，不增加独立监听或重复命令。
 
 ## 管理器加载和后台刷新
@@ -93,7 +95,9 @@
 管理器 `PluginMarketScreen.tsx` 自行按需读取插件目录，`manager-loading.ts` 的 `pluginMarket` 页面不重复请求。Tauri 命令 `refresh_plugin_market`、`install_plugin_market_item`、`plugin_market_install_status` 注册在 `lib.rs`，桥接 `/plugin-market/*` 由 `routes.rs` 调用 `plugin_market.rs`。Codex 原生插件页通过 `62-plugin-market-adapter.js` 接入同一索引与安装任务，保留原生导航入口。
 
 上游新增设置统一迁入 `provider-types.ts` 和 `lib/default-settings.ts`，`App.tsx` 保留归一化、校验与保存互斥；页面副标题由 `route-subtitle.ts` 提供。插件市场的翻译调用加入 `tools/i18n-verify.mjs` 的扫描清单。
-- Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`/backend/status` 与 `/diagnostics/log` 的成功请求不重复写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变，避免空闲心跳持续放大日志和磁盘写入。
+- Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`routes.rs::is_high_frequency_bridge_path` 列出的秒级轮询路由（`/backend/status`、`/diagnostics/log`、`/settings/get`、`/thread-usage-live`）成功时不写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变。后两者原先每次调用写 4 行，占日志九成。
+- `/settings/get` 经 `SettingsStore::try_load_cached` 按设置文件的 mtime 与长度复用解析结果，5 秒心跳不再每次读盘解密；读失败照常报错且不缓存。读-改-写路径仍用 `load()`。
+- `/thread-usage-live` 按数据库路径与会话 ID 缓存 rollout 路径（最多 256 项），文件仍在时不再开库查询；文件消失后回落查库。
 
 ## 会话切换性能诊断
 
@@ -136,3 +140,25 @@ MCP 保存、删除和导入后通过 `syncLiveContextEntries` 将启用状态�
 Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。签名与独立 helper 启动回归使用本机 clang 编译的普通 Mach-O，验证重新签名后的执行与源 app 完整性。
 
 macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-plus` 与 `codex-plus-legacy-shim` 通用二进制，名称从实际 DMG 派生，并通过解压完整性检查。发布附件补跑从 `personal` 的工作流执行，源码仍检出目标标签，保留标签提交。
+
+低功耗模式复用目标页面的 CDP bridge 设置减少动画偏好，关闭时清除媒体覆盖；无限 CSS 动画的暂停状态由渲染端在停用、重载和卸载时还原。Windows MSIX 多开 wrapper 透传额外参数，实测覆盖中文、空格、批处理特殊字符与空参数。
+
+低功耗开启时 Git worker 将非仓库与失败查询缓存 30 秒；成功仍为 2 秒，取消不缓存，目录、主机与原生事件失效保持隔离。工厂探测兼容 shared 和 initial 模块，真实 App 已验证安装入口。
+
+维护页按需扫描官方工作区根目录的 `.git`，确认改名时复查记录与指纹，保留备份。测试覆盖 HEAD 新增、目录内容变化、工作区记录移除和 Windows junction；链接与 `.git` 文件不处理。
+
+## 官方 App 子进程清理
+
+`owned_processes` 在受管实例启动或恢复接管时按调试端口认领官方主进程，运行期间每 5 秒采样其后代，身份由 PID、创建时间及映像路径组成；创建时间不完整或父链代际异常时不认领。状态目录的 `owned-app-children` 保存当前身份记录，内容只含进程身份及用途，不保存命令行或会话数据。多开使用自己的状态目录；维护页同时读取已有多开清单对应的身份记录。
+
+`DefaultLaunchHooks::terminate_codex` 和退出等待共用监测器收尾。只有主进程确认退出后，才清理已记录的 `codex app-server` 和 `node` 后代；其他实例、VS Code 进程及 PID 复用后的进程不在清理范围。Windows 校验与终止共用同一原生句柄；进程快照不可用时停止清理。运行期间不自动结束任何进程。
+
+维护页进入时及手动刷新时查询 `codex_child_processes`，显示数量、可读取的工作集内存和连接状态；`cleanup_disconnected_app_servers` 只清理已有归属记录、父进程已消失的 app-server，执行前用户确认。macOS 采样使用 ps 的 PID、PPID、rss、stat、lstart、args，结合退出前记录识别被重挂到 PID 1 的后代；Z 状态只提示需重启官方 App。Linux 暂不提供该功能。
+
+验证包含父链、PID 复用、用途匹配、手动和自动边界的策略测试，以及 Windows 原生进程夹具（官方实例退出后 app-server/node 清理、模拟 VS Code 子进程保留）。真实 macOS 与 Linux 尚未实机验证。
+
+2026-10-17 的 Windows 门禁通过：`cargo fmt --check`、`cargo check --workspace`、`cargo test --workspace`、管理器 `npm run check`、`npm test`（846 通过、1 跳过）、Vite 构建和注入拼装一致性。发布脚本在强制代码页 936 下验证中文错误可读且失败后停止打标签、推送和创建 Release；移除 UTF-8 初始化的临时副本能复现两个乱码失败。
+
+实机验收入口为 `cargo run -p codex-plus-core --example low_power_probe -- <官方 App 目录> <系统临时目录> <调试端口>`。它要求显式隔离 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，只在临时目录保存配置与 Electron 数据。运行中的二进制应复制到临时目录，避免占用共享 target 影响后续编译。原始本机日志保存在系统临时目录的 `codex3n-low-power-checks`、`codex3n-low-power-live`，不含会话正文；GPU、Git 与导航结果见 [增强业务](enhancements.md#低功耗与-git-维护)。真实多会话退出及真实 VS Code 共存场景未验证，Windows 原生夹具的模拟 Code 进程不能代替该结论。
+
+最后一个真实隔离实例退出前记录到 1 个 codex 子进程，退出后该进程已消失；同次检查的其他 41 个 node/codex 进程仍存活，验收 launcher 随后退出。该实例没有真实会话，因此只证明此次空闲退出与进程隔离结果。

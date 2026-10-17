@@ -1,9 +1,9 @@
-  function patchCodexPlusGitWorkerPerformance(worker) {
+  function patchCodexPlusGitWorkerPerformance(worker, lowPowerEnabled = () => false) {
     if (worker?.workerId !== "git" || typeof worker.request !== "function"
         || !(worker.allEventListeners instanceof Set)) return null;
     const original = worker.request;
     const entries = new Map();
-    let revision = 0, disposed = false;
+    let revision = 0, disposed = false, lastLowPower = lowPowerEnabled();
     const invalidate = () => { revision += 1; entries.clear(); };
     const clone = (value) => structuredClone(value);
 
@@ -34,6 +34,8 @@
     }
 
     const patched = function codexPlusGitPerformanceRequest(request) {
+      const lowPower = lowPowerEnabled();
+      if (lowPower !== lastLowPower) { invalidate(); lastLowPower = lowPower; }
       const params = request?.params;
       // watchForGitInit 会安装监听；只合并无副作用的本机仓库识别。
       if (disposed || request?.method !== "stable-metadata" || !params?.cwd
@@ -57,13 +59,16 @@
         created.promise = Promise.resolve().then(() => original.call(worker, { ...request, signal: created.controller.signal })).then((value) => {
           created.settled = true;
           const valid = value && typeof value.root === "string" && typeof value.commonDir === "string";
-          if (!disposed && currentRevision === revision && valid && entries.get(key) === created) {
-            created.expiresAt = Date.now() + 2000;
+          if (!disposed && currentRevision === revision && (valid || lowPower) && entries.get(key) === created) {
+            created.expiresAt = Date.now() + (valid ? 2000 : 30000);
           } else if (entries.get(key) === created) entries.delete(key);
           return value;
         }, (error) => {
           created.settled = true;
-          if (entries.get(key) === created) entries.delete(key);
+          if (!disposed && currentRevision === revision && lowPower && error?.name !== "AbortError"
+              && !created.controller.signal.aborted && entries.get(key) === created) {
+            created.expiresAt = Date.now() + 30000;
+          } else if (entries.get(key) === created) entries.delete(key);
           throw error;
         });
       }
@@ -92,20 +97,29 @@
     codexPlusGitPerformanceInstalling = true;
     codexPlusGitPerformanceRetryAt = Date.now() + 30000;
     try {
-      const module = await loadOptionalCodexAppModule("app-shared-");
-      if (codexPlusScanDisposed || codexPlusBackendSettings.enhancementsEnabled === false || !module) return;
-      // 导出名随构建变化，按已核对的 worker 工厂结构识别。
-      const factories = Object.values(module).filter((candidate) => {
-        if (typeof candidate !== "function") return false;
-        const source = String(candidate);
-        return /case\s*[`'"]git[`'"]/.test(source) && /case\s*[`'"]computer-use[`'"]/.test(source)
-          && source.includes("new ") && source.includes(".set(");
-      });
-      if (factories.length !== 1) {
-        codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
+      let factory = null, loaded = false;
+      // 两代宿主分别导出在 shared 和 initial 中，沿用已有模块缓存及失败冷却。
+      for (const hint of ["app-shared-", "app-initial-"]) {
+        const module = await loadOptionalCodexAppModule(hint);
+        if (codexPlusScanDisposed || codexPlusBackendSettings.enhancementsEnabled === false) return;
+        if (!module) continue;
+        loaded = true;
+        const factories = Object.values(module).filter((candidate) => {
+          if (typeof candidate !== "function") return false;
+          try {
+            const source = String(candidate);
+            return /case\s*[`'"]git[`'"]/.test(source) && /case\s*[`'"]computer-use[`'"]/.test(source)
+              && source.includes("new ") && source.includes(".set(");
+          } catch { return false; }
+        });
+        if (factories.length > 1) { codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY; return; }
+        if (factories.length === 1) { factory = factories[0]; break; }
+      }
+      if (!factory) {
+        if (loaded) codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
         return;
       }
-      const cleanup = patchCodexPlusGitWorkerPerformance(factories[0]("git"));
+      const cleanup = patchCodexPlusGitWorkerPerformance(factory("git"), () => codexPlusBackendSettings.codexAppLowPower === true);
       codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
       if (cleanup) window.__codexPlusGitPerformanceCleanup = () => {
         cleanup();
@@ -117,4 +131,85 @@
     } finally {
       codexPlusGitPerformanceInstalling = false;
     }
+  }
+
+  function createCodexPlusLowPowerAnimations() {
+    const saved = new Map(), pseudoAnimations = new Map();
+    let observer = null, frame = 0, enabled = false;
+    const restore = (node, state) => {
+      if (node.style.getPropertyValue("animation-play-state") === state.applied) {
+        if (state.value) node.style.setProperty("animation-play-state", state.value, state.priority);
+        else node.style.removeProperty("animation-play-state");
+      }
+    };
+    function refresh() {
+      frame = 0;
+      if (!enabled || document.hidden) return;
+      // 暂停会改写计算样式；先还原再读取，避免旧的循环槽位影响新的有限动画。
+      observer?.disconnect();
+      for (const [node, state] of saved) restore(node, state);
+      saved.clear();
+      const targets = new Set();
+      for (const animation of document.getAnimations()) {
+        if (typeof CSSAnimation === "undefined" || !(animation instanceof CSSAnimation)
+            || animation.effect?.getTiming().iterations !== Infinity) continue;
+        const node = animation.effect.target;
+        if (!node?.style) continue;
+        if (animation.effect.pseudoElement) {
+          if (!pseudoAnimations.has(animation) && animation.playState === "running") {
+            pseudoAnimations.set(animation, true);
+            animation.pause();
+          }
+        } else targets.add(node);
+      }
+      for (const [node, state] of saved) {
+        if (!targets.has(node)) { restore(node, state); saved.delete(node); }
+      }
+      for (const node of targets) {
+        const computed = getComputedStyle(node);
+        const iterations = computed.animationIterationCount.split(",").map((s) => s.trim());
+        const names = computed.animationName.split(",");
+        const states = computed.animationPlayState.split(",").map((s) => s.trim());
+        let state = saved.get(node);
+        if (!state) {
+          state = { value: node.style.getPropertyValue("animation-play-state"), priority: node.style.getPropertyPriority("animation-play-state"), applied: "" };
+          saved.set(node, state);
+        }
+        const applied = names.map((_, i) => iterations[i % iterations.length] === "infinite" ? "paused" : states[i % states.length]).join(", ");
+        state.applied = applied;
+        if (node.style.getPropertyValue("animation-play-state") !== applied) node.style.setProperty("animation-play-state", applied, "important");
+      }
+      for (const [animation] of pseudoAnimations) {
+        if (animation.effect?.getTiming().iterations !== Infinity && animation.playState === "paused") animation.play();
+        if (animation.effect?.getTiming().iterations !== Infinity || animation.playState === "idle" || animation.playState === "finished") pseudoAnimations.delete(animation);
+      }
+      observer?.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style"] });
+    }
+    const schedule = () => { if (enabled && !document.hidden && !frame) frame = requestAnimationFrame(refresh); };
+    function setEnabled(next) {
+      if (enabled === next) return;
+      enabled = next;
+      if (enabled) {
+        observer = new MutationObserver(schedule);
+        observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["class", "style"] });
+        document.addEventListener("animationstart", schedule, true);
+        document.addEventListener("visibilitychange", schedule);
+        schedule();
+      } else {
+        observer?.disconnect(); observer = null;
+        cancelAnimationFrame(frame); frame = 0;
+        document.removeEventListener("animationstart", schedule, true);
+        document.removeEventListener("visibilitychange", schedule);
+        for (const [node, state] of saved) restore(node, state);
+        saved.clear();
+        for (const [animation] of pseudoAnimations) if (animation.playState === "paused") animation.play();
+        pseudoAnimations.clear();
+      }
+    }
+    return { setEnabled };
+  }
+
+  function syncCodexPlusLowPower() {
+    window.__codexPlusLowPowerAnimations ||= createCodexPlusLowPowerAnimations();
+    window.__codexPlusLowPowerAnimations.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false && codexPlusBackendSettings.codexAppLowPower === true);
   }

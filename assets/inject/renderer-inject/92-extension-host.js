@@ -180,8 +180,9 @@
       if (!liveIds.has(node.getAttribute(codexPlusExtensionRailAttribute) || "")) node.remove();
     });
     if (!entries.length) return false;
-    const anchor = codexPlusRailPrimaryAnchor(rail);
-    const host = anchor?.parentElement || rail;
+    const anchor = codexPlusRailInsertAnchor(rail);
+    if (!anchor) return false;
+    const host = anchor.parentElement;
     const template = codexPlusRailTemplateButton(rail);
     let cursor = anchor;
     // 内置三项先占位，第三方从它们之后开始排。
@@ -220,11 +221,7 @@
         markCodexPlusExtensionNode(wrapper, entry.scriptKey);
         markCodexPlusExtensionNode(wrapper.firstElementChild || wrapper, entry.scriptKey);
       }
-      if (cursor?.nextSibling) {
-        if (cursor.nextSibling !== wrapper) host.insertBefore(wrapper, cursor.nextSibling);
-      } else if (cursor) {
-        host.appendChild(wrapper);
-      }
+      if (cursor.nextSibling !== wrapper) host.insertBefore(wrapper, cursor.nextSibling);
       cursor = wrapper;
     });
     return true;

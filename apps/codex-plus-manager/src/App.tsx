@@ -3034,12 +3034,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (route !== "weixin") return;
-    const timer = window.setInterval(() => void refreshWeixinStatus(true), 2_000);
-    return () => window.clearInterval(timer);
-  }, [route]);
-
-  useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.classList.toggle("light", theme === "light");
     window.localStorage.setItem("codex-plus-theme", theme);
@@ -5192,6 +5186,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
   const [localModelState, setLocalModelState] = useState<DictationLocalModelState | null>(null);
   const [localModelDownloading, setLocalModelDownloading] = useState(false);
   const [localModelError, setLocalModelError] = useState("");
+  const localModelBusy = localModelDownloading || localModelState?.phase === "downloading";
   useEffect(() => {
     if (form.dictation.provider !== "sensevoice") return;
     let active = true;
@@ -5199,9 +5194,10 @@ function DictationSettingsPanel({ form, onFormChange }: {
       .then((state) => { if (active) { setLocalModelState(state); } })
       .catch(() => { if (active) setLocalModelError(t("无法读取本地模型状态，请重试。")); });
     void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, 1000);
+    // 只有下载进度需要每秒刷新；空闲时慢速兜底，窗口隐藏时不读。
+    const timer = window.setInterval(() => { if (!document.hidden) void refresh(); }, localModelBusy ? 1000 : 15_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [form.dictation.provider]);
+  }, [form.dictation.provider, localModelBusy]);
   const downloadLocalModel = async () => {
     setLocalModelDownloading(true);
     setLocalModelError("");
@@ -5215,7 +5211,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
       setLocalModelDownloading(false);
     }
   };
-  const downloading = localModelDownloading || localModelState?.phase === "downloading";
+  const downloading = localModelBusy;
   const updateDictation = (patch: Partial<DictationSettings>) => onFormChange({
     ...form,
     dictation: { ...form.dictation, ...patch },
@@ -5725,6 +5721,7 @@ function EnhanceScreen({
                   />
                 </div>
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
+                <FeatureToggle title={t("低功耗模式")} detail={t("减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。")} checked={form.codexAppLowPower} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppLowPower", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
                 <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
                 <FeatureToggle title={t("用量状态栏")} detail={t("在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。")} checked={form.codexAppUsageStatusLine} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUsageStatusLine", value)} />
@@ -7176,8 +7173,85 @@ function MaintenanceScreen({
   actions: Actions;
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
+  type ChildProcessReport = { supported: boolean; processes: Array<{ pid: number; kind: string; memoryBytes: number | null; disconnected: boolean; zombie: boolean; canCleanup: boolean }> };
+  const [childProcesses, setChildProcesses] = useState<ChildProcessReport | null>(null);
+  const [childBusy, setChildBusy] = useState(false);
+  const [childMessage, setChildMessage] = useState("");
+  const [childConfirm, setChildConfirm] = useState(false);
+  const childRevision = useRef(0);
+  useEffect(() => {
+    void refreshChildren();
+    return () => { childRevision.current += 1; };
+  }, []);
+  async function refreshChildren(cleanup = false) {
+    const revision = ++childRevision.current;
+    setChildBusy(true); setChildMessage("");
+    try {
+      const terminated = cleanup ? await invoke<number[]>("cleanup_disconnected_app_servers") : null;
+      const report = await invoke<ChildProcessReport>("codex_child_processes");
+      if (revision !== childRevision.current) return;
+      setChildProcesses(report);
+      if (terminated) setChildMessage(terminated.length ? t("清理完成") : t("未结束进程，请刷新后检查归属状态"));
+      setChildConfirm(false);
+    } catch (error) { if (revision === childRevision.current) setChildMessage(String(error)); }
+    finally { if (revision === childRevision.current) setChildBusy(false); }
+  }
+  const [gitCandidates, setGitCandidates] = useState<Array<{ workspace: string; fingerprint: string }> | null>(null);
+  const [gitBusy, setGitBusy] = useState(false);
+  const [gitMessage, setGitMessage] = useState("");
+  const [gitConfirm, setGitConfirm] = useState<string | null>(null);
+  async function scanGit() {
+    setGitBusy(true); setGitMessage(""); setGitConfirm(null);
+    try { setGitCandidates(await invoke<Array<{ workspace: string; fingerprint: string }>>("scan_empty_git_directories")); }
+    catch (error) { setGitMessage(String(error)); }
+    finally { setGitBusy(false); }
+  }
+  async function quarantineGit(candidate: { workspace: string; fingerprint: string }) {
+    setGitBusy(true); setGitMessage("");
+    try {
+      const backup = await invoke<string>("quarantine_empty_git_directory", { candidate });
+      setGitCandidates((items) => items?.filter((item) => item.workspace !== candidate.workspace) ?? null);
+      setGitMessage(backup); setGitConfirm(null);
+    } catch (error) { setGitMessage(String(error)); }
+    finally { setGitBusy(false); }
+  }
   return (
     <>
+      <Panel>
+        <CardHead title={t("官方 App 子进程")} detail={t("退出后自动清理已确认归属的残留进程；运行中只清理你手动确认的断开连接。")}/>
+        <CardContent>
+          {childProcesses?.supported === false ? <p>{t("当前平台不支持子进程清理")}</p> : <>
+            <p>{t("进程数量")}：{childProcesses?.processes.length ?? "—"} · {t("内存")}：{childProcesses && childProcesses.processes.every((item) => item.memoryBytes !== null) ? formatBytes(childProcesses.processes.reduce((total, item) => total + (item.memoryBytes ?? 0), 0)) : "—"}</p>
+            {childProcesses?.processes.map((item) => <div key={item.pid}><code>{item.pid} {item.kind}</code> · {item.memoryBytes === null ? "—" : formatBytes(item.memoryBytes)} · {item.zombie ? t("需重启官方 App") : item.disconnected ? t("已断开") : t("运行中")}</div>)}
+            <Toolbar>
+              <Button variant="secondary" disabled={childBusy} onClick={() => void refreshChildren()}>{t("刷新")}</Button>
+              <Button variant="secondary" disabled={childBusy || !childProcesses?.processes.some((item) => item.canCleanup)} onClick={() => setChildConfirm(true)}>{t("清理已断开的 app-server")}</Button>
+            </Toolbar>
+            {childConfirm ? <div role="alert">
+              <p>{t("结束已确认归属且父进程已退出的 app-server，进行中的请求可能中断。")}</p>
+              <Button disabled={childBusy} onClick={() => void refreshChildren(true)}>{t("清理已断开的 app-server")}</Button>
+              <Button variant="secondary" disabled={childBusy} onClick={() => setChildConfirm(false)}>{t("取消")}</Button>
+            </div> : null}
+          </>}
+          {childMessage ? <p role="status">{childMessage}</p> : null}
+        </CardContent>
+      </Panel>
+      <Panel>
+        <CardHead title={t("异常 Git 目录")} detail={t("只检查官方 App 记录的本地工作区。缺少 HEAD 的 .git 目录可改名保留。")}/>
+        <CardContent>
+          <Button disabled={gitBusy} variant="secondary" onClick={() => void scanGit()}>{t("扫描 Git 目录")}</Button>
+          {gitCandidates?.length === 0 ? <p>{t("未发现异常 Git 目录")}</p> : null}
+          {gitCandidates?.map((candidate) => <div className="settings-block" key={candidate.workspace}>
+            <code>{candidate.workspace}</code>
+            {gitConfirm === candidate.workspace ? <>
+              <p>{t("将 .git 改名为带时间戳的备份目录，文件会保留。确认此目录不是正在使用的仓库后再继续。")}</p>
+              <Button disabled={gitBusy} onClick={() => void quarantineGit(candidate)}>{t("改名保留")}</Button>
+              <Button variant="secondary" disabled={gitBusy} onClick={() => setGitConfirm(null)}>{t("取消")}</Button>
+            </> : <Button variant="secondary" disabled={gitBusy} onClick={() => setGitConfirm(candidate.workspace)}>{t("处理目录")}</Button>}
+          </div>)}
+          {gitMessage ? <p role="status">{gitMessage}</p> : null}
+        </CardContent>
+      </Panel>
       <Panel>
         <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
         <CardContent>
@@ -7538,6 +7612,12 @@ function SettingsScreen({
                 />
               </Field>
               <p className="field-hint">{t("每行一个参数，例如 --force_high_performance_gpu。不需要填写 open 或 --args。")}</p>
+              {isWindowsPlatform ? <>
+                <Button variant="secondary" disabled={form.codexExtraArgs.includes("--disable-direct-composition")} onClick={() => onFormChange({ ...form, codexExtraArgs: [...form.codexExtraArgs, "--disable-direct-composition"] })}>
+                  {t("关闭 DirectComposition")}
+                </Button>
+                <p className="field-hint">{t("添加 --disable-direct-composition，效果因显卡而异，需重启官方 App。")}</p>
+              </> : null}
             </CardContent>
           </Panel>
         </>

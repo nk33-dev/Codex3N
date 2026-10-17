@@ -22,7 +22,9 @@
 
 注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，缓存键包含 `localStorage` 原文、后端设置对象和 `__CODEX_PLUS_DREAM_SKIN_THEME__` 身份；命中时不重复 `JSON.parse`，仍合并当前后端设置。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
 
-扫描调度由 `98-scan-schedule.js` 保持唯一入口，200 ms 内合并侧栏、会话、菜单、壳层及模型任务；未知宿主结构完整刷新兜底。消息正文的无关变化不刷新整套增强，延迟扫描只保留一帧。导航、隐藏和重新注入会取消旧任务；隐藏期间只记脏状态，恢复后补扫一次，供应商心跳和原生后台任务不受影响。
+扫描调度由 `98-scan-schedule.js` 保持唯一入口，200 ms 内合并侧栏、会话、菜单、壳层及模型任务；未知宿主结构完整刷新兜底。消息正文的无关变化不刷新整套增强，延迟扫描只保留一帧。导航、隐藏和重新注入会取消旧任务；隐藏期间只记脏状态，恢复后补扫一次，供应商心跳和原生后台任务不受影响。每次执行扫描先复位排队标记，否则后续变更全被丢弃。
+
+图标栏入口由 `40-backend-settings.js::codexPlusRailInsertAnchor` 定位：优先插在自动化等非固定入口之后；启动时宿主先只渲染主页和自定义，自动化约晚 1 秒出现，这段时间退到主页那一项之后，下一轮侧栏扫描再挪到自动化后面。没有任何原生入口时暂不插入。第三方拓展入口（`92-extension-host.js::refreshCodexPlusRailNavigation`）共用该锚点。位置已正确时不写 DOM。验证见 `rail-navigation.test.ts`。
 
 服务模式徽章由 `90-action-groups.js::codexServiceTierBadgePlacement` 插在当前输入工具栏的原生模型选择器前；穿过提示与普通包裹层，保持同一 flex 行。旧版只在唯一 footer 的可见按钮组内兜底，不能确认布局时跳过；不按供应商文字匹配草稿、项目栏或编辑区。加载时显示“读取中”，状态不变时不重写文字与属性。侧栏操作组、更多菜单及工具提示也纳入扫描排除，避免自己的 DOM 更新触发增强扫描。验证见 `service-tier-badge.test.ts`。
 
@@ -91,3 +93,19 @@ Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版�
 `assets/claude-localization/page-dictation.js` 适配 Claude Code 与 Cowork 输入框，识别结果只写入输入框；`hook.js` 通过听写 helper 转发请求。`launcher.rs` 在 helper 运行期间保存 `dictation-helper.json`，停止时删除；语音开关关闭时不注入页面入口和调用通道。验证见 `claude-dictation.test.ts`、Claude 本地化与听写单测。
 
 缓存页 `agent-cache.tsx` 通过 Tauri `scan_agent_cache` / `clean_agent_cache` 调用 `agent_cache.rs`。清理只接受后端保存的扫描快照和组 ID，快照 10 分钟到期且只能消费一次；逐文件校验并删除超过 24 小时的白名单缓存，不接收前端文件路径。录音、配置和会话数据不作为缓存清理对象。验证：`dictation-runtime.test.ts`、`enhancement-settings.test.ts`、`agent-cache-model.test.ts`、Rust dictation 与 agent_cache 单测。
+
+## 低功耗与 Git 维护
+
+`codexAppLowPower` 默认关闭，由管理器增强页保存。开启后，bridge 在同一目标的设置响应中应用 `prefers-reduced-motion: reduce`，注入运行时暂停无限循环的 CSS 动画；有限动画和过渡继续运行。关闭总开关或低功耗开关时还原动画与媒体覆盖，页面隐藏时停止动画扫描。设置读取失败保持原状态，CDP 不支持媒体模拟时记录 `low_power.media_failed`。
+
+Windows 的启动参数区提供 `--disable-direct-composition` 快捷项，保存后需重启官方 App，效果取决于显卡。MSIX 多开 wrapper 同样透传额外参数，按 Windows argv 和 cmd 两层转义，使用 UTF-8 代码页及关闭延迟展开。
+
+Git worker 的 `stable-metadata` 成功结果继续缓存 2 秒；低功耗开启后，非仓库结果和查询失败缓存 30 秒，取消不缓存。缓存按目录和主机隔离，Git 事件、聚焦、可见性变化和开关切换使其失效。远程请求、监听初始化和写操作继续走原生路径。入口为 renderer 的 `03-native-performance.js`，按已核对的工厂结构依次检查 shared、initial 模块，并复用模块加载缓存；单个不可读取的导出不影响识别。行为测试见 `native-performance.test.ts`。
+
+维护页的异常 Git 扫描只读取 `.codex-global-state.json` 中的本地工作区根目录，支持旧工作区列表及现代 `local-projects[].rootPaths`。缺少 HEAD 的 `.git` 目录先列出，用户确认后重新校验工作区记录和目录指纹，再改名为 `.git.codex3n-empty-<时间戳>`。不递归扫描，不处理 `.git` 文件、链接或检查期间变化的目录。后端入口为 `git_maintenance`，Tauri 命令为 `scan_empty_git_directories`、`quarantine_empty_git_directory`。
+
+维护页显示官方 App 已确认归属的子进程数量、内存和连接状态；运行中手动清理只处理已断开的 app-server。退出清理及平台边界见 [运行实现](runtime.md#官方-app-子进程清理)。
+
+2026-10-17 在 Windows 官方 App 26.1013.3656.0 的隔离实例验证：冷启动 10 次均为主页 → 自动化 → Codex++ → 拓展 → 自定义；媒体偏好开关与无限动画暂停、恢复生效。同一空 `.git` 连续查询 5 次，关闭时进入原生 worker 5 次，开启时为 1 次。30 秒进程启动追踪中两组属于隔离 App 的 git.exe 均为 0，本机未复现 Git 进程风暴。
+
+前台空闲 20 秒（每秒采样）的 App GPU 均值两组均为 0%，dwm 关闭组约 0.77%、开启组约 1.24%；不能据此声称 GPU 占用改善。开启组另有一次隐藏窗口的样本已弃用。`CODEX_PLUS_PERF_DIAGNOSTICS=1` 的 60 秒空闲采样没有会话切换，也未取得 RPC 时序样本，未获得重复 `thread/list` 的证据，因此保留原生请求；该样本不代表真实多会话切换没有重复请求。

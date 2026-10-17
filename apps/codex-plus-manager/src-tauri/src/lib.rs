@@ -197,6 +197,10 @@ pub fn run() {
             commands::perform_update,
             commands::load_watcher_state,
             commands::set_watcher_enabled,
+            commands::scan_empty_git_directories,
+            commands::codex_child_processes,
+            commands::cleanup_disconnected_app_servers,
+            commands::quarantine_empty_git_directory,
             // 自动接管官方 App：前端 invoke 找不到命令时是运行期静默失败，
             // 没有编译期兜底，所以这三个必须注册在这里（契约测试会守）。
             commands::load_auto_takeover_state,
@@ -568,10 +572,22 @@ fn window_activation_request_path() -> std::path::PathBuf {
 
 fn start_window_activation_listener(app: tauri::AppHandle) {
     let path = window_activation_request_path();
+    let stamp = |path: &std::path::Path| {
+        std::fs::metadata(path)
+            .ok()
+            .map(|meta| (meta.modified().ok(), meta.len()))
+    };
     let mut previous = std::fs::read(&path).unwrap_or_default();
+    let mut previous_stamp = stamp(&path);
     std::thread::spawn(move || {
         while !SHUTDOWN_STARTED.load(Ordering::SeqCst) {
             std::thread::sleep(std::time::Duration::from_millis(300));
+            // 常驻轮询：文件属性没变就不打开文件，内容比较仍是最终判断。
+            let current_stamp = stamp(&path);
+            if current_stamp == previous_stamp {
+                continue;
+            }
+            previous_stamp = current_stamp;
             let current = std::fs::read(&path).unwrap_or_default();
             if !current.is_empty() && current != previous {
                 previous = current;

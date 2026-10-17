@@ -28,7 +28,7 @@ function compile(text: string, deps: Record<string, any>, result: string) {
 }
 const renderer = await readRendererInjectSource();
 const patchSource = functionSource(renderer, "patchCodexPlusGitWorkerPerformance");
-function gitRuntime() {
+function gitRuntime(lowPower = false) {
   let now = 0;
   const window = events(), document = events();
   const calls: any[] = [];
@@ -37,9 +37,9 @@ function gitRuntime() {
   };
   const original = worker.request;
   const patch = compile(patchSource, { window, document, Date: { now: () => now }, AbortController, DOMException, structuredClone }, "patchCodexPlusGitWorkerPerformance");
-  const stop = patch(worker);
+  const stop = patch(worker, () => lowPower);
   const request = (overrides: any = {}) => worker.request({ method: "stable-metadata", params: { cwd: "D:/repo", hostConfig: { id: "durable" } }, ...overrides });
-  return { worker, window, document, calls, stop, original, request, advance: (ms: number) => { now += ms; } };
+  return { worker, window, document, calls, stop, original, request, setLowPower: (value: boolean) => { lowPower = value; }, advance: (ms: number) => { now += ms; } };
 }
 const metadata = { root: "D:/repo", commonDir: "D:/repo/.git" };
 
@@ -137,7 +137,7 @@ test("Git客户端按能力安装，关闭后可重新开启，未知模块不�
   settings.enhancementsEnabled = false; await runtime(); assert.equal(loads, 1);
   settings.enhancementsEnabled = true; await runtime(); assert.equal(loads, 2);
   (app.window as any).__codexPlusGitPerformanceCleanup();
-  module = {}; await runtime(); await runtime(); assert.equal(loads, 3);
+  module = {}; await runtime(); await runtime(); assert.equal(loads, 4);
   assert.equal(app.worker.request, app.original);
 });
 
@@ -215,4 +215,73 @@ test("多会话各自保留最新两条，宿主虚拟化和外边距折叠保�
   assert.equal(app.turns[42].style.getPropertyValue("content-visibility"), "auto");
   assert.equal(app.turns[87].style.getPropertyValue("content-visibility"), "auto");
   app.api.stop();
+});
+
+for (const failed of [false, true]) test(`低功耗缓存${failed ? "失败" : "非仓库"}30秒，关闭后恢复查询`, async () => {
+  const app = gitRuntime(true);
+  const settle = async () => {
+    const request = app.request();
+    const result = failed ? assert.rejects(request, /not a repository/) : request;
+    await Promise.resolve();
+    if (failed) app.calls.at(-1).reject(new Error("not a repository")); else app.calls.at(-1).resolve(null);
+    await result;
+  };
+  await settle();
+  for (const ms of [1, 29998]) {
+    app.advance(ms);
+    if (failed) await assert.rejects(app.request(), /not a repository/); else assert.equal(await app.request(), null);
+  }
+  assert.equal(app.calls.length, 1);
+  app.advance(1); await settle(); assert.equal(app.calls.length, 2);
+  for (const event of ["focus", "visibilitychange", "git"]) {
+    if (event === "git") for (const fn of app.worker.allEventListeners) fn();
+    else (event === "focus" ? app.window : app.document).emit(event);
+    await settle();
+  }
+  app.setLowPower(false); await settle(); await settle(); assert.equal(app.calls.length, 7);
+  app.stop();
+});
+
+test("低功耗不缓存取消错误", async () => {
+  const app = gitRuntime(true);
+  const first = app.request(); const rejected = assert.rejects(first, { name: "AbortError" });
+  await Promise.resolve(); app.calls[0].reject(new DOMException("cancel", "AbortError")); await rejected;
+  const second = app.request(); await Promise.resolve(); assert.equal(app.calls.length, 2);
+  app.calls[1].resolve(null); await second; app.stop();
+});
+
+test("低功耗只暂停循环动画，恢复原样式并释放监听", () => {
+  const window = events(), document = Object.assign(events(), { hidden: false, documentElement: {}, getAnimations: () => animations });
+  class Animation { effect: any; playState = "running"; constructor(target: any, iterations: number, pseudoElement: string | null = null) { this.effect = { target, pseudoElement, getTiming: () => ({ iterations }) }; } pause() { this.playState = "paused"; } play() { this.playState = "running"; } }
+  const values = new Map<string, string>();
+  const node = { style: { getPropertyValue: (k: string) => values.get(k) || "", getPropertyPriority: () => "", setProperty: (k: string, v: string) => values.set(k, v), removeProperty: (k: string) => values.delete(k) } };
+  const loop = new Animation(node, Infinity), finite = new Animation(node, 1), pseudo = new Animation(node, Infinity, "::before");
+  const animations: any[] = [loop, finite, pseudo, { effect: { target: node, getTiming: () => ({ iterations: Infinity }) } }];
+  let callback: Function = () => {}, disconnected = false;
+  const api = compile(functionSource(renderer, "createCodexPlusLowPowerAnimations"), {
+    window, document, CSSAnimation: Animation,
+    MutationObserver: class { constructor(_cb: Function) {} observe() {} disconnect() { disconnected = true; } },
+    getComputedStyle: () => ({ animationIterationCount: "infinite, 1", animationName: "spin, enter", animationPlayState: "running, running" }),
+    requestAnimationFrame: (fn: Function) => { callback = fn; return 1; }, cancelAnimationFrame: () => {},
+  }, "createCodexPlusLowPowerAnimations")();
+  api.setEnabled(true); callback();
+  assert.equal(values.get("animation-play-state"), "paused, running");
+  assert.equal(finite.playState, "running"); assert.equal(pseudo.playState, "paused");
+  api.setEnabled(false); assert.equal(values.size, 0); assert.equal(pseudo.playState, "running");
+  assert.ok(disconnected); assert.equal(document.listeners.get("animationstart")?.size, 0);
+});
+
+test("Git 工厂可从 initial 模块加载，无法读取源码的导出不会阻断安装", async () => {
+  const app=gitRuntime(); app.stop();
+  const pool=new Map(); class GitClient { constructor() { return app.worker; } } class ComputerClient {}
+  function factory(id: string) { switch(id) { case "git":pool.set(id,new GitClient()); return pool.get(id); case "computer-use":pool.set(id,new ComputerClient());return pool.get(id); } }
+  const opaque=()=>{}; opaque.toString=()=>{throw new Error("opaque export")};
+  const loads: string[]=[];
+  const install=compile(`let codexPlusGitPerformanceInstalling=false,codexPlusGitPerformanceRetryAt=0;${functionSource(renderer,"installCodexPlusGitPerformance")}`,{
+    window:app.window,codexPlusScanDisposed:false,codexPlusIsWindowsPlatform:true,codexPlusBackendSettings:{enhancementsEnabled:true,codexAppLowPower:true},
+    loadOptionalCodexAppModule:async(hint: string)=>{loads.push(hint);return hint==="app-shared-"?{opaque}:{factory}},
+    patchCodexPlusGitWorkerPerformance:compile(patchSource,{window:app.window,document:app.document},"patchCodexPlusGitWorkerPerformance"),
+  },"installCodexPlusGitPerformance");
+  await install();await install(); assert.deepEqual(loads,["app-shared-","app-initial-"]); assert.notEqual(app.worker.request,app.original);
+  (app.window as any).__codexPlusGitPerformanceCleanup(); assert.equal(app.worker.request,app.original);
 });

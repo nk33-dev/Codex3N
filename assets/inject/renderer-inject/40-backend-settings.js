@@ -35,6 +35,7 @@
       const previousSettings = JSON.stringify(codexPlusBackendSettings);
       const loaded = await loadBackendSettingsState();
       if (loaded && previousSettings !== JSON.stringify(codexPlusBackendSettings)) {
+        if (typeof syncCodexPlusLowPower === "function") syncCodexPlusLowPower();
         syncOfficialUsagePolicy();
         runScanStep(syncCodexPlusTypingEffects);
         if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
@@ -68,6 +69,7 @@
   }
 
   function refreshCodexPlusBackendToggles() {
+    if (typeof syncCodexPlusLowPower === "function") syncCodexPlusLowPower();
     window.__codexPlusConversationPerformance?.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false);
     if (codexPlusBackendSettings.enhancementsEnabled === false) window.__codexPlusGitPerformanceCleanup?.();
     globalThis.__CODEX_PLUS_ACTIVITY_OVERLAY_SYNC__?.();
@@ -1816,6 +1818,29 @@
     }) || null;
   }
 
+  /**
+   * 入口插在哪个节点之后。
+   *
+   * 启动时 rail 先只渲染 home 和 customize，automations 晚约 1 秒才出现；
+   * 这段时间拿不到 primary 锚点，旧逻辑会插到 rail 最顶上。这里退到 home
+   * 所在的那一项（customize 之前），automations 出现后的扫描再挪到它后面。
+   * 返回 null 表示 rail 还没有可依附的原生按钮，调用方先不插。
+   */
+  function codexPlusRailInsertAnchor(rail) {
+    const primary = codexPlusRailPrimaryAnchor(rail);
+    if (primary) return primary;
+    const customize = rail.querySelector(`${codexPlusRailDestinationSelector}[data-sidebar-destination="builtin:customize"]`);
+    const home = rail.querySelector(`${codexPlusRailDestinationSelector}[data-sidebar-destination="builtin:home"]`);
+    if (!home) return customize?.previousElementSibling || null;
+    // home 可能包在一层 div 里；锚点要取和 customize 同级的那一层。
+    let node = home;
+    if (customize) {
+      while (node.parentElement && node.parentElement !== customize.parentElement) node = node.parentElement;
+      if (node.parentElement !== customize.parentElement) return null;
+    }
+    return node;
+  }
+
   function createCodexPlusRailButton({ id, template, label, iconMarkup, withStatus, onActivate }) {
     const wrapper = document.createElement("div");
     wrapper.id = id;
@@ -1897,10 +1922,12 @@
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
     ];
 
-    const anchor = codexPlusRailPrimaryAnchor(rail);
+    const anchor = codexPlusRailInsertAnchor(rail);
+    // rail 已挂载但原生按钮还没出来：先不插，等下一次 rail 变更触发的扫描。
+    if (!anchor) return true;
     // 插到锚点所在的父容器里，而不是 nav 顶层：原生按钮可能嵌在 nav 内部的分组 div 中，
     // 直接插顶层会破坏它的 flex 布局。
-    const host = anchor?.parentElement || rail;
+    const host = anchor.parentElement;
     let cursor = anchor;
     specs.forEach((spec) => {
       let wrapper = document.getElementById(spec.id);
@@ -1909,14 +1936,8 @@
         wrapper = createCodexPlusRailButton({ ...spec, template });
         if (!wrapper) return;
       }
-      // 顺序：Codex++ 在前，「拓展」在后；紧跟在 primary 区锚点后面。
-      if (cursor?.nextSibling) {
-        host.insertBefore(wrapper, cursor.nextSibling);
-      } else if (cursor) {
-        host.appendChild(wrapper);
-      } else {
-        host.insertBefore(wrapper, host.firstElementChild);
-      }
+      // 顺序：Codex++ 在前，「拓展」在后；紧跟在锚点后面。位置已对时不写 DOM。
+      if (cursor.nextSibling !== wrapper) host.insertBefore(wrapper, cursor.nextSibling);
       cursor = wrapper;
     });
 
