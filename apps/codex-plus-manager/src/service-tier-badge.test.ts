@@ -10,35 +10,35 @@ function extract(file: string, name: string) {
   return source;
 }
 
-test("服务模式跟随模型按钮，忽略输入区、供应商同名项目及自己的徽章", () => {
+test("服务模式固定在模型组首，模型暂时缺失时不改用其他按钮", () => {
   let hasModel = true;
-  const footer: any = { children: [], querySelector: () => hasModel ? model : null };
-  const controls: any = { display: "flex", parentElement: footer };
-  const wrapper: any = { display: "contents", parentElement: controls };
+  const footer: any = { querySelector: () => hasModel ? model : null };
+  const controls: any = { display: "flex", parentElement: footer, children: [] };
+  const wrapper: any = { display: "contents", parentElement: controls, matches: () => false };
   const model = { parentElement: wrapper };
-  const editor = { matches: () => false, querySelector: () => ({}), querySelectorAll: () => { throw Error("不能扫描输入区按钮"); } };
-  const badge = { matches: () => true, querySelector: () => null };
-  const group = { matches: () => false, querySelector: () => null, querySelectorAll: () => [model] };
-  footer.children = [editor, group, badge];
+  const ring = { matches: () => false };
+  const badge = { matches: () => true };
+  controls.children = [ring, wrapper];
   const context = vm.createContext({
     codexServiceTierComposerFooter: () => footer,
     codexServiceTierBadgeVisibleElement: () => true,
-    isExtensionUiNode: () => false,
     getComputedStyle: (node: any) => ({ display: node.display }),
   });
   vm.runInContext(extract("90-action-groups.js", "codexServiceTierBadgePlacement"), context);
-  for (const legacy of [false, true]) {
-    hasModel = !legacy;
-    const placement = context.codexServiceTierBadgePlacement({ textContent: "同名供应商项目" });
-    assert.equal(placement.parent, controls);
-    assert.equal(placement.before, wrapper);
-  }
-  const block = { display: "block", parentElement: controls };
+  assert.equal(context.codexServiceTierBadgePlacement({}).before, ring);
+  controls.children = [badge, ring, wrapper];
+  assert.equal(context.codexServiceTierBadgePlacement({}).before, ring, "重复扫描跳过自己的按钮");
+  controls.children = [ring, badge, wrapper];
+  assert.equal(context.codexServiceTierBadgePlacement({}).before, ring, "原生重排后仍位于圆环之前");
+  hasModel = false;
+  assert.equal(context.codexServiceTierBadgePlacement({}), null);
+  hasModel = true;
+  const block = { display: "block", parentElement: controls, matches: () => false };
   wrapper.parentElement = block;
+  controls.children = [block];
   assert.equal(context.codexServiceTierBadgePlacement({}).before, block);
-  wrapper.parentElement = controls;
   controls.display = "grid";
-  assert.equal(context.codexServiceTierBadgePlacement({}), null, "不能把徽章放到未知 grid 行");
+  assert.equal(context.codexServiceTierBadgePlacement({}), null);
 });
 
 test("重复安装徽章没有DOM写入，模型包裹层替换后只移动一次", () => {
@@ -46,13 +46,13 @@ test("重复安装徽章没有DOM写入，模型包裹层替换后只移动一�
   let before: any = {};
   const parent: any = { insertBefore(node: any, anchor: any) { writes++; node.parentElement = parent; node.nextSibling = anchor; } };
   before.parentElement = parent;
-  const badge = { dataset: { codexServiceTierBadgeVersion: "4" }, parentElement: parent, nextSibling: before, closest: () => ({}) };
+  const badge = { dataset: { codexServiceTierBadgeVersion: "5" }, parentElement: parent, nextSibling: before, closest: () => ({}) };
   const context = vm.createContext({
     codexPlusSettings: () => ({ serviceTierControls: true }),
     codexServiceTierFindComposerEl: () => ({}),
     codexServiceTierBadgePlacement: () => ({ parent, before }),
     document: { querySelectorAll: () => [badge] },
-    codexServiceTierComposerFooterSelector: "footer", codexServiceTierBadgeVersion: "4",
+    codexServiceTierComposerFooterSelector: "footer", codexServiceTierBadgeVersion: "5",
     wireCodexServiceTierBadge() {}, refreshCodexServiceTierBadges() {},
   });
   vm.runInContext(extract("90-action-groups.js", "installCodexServiceTierBadge"), context);

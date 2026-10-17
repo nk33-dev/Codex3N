@@ -27,16 +27,17 @@
     effectiveServiceTier = codexServiceTierState.effectiveServiceTier,
     serviceTierSource = codexServiceTierState.serviceTierSource
   ) {
+    const label = (mode) => mode === "fast" ? "Fast" : (mode === "standard" ? "Standard" : "继承设置");
     if (codexServiceTierState.status === "loading") return "正在读取…";
     if (codexServiceTierState.status === "failed") return "读取失败";
     if (controlMode === "inherit") {
       if (effectiveServiceTier == null) return "继承 Codex 默认设置：默认";
-      return `${serviceTierInheritSourceLabel(serviceTierSource)}：${effectiveMode}`;
+      return `${serviceTierInheritSourceLabel(serviceTierSource)} · ${label(effectiveMode)}`;
     }
     if (controlMode === "global-standard") return "全局 Standard";
     if (controlMode === "global-fast") return "全局 Fast";
-    if (threadMode === "inherit") return `自定义：默认 ${defaultMode}`;
-    return `自定义：当前 thread ${threadMode}`;
+    if (threadMode === "inherit") return `默认模式 · ${label(defaultMode)}`;
+    return `当前会话 · ${label(threadMode)}`;
   }
 
   function readThreadServiceTierState() {
@@ -242,19 +243,19 @@
     const effectiveMode = codexServiceTierState.effectiveMode || "standard";
     const inheritedDefault = codexServiceTierState.controlMode === "inherit" && codexServiceTierState.effectiveServiceTier == null;
     const scope = codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode !== "inherit"
-      ? `当前 thread：${codexServiceTierState.threadMode}`
+      ? `当前会话 · ${codexServiceTierState.threadMode === "fast" ? "Fast" : "Standard"}`
       : serviceTierStatusMessage(codexServiceTierState.controlMode, codexServiceTierState.threadMode, effectiveMode, codexServiceTierState.defaultMode, codexServiceTierState.effectiveServiceTier, codexServiceTierState.serviceTierSource);
     const title = [
-      `服务模式：${scope}`,
-      "Standard：使用标准处理；不在请求上设置 priority。",
-      `Fast：支持 ${codexServiceTierFastModelListLabel()} 或已声明 priority 的模型；使用 service_tier=\"priority\"，实际支持与计费由供应商决定，可在模型配置中明确声明。`,
+      scope,
+      "点击切换 Standard / Fast。",
+      "Fast 优先处理，支持情况与费用由供应商决定。",
     ].join("\n");
     if (effectiveMode === "fast" && !fastAvailability.supported) {
-      return { tier: "unsupported", label: "不支持", title: `${title}\n${codexServiceTierFastUnsupportedMessage(fastAvailability.modelName)}；当前请求会按 Standard 发送。` };
+      return { tier: "unsupported", label: "不支持", title: "当前模型不支持 Fast，使用 Standard。\n可在供应商的模型配置中查看 Fast 支持情况。" };
     }
-    if (effectiveMode === "fast") return { tier: "fast", label: "fast", title };
+    if (effectiveMode === "fast") return { tier: "fast", label: "Fast", title };
     if (inheritedDefault) return { tier: "default", label: "默认", title };
-    return { tier: "standard", label: "standard", title };
+    return { tier: "standard", label: "Standard", title };
   }
 
   function refreshCodexServiceTierBadges() {
@@ -264,7 +265,9 @@
       const disabled = String(!!state.disabled);
       if (node.dataset.disabled !== disabled) node.dataset.disabled = disabled;
       if (node.textContent !== state.label) node.textContent = state.label;
-      if (node.title !== state.title) node.title = state.title;
+      if (node.dataset.codexActionLabel !== state.title) node.dataset.codexActionLabel = state.title;
+      if (node.dataset.codexTooltipPlacement !== "top") node.dataset.codexTooltipPlacement = "top";
+      if (node.hasAttribute?.("title")) node.removeAttribute("title");
       if (node.getAttribute("aria-label") !== state.title) node.setAttribute("aria-label", state.title);
       if (node.getAttribute("aria-disabled") !== disabled) node.setAttribute("aria-disabled", disabled);
     });
@@ -279,7 +282,7 @@
     const fastAvailability = codexServiceTierFastAvailability();
     const fastDisabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading" || !fastAvailability.supported;
     const fastTitle = fastAvailability.supported
-      ? "Fast：使用 service_tier=\"priority\""
+      ? "Fast 优先处理，费用由供应商决定"
       : codexServiceTierFastUnsupportedMessage(fastAvailability.modelName);
     const fastUnsupportedActive = codexServiceTierState.effectiveMode === "fast" && !fastAvailability.supported;
     document.querySelectorAll("[data-codex-service-tier-controls]").forEach((node) => {
@@ -311,7 +314,7 @@
     document.querySelectorAll("[data-codex-service-tier-thread-inherit]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "inherit");
-      button.title = `当前 thread 不单独覆盖，继承自定义默认 ${codexServiceTierState.defaultMode || "inherit"}`;
+      button.title = "当前会话沿用默认模式";
     });
     document.querySelectorAll("[data-codex-service-tier-thread-standard]").forEach((button) => {
       button.disabled = !featureEnabled || !backendConnected || codexServiceTierState.status === "loading";
@@ -321,6 +324,9 @@
       button.disabled = fastDisabled;
       button.dataset.active = String(codexServiceTierState.controlMode === "custom" && codexServiceTierState.threadMode === "fast");
       button.title = fastTitle;
+    });
+    document.querySelectorAll(".codex-plus-service-tier-button").forEach((button) => {
+      button.setAttribute("aria-pressed", button.dataset.active === "true" ? "true" : "false");
     });
     refreshCodexServiceTierBadges();
   }

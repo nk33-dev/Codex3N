@@ -1193,10 +1193,13 @@
         border-radius: var(--border-radius-md, 6px);
         background: var(--codex-plus-bg-elevated);
         color: var(--codex-plus-text);
-        font-family: inherit;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
         font-size: 13px;
-        line-height: 16px;
-        padding: 6px 8px;
+        line-height: 20px;
+        padding: 10px 12px;
+        max-width: min(300px, calc(100vw - 32px));
+        white-space: pre-line;
+        overflow-wrap: anywhere;
         box-shadow: var(--tooltip-box-shadow, var(--shadow-200, 0 4px 12px rgba(0,0,0,.14)));
       }
       .codex-delete-confirm-overlay,
@@ -1319,15 +1322,22 @@
       #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="degraded"],
       .codex-plus-backend-indicator[data-status="degraded"] { background: var(--codex-plus-warning); }
       .${codexServiceTierBadgeClass} {
-        height: 24px;
-        border-color: var(--codex-plus-border);
-        border-radius: var(--border-radius-lg, 8px);
-        background: var(--codex-plus-bg-secondary);
-        color: var(--codex-plus-text-secondary);
-        font-family: inherit;
+        order: -1;
+        height: var(--height-token-button-composer, 28px);
+        min-width: 0;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        background: transparent;
+        color: var(--color-token-text-tertiary, var(--codex-plus-text-secondary));
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
+        font-size: 13px;
+        font-weight: 500;
+        padding: 0 8px;
+        transition: background-color .12s, color .12s;
       }
-      .${codexServiceTierBadgeClass}:hover { border-color: var(--codex-plus-focus); background: var(--codex-plus-bg-hover); }
-      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: var(--color-border-primary, var(--codex-plus-focus)); background: var(--color-background-primary-soft, var(--codex-plus-bg-selected)); color: var(--codex-plus-text); }
+      .${codexServiceTierBadgeClass}:hover { border-color: transparent; background: var(--color-token-bg-primary-ghost-hover, var(--codex-plus-bg-hover)); color: var(--codex-plus-text); }
+      .${codexServiceTierBadgeClass}:focus-visible { outline: 2px solid var(--codex-plus-focus); outline-offset: 2px; }
+      .${codexServiceTierBadgeClass}[data-tier="fast"] { border-color: transparent; background: var(--color-token-interactive-bg-secondary-hover, var(--codex-plus-bg-hover)); color: var(--color-token-text-primary, var(--codex-plus-text)); }
       .${codexServiceTierBadgeClass}[data-tier="failed"] { border-color: var(--color-border-danger, var(--codex-plus-danger)); background: var(--codex-plus-danger-bg); color: var(--codex-plus-danger); }
       .${codexServiceTierBadgeClass}[data-tier="unsupported"] { border-color: var(--color-border-warning, var(--codex-plus-border)); background: var(--color-background-warning-soft, var(--codex-plus-bg-hover)); color: var(--codex-plus-warning); }
       .codex-plus-ad-card { border-color: var(--codex-plus-border-subtle); background: var(--codex-plus-bg-secondary); }
@@ -1370,6 +1380,7 @@
         min-width: 0;
         margin: 0 auto;
         container: codex-plus-settings / inline-size;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", var(--font-sans, sans-serif);
       }
       .codex-plus-settings > .codex-plus-modal-header {
         width: 100%;
@@ -1456,9 +1467,24 @@
         gap: 8px;
       }
       .codex-plus-settings .codex-plus-service-tier-control {
-        flex: 0 1 300px;
+        width: 100%;
+        max-width: none;
         min-width: 0;
+        gap: 14px;
+        justify-items: stretch;
       }
+      .codex-plus-settings .codex-plus-service-tier-section { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; gap: 18px; padding: 20px 0; }
+      .codex-plus-settings .codex-plus-service-tier-section > .codex-plus-service-tier-control { max-width: none; }
+      .codex-plus-service-tier-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+      .codex-plus-service-tier-heading > :first-child { min-width: 0; }
+      .codex-plus-service-tier-heading .codex-plus-service-tier-status { flex: 0 1 auto; padding-top: 2px; line-height: 18px; }
+      .codex-plus-service-tier-group { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 16px; }
+      .codex-plus-settings .codex-plus-service-tier-thread-label { color: var(--codex-plus-text-secondary); font-size: 13px; }
+      .codex-plus-settings .codex-plus-service-tier-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 3px; padding: 3px; border-radius: 10px; background: var(--codex-plus-bg-hover); }
+      .codex-plus-settings .codex-plus-service-tier-thread-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); opacity: 1; }
+      .codex-plus-settings .codex-plus-service-tier-actions .codex-plus-service-tier-button { min-height: 34px; padding: 6px 10px; border-color: transparent; background: transparent; color: var(--codex-plus-text-secondary); font-weight: 500; }
+      .codex-plus-settings .codex-plus-service-tier-actions .codex-plus-service-tier-button[data-active="true"] { border-color: var(--codex-plus-border); background: var(--codex-plus-settings-card-bg, var(--codex-plus-bg-secondary)); color: var(--codex-plus-text); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+      .codex-plus-service-tier-help { margin: 0 0 0 100px; color: var(--codex-plus-text-secondary); font-size: 12px; line-height: 18px; }
       .codex-plus-settings .codex-plus-service-tier-status { overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
       .codex-plus-settings .codex-plus-action-button,
@@ -1594,6 +1620,11 @@
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] { flex-wrap: wrap; }
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > :first-child { flex-basis: 100%; }
         .codex-plus-settings .codex-plus-row[data-codex-service-tier-controls="true"] > .codex-plus-service-tier-control { flex-basis: 100%; max-width: 100%; }
+        .codex-plus-service-tier-heading { flex-direction: column; gap: 8px; }
+        .codex-plus-service-tier-group { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+        .codex-plus-settings .codex-plus-service-tier-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .codex-plus-settings .codex-plus-service-tier-thread-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .codex-plus-service-tier-help { margin-left: 0; }
       }
       /* 拓展与推荐内容使用原生插件页面的导航、标题和轻量列表布局。 */
       .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) {
