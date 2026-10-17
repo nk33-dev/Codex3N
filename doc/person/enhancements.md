@@ -105,3 +105,7 @@ Git worker 的 `stable-metadata` 成功结果继续缓存 2 秒；低功耗开�
 维护页的异常 Git 扫描只读取 `.codex-global-state.json` 中的本地工作区根目录，支持旧工作区列表及现代 `local-projects[].rootPaths`。缺少 HEAD 的 `.git` 目录先列出，用户确认后重新校验工作区记录和目录指纹，再改名为 `.git.codex3n-empty-<时间戳>`。不递归扫描，不处理 `.git` 文件、链接或检查期间变化的目录。后端入口为 `git_maintenance`，Tauri 命令为 `scan_empty_git_directories`、`quarantine_empty_git_directory`。
 
 维护页显示官方 App 已确认归属的子进程数量、内存和连接状态；运行中手动清理只处理已断开的 app-server。退出清理及平台边界见 [运行实现](runtime.md#官方-app-子进程清理)。
+
+2026-10-17 在 Windows 官方 App 26.1013.3656.0 的隔离实例验证：冷启动 10 次均为主页 → 自动化 → Codex++ → 拓展 → 自定义；媒体偏好开关与无限动画暂停、恢复生效。同一空 `.git` 连续查询 5 次，关闭时进入原生 worker 5 次，开启时为 1 次。30 秒进程启动追踪中两组属于隔离 App 的 git.exe 均为 0，本机未复现 Git 进程风暴。
+
+前台空闲 20 秒（每秒采样）的 App GPU 均值两组均为 0%，dwm 关闭组约 0.77%、开启组约 1.24%；不能据此声称 GPU 占用改善。开启组另有一次隐藏窗口的样本已弃用。`CODEX_PLUS_PERF_DIAGNOSTICS=1` 的 60 秒空闲采样没有会话切换，也未取得 RPC 时序样本，未获得重复 `thread/list` 的证据，因此保留原生请求；该样本不代表真实多会话切换没有重复请求。
