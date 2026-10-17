@@ -534,11 +534,24 @@ impl DictationSettings {
     }
 }
 
+/// 只在总开关及对应分类均开启时读取本机项目文件。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PromptEnhanceContextSettings {
+    pub enabled: bool,
+    pub project: bool,
+    pub instructions: bool,
+    pub directory: bool,
+    pub manifests: bool,
+}
+
 /// 提示词增强配置；默认复用下一步建议的连接，也可单独指定服务。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PromptEnhanceSettings {
     pub enabled: bool,
+    pub rewrite_enabled: bool,
+    pub grill_enabled: bool,
     pub use_stepwise_connection: bool,
     pub base_url: String,
     pub api_key: String,
@@ -547,6 +560,9 @@ pub struct PromptEnhanceSettings {
     pub model: String,
     /// 留空时使用内置改写规则。
     pub system_prompt: String,
+    pub grill_system_prompt: String,
+    pub default_mode: String,
+    pub context: PromptEnhanceContextSettings,
     pub timeout_seconds: u64,
 }
 
@@ -554,6 +570,8 @@ impl Default for PromptEnhanceSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            rewrite_enabled: true,
+            grill_enabled: true,
             use_stepwise_connection: true,
             base_url: String::new(),
             api_key: String::new(),
@@ -561,6 +579,9 @@ impl Default for PromptEnhanceSettings {
             protocol: default_stepwise_protocol(),
             model: String::new(),
             system_prompt: String::new(),
+            grill_system_prompt: String::new(),
+            default_mode: "rewrite".to_string(),
+            context: PromptEnhanceContextSettings::default(),
             timeout_seconds: 60,
         }
     }
@@ -574,6 +595,13 @@ impl PromptEnhanceSettings {
         self.protocol = normalize_stepwise_protocol(&self.protocol);
         self.model = self.model.trim().to_string();
         self.system_prompt = self.system_prompt.trim().to_string();
+        self.grill_system_prompt = self.grill_system_prompt.trim().to_string();
+        self.default_mode = if self.default_mode == "grill" {
+            "grill"
+        } else {
+            "rewrite"
+        }
+        .to_string();
         self.timeout_seconds = self.timeout_seconds.clamp(5, 300);
     }
 }
@@ -2149,6 +2177,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             .cloned()
             .unwrap_or_default();
         merge_bool_setting(&mut prompt_enhance, patch, "enabled");
+        merge_bool_setting(&mut prompt_enhance, patch, "rewriteEnabled");
+        merge_bool_setting(&mut prompt_enhance, patch, "grillEnabled");
         merge_bool_setting(&mut prompt_enhance, patch, "useStepwiseConnection");
         for key in [
             "baseUrl",
@@ -2157,6 +2187,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             "protocol",
             "model",
             "systemPrompt",
+            "grillSystemPrompt",
+            "defaultMode",
         ] {
             if let Some(value) = patch.get(key).and_then(Value::as_str) {
                 prompt_enhance.insert(key.to_string(), Value::String(value.trim().to_string()));
@@ -2167,6 +2199,23 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
                 "timeoutSeconds".to_string(),
                 Value::from(value.clamp(5, 300)),
             );
+        }
+        if let Some(patch) = patch.get("context").and_then(Value::as_object) {
+            let mut context = prompt_enhance
+                .get("context")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
+            for key in [
+                "enabled",
+                "project",
+                "instructions",
+                "directory",
+                "manifests",
+            ] {
+                merge_bool_setting(&mut context, patch, key);
+            }
+            prompt_enhance.insert("context".to_string(), Value::Object(context));
         }
         target.insert("promptEnhance".to_string(), Value::Object(prompt_enhance));
     }
@@ -2941,6 +2990,56 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn prompt_enhance_context_and_grill_settings_survive_partial_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(dir.path().join("settings.json"));
+        let old = store
+            .update(json!({"promptEnhance":{"enabled":true,"systemPrompt":"改写规则"}}))
+            .unwrap();
+        assert_eq!(old.prompt_enhance.default_mode, "rewrite");
+        assert!(!old.prompt_enhance.context.enabled);
+        let saved = store.update(json!({"promptEnhance":{
+            "defaultMode":"grill","grillSystemPrompt":"  追问规则  ",
+            "context":{"enabled":true,"project":true,"instructions":true,"directory":false,"manifests":true}
+        }})).unwrap();
+        assert_eq!(saved.prompt_enhance.grill_system_prompt, "追问规则");
+        assert!(saved.prompt_enhance.enabled);
+        assert_eq!(saved.prompt_enhance.system_prompt, "改写规则");
+        store
+            .update(json!({"promptEnhance":{"context":{"directory":true}}}))
+            .unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.prompt_enhance.default_mode, "grill");
+        assert!(loaded.prompt_enhance.context.project);
+        assert!(loaded.prompt_enhance.context.directory);
+        assert!(loaded.prompt_enhance.context.manifests);
+        for (rewrite, grill) in [(false, true), (true, false), (false, false)] {
+            store
+                .update(json!({"promptEnhance":{"rewriteEnabled":rewrite,"grillEnabled":grill}}))
+                .unwrap();
+            store
+                .update(json!({"promptEnhance":{"timeoutSeconds":40}}))
+                .unwrap();
+            let reloaded = store.load().unwrap();
+            assert_eq!(reloaded.prompt_enhance.rewrite_enabled, rewrite);
+            assert_eq!(reloaded.prompt_enhance.grill_enabled, grill);
+            assert!(
+                reloaded.prompt_enhance.context.enabled
+                    && reloaded.prompt_enhance.context.manifests
+            );
+            assert_eq!(reloaded.prompt_enhance.default_mode, "grill");
+        }
+        assert_eq!(
+            store
+                .update(json!({"promptEnhance":{"defaultMode":"invalid"}}))
+                .unwrap()
+                .prompt_enhance
+                .default_mode,
+            "rewrite"
+        );
+    }
 
     #[test]
     fn include_native_models_defaults_on_and_persists_explicit_choice() {

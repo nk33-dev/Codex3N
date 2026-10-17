@@ -10423,3 +10423,22 @@ select {
 .aggregate-default-login-note {
   display: block;
 }
+
+.prompt-tools-toolbar { display:flex; flex-wrap:wrap; align-items:end; gap:8px; margin-block:10px; }
+.prompt-tools-toolbar > .field { flex:1; min-width:150px; }
+.prompt-tools-toolbar > input { flex:1; min-width:160px; }
+.prompt-tools-record { padding:12px 0; border-top:1px solid hsl(var(--border)); overflow-wrap:anywhere; }
+.prompt-tools-record summary { cursor:pointer; font-weight:500; }
+.prompt-tools-record pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; max-height:320px; overflow:auto; padding:10px; background:hsl(var(--muted)); border-radius:8px; }
+.prompt-tools-panel .settings-block { display:grid; gap:10px; }
+
+.prompt-tools-options > summary { width:fit-content; cursor:pointer; font-size:12px; color:hsl(var(--muted-foreground)); }
+.prompt-tools-search > input { flex-basis:180px; }
+.prompt-tools-record > summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 10px; list-style:none; }
+.prompt-tools-record > summary::-webkit-details-marker { display:none; }
+.prompt-tools-record-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.prompt-tools-record > summary small { color:hsl(var(--muted-foreground)); font-weight:400; }
+.prompt-tools-snippet { grid-column:1/-1; font-weight:400; font-size:12px; color:hsl(var(--muted-foreground)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.prompt-tools-record[open] .prompt-tools-snippet { display:none; }
+.prompt-tools-panel .panel-head { padding-bottom:8px; }
+.prompt-tools-panel .panel-head p { display:none; }

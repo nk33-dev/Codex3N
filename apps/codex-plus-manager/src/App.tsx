@@ -1,3 +1,4 @@
+import { PromptToolsPanel } from "./prompt-tools";
 import type { BackendSettings, ToolShard, ImageOverlayFitMode, RelayApiKey, RelayProfile, RelayAggregateStrategy, RelayAggregateMember, RelayAggregateRoute, RelayAggregateConfig, AggregateRelayMember, AggregateRelayProfile, RelayContextSelection, RelayProtocol, StepwiseProtocol, StepwiseGenerationMode, RelayMode, RelaySessionProvider } from "./provider-types";
 export type { RelayProfile } from "./provider-types";
 import { defaultSettings } from "./lib/default-settings";
@@ -5342,15 +5343,20 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
   });
   const issue = promptEnhanceSettingsValidationMessage(promptEnhanceSettingsIssue(form.promptEnhance));
   const [ruleError, setRuleError] = useState("");
-  const fillDefaultRule = async () => {
+  const fillDefaultRule = async (mode: "rewrite" | "grill" = "rewrite") => {
     setRuleError("");
     try {
-      updatePromptEnhance({ systemPrompt: await invoke<string>("prompt_enhance_default_system_prompt") });
+      const rule = await invoke<string>(mode === "grill" ? "prompt_enhance_default_grill_system_prompt" : "prompt_enhance_default_system_prompt");
+      updatePromptEnhance(mode === "grill" ? { grillSystemPrompt: rule } : { systemPrompt: rule });
     } catch {
       setRuleError(t("读取内置规则失败，请重试。"));
     }
   };
+  const modesEnabled = form.promptEnhance.rewriteEnabled || form.promptEnhance.grillEnabled;
+  const effectiveDefault = form.promptEnhance.defaultMode === "grill" && form.promptEnhance.grillEnabled
+    ? "grill" : form.promptEnhance.rewriteEnabled ? "rewrite" : "grill";
   return (
+    <>
     <Panel className="enhance-service-panel">
       <CardHead title={t("提示词增强")} detail={t("把输入框里的草稿改写得更清楚，确认后再写回输入框。")} />
       <CardContent className="settings-content">
@@ -5362,6 +5368,37 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
             checked={form.promptEnhance.enabled}
             onChange={(enabled) => updatePromptEnhance({ enabled })}
           />
+          <FeatureToggle title={t("普通改写")} detail={t("直接改写草稿，先预览再写回。")}
+            disabled={!form.enhancementsEnabled} checked={form.promptEnhance.rewriteEnabled}
+            onChange={(rewriteEnabled) => updatePromptEnhance({ rewriteEnabled })} />
+          <FeatureToggle title={t("追问")} detail={t("先确认需要取舍的事项，再生成提示词。")}
+            disabled={!form.enhancementsEnabled} checked={form.promptEnhance.grillEnabled}
+            onChange={(grillEnabled) => updatePromptEnhance({ grillEnabled })} />
+          <Field label={t("默认模式")}>
+            <AppSelect value={effectiveDefault} disabled={!modesEnabled}
+              onChange={(value) => updatePromptEnhance({ defaultMode: value === "grill" ? "grill" : "rewrite" })}
+              options={[{ value: "rewrite", label: t("普通改写"), disabled: !form.promptEnhance.rewriteEnabled }, { value: "grill", label: t("追问"), disabled: !form.promptEnhance.grillEnabled }]} />
+          </Field>
+          <FeatureToggle title={t("附带项目上下文")}
+            detail={t("所选项目内容会发送给当前配置的模型服务。仅读取当前输入框所属的本机项目。")}
+            disabled={!form.enhancementsEnabled || !modesEnabled}
+            checked={form.promptEnhance.context.enabled}
+            onChange={(enabled) => updatePromptEnhance({ context: { ...form.promptEnhance.context, enabled } })} />
+          {!modesEnabled ? <p className="field-hint">{t("启用普通改写或追问后，项目上下文会随所选模式使用。")}</p> : null}
+          {form.promptEnhance.context.enabled ? <div className="settings-block">
+            <FeatureToggle title={t("项目名与分支")} detail={t("帮助模型识别当前项目。")}
+              checked={form.promptEnhance.context.project}
+              onChange={(project) => updatePromptEnhance({ context: { ...form.promptEnhance.context, project } })} />
+            <FeatureToggle title={t("项目说明")} detail={t("读取根目录 AGENTS.md、CLAUDE.md，没有时读取 README 开头。")}
+              checked={form.promptEnhance.context.instructions}
+              onChange={(instructions) => updatePromptEnhance({ context: { ...form.promptEnhance.context, instructions } })} />
+            <FeatureToggle title={t("目录结构")} detail={t("最多两层，忽略依赖与构建目录。")}
+              checked={form.promptEnhance.context.directory}
+              onChange={(directory) => updatePromptEnhance({ context: { ...form.promptEnhance.context, directory } })} />
+            <FeatureToggle title={t("主要清单文件")} detail={t("读取 Cargo.toml、package.json 等文件，帮助模型判断技术栈。")}
+              checked={form.promptEnhance.context.manifests}
+              onChange={(manifests) => updatePromptEnhance({ context: { ...form.promptEnhance.context, manifests } })} />
+          </div> : null}
           <FeatureToggle
             title={t("使用下一步建议的连接")}
             detail={t("沿用下一步建议页填写的 Base URL、API Key、协议和模型。关闭后可以单独指定服务。")}
@@ -5435,6 +5472,18 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
             </div>
             <p className="field-hint">{t("改写规则可先填入内置规则再改，清空即恢复内置规则。")}</p>
             {ruleError ? <p className="field-hint" role="alert">{ruleError}</p> : null}
+            <Field label={t("追问规则")}>
+              <Textarea value={form.promptEnhance.grillSystemPrompt}
+                onChange={(event) => updatePromptEnhance({ grillSystemPrompt: event.currentTarget.value })}
+                placeholder={t("留空使用内置追问规则：只问需要用户决定的事项，信息足够后生成提示词。")}
+                rows={5} />
+            </Field>
+            <div className="form-row">
+              <Button type="button" variant="outline" onClick={() => void fillDefaultRule("grill")}>{t("填入内置规则")}</Button>
+              <Button type="button" variant="outline" disabled={!form.promptEnhance.grillSystemPrompt}
+                onClick={() => updatePromptEnhance({ grillSystemPrompt: "" })}>{t("恢复内置规则")}</Button>
+            </div>
+            <p className="field-hint">{t("每轮最多 3 题，最多 3 轮；可随时直接生成。追问期间改动草稿需重新开始。")}</p>
             <Field label={t("超时（秒）")}>
               <Input
                 type="number"
@@ -5453,6 +5502,8 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
         </div>
       </CardContent>
     </Panel>
+    <PromptToolsPanel />
+    </>
   );
 }
 

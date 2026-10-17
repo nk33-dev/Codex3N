@@ -82,6 +82,10 @@ pub trait BridgeSettingsService: Send + Sync {
         Ok(String::new())
     }
 
+    fn prompt_tools_path(&self) -> PathBuf {
+        crate::prompt_enhance::store::default_path()
+    }
+
     fn whale_ledger_path(&self) -> PathBuf {
         crate::paths::default_settings_path().with_file_name("whale-balance.sqlite3")
     }
@@ -263,12 +267,23 @@ pub async fn handle_bridge_request(
         "/dictation/cancel" => {
             crate::dictation::cancel_bridge(&payload).map_err(anyhow::Error::from)
         }
+        path if path.starts_with("/prompt-enhance/library/")
+            || path.starts_with("/prompt-enhance/feedback/") =>
+        {
+            let database = ctx.settings.prompt_tools_path();
+            let action = path.trim_start_matches("/prompt-enhance/").to_string();
+            let data = payload.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::prompt_enhance::store::execute(&database, &action, data)
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("收藏或反馈操作失败"))
+        }
         "/prompt-enhance/generate" => match ctx.settings.get_settings().await {
-            Ok(settings) => Ok(crate::prompt_enhance::generate(
-                serde_json::from_value(payload.clone()).unwrap_or_default(),
-                &settings,
-            )
-            .await),
+            Ok(settings) => match serde_json::from_value(payload.clone()) {
+                Ok(request) => Ok(crate::prompt_enhance::generate(request, &settings).await),
+                Err(_) => Ok(json!({"status":"failed","message":"提示词增强请求格式不正确"})),
+            },
             Err(_) => Err(anyhow::anyhow!("无法读取提示词增强设置")),
         },
         "/settings/set" => {
@@ -492,10 +507,12 @@ pub async fn handle_bridge_request(
     };
 
     let response = result.unwrap_or_else(|error| {
-        if matches!(
-            path,
-            "/dictation/transcribe" | "/dictation/cancel" | "/prompt-enhance/generate"
-        ) {
+        if path.starts_with("/prompt-enhance/")
+            || matches!(
+                path,
+                "/dictation/transcribe" | "/dictation/cancel" | "/prompt-enhance/generate"
+            )
+        {
             failed_from_error(&Value::Null, error)
         } else {
             failed_from_error(&payload, error)
@@ -1445,6 +1462,65 @@ mod dictation_bridge_route_tests {
             assert!(!result.to_string().contains("fake-secret"));
             assert!(result["message"].as_str().unwrap().contains("未授权"));
         }
+    }
+}
+
+#[cfg(test)]
+mod prompt_tools_route_tests {
+    use super::*;
+
+    struct IsolatedSettings(PathBuf);
+    #[async_trait]
+    impl BridgeSettingsService for IsolatedSettings {
+        async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
+            Ok(BackendSettings::default())
+        }
+        async fn set_settings(&self, _: Value) -> anyhow::Result<BackendSettings> {
+            anyhow::bail!("只读")
+        }
+        fn prompt_tools_path(&self) -> PathBuf {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_tools_routes_share_storage_and_never_echo_invalid_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("tools.sqlite3");
+        let ctx = BridgeContext::new(
+            Arc::new(IsolatedSettings(database.clone())),
+            Arc::new(CoreRuntimeService::new(
+                0,
+                StatusStore::new(dir.path().join("status.json")),
+            )),
+            Arc::new(UnavailableDataService),
+        );
+        let saved = handle_bridge_request(
+            ctx.clone(),
+            "/prompt-enhance/library/save",
+            json!({"title":"标题","body":"正文"}),
+        )
+        .await;
+        assert_eq!(saved["status"], "ok");
+        let list = crate::prompt_enhance::store::execute(&database, "library/list", json!({}));
+        assert_eq!(list["favorites"][0]["id"], saved["favorite"]["id"]);
+        let response = handle_bridge_request(
+            ctx,
+            "/prompt-enhance/feedback/save",
+            json!({"original":"private-draft","apiKey":"private-key"}),
+        )
+        .await;
+        assert_eq!(response["status"], "failed");
+        assert!(!response.to_string().contains("private-"));
+        let extension = include_str!("../../../assets/inject/renderer-inject/91-extension-api.js");
+        let allowed = extension
+            .split("const codexPlusExtensionRoutes = new Set([")
+            .nth(1)
+            .unwrap()
+            .split("]);")
+            .next()
+            .unwrap();
+        assert!(!allowed.contains("prompt-enhance"));
     }
 }
 
