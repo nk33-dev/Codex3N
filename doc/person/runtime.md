@@ -185,7 +185,7 @@ Windows 官方 App 26.1013.3656.0 的三轮 60 秒采样分别捕获 `thread/lis
 
 真实 VS Code 共存验收：通过已安装的 `openai.chatgpt` 扩展和独立 VS Code 用户目录激活原生 app-server，不发送消息。主动退出经 `DefaultLaunchHooks::terminate_codex` 执行，测试实例的 1 个 app-server 已清理，4 个受保护进程全部保留，其中包括真实 VS Code Codex 进程。另一次隔离实例打开 4 个会话副本后结束确认归属的主进程，独立 `ChildMonitor` 清理其 1 个 app-server，6 个受保护进程全部保留，包括真实 VS Code Codex 进程和另一官方实例。两次均核对 PID、创建时间、路径和父链；这不替代真实系统睡眠唤醒与自动接管延迟验收。
 
-本轮 Windows 完整门禁为 Rust 格式检查、workspace 编译和测试、管理器类型检查、完整前端测试（852 通过、1 跳过）、Vite 构建及两套注入产物一致性。DMG 打包模拟在 Windows 繁忙环境曾超过原有 15 秒上限，测试超时调整为 120 秒后完整测试通过；生产打包重试次数保持原值。
+本轮 Windows 完整门禁为 Rust 格式检查、workspace 编译和测试、管理器类型检查、完整前端测试（853 通过、1 跳过）、Vite 构建及两套注入产物一致性。DMG 打包模拟在 Windows 繁忙环境曾超过原有 15 秒上限，测试超时调整为 120 秒后完整测试通过；生产打包重试次数保持原值。
 
 
 临时清理状态：隔离 App 及其验收监听已结束；自动审批以 `blocked by policy` 拦截了关闭测试 VS Code 窗口和删除临时 `live/codex-home/auth.json` 的命令，凭据副本与测试 VS Code 窗口保留，未把这两项记为已清理。原始检查资料继续保留，清理时只处理本轮临时目录。
