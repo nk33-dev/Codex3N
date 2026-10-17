@@ -536,7 +536,8 @@ fn extract_openai_plugins_zip(bytes: &[u8], destination: &Path) -> anyhow::Resul
         let mut file = archive
             .by_index(index)
             .with_context(|| format!("failed to read zip entry {index}"))?;
-        let Some(relative_path) = zip_entry_relative_path(file.name()) else {
+        let name = file.name().context("插件压缩包文件名编码无效")?.into_owned();
+        let Some(relative_path) = zip_entry_relative_path(&name) else {
             continue;
         };
         let output_path = destination.join(relative_path);
@@ -551,7 +552,7 @@ fn extract_openai_plugins_zip(bytes: &[u8], destination: &Path) -> anyhow::Resul
         }
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)
-            .with_context(|| format!("failed to read zip entry {}", file.name()))?;
+            .with_context(|| format!("读取压缩包条目 {name} 失败"))?;
         std::fs::write(&output_path, contents)
             .with_context(|| format!("failed to write {}", output_path.display()))?;
     }
@@ -565,7 +566,8 @@ fn extract_zip_exact(bytes: &[u8], destination: &Path) -> anyhow::Result<()> {
         let mut file = archive
             .by_index(index)
             .with_context(|| format!("failed to read zip entry {index}"))?;
-        let relative_path = safe_zip_path(file.name())?;
+        let name = file.name().context("插件压缩包文件名编码无效")?.into_owned();
+        let relative_path = safe_zip_path(&name)?;
         let output_path = destination.join(relative_path);
         if file.is_dir() {
             std::fs::create_dir_all(&output_path)
@@ -578,7 +580,7 @@ fn extract_zip_exact(bytes: &[u8], destination: &Path) -> anyhow::Result<()> {
         }
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)
-            .with_context(|| format!("failed to read zip entry {}", file.name()))?;
+            .with_context(|| format!("读取压缩包条目 {name} 失败"))?;
         std::fs::write(&output_path, contents)
             .with_context(|| format!("failed to write {}", output_path.display()))?;
     }

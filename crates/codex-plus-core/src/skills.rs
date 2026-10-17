@@ -855,10 +855,14 @@ pub fn extract_skill_subtree(
         let mut file = archive
             .by_index(index)
             .with_context(|| format!("读取压缩包条目 {index} 失败"))?;
+        let name = file
+            .name()
+            .context("skill 压缩包文件名编码无效")?
+            .into_owned();
         if file.is_symlink() {
-            anyhow::bail!("skill 中不允许包含符号链接：{}", file.name());
+            anyhow::bail!("skill 中不允许包含符号链接：{}", name);
         }
-        let Some(relative) = zip_entry_relative_path(file.name()) else {
+        let Some(relative) = zip_entry_relative_path(&name) else {
             continue;
         };
         // zip 内部的分隔符恒为 '/'，但上面拿回来的是 PathBuf，在 Windows 上
@@ -887,7 +891,7 @@ pub fn extract_skill_subtree(
         }
         let mut contents = Vec::new();
         file.read_to_end(&mut contents)
-            .with_context(|| format!("读取压缩包条目 {} 失败", file.name()))?;
+            .with_context(|| format!("读取压缩包条目 {} 失败", name))?;
         std::fs::write(&output_path, contents)
             .with_context(|| format!("写入 {} 失败", output_path.display()))?;
         if inner == SKILL_MANIFEST_FILE {
