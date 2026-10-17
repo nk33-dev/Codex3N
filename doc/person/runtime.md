@@ -46,6 +46,11 @@
 
 `codexAppAutoTakeover` 默认关闭，`codexAppAutoTakeoverWhenActive` 默认为 `defer`；macOS 与 Windows 的自动接管守护由 `src-tauri/src/auto_takeover.rs` 启停，通过启动器 `session_snapshot()` 判断已有受管会话。平台支持状态与输入采集使用同一目标判据。开关位于“安装维护”页，状态查询接入 `use-manager-lifecycle.ts` 的可见性队列，每 3 秒更新；离页、隐藏或关闭开关即停止，旧响应不提交。验证见 `auto-takeover.test.ts`、`manager-window-lifecycle.test.ts`、核心 `auto_takeover` 单测；真实平台的退出重开及登录项行为需单独验证。
 
+自动接管的轻量心跳与进程探测独立调度：心跳最多间隔 2 秒，昂贵采集按策略的活跃 2 秒、静默 10 秒截止时间执行。设置保存会唤醒守护线程，快速关闭再开启继续保持单线程，停止可立即唤醒等待。每轮只取得一份缓存设置，用于开关、策略和 App 目录；仅在裸启动实例确实可能需要接管且采用 `defer` 策略时扫描活跃会话文件。
+
+`probe_desktop_app_state` 在一次平台快照内判断主实例、端口与多开。Windows 的 `try_enumerate_processes` 和 macOS 的快照入口保留采集失败；无法读取命令行或实例代际时返回 `Unknown`，管理器 `appRunning` 为 `null`。手动接管、唤醒和退出前重新采样，保留原有宽限期、退避和重启额度。
+
+
 上游新增的设置字段与聚合默认成员字段分别维护在 `provider-types.ts` 和 `lib/default-settings.ts`；`App.tsx` 使用同一类型和默认值。`SettingsStore::load` 的重入保护在解密后执行，嵌套读取保留解密与格式校验，只跳过归一化；`load_cached` 继续复用个人版缓存。验证见 `settings_load_recursion.rs` 与设置缓存、加密回归。
 
 - 设置写入采用跨进程锁和唯一临时文件；损坏内容会报错并保留原件，禁止静默回退默认值或覆盖用户配置，保存时保护已有供应商列表。入口：`crates/codex-plus-core/src/settings.rs`；验证设置单元测试和迁移测试。
@@ -162,3 +167,4 @@ macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-
 实机验收入口为 `cargo run -p codex-plus-core --example low_power_probe -- <官方 App 目录> <系统临时目录> <调试端口>`。它要求显式隔离 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，只在临时目录保存配置与 Electron 数据。运行中的二进制应复制到临时目录，避免占用共享 target 影响后续编译。原始本机日志保存在系统临时目录的 `codex3n-low-power-checks`、`codex3n-low-power-live`，不含会话正文；GPU、Git 与导航结果见 [增强业务](enhancements.md#低功耗与-git-维护)。真实多会话退出及真实 VS Code 共存场景未验证，Windows 原生夹具的模拟 Code 进程不能代替该结论。
 
 最后一个真实隔离实例退出前记录到 1 个 codex 子进程，退出后该进程已消失；同次检查的其他 41 个 node/codex 进程仍存活，验收 launcher 随后退出。该实例没有真实会话，因此只证明此次空闲退出与进程隔离结果。
+
