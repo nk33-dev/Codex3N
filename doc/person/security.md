@@ -20,6 +20,14 @@
 
 换 Key 的运行时认证更新走独立的 CDP 调用：后端将密钥作为临时参数交给本机 RPC 的 `account/login/start`，不写入页面全局状态、列表响应或诊断日志。页面只回传是否更新成功，CDP 与 RPC 的原始错误不向页面回显。入口固定为认证更新，不提供读取密钥的桥接路由，也不向远端 host 发送。
 
+## ZIP 依赖
+
+运行时 ZIP 与语音构建依赖统一使用 `zip 9.0.4`，覆盖 Unix 权限及链接解压公告
+RUSTSEC-2026-0367/0368/0369。`sherpa-onnx-sys 1.13.8` 尚固定依赖 zip 2，
+通过根清单 patch 使用 `vendor/sherpa-onnx-sys`；仅更新 ZIP 构建依赖，FFI 和原生库
+版本保持一致。来源、许可证及移除条件见该目录的 `PATCH.md`。Skills、插件和主题包
+继续沿用各自的路径、链接与体积校验。
+
 ## CI 与发布
 
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。

@@ -107,7 +107,7 @@ pub fn validate_and_read_package(
         let file = archive
             .by_index(index)
             .context("读取 Dream Skin ZIP 条目失败")?;
-        let name = file.name().to_string();
+        let name = file.name().context("主题包文件名编码无效")?.into_owned();
         validate_archive_entry_name(&name)?;
         if file.encrypted() || file.is_symlink() {
             bail!("主题包包含加密内容或链接：{name}");
