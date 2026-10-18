@@ -15,6 +15,9 @@ function fixture(stored = new Map<string, string>(), storageFails = false) {
   const slots: any[] = [], effects: Function[] = [];
   let cursor = 0;
   const context = vm.createContext({
+    console: { error() {} },
+    readPreference: (key: string) => { if (storageFails) throw new Error("unavailable"); return stored.get(key) ?? null; },
+    writePreference: async (key: string, value: string) => { if (storageFails) throw new Error("unavailable"); stored.set(key, value); },
     window: { localStorage: {
       getItem: (key: string) => { if (storageFails) throw new Error("unavailable"); return stored.get(key) ?? null; },
       setItem: (key: string, value: string) => { if (storageFails) throw new Error("unavailable"); stored.set(key, value); },

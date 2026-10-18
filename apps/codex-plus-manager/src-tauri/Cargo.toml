@@ -19,6 +19,7 @@ name = "codex-plus-legacy-shim"
 path = "src/legacy_shim.rs"
 
 [dependencies]
+fs2.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
 codex-plus-core = { path = "../../../crates/codex-plus-core" }

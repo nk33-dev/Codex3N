@@ -1,3 +1,4 @@
+import { readPreference, writePreference } from "./preferences";
 import { PromptToolsPanel } from "./prompt-tools";
 import type { BackendSettings, ToolShard, ImageOverlayFitMode, RelayApiKey, RelayProfile, RelayAggregateStrategy, RelayAggregateMember, RelayAggregateRoute, RelayAggregateConfig, AggregateRelayMember, AggregateRelayProfile, RelayContextSelection, RelayProtocol, StepwiseProtocol, StepwiseGenerationMode, RelayMode, RelaySessionProvider } from "./provider-types";
 export type { RelayProfile } from "./provider-types";
@@ -3105,7 +3106,7 @@ export function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.classList.toggle("light", theme === "light");
-    window.localStorage.setItem("codex-plus-theme", theme);
+    void writePreference("codex-plus-theme", theme).catch((error) => console.error("保存主题失败", error));
   }, [theme]);
 
   useEffect(() => {
@@ -8801,7 +8802,7 @@ function RelayFold({ title, children, className = "", bodyClassName = "", issue,
   const [open, setOpen] = useState(() => {
     if (issue) return true;
     try {
-      const stored = preferenceKey ? window.localStorage.getItem(preferenceKey) : null;
+      const stored = preferenceKey ? readPreference(preferenceKey) : null;
       if (stored === "true" || stored === "false") return stored === "true";
     } catch {
       // 无法使用本地存储时仍可展开、编辑并保存供应商草稿。
@@ -8820,7 +8821,7 @@ function RelayFold({ title, children, className = "", bodyClassName = "", issue,
       if (next === open) return;
       setOpen(next);
       if (preferenceKey) {
-        try { window.localStorage.setItem(preferenceKey, String(next)); } catch { /* 偏好不可写不影响编辑。 */ }
+        void writePreference(preferenceKey, String(next)).catch((error) => console.error("保存展开偏好失败", error));
       }
     }}>
       <summary className="relay-fold-summary">
@@ -15052,7 +15053,7 @@ function stringifyError(error: unknown) {
 
 function loadInitialTheme(): Theme {
   if (typeof window === "undefined") return "dark";
-  return window.localStorage.getItem("codex-plus-theme") === "light" ? "light" : "dark";
+  return readPreference("codex-plus-theme") === "light" ? "light" : "dark";
 }
 
 function loadInitialRoute(): Route {

@@ -38,18 +38,6 @@ impl Drop for PendingBackupFiles {
     }
 }
 
-/// 会话删除快照的保留份数。
-///
-/// 撤销入口是 Codex 界面里 10 秒后自动消失的一次性 toast；而每份快照都把
-/// rollout 全文 base64 内联进 JSON，不设上限时 `backups/` 会随删除次数无上限增长。
-const SESSION_DELETE_BACKUP_KEEP_COUNT: usize = 50;
-
-/// 最近这段时间内的快照不受份数限制。
-///
-/// 批量清理一次会写入几百份快照，只按份数保留会在同一次清理中途删掉前面的备份，
-/// 误删后就无从恢复。
-const SESSION_DELETE_BACKUP_KEEP_SECS: u64 = 7 * 24 * 60 * 60;
-
 impl BackupStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -213,7 +201,7 @@ impl BackupStore {
             let snapshot: serde_json::Value =
                 serde_json::from_slice(&fs::read(self.root.join(&name))?)?;
             if snapshot
-                .get("files")
+                .pointer("/tables/__files")
                 .and_then(serde_json::Value::as_array)
                 .is_some_and(|files| files.iter().any(|file| file.get("blob_ref").is_some()))
             {

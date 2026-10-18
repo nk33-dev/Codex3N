@@ -1672,6 +1672,20 @@ pub fn reset_settings_cache_for_tests() {
 
 /// 配置不应承载无界的转义膨胀或文件内容。超限时只报错，不覆盖原文件。
 pub const MAX_SETTINGS_FILE_BYTES: usize = 16 * 1024 * 1024;
+pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
+
+fn config_schema_version(value: &Value) -> anyhow::Result<u64> {
+    anyhow::ensure!(value.is_object(), "配置必须是 JSON 对象");
+    let version = match value.get("schemaVersion") {
+        None => 0,
+        Some(version) => version.as_u64().context("配置版本必须是非负整数")?,
+    };
+    anyhow::ensure!(
+        version <= SETTINGS_SCHEMA_VERSION,
+        "配置由较新版本创建，请升级应用后重试"
+    );
+    Ok(version)
+}
 
 fn serialize_settings_bounded(value: &impl serde::Serialize) -> anyhow::Result<Vec<u8>> {
     struct BoundedWriter(Vec<u8>);
@@ -1732,8 +1746,56 @@ impl SettingsStore {
         Self { path }
     }
 
+    pub fn migrate(&self) -> anyhow::Result<()> {
+        let Some(contents) = self.read_contents()? else {
+            return Ok(());
+        };
+        let parsed: Value = serde_json::from_str(&contents).with_context(|| {
+            format!(
+                "settings {} 解析失败，拒绝退回默认设置以免覆盖用户配置",
+                self.path.display()
+            )
+        })?;
+        let version = config_schema_version(&parsed)?;
+        if version == SETTINGS_SCHEMA_VERSION {
+            return Ok(());
+        }
+        let _lock = self.write_lock()?;
+        let Some(contents) = self.read_contents()? else {
+            return Ok(());
+        };
+        let mut parsed: Value = serde_json::from_str(&contents)?;
+        let mut version = config_schema_version(&parsed)?;
+        if version == SETTINGS_SCHEMA_VERSION {
+            return Ok(());
+        }
+        // 原始密文和未知字段一起备份，迁移不经过默认值序列化。
+        crate::paths::migration::backup_once(&self.path, contents.as_bytes())?;
+        while version < SETTINGS_SCHEMA_VERSION {
+            match version {
+                0 => {
+                    parsed["schemaVersion"] = Value::from(1);
+                }
+                _ => anyhow::bail!("不支持的配置版本"),
+            }
+            version += 1;
+        }
+        atomic_write(&self.path, &serialize_settings_bounded(&parsed)?)?;
+        invalidate_settings_cache(&self.path);
+        if let Some(parent) = self.path.parent() {
+            use std::io::Write;
+            let mut log = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(parent.join("migration.log"))?;
+            writeln!(log, "settings: schema upgraded to {version}")?;
+        }
+        Ok(())
+    }
+
     fn write_lock(&self) -> anyhow::Result<SettingsWriteLock> {
-        SettingsWriteLock::acquire(&self.path)?.ok_or_else(|| anyhow::anyhow!("无法获取设置写锁，配置未修改"))
+        SettingsWriteLock::acquire(&self.path)?
+            .ok_or_else(|| anyhow::anyhow!("无法获取设置写锁，配置未修改"))
     }
 
     pub fn revision(&self) -> anyhow::Result<String> {
@@ -1762,6 +1824,7 @@ impl SettingsStore {
     /// 应用启动即崩。触发条件：聚合供应商的 `configContents` 非空（切换供应商时
     /// `backfill_relay_profile_from_live` 会把 live 配置回填进聚合档案）。
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
+        self.migrate()?;
         let contents = match self.read_contents()? {
             Some(contents) => contents,
             None => {
@@ -1819,14 +1882,16 @@ impl SettingsStore {
             .map(|metadata| (metadata.modified().ok(), metadata.len()))
             .unwrap_or((None, 0));
         let cache = settings_cache();
-        let mut cache = lock_settings_cache(cache);
-        if let Some(entry) = cache.get(&self.path)
-            && entry.fingerprint == fingerprint
         {
-            return Ok(Arc::clone(&entry.settings));
+            let cache = lock_settings_cache(cache);
+            if let Some(entry) = cache.get(&self.path)
+                && entry.fingerprint == fingerprint
+            {
+                return Ok(Arc::clone(&entry.settings));
+            }
         }
         let settings = Arc::new(self.load()?);
-        cache.insert(
+        lock_settings_cache(cache).insert(
             self.path.clone(),
             CachedSettings {
                 fingerprint,
@@ -1859,6 +1924,7 @@ impl SettingsStore {
         prepare: impl FnOnce(&str) -> anyhow::Result<()>,
         publish: impl FnOnce(&str) -> anyhow::Result<()>,
     ) -> anyhow::Result<String> {
+        self.migrate()?;
         let _lock = self.write_lock()?;
         let revision = self.revision()?;
         if settings.settings_revision != revision
@@ -1946,6 +2012,7 @@ impl SettingsStore {
         preserve_unknown_settings_fields(&mut next, &raw)?;
         next.remove("revision");
         encrypt_settings_secrets(&mut next);
+        next.insert("schemaVersion".into(), Value::from(SETTINGS_SCHEMA_VERSION));
         serialize_settings_bounded(&Value::Object(next))
     }
 
@@ -1989,6 +2056,7 @@ impl SettingsStore {
     }
 
     pub fn update(&self, payload: Value) -> anyhow::Result<BackendSettings> {
+        self.migrate()?;
         let Value::Object(payload) = payload else {
             return self.load();
         };
@@ -2060,6 +2128,7 @@ impl SettingsStore {
         }
         raw.remove("revision");
         encrypt_settings_secrets(&mut raw);
+        raw.insert("schemaVersion".into(), Value::from(SETTINGS_SCHEMA_VERSION));
         let bytes = serialize_settings_bounded(&Value::Object(raw))?;
         atomic_write(&self.path, &bytes)?;
         settings.settings_revision = settings_revision(Some(&bytes));
@@ -3321,6 +3390,7 @@ pub fn atomic_write_with(
             .with_context(|| format!("failed to create temp file {}", temp_path.display()))?;
         write_contents(&mut temp_file)?;
         temp_file.flush()?;
+        temp_file.sync_all()?;
         if let Some(permissions) = existing_permissions {
             temp_file.set_permissions(permissions)?;
         }
@@ -5915,6 +5985,82 @@ mod low_power_tests {
                 .update(serde_json::json!({ "codexAppLowPower": false }))
                 .unwrap()
                 .codex_app_low_power
+        );
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn migration_retains_explicit_false_unknown_fields_and_original_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let old = br#"{"codexAppSessionDelete":false,"codexAppUsageStatusLine":false,"codexAppLowPower":true,"future":{"enabled":true},"promptEnhance":{"enabled":true}}"#;
+        fs::write(&path, old).unwrap();
+        let store = SettingsStore::new(path.clone());
+        let loaded = store.load().unwrap();
+        assert!(!loaded.codex_app_session_delete);
+        assert!(!loaded.codex_app_usage_status_line);
+        assert!(loaded.codex_app_low_power);
+        assert!(loaded.prompt_enhance.enabled);
+        assert_eq!(
+            fs::read(temp.path().join("settings.json.bak")).unwrap(),
+            old
+        );
+        let first = fs::read(&path).unwrap();
+        store.load().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), first);
+        store.save(&loaded).unwrap();
+        let raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["schemaVersion"], 1);
+        assert_eq!(raw["future"]["enabled"], true);
+        assert!(!store.load().unwrap().codex_app_session_delete);
+        assert!(temp.path().join("migration.log").exists());
+    }
+
+    #[test]
+    fn stale_snapshot_and_future_schema_cannot_reset_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        let old = store.load().unwrap();
+        store.update(json!({"codexAppLowPower":true})).unwrap();
+        assert!(store.save(&old).is_err());
+        assert!(store.load().unwrap().codex_app_low_power);
+        let future = br#"{"schemaVersion":999,"codexAppLowPower":true}"#;
+        fs::write(&path, future).unwrap();
+        assert!(store.load().is_err());
+        assert!(store.update(json!({"codexAppLowPower":false})).is_err());
+        assert_eq!(fs::read(&path).unwrap(), future);
+    }
+
+    #[test]
+    fn replacing_program_files_preserves_config_and_removing_config_uses_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let install = temp.path().join("program");
+        let config = temp.path().join("user/settings.json");
+        fs::create_dir(&install).unwrap();
+        fs::write(install.join("app"), "old").unwrap();
+        let store = SettingsStore::new(config.clone());
+        store
+            .update(json!({"codexAppLowPower":true,"codexAppSessionDelete":false}))
+            .unwrap();
+        fs::write(install.join("app"), "new").unwrap();
+        let restarted = SettingsStore::new(config.clone()).load().unwrap();
+        assert!(restarted.codex_app_low_power);
+        assert!(!restarted.codex_app_session_delete);
+        fs::remove_file(&config).unwrap();
+        let defaults = store.load().unwrap();
+        assert_eq!(
+            defaults.codex_app_low_power,
+            BackendSettings::default().codex_app_low_power
+        );
+        assert_eq!(
+            defaults.codex_app_session_delete,
+            BackendSettings::default().codex_app_session_delete
         );
     }
 }

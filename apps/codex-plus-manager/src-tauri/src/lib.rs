@@ -2,6 +2,7 @@ mod agent_collaboration_commands;
 mod auto_takeover;
 pub mod commands;
 pub mod install;
+mod preferences;
 mod runtime_health;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -86,6 +87,17 @@ pub fn run() {
                     .focused(true)
                     .inner_size(1180.0, 820.0)
                     .min_inner_size(960.0, 720.0);
+            if let Some(state_dir) = codex_plus_core::paths::state_dir_override() {
+                main_window_builder = main_window_builder.data_directory(state_dir.join("webview"));
+            }
+            let window_preferences = preferences::read()?;
+            if let (Some(width), Some(height)) =
+                (window_preferences.width, window_preferences.height)
+            {
+                main_window_builder = main_window_builder
+                    .inner_size(width.clamp(960.0, 7680.0), height.clamp(720.0, 4320.0));
+            }
+            main_window_builder = main_window_builder.maximized(window_preferences.maximized);
             if let Some(icon) = app.default_window_icon().cloned() {
                 main_window_builder = main_window_builder.icon(icon)?;
             }
@@ -121,6 +133,8 @@ pub fn run() {
             commands::restart_codex_multi_instance,
             commands::restart_codex_plus,
             commands::load_settings,
+            preferences::load_ui_preferences,
+            preferences::save_ui_preferences,
             commands::dictation_local_model_status,
             commands::prompt_enhance_default_system_prompt,
             commands::prompt_enhance_default_grill_system_prompt,
@@ -425,6 +439,9 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             }
         }
         WindowEvent::Focused(focused) if !APP_EXITING.load(Ordering::SeqCst) => {
+            if !focused {
+                preferences::save_window(&focus_event_window);
+            }
             if *focused {
                 #[cfg(windows)]
                 let _ = focus_event_window.show();
@@ -436,6 +453,7 @@ fn register_main_window_events<R: tauri::Runtime>(window: tauri::WebviewWindow<R
             }
         }
         WindowEvent::CloseRequested { api, .. } => {
+            preferences::save_window(&close_event_window);
             // 统一由 app.exit 驱动退出，避免默认关窗与显式退出同时销毁事件循环。
             api.prevent_close();
             if APP_EXITING.load(Ordering::SeqCst) {

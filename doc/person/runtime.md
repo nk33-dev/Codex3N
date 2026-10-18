@@ -195,3 +195,17 @@ Windows 官方 App 26.1013.3656.0 的三轮 60 秒采样分别捕获 `thread/lis
 
 
 上述合并版本随后独立执行 `cargo test --workspace` 全量通过，最终退出码 0；日志为 `merged-workspace-retry.log`。格式和 workspace 编译通过；失败尝试继续保留，便于复查并行测试稳定性。
+
+## 用户配置持久化
+
+默认状态目录由 `paths.rs::default_app_state_dir` 统一提供：Windows `%APPDATA%/Codex3N`、macOS `~/Library/Application Support/Codex3N`、Linux `$XDG_CONFIG_HOME/Codex3N`（缺省 `~/.config/Codex3N`）。`CODEX_PLUS_STATE_DIR` 仍可为多开和测试显式指定独立目录。
+
+GUI 和 MCP 启动前执行 `paths/migration.rs::initialize_user_state`。新目录不存在时从 `~/.codex-session-delete` 一次导入，旧 `settings.json` 先写同目录 `.bak`；在临时目录完成复制后 rename 发布。SQLite 使用在线备份包含 WAL 已提交事务，锁、状态回执和 SQLite 边车不复制。密钥文件、插件、主题资源、收藏、Skills 和缓存等共用状态目录一起迁移，用户另选的外部路径保持配置。旧目录保留用于恢复；新目录存在后不再读取旧设置，因此删除新设置不会复活旧值。
+
+`SettingsStore::migrate` 按 `schemaVersion` 逐版本迁移，当前为 1；原始 JSON 与密文先备份，保留未知字段，只更新迁移字段。缺键在反序列化时使用代码默认值。未来版本和损坏配置拒绝保存；修订号防止旧表单覆盖其他进程的更新。写入共用跨进程锁和唯一临时文件，flush、sync 后原子替换。
+
+`ui-preferences.json` 保存主题、语言、折叠偏好及窗口尺寸/最大化状态。前端启动先读用户配置，再加载 App；旧 WebView 偏好只导入一次，清空 WebView 不影响后端值。`ui-preferences.imported` 保留导入标记，删除偏好文件后按默认值启动。主配置中的皮肤、插件、缓存选项沿用同一设置机制；Codex 原生快捷键由宿主维护，本项目没有第二份快捷键配置。
+
+旧路径原本已位于用户目录，安装脚本不删除该目录，未证实发布包替换是设置丢失的原因。已发现的风险是完整表单覆盖未知字段、旧快照保存，以及 WebView 独有偏好丢失；对应保护由修订号、字段保留和用户目录持久化覆盖。历史上已经被覆盖且没有备份的值无法从默认值推断恢复。
+
+迁移日志位于新目录 `migration.log`，不记录配置正文或密钥。迁移/加密数据测试均使用临时副本；真实跨平台安装升级仍须分别验证。

@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
+pub(crate) mod migration;
+pub use migration::initialize_user_state;
+
 const APP_STATE_DIR: &str = ".codex-session-delete";
 const SETTINGS_FILE: &str = "settings.json";
 const LATEST_STATUS_FILE: &str = "latest-status.json";
@@ -44,11 +47,17 @@ pub fn default_app_state_dir() -> PathBuf {
         return state_dir;
     }
 
-    if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-        return home_dir.join(APP_STATE_DIR);
+    if let Some(dirs) = directories::BaseDirs::new() {
+        return dirs.config_dir().join("Codex3N");
     }
 
     PathBuf::from(APP_STATE_DIR)
+}
+
+pub fn legacy_app_state_dir() -> PathBuf {
+    directories::BaseDirs::new()
+        .map(|dirs| dirs.home_dir().join(APP_STATE_DIR))
+        .unwrap_or_else(|| PathBuf::from(APP_STATE_DIR))
 }
 
 pub fn default_settings_path() -> PathBuf {
@@ -135,49 +144,49 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_settings_path();
 
-        assert!(path.ends_with(".codex-session-delete/settings.json"));
+        assert!(path.ends_with("Codex3N/settings.json"));
     }
 
     #[test]
     fn default_latest_status_path_uses_app_state_directory() {
         let path = default_latest_status_path();
 
-        assert!(path.ends_with(".codex-session-delete/latest-status.json"));
+        assert!(path.ends_with("Codex3N/latest-status.json"));
     }
 
     #[test]
     fn default_diagnostic_log_path_uses_app_state_directory() {
         let path = default_diagnostic_log_path();
 
-        assert!(path.ends_with(".codex-session-delete/codex-plus.log"));
+        assert!(path.ends_with("Codex3N/codex-plus.log"));
     }
 
     #[test]
     fn default_pending_provider_import_path_uses_app_state_directory() {
         let path = default_pending_provider_import_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-provider-import.json"));
+        assert!(path.ends_with("Codex3N/pending-provider-import.json"));
     }
 
     #[test]
     fn default_pending_session_share_path_uses_app_state_directory() {
         let path = default_pending_session_share_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-session-share.txt"));
+        assert!(path.ends_with("Codex3N/pending-session-share.txt"));
     }
 
     #[test]
     fn default_pending_remote_control_recovery_path_uses_app_state_directory() {
         let path = default_pending_remote_control_recovery_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-remote-control-recovery.json"));
+        assert!(path.ends_with("Codex3N/pending-remote-control-recovery.json"));
     }
 
     #[test]
     fn default_pending_manager_navigation_path_uses_app_state_directory() {
         let path = default_pending_manager_navigation_path();
 
-        assert!(path.ends_with(".codex-session-delete/pending-manager-navigation.json"));
+        assert!(path.ends_with("Codex3N/pending-manager-navigation.json"));
     }
 
     // 显式状态目录覆盖是 Windows 多开隔离的前提：平台无关的环境变量，
@@ -215,7 +224,7 @@ mod tests {
         );
 
         drop(scope);
-        assert!(default_app_state_dir().ends_with(".codex-session-delete"));
+        assert!(default_app_state_dir().ends_with("Codex3N"));
     }
 
     /// 测试用：临时设置 `CODEX_PLUS_STATE_DIR`，Drop 时恢复原值。

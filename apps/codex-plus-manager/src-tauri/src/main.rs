@@ -2,6 +2,12 @@
 
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();
+    if !args.iter().any(|arg| arg == "--codex-plus-multi-worker") {
+        if let Err(error) = codex_plus_core::paths::initialize_user_state() {
+            eprintln!("配置迁移失败：{error:#}");
+            std::process::exit(1);
+        }
+    }
     // MCP 是独立 stdio 进程，必须在 GUI、单实例锁和启动日志之前处理。
     if args
         .get(1)

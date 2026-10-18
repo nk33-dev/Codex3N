@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
+import { initializePreferences } from "./preferences";
 import "./styles.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
@@ -12,5 +12,10 @@ import "@fontsource/jetbrains-mono";
 const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
-  createRoot(app).render(<App />);
+  void initializePreferences().then(async () => {
+    const { App } = await import("./App");
+    createRoot(app).render(<App />);
+  }).catch((error) => {
+    app.textContent = `读取界面设置失败：${String(error)}。请重启应用`;
+  });
 }

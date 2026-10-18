@@ -21,7 +21,7 @@ const STORAGE_KEY = "codex-plus-lang";
 
 function resolveInitialLanguage(): Language {
   try {
-    return window.localStorage.getItem(STORAGE_KEY) === "en" ? "en" : "zh";
+    return readPreference(STORAGE_KEY) === "en" ? "en" : "zh";
   } catch {
     return "zh";
   }
@@ -62,15 +62,12 @@ export function tf(key: string, args: Array<string | number>): string {
 
 /** Persist a new language and reload so every literal re-evaluates under it. */
 export function setLanguage(language: Language): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, language);
-  } catch {
-    // Ignore storage failures; the reload below simply keeps the old value.
-  }
-  window.location.reload();
+  void writePreference(STORAGE_KEY, language).then(() => window.location.reload())
+    .catch((error) => window.alert(`保存语言失败：${String(error)}`));
 }
 
 /** Flip between Chinese and English. */
 export function toggleLanguage(): void {
   setLanguage(LANG === "en" ? "zh" : "en");
 }
+import { readPreference, writePreference } from "./preferences";

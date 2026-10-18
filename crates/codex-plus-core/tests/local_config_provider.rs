@@ -1,7 +1,7 @@
 use codex_plus_core::provider_import::initialize_local_config_provider;
 use codex_plus_core::settings::{
     AggregateRelayMember, AggregateRelayProfile, AggregateRelayRoute, AggregateRelayStrategy,
-    BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore,
+    BackendSettings, RelayMode, RelayProfile, RelayProtocol, RelaySessionProvider, SettingsStore,
 };
 
 /// 把设置主密钥文件重定向到本进程共用的临时目录。
