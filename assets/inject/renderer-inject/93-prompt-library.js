@@ -530,13 +530,12 @@
       button.append(codexPlusPromptIcon("bookmark"));
       button.addEventListener("pointerdown", (event) => {
         event.preventDefault();
-        if (codexPlusPromptLibrary.panel) codexPlusPromptLibrary.suppressTriggerClick = true;
       });
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (codexPlusPromptLibrary.suppressTriggerClick) {
-          codexPlusPromptLibrary.suppressTriggerClick = false;
+        if (codexPlusPromptLibrary.panel) {
+          closeCodexPlusPromptLibrary();
           return;
         }
         void openCodexPlusPromptLibrary(footer);

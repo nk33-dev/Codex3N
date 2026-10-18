@@ -89,6 +89,8 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     blocker: codexPlusPromptEnhanceReplaceBlocker, enabled: codexPlusPromptEnhanceEnabled,
     request: requestCodexPlusPromptEnhance, guard: guardCodexPlusPromptEnhance,
     position: positionCodexPlusPromptCard,
+    render: renderCodexPlusPromptEnhance, toolsHost: codexPlusPromptToolsHost,
+    updateTrigger: updateCodexPlusPromptEnhanceTrigger,
     keydown: codexPlusPromptEnhanceKeyHandler,
     modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
@@ -131,6 +133,10 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   Object.assign(layout.state, { phase: "questions", activeQuestion: 0, questions: [{ id: "only", options: [{ label: "A" }, { label: "B" }] }] });
   layout.keydown({ key: "ArrowRight", target: { closest: () => null }, preventDefault() {} });
   assert.equal(layout.requests.length, 0, "末题方向键不能隐式跳过并提交");
+  layout.state.questions.push({ id: "second", options: [{ label: "A" }, { label: "B" }] });
+  layout.keydown({ key: "ArrowRight", target: { closest: () => null }, preventDefault() {} });
+  assert.equal(layout.state.activeQuestion, 1);
+  assert.equal(Object.keys(layout.state.answers).length, 0, "翻页不能替用户决定答案");
 
   const read = fixture({ lines: ["第一行", "", "第三行"] });
   const firstRead = read.read(read.editor);
@@ -478,6 +484,122 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   await resumed.start({});
   assert.equal(resumed.state.text, "编辑结果");
   assert.equal(resumed.requests.length, 1, "reopening does not generate again");
+
+  const improved = fixture();
+  const initial = improved.start({});
+  await flush(); improved.resolve({ status: "ok", text: "图书管理与借还" }); await initial;
+  improved.state.text = "图书管理与借还，手动加了 ISBN 搜索";
+  const edit = improved.request({ forceFinal: true, supplementOnly: true, addition: "只管理个人藏书，加 CSV 导出" });
+  await flush();
+  await improved.request({ addition: "重复点击" });
+  assert.equal(improved.requests.length, 2, "生成中不能重复提交");
+  const payload = improved.requests[1].payload;
+  assert.equal(payload.currentText, "图书管理与借还，手动加了 ISBN 搜索");
+  assert.equal(payload.messages.at(-1).text, "只管理个人藏书，加 CSV 导出");
+  assert.equal(payload.messages.at(-2).text, payload.currentText);
+  improved.resolve({ status: "ok", text: "个人藏书与 ISBN 搜索，CSV 导出" }); await edit;
+  assert.equal(improved.state.text, "个人藏书与 ISBN 搜索，CSV 导出");
+  assert.equal(improved.editor.pmViewDesc.view.dispatched.length, 0, "改进只更新结果，不自动写回草稿");
+  const failedEdit = improved.request({ addition: "支持标签" });
+  await flush(); improved.resolve({ status: "failed", message: "网络失败" }); await failedEdit;
+  assert.equal(improved.state.phase, "result", "改进失败仍显示可编辑的旧结果");
+  assert.equal(improved.state.supplement, "支持标签");
+  const retryEdit = improved.request({ retry: true });
+  await flush();
+  assert.equal(improved.requests.at(-1).payload.messages.at(-1).text, "支持标签");
+  assert.equal(improved.requests.at(-1).payload.messages.filter(m => m.text === "支持标签").length, 1);
+  improved.resolve({ status: "ok", text: "个人藏书与 ISBN 搜索，CSV 导出" }); await retryEdit;
+  assert.match(improved.state.error, /模型未改动/);
+  assert.equal(improved.state.supplement, "支持标签", "无改动时保留本轮要求供调整");
+
+  // DOM 替身只提供节点和事件，运行生产渲染函数与提交处理器。
+  class Element {
+    constructor(tag = "div") { this.tag = tag; this.dataset = {}; this.style = {}; this.children = []; this.events = {}; this.attributes = {}; this.disabled = false; }
+    append(...nodes) { for (const node of nodes) { node.remove(); node.parentElement = this; this.children.push(node); } }
+    remove() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); this.parentElement = null; }
+    replaceChildren(...nodes) { for (const node of [...this.children]) node.remove(); this.append(...nodes); }
+    setAttribute(key, value) { this.attributes[key] = value; }
+    appendChild(node) { this.append(node); }
+    addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
+    emit(name, props = {}) {
+      const event = { target: this, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.stopped = true; }, ...props };
+      for (const fn of this.events[name] || []) fn(event);
+      return event;
+    }
+    get nextElementSibling() { return this.parentElement?.children[this.parentElement.children.indexOf(this) + 1] || null; }
+    after(node) { const parent = this.parentElement; node.remove(); node.parentElement = parent; parent.children.splice(parent.children.indexOf(this) + 1, 0, node); }
+    contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+    matches(selector) {
+      return selector.split(", ").some(part => {
+        if (part.startsWith(".")) return (this.className || "").split(" ").includes(part.slice(1));
+        if (part.startsWith("[data-")) {
+          const match = part.match(/^\[data-([\w-]+)(?:="([^"]*)")?\]$/);
+          const key = match?.[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+          return key && key in this.dataset && (match[2] === undefined || this.dataset[key] === match[2]);
+        }
+        return this.tag === part;
+      });
+    }
+    closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector); }
+    querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  }
+  const dom = fixture({ editorKind: "textarea", lines: ["图书管理"] });
+  dom.context.document.createElement = tag => new Element(tag);
+  dom.context.codexPlusPromptIcon = () => new Element("svg");
+  const card = new Element();
+  dom.context.codexPlusPromptEnhancePanel = () => card;
+  dom.context.positionCodexPlusPromptCard = () => {};
+  dom.context.codexPlusPromptEnhanceContextCaption = () => null;
+  dom.context.renderCodexPlusPromptEnhance = dom.render;
+  const domStart = dom.start({});
+  await flush(); dom.resolve({ status: "ok", text: "图书借阅" }); await domStart;
+  let follow = card.querySelector(".codex-plus-prompt-follow");
+  let submit = card.querySelector(".codex-plus-prompt-follow-row").children[1];
+  assert.equal(submit.disabled, true);
+  follow.value = "增加导出"; follow.emit("input");
+  assert.equal(submit.disabled, false);
+  follow.emit("keydown", { key: "Enter", isComposing: true });
+  assert.equal(dom.requests.length, 1, "中文选字回车不能提交");
+  submit.emit("click"); await flush();
+  assert.equal(dom.requests[1].payload.messages.at(-1).text, "增加导出");
+  dom.resolve({ status: "ok", text: "图书借阅和导出" }); await flush();
+  assert.equal(card.querySelector("textarea").value, "图书借阅和导出");
+  follow = card.querySelector(".codex-plus-prompt-follow");
+  follow.value = "去掉借阅"; follow.emit("input");
+  const enter = follow.emit("keydown", { key: "Enter" }); await flush();
+  assert.equal(enter.stopped, true, "回车不能传到宿主发送处理器");
+  assert.equal(dom.requests[2].payload.currentText, "图书借阅和导出");
+  dom.resolve({ status: "ok", text: "藏书管理和导出" }); await flush();
+  assert.equal(card.querySelector("textarea").value, "藏书管理和导出");
+
+  const trigger = new Element("button");
+  dom.editor.value = " \n "; dom.updateTrigger(trigger, {});
+  assert.equal(trigger.disabled, true, "纯空白草稿禁用入口");
+  dom.editor.value = "图书"; dom.updateTrigger(trigger, {});
+  assert.equal(trigger.disabled, false);
+
+  const footer = new Element();
+  const toolbar = new Element(); toolbar.className = "flex";
+  const wrapper = new Element();
+  const permissions = new Element("button"); permissions.dataset.composerNavigationTarget = "permissions";
+  wrapper.append(permissions); toolbar.append(wrapper); footer.append(toolbar);
+  const group = dom.toolsHost(footer);
+  const favorite = new Element("button"); group.append(favorite, trigger);
+  assert.equal(wrapper.nextElementSibling, group);
+  toolbar.append(wrapper);
+  assert.equal(dom.toolsHost(footer), group);
+  assert.equal(wrapper.nextElementSibling, group, "权限入口被挪动后恢复相邻位置");
+  const replacement = new Element(); replacement.className = "flex";
+  replacement.append(wrapper); footer.append(replacement);
+  for (let i = 0; i < 5; i++) dom.toolsHost(footer);
+  assert.equal(group.parentElement, replacement, "布局重建后复用原工具组");
+  assert.equal(footer.querySelectorAll("[data-prompt-tools]").length, 1);
+  assert.deepEqual(group.children, [favorite, trigger]);
+  const toggle = dom.context.createCodexPlusPromptEnhanceTrigger();
+  toggle.emit("pointerdown");
+  toggle.emit("click", { stopPropagation() {} });
+  assert.equal(dom.state.phase, "idle", "再次点击增强入口关闭当前卡片");
 
   console.log("prompt enhance read, preview, replace, append, cancel and stale-draft contracts passed");
 })().catch(error => { console.error(error); process.exit(1); });
