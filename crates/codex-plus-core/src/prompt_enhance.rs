@@ -718,9 +718,9 @@ mod tests {
     #[test]
     fn bundled_system_prompt_is_loaded_from_asset() {
         let prompt = default_system_prompt();
-        assert!(prompt.starts_with("You are a prompt engineer."));
+        assert_eq!(prompt, BUNDLED_SYSTEM_PROMPT.trim());
         assert_eq!(prompt, prompt.trim());
-        assert!(prompt.contains("[@file](...)"));
+        assert!(prompt.contains("Markdown file or skill links"));
     }
 
     fn sample_round(answer: &str) -> Round {

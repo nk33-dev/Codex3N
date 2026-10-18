@@ -88,6 +88,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     forget: () => codexPlusPromptWorkflows.clear(),
     blocker: codexPlusPromptEnhanceReplaceBlocker, enabled: codexPlusPromptEnhanceEnabled,
     request: requestCodexPlusPromptEnhance, guard: guardCodexPlusPromptEnhance,
+    position: positionCodexPlusPromptCard,
     modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
   };`, context);
@@ -99,6 +100,34 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
 }
 
 (async () => {
+  const layout = fixture();
+  const panel = { style: {} };
+  let rect = { left: 180, top: 600, bottom: 760, width: 840 };
+  layout.context.codexPlusPromptCardScope = () => ({ getBoundingClientRect: () => rect });
+  layout.position(panel);
+  assert.equal(panel.style.bottom, "208px", "短内容也通过底边贴住输入框");
+  assert.equal(panel.style.top, "auto");
+  assert.equal(panel.style.width, "840px");
+  rect = { left: 10, top: 30, bottom: 140, width: 1000 };
+  layout.position(panel);
+  assert.equal(panel.style.top, "148px", "上方空间不足时放在下方");
+  assert.equal(panel.style.bottom, "auto");
+  layout.context.window.innerWidth = 220;
+  layout.context.window.innerHeight = 240;
+  rect = { left: -40, top: 10, bottom: 230, width: 500 };
+  layout.position(panel);
+  assert.equal(panel.style.width, "204px", "窄窗口不强制最小宽度");
+  assert.equal(panel.style.bottom, "8px", "长草稿场景保持操作区可见");
+  assert.ok(parseFloat(panel.style.maxHeight) <= 224);
+  layout.context.window.innerWidth = 1200;
+  layout.context.window.innerHeight = 800;
+  layout.context.codexPlusWindowZoom = () => 1.25;
+  rect = { left: 100, top: 600, bottom: 760, width: 1000 };
+  layout.position(panel);
+  assert.equal(panel.style.zoom, "1.25");
+  assert.equal(panel.style.width, "800px");
+  assert.equal(panel.style.bottom, "168px", "缩放后仍保持同宽与边缘间距");
+
   const read = fixture({ lines: ["第一行", "", "第三行"] });
   const firstRead = read.read(read.editor);
   assert.deepEqual({ text: firstRead.text, rich: firstRead.rich }, { text: "第一行\n\n第三行", rich: false });

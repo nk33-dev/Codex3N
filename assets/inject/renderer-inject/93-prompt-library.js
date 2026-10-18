@@ -36,6 +36,7 @@
     });
     ++state.revision;
     clearTimeout(state.searchTimer);
+    state.panel?.promptObserver?.disconnect();
     state.panel?.remove();
     state.panel = null;
     state.edit = null;

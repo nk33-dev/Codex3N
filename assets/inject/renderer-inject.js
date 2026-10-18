@@ -17970,7 +17970,7 @@
     return button;
   }
 
-  // Codex3N 的输入卡片贴在 composer 上方；空间不足时落到下面。宽度跟随输入框。
+  // 用底边贴住输入框，内容变短时也不会留下按最大高度计算的空隙。
   function codexPlusPromptCardScope() {
     const target = codexPlusPromptEnhance.target || codexPlusPromptLibrary.target;
     const footer = target?.footer;
@@ -17979,28 +17979,41 @@
   }
 
   function positionCodexPlusPromptCard(panel) {
-    const rect = codexPlusPromptCardScope()?.getBoundingClientRect?.();
+    const scope = codexPlusPromptCardScope();
+    const rect = scope?.getBoundingClientRect?.();
     const zoom = typeof codexPlusWindowZoom === "function" ? codexPlusWindowZoom() : 1;
     const margin = 8;
     const viewportWidth = window.innerWidth / zoom;
     const viewportHeight = window.innerHeight / zoom;
-    const left = rect ? Math.max(margin, rect.left / zoom) : margin;
-    const width = rect
-      ? Math.min(rect.width / zoom, viewportWidth - left - margin)
-      : Math.min(560, viewportWidth - margin * 2);
-    const above = rect ? rect.top / zoom - margin : viewportHeight - margin;
-    let maxHeight = Math.min(viewportHeight * 0.62, above);
-    let top = above - maxHeight;
-    if (maxHeight < 220 && rect) {
-      top = rect.bottom / zoom + margin;
-      maxHeight = Math.min(viewportHeight * 0.62, viewportHeight - top - margin);
+    const width = Math.max(0, Math.min(rect ? rect.width / zoom : 560, viewportWidth - margin * 2));
+    const left = Math.max(margin, Math.min(rect ? rect.left / zoom : margin, viewportWidth - width - margin));
+    const above = rect ? Math.max(0, rect.top / zoom - margin * 2) : 0;
+    const below = rect ? Math.max(0, viewportHeight - rect.bottom / zoom - margin * 2) : 0;
+    const limit = Math.max(0, Math.min(viewportHeight * 0.62, viewportHeight - margin * 2));
+    let top = "auto", bottom = "auto", maxHeight = limit;
+    if (above >= 200) {
+      bottom = `${viewportHeight - rect.top / zoom + margin}px`;
+      maxHeight = Math.min(limit, above);
+    } else if (below >= 200) {
+      top = `${rect.bottom / zoom + margin}px`;
+      maxHeight = Math.min(limit, below);
+    } else {
+      // 长草稿占满窗口时允许覆盖部分输入区，保证卡片及操作按钮仍在视口内。
+      bottom = `${margin}px`;
     }
     Object.assign(panel.style, {
+      zoom: String(zoom),
       left: `${left}px`,
-      top: `${Math.max(margin, top)}px`,
-      width: `${Math.max(240, width)}px`,
-      maxHeight: `${Math.max(160, maxHeight)}px`,
+      top, bottom,
+      width: `${width}px`,
+      maxHeight: `${maxHeight}px`,
     });
+    if (typeof ResizeObserver !== "undefined" && scope && panel.promptAnchor !== scope) {
+      panel.promptObserver?.disconnect();
+      panel.promptAnchor = scope;
+      panel.promptObserver = new ResizeObserver(() => { if (panel.isConnected) positionCodexPlusPromptCard(panel); });
+      panel.promptObserver.observe(scope);
+    }
   }
 
   // 旧入口保留这个名字，收藏库也用它。
@@ -18222,6 +18235,7 @@
     });
     const panel = state.panel || document.getElementById("codex-plus-prompt-enhance-panel");
     if (state.phase === "idle") {
+      panel?.promptObserver?.disconnect();
       panel?.remove();
       state.panel = null;
       return;
@@ -18253,7 +18267,7 @@
       banner.append(restart);
       children.push(banner);
     }
-    const body = codexPlusPromptNode("div", "codex-plus-prompt-body");
+    const body = codexPlusPromptNode("div", `codex-plus-prompt-body${state.phase === "result" ? " is-result" : ""}`);
     if (state.phase === "loading") {
       const loading = codexPlusPromptNode("p", "codex-plus-prompt-status is-loading", state.busyText || "正在处理…");
       loading.setAttribute("role", "status");
@@ -18288,7 +18302,13 @@
       text.spellcheck = false;
       text.value = state.text;
       text.setAttribute("aria-label", "结果");
-      text.addEventListener("input", () => { state.text = text.value; });
+      text.addEventListener("input", () => {
+        state.text = text.value;
+        for (const action of ["copy", "save", "append", "replace"]) {
+          const button = card.querySelector(`[data-prompt-enhance-action="${action}"]`);
+          if (button) button.disabled = !state.text.trim() || (action === "replace" && (state.locked || !!codexPlusPromptEnhanceReplaceBlocker()));
+        }
+      });
       body.append(text);
       const follow = document.createElement("input");
       follow.className = "codex-plus-prompt-input codex-plus-prompt-follow";
@@ -18331,9 +18351,9 @@
       footer.append(codexPlusPromptNode("span", "codex-plus-prompt-grow"), codexPlusPromptButton("取消", "close"));
     } else if (state.phase === "questions") {
       const pager = codexPlusPromptNode("span", "codex-plus-prompt-pager");
-      pager.append(codexPlusPromptIconButton("rotate", "上一题", "prev", { disabled: state.activeQuestion === 0 || state.locked }));
+      pager.append(codexPlusPromptButton("‹", "prev", { title: "上一题", disabled: state.activeQuestion === 0 || state.locked }));
       pager.append(codexPlusPromptNode("span", "", `${state.activeQuestion + 1} / ${state.questions.length}`));
-      pager.append(codexPlusPromptIconButton("rotate", "下一题", "next", { disabled: state.locked }));
+      pager.append(codexPlusPromptButton("›", "next", { title: "下一题", disabled: state.locked }));
       footer.append(pager, codexPlusPromptNode("span", "codex-plus-prompt-grow"));
       footer.append(codexPlusPromptButton("不问了，直接写", "direct", { disabled: state.locked }));
     } else if (state.phase === "summary") {
@@ -18499,56 +18519,58 @@
       .codex-plus-prompt-enhance-trigger:hover,.codex-plus-prompt-library-trigger:hover{background:var(--color-token-interactive-bg-secondary-hover,color-mix(in srgb,currentColor 12%,transparent));opacity:1}
       .codex-plus-prompt-enhance-trigger[data-active="true"],.codex-plus-prompt-library-trigger[data-active="true"]{background:var(--color-token-interactive-bg-secondary-hover,color-mix(in srgb,currentColor 12%,transparent))}
       .codex-plus-prompt-enhance-trigger:focus-visible,.codex-plus-prompt-library-trigger:focus-visible{outline:2px solid currentColor;outline-offset:2px}
-      #codex-plus-prompt-enhance-panel,#codex-plus-prompt-library{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:10px;box-sizing:border-box;padding:12px 14px;overflow:hidden;border:1px solid var(--color-token-border-heavy,#8885);border-radius:14px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));color:var(--color-token-text-primary,#eee);font:13px/1.6 system-ui}
+      #codex-plus-prompt-enhance-panel,#codex-plus-prompt-library{position:fixed;z-index:2147483000;display:flex;flex-direction:column;gap:0;box-sizing:border-box;padding:0;overflow:hidden;box-shadow:0 12px 36px #0002;border:1px solid var(--color-token-border-heavy,#8885);border-radius:14px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));color:var(--color-token-text-primary,#eee);font:14px/1.6 system-ui}
       #codex-plus-prompt-enhance-panel *,#codex-plus-prompt-library *{box-sizing:border-box}
-      .codex-plus-prompt-head{display:flex;align-items:center;gap:8px;flex:none}
-      .codex-plus-prompt-head h2{margin:0;font-size:13px;font-weight:600}
-      .codex-plus-prompt-meta{color:var(--color-token-text-tertiary,inherit);font-size:12px}
+      .codex-plus-prompt-head{display:flex;align-items:center;gap:10px;flex:none;padding:14px 18px;border-bottom:1px solid var(--color-token-border-heavy,#8884)}
+      .codex-plus-prompt-head h2{margin:0;font-size:16px;font-weight:600;white-space:nowrap}
+      .codex-plus-prompt-meta{color:var(--color-token-text-tertiary,inherit);font-size:13px;min-width:0}
       .codex-plus-prompt-grow{flex:1 1 auto}
-      .codex-plus-prompt-body{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto;padding:2px 2px 4px}
+      .codex-plus-prompt-body{display:flex;flex-direction:column;gap:16px;min-height:0;overflow:auto;padding:18px;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--color-token-border-heavy,#666) transparent}
       .codex-plus-prompt-status{color:var(--color-token-text-tertiary,inherit);margin:0}
       .codex-plus-prompt-status.is-loading{animation:codex-plus-prompt-pulse 1.2s ease-in-out infinite}
       @keyframes codex-plus-prompt-pulse{50%{opacity:.4}}
       .codex-plus-prompt-draft{padding:8px 10px;border-radius:10px;background:var(--color-token-bg-tertiary,#0002);color:var(--color-token-text-tertiary,inherit);white-space:pre-wrap;word-break:break-word;max-height:96px;overflow:auto}
-      .codex-plus-prompt-question{margin:0;font-size:15px;font-weight:500;overflow-wrap:anywhere}
+      .codex-plus-prompt-question{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere}
       .codex-plus-prompt-question-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-      .codex-plus-prompt-options{display:flex;flex-direction:column;gap:4px}
-      .codex-plus-prompt-option{display:flex;align-items:flex-start;gap:10px;width:100%;padding:9px 8px;border:1px solid transparent;border-radius:9px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+      .codex-plus-prompt-options{display:flex;flex-direction:column;gap:8px;margin-top:18px}
+      .codex-plus-prompt-option{display:flex;align-items:flex-start;gap:12px;width:100%;padding:12px 10px;border:1px solid transparent;border-radius:9px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
       .codex-plus-prompt-option:hover{background:var(--color-token-interactive-bg-secondary-hover,#8882)}
       .codex-plus-prompt-option.is-selected{border-color:var(--color-token-border-heavy,#8885);background:var(--color-token-interactive-bg-secondary-hover,#fff1)}
       .codex-plus-prompt-option:disabled{opacity:.5;cursor:default}
-      .codex-plus-prompt-option-number{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:6px;font-size:12px;color:var(--color-token-text-tertiary,inherit)}
-      .codex-plus-prompt-option-text{min-width:0;overflow-wrap:anywhere;display:flex;flex-direction:column;gap:1px}
+      .codex-plus-prompt-option-number{display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;border:0;background:var(--color-token-interactive-bg-secondary-hover,#8883);border-radius:6px;font-size:12px;color:var(--color-token-text-tertiary,inherit)}
+      .codex-plus-prompt-option-text{min-width:0;overflow-wrap:anywhere;display:block}
       .codex-plus-prompt-option-text strong{font-weight:500}
-      .codex-plus-prompt-option-text small{color:var(--color-token-text-tertiary,inherit)}
-      .codex-plus-prompt-badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:5px;background:var(--color-token-interactive-bg-secondary-hover,#8883);font-size:11px;color:var(--color-token-text-tertiary,inherit)}
+      .codex-plus-prompt-option-text small{display:block;margin-top:3px;font-size:13px;color:var(--color-token-text-tertiary,inherit)}
+      .codex-plus-prompt-badge{display:inline;margin-left:8px;font-size:12px;color:var(--color-token-text-link,#8ab4f8)}
       .codex-plus-prompt-answered{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;color:var(--color-token-text-tertiary,inherit);font-size:12px}
       .codex-plus-prompt-answered li{display:flex;gap:6px;min-width:0}
       .codex-plus-prompt-answered li span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .codex-plus-prompt-summary{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8}
       .codex-plus-prompt-input{width:100%;padding:8px 10px;border:1px solid var(--color-token-input-border,#8884);border-radius:9px;background:var(--color-token-bg-tertiary,transparent);color:inherit;font:inherit;outline:none}
       .codex-plus-prompt-input:focus-visible{border-color:var(--color-token-text-tertiary,#888);outline:2px solid currentColor;outline-offset:1px}
-      .codex-plus-prompt-result{min-height:220px;max-height:46vh;resize:vertical;font-size:14px;line-height:1.65}
+      .codex-plus-prompt-body.is-result{flex:1;overflow:hidden}
+      .codex-plus-prompt-result{flex:1 1 280px;min-height:60px;width:100%;resize:none;border:0;border-radius:4px;background:transparent;padding:2px;font-size:15px;line-height:1.8;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--color-token-border-heavy,#666) transparent}
       .codex-plus-prompt-follow{flex:none}
       .codex-plus-prompt-caption{margin:0;color:var(--color-token-text-tertiary,inherit);font-size:12px;overflow-wrap:anywhere}
-      .codex-plus-prompt-foot{display:flex;align-items:center;flex-wrap:wrap;gap:6px;flex:none;padding-top:2px}
-      .codex-plus-prompt-action,.codex-plus-prompt-icon{height:28px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+      .codex-plus-prompt-foot{display:flex;align-items:center;flex-wrap:wrap;gap:8px;flex:none;padding:12px 18px;border-top:1px solid var(--color-token-border-heavy,#8884)}
+      .codex-plus-prompt-action,.codex-plus-prompt-icon{height:36px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}
       .codex-plus-prompt-action{padding:0 12px;white-space:nowrap}
-      .codex-plus-prompt-icon{width:28px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+      .codex-plus-prompt-icon{width:36px;flex:none;border-color:transparent;padding:0;display:inline-flex;align-items:center;justify-content:center}
       .codex-plus-prompt-action:hover,.codex-plus-prompt-icon:hover{background:var(--color-token-interactive-bg-secondary-hover,#fff2)}
       .codex-plus-prompt-action.is-primary{background:var(--color-token-text-primary,#eee);color:var(--color-token-bg-primary,#222);border-color:transparent;font-weight:500}
       .codex-plus-prompt-action:disabled,.codex-plus-prompt-icon:disabled{opacity:.45;cursor:default}
       .codex-plus-prompt-icon:focus-visible,.codex-plus-prompt-action:focus-visible,.codex-plus-prompt-option:focus-visible,.codex-plus-prompt-link:focus-visible{outline:2px solid currentColor;outline-offset:2px}
       .codex-plus-prompt-pager{display:inline-flex;align-items:center;gap:6px;color:var(--color-token-text-tertiary,inherit);font-size:12px}
-      .codex-plus-prompt-pager button{width:28px}
+      .codex-plus-prompt-pager button{width:30px;padding:0;border:0;font-size:24px;line-height:1}
       .codex-plus-prompt-link{padding:0;border:0;background:transparent;color:inherit;font:inherit;text-decoration:underline;text-underline-offset:2px;cursor:pointer}
       .codex-plus-prompt-link:disabled{opacity:.45;cursor:default}
-      .codex-plus-prompt-stale{display:flex;align-items:center;gap:10px;flex:none;padding:8px 10px;border-radius:9px;background:var(--color-token-interactive-bg-secondary-hover,#8882);color:var(--color-token-editor-warning-foreground,#ff8549);font-size:12px}
-      .codex-plus-prompt-error-bar{display:flex;align-items:center;gap:10px;flex:none;padding:8px 10px;border-radius:9px;background:color-mix(in srgb,#e5484d 14%,transparent);color:#e5484d;font-size:12px;overflow-wrap:anywhere}
+      .codex-plus-prompt-stale{display:flex;align-items:center;gap:10px;flex:none;margin:12px 18px 0;padding:8px 10px;border-radius:9px;background:var(--color-token-interactive-bg-secondary-hover,#8882);color:var(--color-token-editor-warning-foreground,#ff8549);font-size:12px}
+      .codex-plus-prompt-error-bar{display:flex;align-items:center;gap:10px;flex:none;margin:0 18px 12px;padding:8px 10px;border-radius:9px;background:color-mix(in srgb,#e5484d 14%,transparent);color:#e5484d;font-size:12px;overflow-wrap:anywhere}
       .codex-plus-prompt-mode-menu{position:fixed;z-index:2147483001;display:flex;flex-direction:column;gap:2px;min-width:136px;padding:4px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:10px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));color:var(--color-token-text-primary,#eee)}
       .codex-plus-prompt-mode-menu .codex-plus-prompt-action{display:block;width:100%;text-align:left;border:0;border-radius:6px;padding:7px 10px;height:auto}
       .codex-plus-prompt-mode-menu .codex-plus-prompt-action:hover{background:var(--color-token-interactive-bg-secondary-hover,#8883)}
-      .codex-plus-prompt-close-button{font-size:16px;line-height:1}
+      .codex-plus-prompt-close-button{font-size:24px;line-height:1}
+      @media(max-width:480px){.codex-plus-prompt-head,.codex-plus-prompt-foot{padding:10px 12px}.codex-plus-prompt-body{padding:12px}.codex-plus-prompt-meta{font-size:12px}.codex-plus-prompt-action{padding:0 9px}}
       .codex-plus-prompt-close{line-height:1}
       @media(prefers-reduced-motion:reduce){.codex-plus-prompt-status.is-loading{animation:none}}
     `;
@@ -18659,10 +18681,12 @@
   document.addEventListener("input", codexPlusPromptEnhanceInput, true);
   document.addEventListener("keydown", codexPlusPromptEnhanceKeyHandler, true);
   window.addEventListener("resize", codexPlusPromptEnhanceResize);
+  document.addEventListener("scroll", codexPlusPromptEnhanceResize, true);
   const codexPlusPromptEnhanceDispose = () => {
     cancelCodexPlusPromptEnhanceRequest();
     ++codexPlusPromptEnhance.revision;
     disposeCodexPlusPromptLibrary();
+    codexPlusPromptEnhance.panel?.promptObserver?.disconnect();
     codexPlusPromptWorkflows.clear();
     codexPlusPromptLibraries.clear();
     window.removeEventListener("popstate", codexPlusPromptEnhanceNavigation);
@@ -18671,6 +18695,7 @@
     document.removeEventListener("input", codexPlusPromptEnhanceInput, true);
     document.removeEventListener("keydown", codexPlusPromptEnhanceKeyHandler, true);
     window.removeEventListener("resize", codexPlusPromptEnhanceResize);
+    document.removeEventListener("scroll", codexPlusPromptEnhanceResize, true);
     document.querySelectorAll('[data-codex-plus-ext="builtin-prompt-enhance"]').forEach((node) => node.remove());
   };
   window.addEventListener("pagehide", codexPlusPromptEnhanceDispose, { once: true });
@@ -18716,6 +18741,7 @@
     });
     ++state.revision;
     clearTimeout(state.searchTimer);
+    state.panel?.promptObserver?.disconnect();
     state.panel?.remove();
     state.panel = null;
     state.edit = null;
