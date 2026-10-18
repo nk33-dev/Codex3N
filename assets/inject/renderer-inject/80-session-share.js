@@ -112,6 +112,16 @@
       });
       toast.appendChild(undo);
     }
+    // 插件自己的可撤销操作（例如替换草稿、删除收藏）复用同一条提示条。
+    if (settings.action?.run) {
+      const action = document.createElement("button");
+      action.textContent = settings.action.label || "撤销";
+      action.addEventListener("click", () => {
+        dismissCodexPlusToast(toast);
+        Promise.resolve().then(settings.action.run).catch(() => {});
+      });
+      toast.appendChild(action);
+    }
     document.body.appendChild(toast);
     // append 之后统一重排：此时这条才进入 DOM，索引才是它真实的层号。
     layoutCodexPlusToasts();

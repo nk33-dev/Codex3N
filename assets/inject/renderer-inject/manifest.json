@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测、常量与工具函数",
-      "lines": 1738
+      "lines": 1719
     },
     {
       "name": "01-registry.js",
@@ -23,7 +23,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2882
+      "lines": 2870
     },
     {
       "name": "20-menu.js",
@@ -38,7 +38,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、用户脚本与市场状态、拓展 UI",
-      "lines": 1957
+      "lines": 1953
     },
     {
       "name": "50-navigation.js",
@@ -48,7 +48,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 2103
+      "lines": 1565
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -73,7 +73,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具；分享入口已撤出管理器扫描",
-      "lines": 755
+      "lines": 765
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -117,13 +117,13 @@
     },
     {
       "name": "93-prompt-enhance.js",
-      "description": "提示词增强：读取草稿、后端改写、预览确认后替换或追加",
-      "lines": 874
+      "description": "提示词优化、需求问答与输入框上方的浮动卡片",
+      "lines": 1234
     },
     {
       "name": "93-prompt-library.js",
-      "description": "提示词收藏快捷取用与主动反馈",
-      "lines": 254
+      "description": "常用提示词列表、拖拽排序、编辑与撤销删除",
+      "lines": 551
     },
     {
       "name": "94-typing-effects.js",
@@ -133,7 +133,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 995
+      "lines": 987
     },
     {
       "name": "96-whale-compat.js",

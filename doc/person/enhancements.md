@@ -40,6 +40,14 @@ Windows 的 `03-native-performance.js` 从宿主 `app-shared-*` 模块按结构�
 
 性能回归见 `native-performance.test.ts`、`renderer-performance.test.ts` 与现有注入测试。Windows Chromium 页面验证涵盖长历史高度、搜索、选择、滚动到底和停用还原；这些夹具结果不代表真实 ChatGPT/Codex 客户端已修复。macOS、Linux 的原生运行行为及用户长会话仍需实测。
 
+## 会话滚动
+
+会话切换与位置恢复由官方客户端管理，注入脚本不保存滚动位置、不拦截宿主滚动方法。旧 `codexAppThreadScrollRestore` 配置键保持读取兼容，不再启动位置恢复。
+
+`60-plugin-marketplace.js::releaseThreadScrollControl` 在重新注入时取消旧恢复任务并解绑监听，只还原仍由本工具直接包装的方法；其他组件的外层包装保持原样。主动点击回答大纲仍按目标消息定位。回归见 `native-thread-scroll.test.ts`。
+
+2026-10-17 Windows 客户端完成热更新、重复注入及会话往返验证：滚动和 history 方法恢复为宿主方法，旧恢复任务为零，保存的位置记录未再变化。该验证确认插件退出接管，不代表官方客户端所有滚动行为均已验证；安装版需使用更新后的构建才能在重启后保持该行为。
+
 ## 悬浮球
 
 错误态不再绘制双 X，使用温和平静的短眼形；保留微笑、拖拽、展开及建议/大纲能力。表情调整不等于忽略实际错误，状态说明仍须可见。
@@ -95,9 +103,9 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 `dictation.provider` 支持 `api` 和 `sensevoice`，旧配置默认沿用 API 转写。SenseVoiceSmall INT8 模型由配置页手动下载固定版本并验证 SHA-256，录音入口不触发下载；浏览器将音频转为 16 kHz 单声道 WAV，Rust `dictation.rs` 经 sherpa-onnx 在本机推理。识别器在专用线程串行复用，模型或语言变化时重新校验和加载，PCM 样本直接进入推理；缓存会常驻一份模型内存。
 
-提示词增强使用独立的 `promptEnhance` 配置，默认关闭并受 `enhancementsEnabled` 控制，默认复用下一步建议连接。`defaultMode` 选择普通改写或追问，`systemPrompt` / `grillSystemPrompt` 分别覆盖两组内置规则，管理器均可填入、编辑和恢复。`context` 的总开关及项目、说明、清单、目录四类开关默认关闭；Rust 有界读取所选内容并发给配置的模型服务，预览列出文件及跳过原因。目录只从当前输入框匹配的本机会话元数据获取，远程或未知身份跳过。追问采用标签切题、推荐选项和自定义答案，主动确认后整轮提交，最多三轮、每轮三题，可随时直接生成；改稿暂停并重新开始，失败保留答案。唯一渲染入口仍为 manifest 的 `93-prompt-enhance.js`，定位辅助在 `93-prompt-enhance-context.js`；写回沿用原生 `updatePromptText`、Markdown 引用保留和草稿校验。Rust `prompt_enhance.rs` 编排请求，`prompt_enhance/context.rs` 读取上下文，`grill.rs` 校验问答并解析结果，协议仍复用 `stepwise.rs`。接口、预算和验证范围见 `docs/prompt-enhance.md`。
+提示词工具使用 `promptEnhance` 配置，默认关闭并受 `enhancementsEnabled` 控制，默认复用下一步建议连接。「增强提示词」直接补全草稿，新增设定标为建议；「需求对齐」一次一题，点选后自动进入下一题，一轮答完自动提交，支持自填、跳过和换个问法。轮数不限，需求小结须用户确认才生成提示词；修改旧答案会丢弃其后的追问记录并重新推导。关闭卡片、切换工具和会话时保留当前窗口的整理过程，退出清空。结果可编辑并按用户确认追加或替换，替换后可在提示条撤销。`systemPrompt/grillSystemPrompt` 可覆盖内置规则。项目资料开关和读取边界保持原约定。唯一渲染入口为 `93-prompt-enhance.js`，常用提示词为 `93-prompt-library.js`，项目定位在 `93-prompt-enhance-context.js`，Rust 编排、读取与解析分别在 `prompt_enhance.rs`、`context.rs`、`grill.rs`；仍复用原生写回及引用保护。接口与验证见 `docs/prompt-enhance.md`。
 
-普通改写与追问分别由 `promptEnhance.rewriteEnabled/grillEnabled` 控制，缺省均开启；两者都关闭时保留项目上下文选择并暂停读取。预览可切换通用、新功能、修 bug、代码审查场景，重新生成前核对需要重置的内容。输入框旁的收藏库独立于模型开关，在增强页集中管理；收藏取用共用草稿及引用保护。结果反馈仅主动保存，包含原稿、生成与编辑结果、追问答案和生效规则，供集中查看与导出。Rust `prompt_enhance/store.rs` 将收藏、反馈存入当前实例设置目录旁的 `prompt-enhance.sqlite3`；管理器命令和内部桥接共用同一服务。完整行为与验证入口见 `docs/prompt-enhance.md`。
+两个模型模式分别由 `rewriteEnabled/grillEnabled` 控制，都关闭时不渲染 ✨；常用提示词只受自己的开关控制。卡片浮在输入框上方、与其同宽，最高约 62vh；结果操作区左侧为重新生成、复制、存为常用，右侧为追加和替换。收藏支持搜索、范围与标签筛选、点一条追加、拖动手动排序，删除后可从提示条撤销。`prompt_enhance/store.rs` 继续使用 `prompt-enhance.sqlite3`，管理器和内部桥接共用服务；旧置顶顺序首次打开时一次性迁移为显式顺序，`pinned` 仅保留读取兼容。评分反馈入口及新增功能停用，已有数据保留。
 
 Claude 增强页通过 `claude_localization.rs` 创建受管副本、检查版本与 `app.asar` 一致性。页面由用户点击检测，后台探测单个命令最多等待 3 秒、整组最多 15 秒，超时回收子进程；离页后的结果不提交。`claudeAppLocalization` 和 `claudeAppVoiceInput` 默认开启，分别控制界面汉化与语音入口，重启副本后应用；关闭汉化时恢复已保存的外壳语言。Windows 支持普通安装和 MSIX 来源，普通副本以完整应用目录替换，失败时恢复旧目录；macOS 副本重新签名。命令只通过 Tauri 注册，回归见 `claude-localization-screen.test.ts` 和本地化单测。
 

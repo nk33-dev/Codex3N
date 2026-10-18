@@ -277,8 +277,9 @@ pub async fn handle_bridge_request(
                 crate::prompt_enhance::store::execute(&database, &action, data)
             })
             .await
-            .map_err(|_| anyhow::anyhow!("收藏或反馈操作失败"))
+            .map_err(|_| anyhow::anyhow!("收藏操作失败"))
         }
+        "/prompt-enhance/cancel" => Ok(crate::prompt_enhance::cancel(&payload)),
         "/prompt-enhance/generate" => match ctx.settings.get_settings().await {
             Ok(settings) => match serde_json::from_value(payload.clone()) {
                 Ok(request) => Ok(crate::prompt_enhance::generate(request, &settings).await),

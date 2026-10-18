@@ -55,7 +55,10 @@ pub struct Favorite {
     pub body: String,
     pub tags: Vec<String>,
     pub project: Option<Project>,
+    /// 旧数据里的置顶；迁移后界面不再使用。
     pub pinned: bool,
+    /// 手动顺序，越小越靠前；新条目排在最前。
+    pub order: i64,
     pub created_at: i64,
     pub updated_at: i64,
     pub last_used_at: i64,
@@ -175,18 +178,68 @@ fn open(path: &Path) -> anyhow::Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
-    ensure!(
-        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? <= 1,
-        "数据库版本过新"
-    );
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS favorites (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS feedback (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-        PRAGMA user_version=1;",
+        CREATE TABLE IF NOT EXISTS feedback (id TEXT PRIMARY KEY, data TEXT NOT NULL);",
     )?;
+    let version = conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?;
+    ensure!(version <= 2, "数据库版本过新");
+    // v2：一次性把置顶优先、最近使用在前的旧顺序写成显式 order，之后完全按用户手动顺序。
+    if version < 2 {
+        migrate_orders(&mut conn)?;
+        conn.pragma_update(None, "user_version", 2)?;
+    }
     Ok(conn)
+}
+
+/// 旧版本没有 order；迁移只做一次，之后置顶字段只用于读旧数据。
+fn migrate_orders(conn: &mut Connection) -> anyhow::Result<()> {
+    let mut items = favorites(conn)?;
+    items.sort_by_key(|item| {
+        (
+            std::cmp::Reverse(item.pinned),
+            std::cmp::Reverse(item.last_used_at),
+            std::cmp::Reverse(item.updated_at),
+            item.id.clone(),
+        )
+    });
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    for (index, mut item) in items.into_iter().enumerate() {
+        item.order = index as i64;
+        tx.execute(
+            "UPDATE favorites SET data=?2 WHERE id=?1",
+            params![item.id, serde_json::to_string(&item)?],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn manual(items: &[Favorite]) -> Vec<Favorite> {
+    let mut ordered = items.to_vec();
+    ordered.sort_by_key(|item| (item.order, item.updated_at, item.id.clone()));
+    ordered
+}
+
+fn write_all(conn: &Connection, items: &[Favorite]) -> anyhow::Result<()> {
+    for item in items {
+        conn.execute(
+            "UPDATE favorites SET data=?2 WHERE id=?1",
+            params![item.id, serde_json::to_string(item)?],
+        )?;
+    }
+    Ok(())
+}
+
+fn first_order(conn: &Connection) -> anyhow::Result<i64> {
+    Ok(favorites(conn)?
+        .iter()
+        .map(|item| item.order)
+        .min()
+        .unwrap_or(0)
+        - 1)
 }
 
 fn favorites(conn: &Connection) -> anyhow::Result<Vec<Favorite>> {
@@ -206,10 +259,13 @@ fn id(payload: &Value) -> anyhow::Result<&str> {
 
 /// 只接收结构化内容，不接收前端提供的数据库路径。
 pub fn execute(path: &Path, action: &str, payload: Value) -> Value {
+    if action == "feedback/save" {
+        return json!({"status":"failed","message":"反馈记录已停用"});
+    }
     match execute_inner(path, action, payload) {
         Ok(value) => value,
         // SQLite、JSON 错误可能带正文；响应和日志均不转发原始错误。
-        Err(_) => json!({"status":"failed","message":"收藏或反馈操作失败，请检查内容格式后重试"}),
+        Err(_) => json!({"status":"failed","message":"收藏操作失败，请检查内容后重试"}),
     }
 }
 
@@ -236,6 +292,21 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_lowercase();
+            let tag = payload
+                .get("tag")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let sort = payload
+                .get("sort")
+                .and_then(Value::as_str)
+                .unwrap_or("manual");
+            let limit = payload
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(5000)
+                .clamp(1, 5000) as usize;
             let mut items = favorites(&conn)?;
             items.retain(|item| {
                 let visible = match scope {
@@ -252,20 +323,37 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
                             .to_lowercase()
                             .contains(&query))
             });
-            let recent = payload.get("sort").and_then(Value::as_str) != Some("updated");
-            items.sort_by_key(|item| {
-                std::cmp::Reverse((
-                    item.pinned,
-                    if recent {
-                        item.last_used_at
-                    } else {
-                        item.updated_at
-                    },
-                    item.updated_at,
-                    item.id.clone(),
-                ))
-            });
-            Ok(json!({"status":"ok","favorites":items}))
+            let mut tags = items
+                .iter()
+                .flat_map(|item| item.tags.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            tags.sort();
+            tags.dedup();
+            if !tag.is_empty() {
+                items.retain(|item| item.tags.iter().any(|value| value == &tag));
+            }
+            match sort {
+                "recent" => items.sort_by_key(|item| {
+                    (
+                        std::cmp::Reverse(item.last_used_at),
+                        std::cmp::Reverse(item.updated_at),
+                        item.id.clone(),
+                    )
+                }),
+                "updated" => items.sort_by_key(|item| {
+                    (
+                        std::cmp::Reverse(item.updated_at),
+                        std::cmp::Reverse(item.last_used_at),
+                        item.id.clone(),
+                    )
+                }),
+                // 默认按用户手动排的顺序；导出同样使用这个顺序。
+                _ => items = manual(&items),
+            }
+            let total = items.len();
+            items.truncate(limit);
+            Ok(json!({"status":"ok","favorites":items,"tags":tags,"total":total}))
         }
         "library/save" => {
             let mut item: Favorite = serde_json::from_value(payload)?;
@@ -284,9 +372,12 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
                 let old: Favorite = serde_json::from_str(&previous)?;
                 item.created_at = old.created_at;
                 item.last_used_at = old.last_used_at;
+                // 编辑保持原来的手动位置。
+                item.order = old.order;
             } else {
                 item.created_at = time;
                 item.last_used_at = 0;
+                item.order = first_order(&tx)?;
             }
             item.updated_at = time;
             tx.execute(
@@ -296,14 +387,132 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
             tx.commit()?;
             Ok(json!({"status":"ok","favorite":item}))
         }
-        "library/delete" | "feedback/delete" => {
-            let sql = if action == "library/delete" {
-                "DELETE FROM favorites WHERE id=?1"
-            } else {
-                "DELETE FROM feedback WHERE id=?1"
+        "library/delete" => {
+            let id = id(&payload)?;
+            let ordered = manual(&favorites(&conn)?);
+            let Some(index) = ordered.iter().position(|item| item.id == id) else {
+                bail!("收藏不存在");
             };
-            conn.execute(sql, [id(&payload)?])?;
+            let favorite = ordered[index].clone();
+            conn.execute("DELETE FROM favorites WHERE id=?1", [id])?;
+            Ok(json!({"status":"ok","favorite":favorite,"index":index}))
+        }
+        "feedback/delete" => {
+            conn.execute("DELETE FROM feedback WHERE id=?1", [id(&payload)?])?;
             Ok(json!({"status":"ok"}))
+        }
+        "library/restore" => {
+            let mut item: Favorite =
+                serde_json::from_value(payload.get("favorite").cloned().context("缺少收藏内容")?)?;
+            let index = payload.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            item.normalize()?;
+            ensure!(!item.id.is_empty(), "收藏缺少 ID");
+            let mut items = manual(&favorites(&conn)?);
+            items.retain(|value| value.id != item.id);
+            items.insert(index.min(items.len()), item);
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for (position, value) in items.iter_mut().enumerate() {
+                value.order = position as i64;
+            }
+            for value in &items {
+                tx.execute(
+                    "INSERT OR REPLACE INTO favorites VALUES (?1,?2)",
+                    params![value.id, serde_json::to_string(value)?],
+                )?;
+            }
+            tx.commit()?;
+            Ok(json!({"status":"ok"}))
+        }
+        "library/reorder" => {
+            let ids: Vec<String> = payload
+                .get("ids")
+                .and_then(Value::as_array)
+                .context("缺少顺序")?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|text| !text.is_empty() && text.len() <= 80)
+                        .map(str::to_string)
+                        .context("收藏 ID 无效")
+                })
+                .collect::<anyhow::Result<_>>()?;
+            ensure!(ids.len() <= 5000, "顺序内容过多");
+            let mut seen = std::collections::HashSet::new();
+            ensure!(ids.iter().all(|id| seen.insert(id.clone())), "收藏 ID 重复");
+            let items = manual(&favorites(&conn)?);
+            let known: std::collections::HashSet<&str> =
+                items.iter().map(|item| item.id.as_str()).collect();
+            ensure!(
+                ids.iter().all(|id| known.contains(id.as_str())),
+                "部分收藏不存在"
+            );
+            // 只重排传入的这几条，其他收藏（比如别的项目）保持原来的位置。
+            let slots: Vec<usize> = items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| ids.contains(&item.id))
+                .map(|(index, _)| index)
+                .collect();
+            ensure!(slots.len() == ids.len(), "顺序内容不完整");
+            let mut reordered = items.clone();
+            for (slot, id) in slots.iter().zip(ids.iter()) {
+                reordered[*slot] = items
+                    .iter()
+                    .find(|item| &item.id == id)
+                    .expect("id 已校验")
+                    .clone();
+            }
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            for (position, item) in reordered.iter_mut().enumerate() {
+                item.order = position as i64;
+            }
+            write_all(&tx, &reordered)?;
+            tx.commit()?;
+            Ok(json!({"status":"ok"}))
+        }
+        "library/add" => {
+            let body = payload
+                .get("body")
+                .and_then(Value::as_str)
+                .context("缺少正文")?
+                .to_string();
+            ensure!(
+                !body.trim().is_empty() && body.chars().count() <= 20_000,
+                "正文需要 1–20000 字"
+            );
+            let mut project: Option<Project> =
+                serde_json::from_value(payload.get("project").cloned().unwrap_or(Value::Null))?;
+            if let Some(project) = &mut project {
+                project.normalize()?;
+            }
+            let time = now();
+            let mut item = Favorite {
+                id: uuid::Uuid::new_v4().to_string(),
+                // 直接保存时第一行当标题。
+                title: body
+                    .trim()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(80)
+                    .collect(),
+                body,
+                tags: Vec::new(),
+                project,
+                pinned: false,
+                order: first_order(&conn)?,
+                created_at: time,
+                updated_at: time,
+                last_used_at: 0,
+            };
+            item.normalize()?;
+            conn.execute(
+                "INSERT INTO favorites VALUES (?1,?2)",
+                params![item.id, serde_json::to_string(&item)?],
+            )?;
+            Ok(json!({"status":"ok","favorite":item}))
         }
         "library/use" => {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -321,9 +530,8 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
             tx.commit()?;
             Ok(json!({"status":"ok"}))
         }
-        "library/export" => {
-            Ok(json!({"status":"ok","document":{"version":1,"favorites":favorites(&conn)?}}))
-        }
+        "library/export" => Ok(json!({"status":"ok",
+            "document":{"version":1,"favorites":manual(&favorites(&conn)?)}})),
         "library/import-preview" | "library/import" => {
             let mut document: Import = serde_json::from_value(payload)?;
             ensure!(
@@ -337,16 +545,33 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let mut inserted = 0;
             let mut skipped = 0;
-            for item in document.favorites {
-                if tx.execute(
+            // 导入按文件里的数组顺序追加到现有列表末尾，不沿用文件里的 order。
+            let mut next = favorites(&tx)?
+                .iter()
+                .map(|item| item.order)
+                .max()
+                .unwrap_or(-1)
+                + 1;
+            for mut item in document.favorites {
+                let exists: bool = tx
+                    .query_row(
+                        "SELECT 1 FROM favorites WHERE id=?1",
+                        [&item.id],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+                if exists {
+                    skipped += 1;
+                    continue;
+                }
+                item.order = next;
+                next += 1;
+                tx.execute(
                     "INSERT OR IGNORE INTO favorites VALUES (?1,?2)",
                     params![item.id, serde_json::to_string(&item)?],
-                )? == 1
-                {
-                    inserted += 1;
-                } else {
-                    skipped += 1;
-                }
+                )?;
+                inserted += 1;
             }
             if action == "library/import" {
                 tx.commit()?;
@@ -447,9 +672,11 @@ mod tests {
         let updated = execute(&path, "library/save", local.clone())["favorite"].clone();
         assert!(updated["lastUsedAt"].as_i64().unwrap() > 0);
         assert_eq!(updated["createdAt"], local["createdAt"]);
+        assert_eq!(updated["order"], local["order"], "编辑收藏不能改变手动顺序");
         assert_eq!(
-            execute(&path, "library/list", json!({"all":true}))["favorites"][0]["id"],
-            local["id"]
+            execute(&path, "library/list", json!({"all":true,"sort":"recent"}))["favorites"][0]["id"],
+            local["id"],
+            "旧排序方式仍然可用"
         );
         execute(&path, "library/delete", json!({"id":global["id"]}));
         assert!(
@@ -521,7 +748,143 @@ mod tests {
     }
 
     #[test]
-    fn feedback_requires_explicit_save_and_does_not_accept_context_or_credentials() {
+    fn manual_order_reorder_delete_restore_and_quick_add() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let order = |value: Value| -> Vec<Value> {
+            value["favorites"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["id"].clone())
+                .collect()
+        };
+        let first = save(&path, "一", Value::Null);
+        let second = save(&path, "二", Value::Null);
+        let third = save(&path, "三", Value::Null);
+        assert_eq!(
+            order(execute(&path, "library/list", json!({}))),
+            vec![
+                third["id"].clone(),
+                second["id"].clone(),
+                first["id"].clone()
+            ],
+            "新收藏排在最前"
+        );
+        assert_eq!(
+            execute(
+                &path,
+                "library/reorder",
+                json!({"ids":[first["id"],third["id"]]})
+            )["status"],
+            "ok"
+        );
+        assert_eq!(
+            order(execute(&path, "library/list", json!({}))),
+            vec![
+                first["id"].clone(),
+                second["id"].clone(),
+                third["id"].clone()
+            ],
+            "只重排传入的条目，未传入的保持原位置"
+        );
+        let deleted = execute(&path, "library/delete", json!({"id":second["id"]}));
+        assert_eq!(deleted["index"], 1);
+        execute(
+            &path,
+            "library/restore",
+            json!({"favorite":deleted["favorite"],"index":deleted["index"]}),
+        );
+        assert_eq!(
+            order(execute(&path, "library/list", json!({}))),
+            vec![
+                first["id"].clone(),
+                second["id"].clone(),
+                third["id"].clone()
+            ]
+        );
+        let added = execute(&path, "library/add", json!({"body":"标题行\n正文"}));
+        assert_eq!(added["favorite"]["title"], "标题行");
+        assert_eq!(
+            order(execute(&path, "library/list", json!({})))[0],
+            added["favorite"]["id"]
+        );
+        assert_eq!(
+            execute(&path, "library/reorder", json!({"ids":["missing"]}))["status"],
+            "failed"
+        );
+        assert_eq!(
+            execute(&path, "library/reorder", json!({"ids":["a","a"]}))["status"],
+            "failed"
+        );
+    }
+
+    #[test]
+    fn legacy_pinned_order_migrates_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE favorites (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+                CREATE TABLE feedback (id TEXT PRIMARY KEY, data TEXT NOT NULL);",
+            )
+            .unwrap();
+            let legacy = |id: &str, pinned: bool, used: i64, updated: i64| {
+                json!({"id":id,"title":id,"body":"正文","tags":[],"project":null,
+                    "pinned":pinned,"createdAt":updated,"updatedAt":updated,"lastUsedAt":used})
+            };
+            for (id, pinned, used, updated) in [
+                ("a", false, 10, 10),
+                ("b", true, 5, 5),
+                ("c", false, 30, 30),
+            ] {
+                conn.execute(
+                    "INSERT INTO favorites VALUES (?1,?2)",
+                    params![
+                        id,
+                        serde_json::to_string(&legacy(id, pinned, used, updated)).unwrap()
+                    ],
+                )
+                .unwrap();
+            }
+            conn.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let listed = execute(&path, "library/list", json!({}));
+        let ids: Vec<Value> = listed["favorites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].clone())
+            .collect();
+        assert_eq!(ids, vec![json!("b"), json!("c"), json!("a")]);
+        assert_eq!(listed["favorites"][0]["order"], 0);
+        let version: i64 = Connection::open(&path)
+            .unwrap()
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[test]
+    fn imports_append_in_array_order_and_exports_manual_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.db");
+        let item = save(&path, "原有", Value::Null);
+        let mut new = item.clone();
+        new["id"] = json!("new");
+        new["order"] = json!(-100);
+        let document = json!({"version":1,"favorites":[new,item.clone()]});
+        let preview = execute(&path, "library/import-preview", document.clone());
+        assert_eq!(preview["inserted"], 1);
+        execute(&path, "library/import", document);
+        let exported = execute(&path, "library/export", json!({}));
+        let favorites = exported["document"]["favorites"].as_array().unwrap();
+        assert_eq!(favorites[0]["id"], item["id"], "现有收藏保持原位置");
+        assert_eq!(favorites[1]["id"], "new", "导入按数组顺序追加到末尾");
+    }
+    #[test]
+    fn retired_feedback_preserves_existing_records() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.db");
         assert!(
@@ -536,7 +899,11 @@ mod tests {
         let error = execute(&path, "feedback/save", invalid);
         assert_eq!(error["status"], "failed");
         assert!(!error.to_string().contains("private-value"));
-        execute(&path, "feedback/save", data);
+        assert_eq!(
+            execute(&path, "feedback/save", data.clone())["status"],
+            "failed"
+        );
+        execute_inner(&path, "feedback/save", data).unwrap();
         assert_eq!(
             execute(&path, "feedback/list", json!({"rating":"improve"}))["feedback"]
                 .as_array()

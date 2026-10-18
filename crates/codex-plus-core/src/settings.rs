@@ -552,6 +552,8 @@ pub struct PromptEnhanceSettings {
     pub enabled: bool,
     pub rewrite_enabled: bool,
     pub grill_enabled: bool,
+    /// 常用提示词入口；与两种模型模式互相独立。
+    pub favorites_enabled: bool,
     pub use_stepwise_connection: bool,
     pub base_url: String,
     pub api_key: String,
@@ -572,6 +574,7 @@ impl Default for PromptEnhanceSettings {
             enabled: false,
             rewrite_enabled: true,
             grill_enabled: true,
+            favorites_enabled: true,
             use_stepwise_connection: true,
             base_url: String::new(),
             api_key: String::new(),
@@ -687,7 +690,8 @@ pub struct BackendSettings {
     pub codex_app_low_power: bool,
     #[serde(rename = "codexAppConversationView", default)]
     pub codex_app_conversation_view: bool,
-    #[serde(rename = "codexAppThreadScrollRestore", default = "default_true")]
+    // 兼容旧设置文件；会话滚动由宿主管理。
+    #[serde(rename = "codexAppThreadScrollRestore", default)]
     pub codex_app_thread_scroll_restore: bool,
     #[serde(rename = "codexAppNativeMenuPlacement", default = "default_true")]
     pub codex_app_native_menu_placement: bool,
@@ -896,7 +900,7 @@ impl Default for BackendSettings {
             codex_app_thread_id_badge: false,
             codex_app_low_power: false,
             codex_app_conversation_view: false,
-            codex_app_thread_scroll_restore: true,
+            codex_app_thread_scroll_restore: false,
             codex_app_native_menu_placement: true,
             codex_app_native_browser_require_identification: false,
             codex_app_service_tier_controls: false,
@@ -2179,6 +2183,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         merge_bool_setting(&mut prompt_enhance, patch, "enabled");
         merge_bool_setting(&mut prompt_enhance, patch, "rewriteEnabled");
         merge_bool_setting(&mut prompt_enhance, patch, "grillEnabled");
+        merge_bool_setting(&mut prompt_enhance, patch, "favoritesEnabled");
         merge_bool_setting(&mut prompt_enhance, patch, "useStepwiseConnection");
         for key in [
             "baseUrl",

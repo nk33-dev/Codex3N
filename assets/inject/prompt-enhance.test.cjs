@@ -40,7 +40,7 @@ function proseMirror(lines, extra = []) {
 }
 
 function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], extra = [], respond } = {}) {
-  const requests = [], toasts = [], events = [], appended = [], responseResolvers = [];
+  const requests = [], cancellations = [], toasts = [], events = [], appended = [], responseResolvers = [];
   let resolveResponse;
   class Textarea {
     constructor(value) { this._value = value; this.dataset = {}; this.isConnected = true; }
@@ -76,6 +76,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     codexPlusBackendSettings: { promptEnhance: { enabled: true }, dictation: { enabled: false } },
     showToast: message => toasts.push(message), loadOptionalCodexAppModule: async () => ({}),
     postJson: async (path, payload) => {
+      if (path === "/prompt-enhance/cancel") { cancellations.push(payload); return { status: "ok" }; }
       requests.push({ path, payload });
       if (respond) return respond(payload);
       return new Promise(resolve => { resolveResponse = resolve; responseResolvers.push(resolve); });
@@ -84,16 +85,17 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   vm.runInContext(`${dictationSource}\n${contextSource}\n${source}\n${librarySource}\n globalThis.testApi = {
     state: codexPlusPromptEnhance, read: codexPlusPromptEnhanceRead, write: codexPlusPromptEnhanceWrite,
     start: startCodexPlusPromptEnhance, apply: applyCodexPlusPromptEnhance, close: closeCodexPlusPromptEnhance,
+    forget: () => codexPlusPromptWorkflows.clear(),
     blocker: codexPlusPromptEnhanceReplaceBlocker, enabled: codexPlusPromptEnhanceEnabled,
     request: requestCodexPlusPromptEnhance, guard: guardCodexPlusPromptEnhance,
-    modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite, feedback: saveCodexPlusPromptFeedback,
+    modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
   };`, context);
   context.renderCodexPlusPromptEnhance = () => {};
   // 跳过 DOM 布局查询，直接把 footer 映射到测试输入框。
   context.codexPlusDictationScope = () => ({});
   context.codexPlusDictationEditor = () => editor;
-  return { ...context.testApi, context, editor, requests, toasts, events, responseResolvers, resolve: value => resolveResponse(value) };
+  return { ...context.testApi, context, editor, requests, cancellations, toasts, events, responseResolvers, resolve: value => resolveResponse(value) };
 }
 
 (async () => {
@@ -107,7 +109,8 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const flow = fixture({ lines: ["修一下登录页"] });
   const pending = flow.start({});
   await flush();
-  assert.deepEqual(JSON.parse(JSON.stringify(flow.requests)), [{ path: "/prompt-enhance/generate", payload: { prompt: "修一下登录页" } }]);
+  assert.equal(flow.requests[0].payload.prompt, "修一下登录页");
+  assert.equal(flow.requests[0].path, "/prompt-enhance/generate");
   assert.equal(flow.state.phase, "loading");
   assert.equal(flow.editor.pmViewDesc.view.dispatched.length, 0, "the draft stays untouched while generating");
   flow.resolve({ status: "ok", text: "目标：修复登录页\n要求：保留现有样式" });
@@ -127,18 +130,20 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const cancelled = cancel.start({});
   await flush();
   cancel.close();
+  assert.equal(cancel.cancellations.length, 1);
   cancel.resolve({ status: "ok", text: "迟到的结果" });
   await cancelled;
   assert.equal(cancel.state.phase, "idle");
   assert.equal(cancel.editor.pmViewDesc.view.dispatched.length, 0, "cancel leaves the draft unchanged");
 
-  // 生成期间用户改了草稿：拒绝整段替换，只允许追加。
+  // 生成期间用户改了草稿：锁定流程，拒绝整段替换，只允许追加。
   const edited = fixture({ lines: ["原稿"] });
   const editedPending = edited.start({});
   await flush();
   edited.editor.pmViewDesc.view.state.doc.blocks[0].children[0].text = "原稿加了一句";
   edited.resolve({ status: "ok", text: "增强稿" });
   await editedPending;
+  assert.equal(edited.state.locked, true, "draft edits lock the open workflow");
   assert.match(edited.blocker(), /草稿改过了/);
   assert.equal(edited.apply("replace", "增强稿"), false);
   assert.equal(edited.editor.pmViewDesc.view.dispatched.length, 0);
@@ -189,11 +194,11 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     loadOptionalCodexAppModule = async () => ({ renamedUpdate: uHi, renamedContext: wHi });
   `, native.context);
   await native.start({});
-  assert.deepEqual(JSON.parse(JSON.stringify(native.requests[0].payload)), { prompt: "看看 [@App.tsx](file:///repo/App.tsx/)" }, "mentions are sent as markdown links");
+  assert.equal(native.requests[0].payload.prompt, "看看 [@App.tsx](file:///repo/App.tsx/)", "mentions are sent as markdown links");
   assert.equal(native.blocker(), "");
   assert.equal(native.apply("replace", "增强稿 [@App.tsx](file:///repo/App.tsx/)"), true);
   assert.equal(native.context.nativeDraft, "增强稿 [@App.tsx](file:///repo/App.tsx/)");
-  assert.equal(native.context.nativeCalls.at(-1).options.isolateHistory, true, "replacement is its own undo step");
+  assert.equal(native.context.nativeCalls.filter(call => call.options).at(-1).options.isolateHistory, true, "replacement is its own undo step");
   assert.equal(native.editor.pmViewDesc.view.dispatched.length, 0, "native path does not touch ProseMirror directly");
 
   const nativeEdited = fixture({ respond: () => ({ status: "ok", text: "增强稿" }) });
@@ -250,26 +255,35 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
 
   const question = (id = "goal") => ({ id, title: "目标", question: "覆盖哪些功能？",
     options: [{ label: "管理图书", description: "先完成图书增删改查" }, { label: "包含借阅", description: "同时处理借还流程" }], recommended: 0 });
+  // 需求对齐允许空草稿，先问「你想做什么？」，用户填写后才请求。
+  const intro = fixture({ lines: ["  "], respond: () => ({ status: "ok", kind: "questions", questions: [question()] }) });
+  await intro.start({}, "grill");
+  assert.equal(intro.state.phase, "intro");
+  assert.equal(intro.requests.length, 0);
+  await intro.request({ intro: "做个待办应用" });
+  assert.equal(intro.requests[0].payload.prompt, "做个待办应用");
+  assert.equal(intro.state.phase, "questions", intro.state.error);
   const grill = fixture({ respond: payload => payload.forceFinal ? { status: "ok", kind: "final", text: "最终提示词" }
     : { status: "ok", kind: "questions", questions: [question()] } });
   await grill.start({}, "grill");
   assert.equal(grill.state.phase, "questions");
   assert.equal(grill.state.history.length, 0);
   assert.equal(grill.round().answers.length, 0, "recommendations are not silently accepted");
-  await grill.request();
-  assert.equal(grill.requests.length, 1, "unanswered rounds require confirmation");
-  grill.state.answers.goal = { selected: 0 };
+  grill.state.answers.goal = "管理图书";
   await grill.request();
   assert.equal(grill.state.history.length, 1);
   assert.equal(grill.state.answers.goal, undefined, "each new round needs fresh confirmation");
-  grill.state.answers.goal = { custom: true, text: "图书管理和导出" };
+  grill.state.answers.goal = "图书管理和导出";
   await grill.request();
   assert.equal(grill.state.history.length, 2);
   assert.equal(grill.requests[2].payload.history[1].answers[0].answer, "图书管理和导出");
-  grill.state.answers.goal = { selected: 1 };
+  grill.state.answers.goal = "包含借阅";
   await grill.request();
-  assert.equal(grill.requests[3].payload.forceFinal, true);
+  assert.equal(grill.requests[3].payload.forceFinal, false);
   assert.equal(grill.requests[3].payload.history.length, 3);
+  assert.equal(grill.state.phase, "questions");
+  grill.state.answers.goal = "包含借阅";
+  await grill.request({ forceFinal: true });
   assert.equal(grill.state.phase, "result");
   assert.equal(grill.state.text, "最终提示词");
 
@@ -278,10 +292,10 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     ? (failOnce = false, { status: "failed", message: "超时" })
     : { status: "ok", kind: "questions", questions: [question()] } });
   await retry.start({}, "grill");
-  retry.state.answers.goal = { custom: true, text: "已填写的答案" };
+  retry.state.answers.goal = "已填写的答案";
   await retry.request();
   assert.equal(retry.state.phase, "error");
-  assert.equal(retry.state.answers.goal.text, "已填写的答案");
+  assert.equal(retry.state.answers.goal, "已填写的答案");
   await retry.request({ retry: true });
   assert.deepEqual(JSON.parse(JSON.stringify(retry.requests[1].payload)), JSON.parse(JSON.stringify(retry.requests[2].payload)));
   assert.equal(retry.state.history.length, 1, "retry does not append the round twice");
@@ -289,7 +303,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const direct = fixture({ respond: payload => payload.forceFinal ? { status: "ok", text: "直接结果" }
     : { status: "ok", kind: "questions", questions: [question("one"), question("two")] } });
   await direct.start({}, "grill");
-  direct.state.answers.one = { selected: 1 };
+  direct.state.answers.one = "包含借阅";
   await direct.request({ forceFinal: true });
   assert.equal(direct.state.phase, "result");
   assert.equal(direct.requests[1].payload.history[0].answers.length, 1, "direct generation uses only confirmed answers");
@@ -300,12 +314,13 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   changed.editor.pmViewDesc.view.state.doc.blocks[0].children[0].text = "新草稿";
   changed.resolve({ status: "ok", kind: "questions", questions: [question()] });
   await changing;
-  assert.equal(changed.state.phase, "stale");
+  assert.equal(changed.state.locked, true);
   const changeRevision = changed.state.revision;
   await changed.request({ forceFinal: true });
   assert.equal(changed.requests.length, 1, "changed drafts pause the old interview");
   assert.ok(changed.state.revision >= changeRevision);
   changed.close();
+  changed.forget();
   const restarted = changed.start({}, "grill");
   await flush();
   assert.equal(changed.requests[1].payload.prompt, "新草稿");
@@ -319,7 +334,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   late.context.window.location.href = "app://-/thread/another";
   late.resolve({ status: "ok", kind: "questions", questions: [question()] });
   await lateRun;
-  assert.equal(late.state.phase, "stale");
+  assert.equal(late.state.phase, "idle");
   assert.equal(late.state.questions.length, 0);
 
   const superseded = fixture();
@@ -341,7 +356,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const specialId = fixture({ respond: () => ({ status: "ok", kind: "questions", questions: [question("__proto__")] }) });
   await specialId.start({}, "grill");
   assert.equal(specialId.round().answers.length, 0);
-  specialId.state.answers["__proto__"] = { selected: 1 };
+  specialId.state.answers["__proto__"] = "包含借阅";
   assert.equal(specialId.round().answers[0].answer, "包含借阅");
 
   const withContext = fixture({ respond: () => ({ status: "ok", text: "结果", context: { enabled: true, sections: [] } }) });
@@ -401,41 +416,35 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const scene = fixture({ respond: () => ({ status: "ok", text: "结果", metadata: { mode: "grill", scenario: "general", model: "test", systemPrompt: "规则" } }) });
   await scene.start({}, "grill");
   scene.state.history = [{ questions: [question()], answers: [{ questionId: "goal", answer: "答案" }] }];
-  scene.state.text = "编辑过的结果"; scene.state.scenario = "bugfix";
-  scene.context.window.confirm = () => false;
-  await scene.request({ regenerate: true, forceFinal: true });
-  assert.equal(scene.requests.length, 1); assert.equal(scene.state.text, "编辑过的结果");
-  scene.context.window.confirm = () => true;
-  await scene.request({ regenerate: true, forceFinal: true });
-  assert.equal(scene.requests[1].payload.scenario, "bugfix");
-  assert.equal(scene.requests[1].payload.history.length, 0);
-  assert.equal(scene.requests[1].payload.forceFinal, false, "new grill scenarios restart questions");
+  scene.state.text = "编辑过的结果";
+  await scene.request({ forceFinal: true, rounds: scene.state.history });
+  assert.equal(scene.requests[1].payload.scenario, "general", "场景已从界面下线，固定使用通用规则");
+  assert.equal(scene.requests[1].payload.history.length, 1);
+  assert.equal(scene.requests[1].payload.forceFinal, true);
 
   const favorites = fixture({ lines: ["草稿"], respond: () => ({ status: "ok" }) });
   favorites.library.target = { editor: favorites.editor, href: favorites.context.window.location.href, original: "草稿", rich: false, doc: favorites.editor.pmViewDesc.view.state.doc };
   const item = { id: "saved", body: "收藏正文" };
-  favorites.context.navigator.clipboard = { writeText: async text => { assert.equal(text, "收藏正文"); } };
+  let copied = "";
+  favorites.context.navigator.clipboard = { writeText: async text => { copied = text; } };
   await favorites.useFavorite(item, "copy");
-  assert.equal(favorites.requests[0].path, "/prompt-enhance/library/use");
+  assert.equal(copied, "收藏正文");
+  assert.equal(favorites.requests.length, 0, "复制不算使用，不更新时间也不写输入框");
   favorites.editor.pmViewDesc.view.state.doc.blocks[0].children[0].text = "新草稿";
   await favorites.useFavorite(item, "replace");
   assert.equal(favorites.editor.pmViewDesc.view.dispatched.length, 0, "favorites cannot replace changed drafts");
-  assert.equal(favorites.requests.length, 1, "rejected writes do not count as recent use");
+  assert.equal(favorites.requests.length, 0, "rejected writes do not count as recent use");
   favorites.context.window.location.href = "app://-/thread/other";
   await favorites.useFavorite(item, "append");
   assert.equal(favorites.editor.pmViewDesc.view.dispatched.length, 0, "favorites cannot append to another session");
 
-  const explicit = fixture({ respond: () => ({ status: "ok", text: "生成结果", metadata: { mode: "rewrite", scenario: "general", model: "test", systemPrompt: "规则" } }) });
-  await explicit.start({});
-  assert.equal(explicit.requests.length, 1, "generation does not automatically save feedback");
-  explicit.state.text = "编辑结果";
-  explicit.context.postJson = async (path, payload) => { explicit.requests.push({ path, payload }); return { status: "ok" }; };
-  await explicit.feedback({ querySelector: () => null });
-  assert.equal(explicit.requests[1].path, "/prompt-enhance/feedback/save");
-  assert.equal(explicit.requests[1].payload.generated, "生成结果");
-  assert.equal(explicit.requests[1].payload.edited, "编辑结果");
-  assert.equal(explicit.requests[1].payload.metadata.model, "test");
-  assert.equal(explicit.requests[1].payload.history.length, 0);
+  assert.equal(source.includes('action === "feedback"'), false);
+  const resumed = fixture({ respond: () => ({ status: "ok", text: "生成结果" }) });
+  await resumed.start({});
+  resumed.state.text = "编辑结果"; resumed.close();
+  await resumed.start({});
+  assert.equal(resumed.state.text, "编辑结果");
+  assert.equal(resumed.requests.length, 1, "reopening does not generate again");
 
   console.log("prompt enhance read, preview, replace, append, cancel and stale-draft contracts passed");
 })().catch(error => { console.error(error); process.exit(1); });

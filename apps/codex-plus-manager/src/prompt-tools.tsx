@@ -1,180 +1,185 @@
 import { useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { Plus, Search, Upload, Download, ArrowLeft, Pencil, Trash2, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CardContent } from "@/components/ui/card";
 import { AppSelect, CardHead, Field, Panel } from "@/components/ui/manager-primitives";
 import { t, tf } from "@/i18n";
+import "./prompt-tools.css";
 
 type Project = { hostId: string; workingDirectory: string };
 type Favorite = {
-  id: string; title: string; body: string; tags: string[]; project: Project | null; pinned: boolean;
-  createdAt?: number; updatedAt?: number; lastUsedAt?: number;
+  id: string; title: string; body: string; tags: string[]; project: Project | null;
+  pinned: boolean; order: number;
 };
-type Feedback = {
-  id: string; original: string; generated: string; edited: string; rating: string; note: string; createdAt: number;
-  history: unknown[]; metadata: { mode: string; scenario: string; model: string; systemPrompt: string };
+type Result = {
+  status: string; message?: string; favorites?: Favorite[]; tags?: string[]; total?: number;
+  inserted?: number; skipped?: number; favorite?: Favorite; index?: number;
 };
-type Result = { status: string; message?: string; favorites?: Favorite[]; feedback?: Feedback[]; inserted?: number; skipped?: number; document?: unknown };
-
 async function request(action: string, payload: unknown = {}): Promise<Result> {
   const result = await invoke<Result>("prompt_tools_request", { action, payload });
   if (result.status !== "ok") throw new Error(result.message || t("读取或保存失败，请重试"));
   return result;
 }
-
-async function exportFile(kind: "library" | "feedback", payload: unknown = {}) {
-  const path = await save({ defaultPath: kind === "library" ? "prompt-favorites.json" : "prompt-feedback.json", filters: [{ name: "JSON", extensions: ["json"] }] });
-  if (!path) return;
-  const result = await invoke<Result>("prompt_tools_export_file", { kind, path, payload });
-  if (result.status !== "ok") throw new Error(result.message);
-}
-
-const emptyFavorite = (): Favorite => ({ id: "", title: "", body: "", tags: [], project: null, pinned: false });
+const emptyFavorite = (): Favorite => ({ id: "", title: "", body: "", tags: [], project: null, pinned: false, order: 0 });
 
 export function PromptToolsPanel() {
-  const [tab, setTab] = useState<"library" | "feedback">("library");
-  const [favorites, setFavorites] = useState<Favorite[]>([]);
-  const [feedback, setFeedback] = useState<Feedback[]>([]);
-  const [query, setQuery] = useState("");
-  const [scope, setScope] = useState("available");
-  const [projectFilter, setProjectFilter] = useState("");
-  const [sort, setSort] = useState("recent");
-  const [rating, setRating] = useState("");
-  const [edit, setEdit] = useState<Favorite | null>(null);
-  const [tags, setTags] = useState("");
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [importDocument, setImportDocument] = useState<unknown>(null);
-  const [importCounts, setImportCounts] = useState({ inserted: 0, skipped: 0 });
-  const loadRevision = useRef(0);
-  const fileInput = useRef<HTMLInputElement>(null);
-  const [projects, setProjects] = useState<Project[]>([]);
-
-  const load = async () => {
-    const revision = ++loadRevision.current;
-    const result = await request(tab === "library" ? "library/list" : "feedback/list",
-      tab === "library" ? { all: true, query, scope, sort } : { query, rating });
-    if (revision !== loadRevision.current) return;
-    if (tab === "library") {
-      setFavorites(result.favorites || []);
-      if (!query && scope === "available") {
-        const unique = new Map<string, Project>();
-        for (const item of result.favorites || []) if (item.project) unique.set(JSON.stringify(item.project), item.project);
-        setProjects([...unique.values()]);
-      }
+  const [items, setItems] = useState<Favorite[]>([]), [query, setQuery] = useState(""),
+    [scope, setScope] = useState("available"), [tag, setTag] = useState(""), [projectFilter, setProjectFilter] = useState(""),
+    [tags, setTags] = useState<string[]>([]), [selected, setSelected] = useState<Favorite | null>(null),
+    [edit, setEdit] = useState<Favorite | null>(null), [tagsText, setTagsText] = useState(""),
+    [error, setError] = useState(""), [message, setMessage] = useState(""),
+    [busy, setBusy] = useState(false), [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<string | null>(null),
+    [importData, setImportData] = useState<{ data: unknown; added: number; skipped: number } | null>(null);
+  const revision = useRef(0), fileInput = useRef<HTMLInputElement>(null);
+  const projects = [...new Map(items.filter(item => item.project).map(item => [JSON.stringify(item.project), item.project!])).entries()];
+  const visibleItems = items.filter(item => !projectFilter || JSON.stringify(item.project) === projectFilter);
+  async function load() {
+    const token = ++revision.current;
+    const result = await request("library/list", { all: true, query, scope, tag });
+    if (token === revision.current) {
+      setItems(result.favorites || []);
+      setTags(result.tags || []);
+      setSelected(value => result.favorites?.find(item => item.id === value?.id) || null);
     }
-    else setFeedback(result.feedback || []);
-  };
-  useEffect(() => {
-    let alive = true;
-    void request("library/list", { all: true }).then((result) => {
-      if (!alive) return;
-      const unique = new Map<string, Project>();
-      for (const item of result.favorites || []) if (item.project) unique.set(JSON.stringify(item.project), item.project);
-      setProjects([...unique.values()]);
-    }).catch(() => { if (alive) setError(t("读取或保存失败，请重试")); });
-    return () => { alive = false; ++loadRevision.current; };
-  }, []);
-  useEffect(() => { void load().catch(() => setError(t("读取或保存失败，请重试"))); return () => { ++loadRevision.current; }; }, [tab, scope, sort, rating]);
-
-  const run = async (task: () => Promise<void>) => {
+  }
+  useEffect(() => { void load().catch(() => setError(t("读取或保存失败，请重试"))); return () => { ++revision.current; }; }, [scope, tag]);
+  async function run(task: () => Promise<void>) {
     if (busy) return;
     setBusy(true); setError(""); setMessage("");
-    try { await task(); } catch { setError(t("读取或保存失败，请重试")); }
+    try { await task(); } catch (e) { setError(e instanceof Error ? e.message : t("读取或保存失败，请重试")); }
     finally { setBusy(false); }
-  };
-  const startEdit = (item: Favorite) => { setEdit({ ...item, project: item.project ? { ...item.project } : null }); setTags(item.tags.join(", ")); setError(""); };
-  const remove = async (kind: string, id: string) => {
-    if (!window.confirm(t("删除这条记录？删除后无法恢复。"))) return;
-    await request(`${kind}/delete`, { id }); await load();
-  };
-  const filteredFavorites = favorites.filter((item) => !projectFilter || (item.project && JSON.stringify(item.project) === projectFilter));
-
+  }
+  function startEdit(item: Favorite) {
+    setEdit({ ...item, tags: [...item.tags], project: item.project ? { ...item.project } : null });
+    setTagsText(item.tags.join(", ")); setError("");
+  }
+  async function remove(item: Favorite) {
+    await run(async () => {
+      const removed = await request("library/delete", { id: item.id });
+      await load();
+      setMessage(tf("已删除“{0}”", [item.title]));
+      if (removed.favorite) {
+        setUndo(() => async () => {
+          await request("library/restore", { favorite: removed.favorite, index: removed.index || 0 });
+          await load(); setMessage(t("已恢复"));
+        });
+      }
+    });
+  }
+  const [undo, setUndo] = useState<(() => Promise<void>) | null>(null);
+  async function move(id: string, target: string) {
+    if (id === target) return;
+    const next = [...visibleItems];
+    const from = next.findIndex(item => item.id === id), to = next.findIndex(item => item.id === target);
+    if (from < 0 || to < 0) return;
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    const order = [...next.map(item => item.id)];
+    setItems(value => {
+      const filtered = next.map(item => item.id);
+      return [...value].sort((a, b) => {
+        const aIndex = filtered.indexOf(a.id), bIndex = filtered.indexOf(b.id);
+        if (aIndex >= 0 && bIndex >= 0) return aIndex - bIndex;
+        return a.order - b.order;
+      });
+    });
+    await run(async () => { await request("library/reorder", { ids: order }); await load(); });
+  }
   return <Panel className="enhance-service-panel prompt-tools-panel">
-    <CardHead title={t("提示词工具")} detail={t("收藏常用提示词，回看主动保存的结果反馈。")} />
+    <CardHead title={t("常用提示词")} />
     <CardContent className="settings-content">
-      <div className="prompt-tools-toolbar" role="group" aria-label={t("提示词工具")}>
-        <Button variant={tab === "library" ? "default" : "outline"} onClick={() => { setTab("library"); setImportDocument(null); }}>{t("收藏库")}</Button>
-        <Button variant={tab === "feedback" ? "default" : "outline"} onClick={() => { setTab("feedback"); setEdit(null); setImportDocument(null); }}>{t("结果反馈")}</Button>
-      </div>
-      <form className="prompt-tools-toolbar prompt-tools-search" onSubmit={(event) => { event.preventDefault(); void run(load); }}>
-        <Input aria-label={t("搜索记录")} placeholder={t("搜索标题、正文、标签或反馈备注")} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
-        <Button type="submit" variant="outline" disabled={busy}>{t("搜索")}</Button>
-        {tab === "library" ? <Button type="button" disabled={busy} onClick={() => startEdit(emptyFavorite())}>{t("新建收藏")}</Button> : null}
+      <form className="prompt-tools-toolbar" onSubmit={event => { event.preventDefault(); void run(load); }}>
+        <Input aria-label={t("搜索")} placeholder={t("搜索标题、正文或标签")} value={query} onChange={event => setQuery(event.currentTarget.value)} />
+        <Button type="submit" variant="outline" title={t("搜索")} aria-label={t("搜索")} disabled={busy}><Search size={16} /></Button>
+        <Button type="button" title={t("新建")} aria-label={t("新建")} disabled={busy} onClick={() => startEdit(emptyFavorite())}><Plus size={16} /></Button>
       </form>
-      {error ? <p role="alert">{error}</p> : null}
-      {message ? <p role="status">{message}</p> : null}
-      {tab === "library" ? <>
-        <details className="prompt-tools-options"><summary>{t("筛选与导入导出")}</summary>
+      {error && <p role="alert">{error}</p>}
+      {message && <p role="status">{message}{undo && <Button variant="ghost" onClick={() => { const action = undo; setUndo(null); void run(action); }}>{t("撤销")}</Button>}</p>}
+      <details className="prompt-tools-options" open><summary>{t("筛选与导入导出")}</summary>
         <div className="prompt-tools-toolbar">
-          <Field label={t("范围")}><AppSelect value={scope} onChange={setScope} options={[{ value: "available", label: t("全部") }, { value: "global", label: t("全局") }, { value: "project", label: t("项目") }]} /></Field>
-          <Field label={t("项目筛选")}><AppSelect value={projectFilter} onChange={setProjectFilter} options={[{ value: "", label: t("全部项目") }, ...projects.map((project) => ({ value: JSON.stringify(project), label: `${project.hostId} · ${project.workingDirectory}` }))]} /></Field>
-          <Field label={t("排序")}><AppSelect value={sort} onChange={setSort} options={[{ value: "recent", label: t("最近使用") }, { value: "updated", label: t("最近修改") }]} /></Field>
-          <Button variant="outline" disabled={busy} onClick={() => fileInput.current?.click()}>{t("导入")}</Button>
-          <Button variant="outline" disabled={busy} onClick={() => void run(async () => { await exportFile("library"); })}>{t("导出收藏")}</Button>
-          <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={(event) => {
+          <Field label={t("范围")}><AppSelect value={scope} onChange={setScope} options={[
+            { value: "available", label: t("全部") }, { value: "global", label: t("通用") }, { value: "project", label: t("项目") }]} /></Field>
+          <Field label={t("标签")}><AppSelect value={tag} onChange={setTag} options={[
+            { value: "", label: t("全部标签") }, ...tags.map(value => ({ value, label: value }))]} /></Field>
+          <Field label={t("项目筛选")}><AppSelect value={projectFilter} onChange={setProjectFilter} options={[
+            { value: "", label: t("全部项目") }, ...projects.map(([value, project]) => ({ value, label: `${project.hostId} · ${project.workingDirectory}` }))]} /></Field>
+          <Button variant="outline" disabled={busy} title={t("导入")} aria-label={t("导入")} onClick={() => fileInput.current?.click()}><Upload size={16} /></Button>
+          <Button variant="outline" disabled={busy} title={t("导出")} aria-label={t("导出")} onClick={() => void run(async () => {
+            const path = await save({ defaultPath: "prompt-favorites.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+            if (!path) return;
+            const result = await invoke<Result>("prompt_tools_export_file", { kind: "library", path, payload: {} });
+            if (result.status !== "ok") throw new Error(result.message);
+          })}><Download size={16} /></Button>
+          <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={event => {
             const file = event.currentTarget.files?.[0]; event.currentTarget.value = "";
             if (!file) return;
             void run(async () => {
-              setImportDocument(null);
-              if (file.size > 8 * 1024 * 1024) throw new Error("size");
-              const documentData: unknown = JSON.parse(await file.text());
-              const result = await request("library/import-preview", documentData);
-              setImportDocument(documentData); setImportCounts({ inserted: result.inserted || 0, skipped: result.skipped || 0 });
+              if (file.size > 8 * 1024 * 1024) throw new Error(t("文件不能超过 8 MiB"));
+              const data: unknown = JSON.parse(await file.text()), result = await request("library/import-preview", data);
+              setImportData({ data, added: result.inserted || 0, skipped: result.skipped || 0 });
             });
           }} />
         </div>
+      </details>
+      {importData && <div className="settings-block">
+        <p>{tf("将导入 {0} 条，跳过 {1} 条重复收藏。", [importData.added, importData.skipped])}</p>
+        <Button disabled={busy} onClick={() => void run(async () => {
+          await request("library/import", importData.data); setImportData(null); await load(); setMessage(t("已导入"));
+        })}>{t("导入")}</Button>
+        <Button variant="outline" onClick={() => setImportData(null)}>{t("取消")}</Button>
+      </div>}
+      {edit ? <form className="prompt-tools-editor" onSubmit={event => {
+        event.preventDefault(); void run(async () => {
+          await request("library/save", { ...edit, tags: tagsText.split(/[,，]/).map(value => value.trim()).filter(Boolean) });
+          setEdit(null); await load(); setMessage(t("已保存"));
+        });
+      }}>
+        <Field label={t("标题")}><Input required maxLength={200} value={edit.title} onChange={event => setEdit({ ...edit, title: event.currentTarget.value })} /></Field>
+        <Field label={t("内容")}><Textarea required maxLength={20000} rows={12} value={edit.body} onChange={event => setEdit({ ...edit, body: event.currentTarget.value })} /></Field>
+        <details><summary>{t("更多选项")}</summary>
+          <Field label={t("标签")}><Input value={tagsText} placeholder={t("用逗号分隔")} onChange={event => setTagsText(event.currentTarget.value)} /></Field>
+          <Field label={t("范围")}><AppSelect value={edit.project ? "project" : "global"}
+            onChange={value => setEdit({ ...edit, project: value === "project" ? edit.project || { hostId: "local", workingDirectory: "" } : null })}
+            options={[{ value: "global", label: t("所有项目都能用") }, { value: "project", label: t("仅当前项目") }]} /></Field>
+          {edit.project && <>
+            <Field label={t("主机")}><Input required value={edit.project.hostId} onChange={event => setEdit({ ...edit, project: { ...edit.project!, hostId: event.currentTarget.value } })} /></Field>
+            <Field label={t("项目目录")}><Input required value={edit.project.workingDirectory} onChange={event => setEdit({ ...edit, project: { ...edit.project!, workingDirectory: event.currentTarget.value } })} /></Field>
+          </>}
         </details>
-        {importDocument ? <div className="settings-block">
-          <p>{tf("将导入 {0} 条，跳过 {1} 条重复收藏。", [importCounts.inserted, importCounts.skipped])}</p>
-          <Button disabled={busy} onClick={() => void run(async () => {
-            const result = await request("library/import", importDocument); setImportDocument(null); await load();
-            setMessage(tf("已导入 {0} 条，跳过 {1} 条。", [result.inserted || 0, result.skipped || 0]));
-          })}>{t("导入收藏")}</Button>
-          <Button variant="outline" onClick={() => setImportDocument(null)}>{t("取消")}</Button>
-        </div> : null}
-        {edit ? <form className="settings-block" onSubmit={(event) => { event.preventDefault(); void run(async () => {
-          await request("library/save", { ...edit, tags: tags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean) }); setEdit(null); await load();
-          setMessage(t("收藏已保存"));
-        }); }}>
-          <Field label={t("标题")}><Input required maxLength={200} value={edit.title} onChange={(event) => setEdit({ ...edit, title: event.currentTarget.value })} /></Field>
-          <Field label={t("正文")}><Textarea required maxLength={20000} rows={8} value={edit.body} onChange={(event) => setEdit({ ...edit, body: event.currentTarget.value })} /></Field>
-          <Field label={t("标签（逗号分隔）")}><Input value={tags} onChange={(event) => setTags(event.currentTarget.value)} /></Field>
-          <Field label={t("范围")}><AppSelect value={edit.project ? "project" : "global"} onChange={(value) => setEdit({ ...edit, project: value === "project" ? projects[0] || { hostId: "local", workingDirectory: "" } : null })}
-            options={[{ value: "global", label: t("全局") }, { value: "project", label: t("项目") }]} /></Field>
-          {edit.project ? <>
-            <Field label={t("主机")}><Input required value={edit.project.hostId} onChange={(event) => setEdit({ ...edit, project: { ...edit.project!, hostId: event.currentTarget.value } })} /></Field>
-            <Field label={t("项目目录")}><Input required value={edit.project.workingDirectory} onChange={(event) => setEdit({ ...edit, project: { ...edit.project!, workingDirectory: event.currentTarget.value } })} /></Field>
-          </> : null}
-          <label><input type="checkbox" checked={edit.pinned} onChange={(event) => setEdit({ ...edit, pinned: event.currentTarget.checked })} /> {t("置顶")}</label>
-          <div className="prompt-tools-toolbar"><Button type="submit" disabled={busy}>{t("保存收藏")}</Button><Button type="button" variant="outline" onClick={() => setEdit(null)}>{t("取消")}</Button></div>
-        </form> : null}
-        {!edit && !filteredFavorites.length ? <p className="field-hint">{t("没有匹配的收藏，可以新建或从输入框保存草稿。")}</p> : null}
-        {!edit && filteredFavorites.map((item) => <details key={item.id} name="prompt-manager-preview" className="prompt-tools-record">
-          <summary><span className="prompt-tools-record-title">{item.pinned ? `${t("置顶")} · ` : ""}{item.title}</span><small title={item.project?.workingDirectory}>{item.project ? t("项目") : t("全局")}</small><span className="prompt-tools-snippet">{item.body.replace(/\s+/g, " ")}</span></summary>
-          <p className="field-hint">{item.tags.join(" · ")}</p><pre>{item.body}</pre>
-          <div className="prompt-tools-toolbar"><Button variant="outline" disabled={busy} onClick={() => startEdit(item)}>{t("编辑")}</Button>
-            <Button variant="outline" disabled={busy} onClick={() => void run(async () => { await request("library/save", { ...item, pinned: !item.pinned }); await load(); })}>{item.pinned ? t("取消置顶") : t("置顶")}</Button>
-            <Button variant="outline" disabled={busy} onClick={() => void run(() => remove("library", item.id))}>{t("删除")}</Button></div>
-        </details>)}
-      </> : <>
-        <details className="prompt-tools-options"><summary>{t("筛选与导出")}</summary>
-        <div className="prompt-tools-toolbar"><Field label={t("评价")}><AppSelect value={rating} onChange={setRating} options={[{ value: "", label: t("全部") }, { value: "useful", label: t("有用") }, { value: "improve", label: t("需改进") }]} /></Field>
-          <Button variant="outline" disabled={busy} onClick={() => void run(async () => { await exportFile("feedback", { query, rating }); })}>{t("导出反馈")}</Button></div>
-        </details>
-        {!feedback.length ? <p className="field-hint">{t("还没有反馈，在增强结果中评价后会保存在这里。")}</p> : null}
-        {feedback.map((item) => <details key={item.id} className="prompt-tools-record">
-          <summary>{item.rating === "useful" ? t("有用") : t("需改进")} · {new Date(item.createdAt).toLocaleString()} · {item.metadata.model}</summary>
-          <p>{item.note}</p><p>{item.metadata.mode} · {item.metadata.scenario}</p>
-          <h4>{t("原稿")}</h4><pre>{item.original}</pre><h4>{t("生成结果")}</h4><pre>{item.generated}</pre><h4>{t("编辑后的结果")}</h4><pre>{item.edited}</pre>
-          <details><summary>{t("追问答案与规则")}</summary><pre>{JSON.stringify(item.history, null, 2)}</pre><pre>{item.metadata.systemPrompt}</pre></details>
-          <Button variant="outline" disabled={busy} onClick={() => void run(() => remove("feedback", item.id))}>{t("删除")}</Button>
-        </details>)}
-      </>}
+        <div className="prompt-tools-toolbar"><Button type="submit" disabled={busy}>{t("保存")}</Button>
+          <Button type="button" variant="outline" onClick={() => setEdit(null)}>{t("取消")}</Button></div>
+      </form> : <div className="prompt-manager-browser">
+        <div className="prompt-manager-list">
+          {!visibleItems.length && <p className="field-hint">{t("没有匹配的收藏")}</p>}
+          {visibleItems.map(item => <div key={item.id} className="prompt-manager-row"
+            data-dragging={dragging === item.id || undefined} data-over={over === item.id && dragging !== item.id || undefined}
+            onDragOver={event => { if (!dragging) return; event.preventDefault(); setOver(item.id); }}
+            onDragLeave={() => setOver(value => value === item.id ? null : value)}
+            onDrop={event => { event.preventDefault(); const id = dragging; setDragging(null); setOver(null); if (id) void move(id, item.id); }}>
+            <button type="button" className="prompt-manager-grip" draggable title={t("拖动排序")} aria-label={`${t("拖动排序")}: ${item.title}`}
+              onDragStart={event => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDragging(item.id); }}
+              onDragEnd={() => { setDragging(null); setOver(null); }}><GripVertical size={14} /></button>
+            <button type="button" className="prompt-manager-item" aria-pressed={selected?.id === item.id} onClick={() => setSelected(item)}>
+              <strong>{item.title}</strong>
+              <span>{item.tags.length ? `${item.tags.join(" · ")} — ` : ""}{item.body.replace(/\s+/g, " ")}</span>
+            </button>
+          </div>)}
+        </div>
+        {selected ? <section className="prompt-manager-preview">
+          <Button variant="ghost" className="prompt-manager-back" title={t("返回列表")} aria-label={t("返回列表")} onClick={() => setSelected(null)}><ArrowLeft size={16} /></Button>
+          <h3>{selected.title}</h3>
+          {selected.project && <p className="field-hint">{selected.project.workingDirectory}</p>}
+          <pre>{selected.body}</pre>
+          <div className="prompt-tools-toolbar">
+            <Button variant="outline" title={t("编辑")} aria-label={t("编辑")} onClick={() => startEdit(selected)}><Pencil size={16} /></Button>
+            <Button variant="outline" title={t("删除")} aria-label={t("删除")} disabled={busy} onClick={() => void remove(selected)}><Trash2 size={16} /></Button>
+          </div>
+        </section> : <p className="field-hint">{t("选择一条收藏查看正文")}</p>}
+      </div>}
     </CardContent>
   </Panel>;
 }

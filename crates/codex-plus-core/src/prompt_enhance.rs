@@ -8,7 +8,11 @@ pub mod store;
 
 pub use grill::{Answer, Question, QuestionOption, Round};
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use std::time::Instant;
+use tokio::sync::watch;
 
 use anyhow::Context;
 use reqwest::StatusCode;
@@ -42,6 +46,16 @@ pub struct PromptEnhanceRequest {
     pub session_id: String,
     pub history: Vec<Round>,
     pub force_final: bool,
+    pub messages: Vec<PromptMessage>,
+    pub current_text: String,
+    pub request_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptMessage {
+    pub role: String,
+    pub text: String,
 }
 
 pub fn default_grill_system_prompt() -> &'static str {
@@ -96,7 +110,67 @@ fn failed(message: impl Into<String>) -> Value {
     json!({ "status": "failed", "message": message.into() })
 }
 
+type PendingRequests = HashMap<uuid::Uuid, (Instant, watch::Sender<bool>)>;
+static PENDING_REQUESTS: OnceLock<Mutex<PendingRequests>> = OnceLock::new();
+
+pub fn cancel(payload: &Value) -> Value {
+    let Some(id) = payload
+        .get("requestId")
+        .and_then(Value::as_str)
+        .and_then(|id| uuid::Uuid::parse_str(id).ok())
+    else {
+        return failed("请求编号无效");
+    };
+    let mut pending = PENDING_REQUESTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    pending.retain(|_, (created, _)| created.elapsed() < Duration::from_secs(300));
+    if pending.len() >= 512 && !pending.contains_key(&id) {
+        return failed("请求过多，请稍后重试");
+    }
+    let entry = pending
+        .entry(id)
+        .or_insert_with(|| (Instant::now(), watch::channel(true).0));
+    entry.1.send_replace(true);
+    json!({"status":"ok"})
+}
+
 pub async fn generate(request: PromptEnhanceRequest, settings: &BackendSettings) -> Value {
+    if request.request_id.is_empty() {
+        return generate_inner(request, settings).await;
+    }
+    let Ok(id) = uuid::Uuid::parse_str(&request.request_id) else {
+        return failed("请求编号无效");
+    };
+    let mut cancellation = {
+        let mut pending = PENDING_REQUESTS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        pending.retain(|_, (created, _)| created.elapsed() < Duration::from_secs(300));
+        if let Some((_, sender)) = pending.get(&id) {
+            return failed(if *sender.borrow() {
+                "请求已取消"
+            } else {
+                "请求编号已使用"
+            });
+        }
+        if pending.len() >= 512 {
+            return failed("请求过多，请稍后重试");
+        }
+        let (sender, receiver) = watch::channel(false);
+        pending.insert(id, (Instant::now(), sender));
+        receiver
+    };
+    // 取消时丢弃整个请求 future，同时关闭正在等待的 HTTP 响应。
+    tokio::select! {
+        result = generate_inner(request, settings) => result,
+        _ = cancellation.changed() => failed("请求已取消"),
+    }
+}
+
+async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSettings) -> Value {
     if !settings.enhancements_enabled || !settings.prompt_enhance.enabled {
         return failed("提示词增强未启用");
     }
@@ -109,6 +183,15 @@ pub async fn generate(request: PromptEnhanceRequest, settings: &BackendSettings)
     }
     if let Err(message) = grill::validate(&request.history) {
         return failed(message);
+    }
+    if request.current_text.chars().count() > 100_000
+        || request.messages.iter().any(|m| {
+            !["user", "assistant"].contains(&m.role.as_str()) || m.text.chars().count() > 40_000
+        })
+        || serde_json::to_vec(&json!([request.history, request.messages]))
+            .map_or(true, |v| v.len() > 120_000)
+    {
+        return failed("整理内容过长，请缩短补充内容，或用需求小结重新开始");
     }
     if !["", "rewrite", "grill"].contains(&request.mode.as_str()) {
         return failed("未知的提示词增强模式");
@@ -133,7 +216,7 @@ pub async fn generate(request: PromptEnhanceRequest, settings: &BackendSettings)
     let Some(scenario_prompt) = scenario_rule(scenario) else {
         return failed("未知的提示词场景");
     };
-    let force_final = request.force_final || request.history.len() >= grill::MAX_ROUNDS;
+    let force_final = request.force_final;
     let connection = connection(settings);
     let base_url = connection.base_url.trim().trim_end_matches('/');
     let model = connection.model.trim();
@@ -168,13 +251,16 @@ pub async fn generate(request: PromptEnhanceRequest, settings: &BackendSettings)
         user_prompt =
             serde_json::to_string(&json!({"draft":prompt,"projectContext":context_text})).unwrap();
     }
+    if is_grill || !request.messages.is_empty() || !request.current_text.is_empty() {
+        user_prompt = serde_json::to_string(&json!({
+            "draft":prompt,"projectContext":context_text,"history":request.history,
+            "messages":request.messages,"currentText":request.current_text,"forceFinal":force_final,
+        }))
+        .unwrap();
+    }
     if is_grill {
         system_prompt.push('\n');
         system_prompt.push_str(grill::FORMAT);
-        user_prompt = serde_json::to_string(&json!({
-            "draft":prompt,"projectContext":context_text,"history":request.history,
-            "forceFinal":force_final,"remainingRounds":grill::MAX_ROUNDS.saturating_sub(request.history.len()),
-        })).unwrap();
     }
     let client = match crate::http_client::client_for_url("", base_url) {
         Ok(client) => client,
@@ -255,7 +341,7 @@ pub async fn generate(request: PromptEnhanceRequest, settings: &BackendSettings)
                 skipped.push(format!("{} empty", protocol.as_str()));
                 continue;
             }
-            return failed("模型没有返回改写结果");
+            return failed("模型没有返回内容，请重试");
         };
         let mut result = if is_grill {
             grill::parse(&enhanced, force_final)
@@ -475,7 +561,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "choices":[{"message":{"content":"结果"}}]
+                "choices":[{"message":{"content":"{\"kind\":\"summary\",\"text\":\"结果\"}"}}]
             })))
             .mount(&server)
             .await;
@@ -698,18 +784,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn third_round_forces_final_and_custom_grill_rules_apply() {
+    async fn further_rounds_wait_for_confirmation_and_custom_rules_apply() {
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices":[{"message":{"content":"{\"kind\":\"final\",\"text\":\"管理图书并提供导出\"}"}}]
         }))).expect(1).mount(&server).await;
         let mut req = request("图书管理");
         req.mode = "grill".into();
-        req.history = vec![sample_round("a"), sample_round("b"), sample_round("c")];
+        req.history = vec![
+            sample_round("a"),
+            sample_round("b"),
+            sample_round("c"),
+            sample_round("d"),
+        ];
         let mut config = settings(server.uri(), "chat_completions");
         config.prompt_enhance.grill_system_prompt = "追问专用规则".into();
         let result = generate(req, &config).await;
-        assert_eq!(result["kind"], "final");
+        assert_eq!(result["kind"], "summary");
         assert_eq!(result["text"], "管理图书并提供导出");
         let requests = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
@@ -721,8 +812,7 @@ mod tests {
         );
         let user: Value =
             serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
-        assert_eq!(user["forceFinal"], true);
-        assert_eq!(user["remainingRounds"], 0);
+        assert_eq!(user["forceFinal"], false);
     }
 
     #[tokio::test]
@@ -787,9 +877,17 @@ mod tests {
     }
 
     #[test]
-    fn grill_text_fallback_and_force_final_are_bounded() {
-        assert_eq!(grill::parse("普通提示词", false)["text"], "普通提示词");
-        assert_eq!(grill::parse("{broken JSON", false)["kind"], "final");
+    fn grill_format_and_force_final_are_bounded() {
+        assert_eq!(grill::parse("普通提示词", false)["status"], "failed");
+        assert_eq!(grill::parse("{broken JSON", false)["status"], "failed");
+        assert_eq!(
+            grill::parse(r#"{"kind":"summary","text":"方向已明确"}"#, false)["kind"],
+            "summary"
+        );
+        assert_eq!(
+            grill::parse(r#"{"kind":"final","text":"提示词"}"#, true)["kind"],
+            "final"
+        );
         let questions =
             json!({"kind":"questions","questions":sample_round("x").questions}).to_string();
         assert_eq!(grill::parse(&questions, true)["status"], "failed");
@@ -798,6 +896,51 @@ mod tests {
         round.answers[0].answer = "有效".into();
         assert!(grill::validate(&[round]).is_ok());
         assert!(default_grill_system_prompt().contains("forceFinal"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_registration_rejects_late_request() {
+        let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(cancel(&json!({"requestId":id}))["status"], "ok");
+        let mut req = request("需求");
+        req.request_id = id;
+        assert_eq!(
+            generate(req, &settings("http://127.0.0.1:9".into(), "auto")).await["message"],
+            "请求已取消"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_model_wait() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(5))
+                    .set_body_json(json!({"choices":[{"message":{"content":"结果"}}]})),
+            )
+            .mount(&server)
+            .await;
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut req = request("需求");
+        req.request_id = id.clone();
+        let config = settings(server.uri(), "chat_completions");
+        let pending = generate(req, &config);
+        let stop = async {
+            for _ in 0..100 {
+                if !server.received_requests().await.unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            cancel(&json!({"requestId":id}));
+        };
+        let (result, _) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(pending, stop)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result["message"], "请求已取消");
     }
 
     #[test]

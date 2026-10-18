@@ -1,0 +1,22 @@
+.prompt-tools-panel .prompt-tools-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.prompt-tools-panel form.prompt-tools-toolbar>input{flex:1;min-width:140px}
+.prompt-tools-panel .prompt-tools-options{margin:12px 0}
+.prompt-manager-browser{display:grid;grid-template-columns:minmax(180px,2fr) minmax(0,3fr);gap:20px;margin-top:16px;min-height:280px}
+.prompt-manager-list{border-right:1px solid var(--border);padding-right:12px;max-height:60vh;overflow:auto}
+.prompt-manager-item{display:block;width:100%;text-align:left;padding:12px 8px;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer}
+.prompt-manager-item:hover,.prompt-manager-item[aria-pressed=true]{background:var(--accent)}
+.prompt-manager-item strong{display:flex;gap:6px;align-items:center;font-weight:500;overflow-wrap:anywhere}
+.prompt-manager-item span{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:12px;opacity:.65;margin-top:4px}
+.prompt-manager-preview{min-width:0}
+.prompt-manager-preview h3{font-size:15px;margin:0}
+.prompt-manager-preview pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.8;max-height:55vh;overflow:auto;margin:16px 0}
+.prompt-tools-editor{display:flex;flex-direction:column;gap:16px}
+.prompt-manager-back{display:none}
+@media(max-width:700px){.prompt-manager-browser{display:block}.prompt-manager-list{border:0;padding:0}.prompt-manager-browser.has-selection>.prompt-manager-list{display:none}.prompt-manager-back{display:inline-flex;margin-bottom:12px}}
+.prompt-manager-row{display:flex;align-items:flex-start;gap:2px;border-radius:4px}
+.prompt-manager-row:hover{background:var(--accent)}
+.prompt-manager-row[data-dragging=true]{opacity:.5}
+.prompt-manager-row[data-over=true]{box-shadow:inset 0 2px 0 var(--border)}
+.prompt-manager-grip{align-self:stretch;display:inline-flex;align-items:center;justify-content:center;width:22px;border:0;background:transparent;color:inherit;opacity:0;cursor:grab}
+.prompt-manager-row:hover .prompt-manager-grip,.prompt-manager-row:focus-within .prompt-manager-grip{opacity:.6}
+.prompt-manager-grip:focus-visible{outline:2px solid currentColor;outline-offset:1px;opacity:1}

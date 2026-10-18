@@ -10,6 +10,7 @@ export type PromptEnhanceSettings = {
   enabled: boolean;
   rewriteEnabled: boolean;
   grillEnabled: boolean;
+  favoritesEnabled: boolean;
   useStepwiseConnection: boolean;
   baseUrl: string;
   apiKey: string;
@@ -32,6 +33,7 @@ export function defaultPromptEnhanceSettings(): PromptEnhanceSettings {
     enabled: false,
     rewriteEnabled: true,
     grillEnabled: true,
+    favoritesEnabled: true,
     useStepwiseConnection: true,
     baseUrl: "",
     apiKey: "",
@@ -55,6 +57,7 @@ export function normalizePromptEnhanceSettings(value: Partial<PromptEnhanceSetti
     enabled: value?.enabled === true,
     rewriteEnabled: value?.rewriteEnabled !== false,
     grillEnabled: value?.grillEnabled !== false,
+    favoritesEnabled: value?.favoritesEnabled !== false,
     useStepwiseConnection: value?.useStepwiseConnection !== false,
     baseUrl: text(value?.baseUrl).replace(/\/+$/, ""),
     apiKey: text(value?.apiKey),

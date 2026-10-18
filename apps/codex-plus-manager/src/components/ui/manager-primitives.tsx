@@ -90,11 +90,11 @@ export function Panel({ children, fill = false, className = "" }: { children: Re
   );
 }
 
-export function CardHead({ title, detail }: { title: string; detail: string }) {
+export function CardHead({ title, detail }: { title: string; detail?: string }) {
   return (
     <CardHeader className="panel-head">
       <CardTitle>{title}</CardTitle>
-      <CardDescription>{detail}</CardDescription>
+      {detail && <CardDescription>{detail}</CardDescription>}
     </CardHeader>
   );
 }
