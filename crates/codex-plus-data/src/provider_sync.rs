@@ -1209,15 +1209,11 @@ where
                 &mut writer,
             ) {
                 Ok(before) => before,
-                Err(error)
-                    if error
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(is_locked_io_error) =>
-                {
+                Err(error) if is_locked_io_error(&error) => {
                     scanned_skipped_rollout_files.push(plan.path.clone());
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             };
             if before == plan.original_sha256 {
                 rollout_journal.push(crate::sync_journal::JournalRollout {

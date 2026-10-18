@@ -2183,6 +2183,7 @@ model_provider = "openai"
     );
 }
 
+#[test]
 fn lists_codex_context_entries_from_common_config() {
     let entries = list_context_entries_from_common_config(
         r#"[mcp_servers.context7]

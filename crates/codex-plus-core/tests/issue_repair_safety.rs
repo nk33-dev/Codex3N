@@ -178,6 +178,7 @@ fn publication_fixture() -> (
         sync_default_member_login: false,
     };
     let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
     settings.active_relay_id = "agg".into();
     settings.active_aggregate_relay_id = "agg".into();
     settings.aggregate_relay_profiles = vec![aggregate.clone()];
@@ -200,13 +201,25 @@ fn publication_fixture() -> (
 fn active_member_save_publishes_and_repairs_a_drifted_projection() {
     let (_dir, store, home, aggregate) = publication_fixture();
     let mut next = store.load().unwrap();
+    let initial =
+        codex_plus_core::aggregate_catalog::catalog_summary(&home, &next, &aggregate).unwrap();
+    let initial_count = initial["models"].as_array().unwrap().len();
     next.relay_profiles[0].model_list = "alpha\nbeta".into();
     codex_plus_core::aggregate_catalog::save_with_active_catalog_refresh(&store, &home, &next)
         .unwrap();
     let latest = store.load().unwrap();
     let summary =
         codex_plus_core::aggregate_catalog::catalog_summary(&home, &latest, &aggregate).unwrap();
-    assert_eq!(summary["models"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        summary["models"].as_array().unwrap().len(),
+        initial_count + 1
+    );
+    assert!(
+        summary["models"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("cpx-member/beta"))
+    );
     assert_eq!(summary["applied"], true);
     assert_eq!(summary["pending_changes"], false);
     let config: toml_edit::DocumentMut = std::fs::read_to_string(home.join("config.toml"))
@@ -244,7 +257,10 @@ fn active_member_save_publishes_and_repairs_a_drifted_projection() {
         &aggregate,
     )
     .unwrap();
-    assert_eq!(summary["models"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        summary["models"].as_array().unwrap().len(),
+        initial_count + 2
+    );
     let latest = store.load().unwrap();
     std::fs::write(
         home.join("config.toml"),
@@ -262,7 +278,10 @@ fn active_member_save_publishes_and_repairs_a_drifted_projection() {
         &aggregate,
     )
     .unwrap();
-    assert_eq!(summary["models"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        summary["models"].as_array().unwrap().len(),
+        initial_count + 2
+    );
 }
 
 #[test]

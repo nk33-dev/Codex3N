@@ -534,7 +534,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod retention_tests {
     use super::BackupStore;
     use std::fs;
 

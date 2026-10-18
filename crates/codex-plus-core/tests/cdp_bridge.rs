@@ -3811,7 +3811,10 @@ fn injection_script_preserves_native_tiers_and_shared_provider_contracts() {
             .get("projectAssignment")
             .is_none()
     );
-    assert_eq!(cases["fetchStartConversation"]["serviceTier"], "priority");
+    assert_eq!(
+        cases["fetchStartConversation"]["serviceTier"],
+        serde_json::Value::Null
+    );
     assert_eq!(
         cases["fetchSendCliRequest"]["params"]["serviceTier"],
         serde_json::Value::Null
