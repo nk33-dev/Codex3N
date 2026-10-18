@@ -1934,6 +1934,29 @@
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-empty { display: none; }
         .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="extensions"], [data-codex-plus-active-tab="sponsor"]) .codex-plus-modal-body { padding: 24px 16px 40px; }
       }
+      /* 官方用 .hide-scrollbar 隐藏输入框附件行的滚动条，这里只给附件行补回细滚动条。 */
+      div.hide-scrollbar:has(.composer-attachment-surface) {
+        scrollbar-width: thin !important;
+        -ms-overflow-style: auto !important;
+        scrollbar-color: color-mix(in srgb, var(--codex-plus-text-tertiary, rgba(255,255,255,.5)) 55%, transparent) transparent !important;
+      }
+      div.hide-scrollbar:has(.composer-attachment-surface)::-webkit-scrollbar {
+        display: block !important;
+        height: 8px !important;
+      }
+      div.hide-scrollbar:has(.composer-attachment-surface)::-webkit-scrollbar-track {
+        background: transparent !important;
+      }
+      div.hide-scrollbar:has(.composer-attachment-surface)::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--codex-plus-text-tertiary, rgba(255,255,255,.45)) 60%, transparent);
+        background-clip: padding-box;
+      }
+      div.hide-scrollbar:has(.composer-attachment-surface)::-webkit-scrollbar-thumb:hover {
+        background: var(--codex-plus-text-tertiary, rgba(255,255,255,.6));
+        background-clip: padding-box;
+      }
     `;
     document.documentElement.appendChild(style);
   }
