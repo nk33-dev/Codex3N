@@ -681,7 +681,7 @@ fn apply_relay_config_writes_isolated_provider_without_live_config_carryover() {
     std::fs::write(
         temp.path().join("config.toml"),
         r#"model = "gpt-5"
-model_catalog_json = 'C:\Users\me\.codex\model-catalogs\relay-mpgm24lf.json'
+model_catalog_json = 'C:\Users\Administrator\.codex\model-catalogs\relay-mpgm24lf.json'
 model_provider = "custom1"
 [model_providers.custom1]
 name = "custom1"
@@ -2229,8 +2229,8 @@ fn lists_codex_context_entries_with_parent_mcp_table() {
 
 [mcp_servers.ida-pro-mcp]
 type = "stdio"
-command = 'C:\Users\me\AppData\Local\Programs\Python\Python313\python.exe'
-args = ['C:\Users\me\AppData\Local\Programs\Python\Python313\Lib\site-packages\ida_pro_mcp\server.py']
+command = 'C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe'
+args = ['C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\ida_pro_mcp\server.py']
 disabled = false
 timeout = 1800
 "#,
@@ -2404,7 +2404,7 @@ model_provider = "custom"
 base_url = "https://root-provider.example/v1"
 openai_base_url = "https://openai-provider.example/v1"
 chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
-model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
+model_catalog_json = "C:\\Users\\Administrator\\.codex\\model-catalogs\\relay-a.json"
 OPENAI_API_KEY = "sk-root"
 CUSTOM_API_KEY = "sk-custom"
 model_reasoning_effort = "high"
@@ -2468,7 +2468,7 @@ base_url = "https://relay.example/v1"
 #[test]
 fn sanitizes_model_catalog_json_from_common_config() {
     let sanitized = sanitize_common_config_contents(
-        r#"model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
+        r#"model_catalog_json = "C:\\Users\\Administrator\\.codex\\model-catalogs\\relay-a.json"
 openai_base_url = "https://openai-provider.example/v1"
 chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
 OPENAI_API_KEY = "sk-root"
@@ -2493,8 +2493,8 @@ goals = true
 #[test]
 fn sanitizes_model_catalog_json_from_invalid_common_config() {
     let sanitized = sanitize_common_config_contents(
-        r#"model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
-model_catalog_json = 'C:\Users\me\.codex\model-catalogs\relay-b.json'
+        r#"model_catalog_json = "C:\\Users\\Administrator\\.codex\\model-catalogs\\relay-a.json"
+model_catalog_json = 'C:\Users\Administrator\.codex\model-catalogs\relay-b.json'
 "openai_base_url" = "https://openai-provider.example/v1"
 chatgpt_base_url = "https://chatgpt-provider.example/backend-api"
 OPENAI_API_KEY = "sk-root"
@@ -2561,7 +2561,7 @@ command = "old"
         temp.path(),
         r#"model = "gpt-5"
 model_provider = "custom"
-model_catalog_json = 'C:\Users\me\.codex\model-catalogs\relay-mpgm24lf.json'
+model_catalog_json = 'C:\Users\Administrator\.codex\model-catalogs\relay-mpgm24lf.json'
 [model_providers.custom]
 name = "custom"
 wire_api = "responses"
@@ -5667,6 +5667,8 @@ fn apply_third_party_deepseek_responses_preserves_code_mode_and_catalog_tool_mod
             "models": [{
                 "slug": "relay-deepseek",
                 "display_name": "Relay DeepSeek",
+                "base_instructions": "",
+                "supports_parallel_tool_calls": false,
                 "context_window": 262_144,
                 "tool_mode": "code_mode_only",
                 "use_responses_lite": true,
@@ -5863,6 +5865,8 @@ fn apply_relay_profile_copies_external_lite_catalog_for_standard_responses() {
       "slug": "gpt-5.6-sol",
       "context_window": 272000,
       "max_context_window": 272000,
+      "base_instructions": "",
+      "supports_parallel_tool_calls": true,
       "supports_search_tool": true,
       "web_search_tool_type": "text_and_image",
       "use_responses_lite": true

@@ -224,7 +224,7 @@
     if (locked !== state.locked) {
       state.locked = locked;
       if (locked && state.phase === "loading") {
-        // 草稿变了就别等旧请求了；保留上一次已经拿到的内容，只允许按新内容重来。
+        // 草稿变了就别等旧请求了；保留上一次已经拿到的内容，只允许按新草稿生成。
         cancelCodexPlusPromptEnhanceRequest();
         ++state.revision;
         state.phase = state.resumePhase === "loading" ? "ready" : state.resumePhase;
@@ -633,7 +633,9 @@
         else if (action === "change-answers") changeCodexPlusPromptEnhanceAnswers();
         else if (action === "prev") {
           if (state.activeQuestion > 0) { state.activeQuestion -= 1; state.other = null; renderCodexPlusPromptEnhance(); }
-        } else if (action === "next") advanceCodexPlusPromptEnhance();
+        } else if (action === "next") {
+          if (state.activeQuestion < state.questions.length - 1) advanceCodexPlusPromptEnhance();
+        } else if (action === "skip") pickCodexPlusPromptEnhanceAnswer("没想好，你看着定");
         else if (action === "rephrase") void requestCodexPlusPromptEnhance({
           supplementOnly: true, addition: "这道题没看懂，请用具体例子重新解释，让选项的区别更清楚。",
         });
@@ -726,7 +728,7 @@
       input.className = "codex-plus-prompt-input";
       input.maxLength = 3000;
       input.value = state.other;
-      input.placeholder = "写下你的想法，回车确认";
+      input.placeholder = "填写答案，回车确认";
       input.setAttribute("aria-label", "其他");
       input.disabled = state.locked;
       input.addEventListener("input", () => { state.other = input.value; });
@@ -804,7 +806,7 @@
     const title = codexPlusPromptNode("h2", "", state.mode === "grill" ? "需求对齐" : "增强提示词");
     const meta = codexPlusPromptNode("span", "codex-plus-prompt-meta", state.phase === "questions"
       ? `第 ${state.history.length + 1} 轮`
-      : state.phase === "summary" ? "需求已经够清楚了"
+      : state.phase === "summary" ? "待确认"
         : state.phase === "result" ? "可以直接修改" : "");
     const close = codexPlusPromptIconButton("trash", "关闭", "close");
     close.replaceChildren(codexPlusPromptNode("span", "codex-plus-prompt-close", "×"));
@@ -814,8 +816,8 @@
     if (state.locked) {
       const banner = codexPlusPromptNode("div", "codex-plus-prompt-stale");
       banner.setAttribute("role", "status");
-      banner.append(codexPlusPromptNode("span", "", "输入框内容改过了"));
-      const restart = codexPlusPromptNode("button", "codex-plus-prompt-link", "按新内容重来");
+      banner.append(codexPlusPromptNode("span", "", "草稿已修改"));
+      const restart = codexPlusPromptNode("button", "codex-plus-prompt-link", "按新草稿生成");
       restart.type = "button";
       restart.dataset.promptEnhanceAction = "restart";
       banner.append(restart);
@@ -832,7 +834,7 @@
       const input = document.createElement("input");
       input.className = "codex-plus-prompt-input";
       input.maxLength = 20000;
-      input.placeholder = "用一句话说说，回车确认";
+      input.placeholder = "描述需求，回车确认";
       input.setAttribute("aria-label", "你想做什么？");
       input.addEventListener("keydown", (event) => {
         if (event.isComposing || event.key !== "Enter") return;
@@ -847,7 +849,7 @@
     } else if (state.phase === "questions") {
       body.append(createCodexPlusPromptEnhanceQuestions());
     } else if (state.phase === "summary") {
-      const hint = codexPlusPromptNode("p", "codex-plus-prompt-caption", "确认没问题就写提示词，有遗漏可以接着问。");
+      const hint = codexPlusPromptNode("p", "codex-plus-prompt-caption", "确认需求后生成提示词");
       body.append(hint, codexPlusPromptNode("div", "codex-plus-prompt-summary", state.text));
     } else if (state.phase === "result") {
       const text = document.createElement("textarea");
@@ -884,7 +886,7 @@
       const context = codexPlusPromptEnhanceContextCaption();
       if (context) body.append(context);
     } else if (state.phase === "error") {
-      body.append(codexPlusPromptNode("p", "codex-plus-prompt-caption", "填写过的答案和结果都还在，可以直接重试。"));
+      body.append(codexPlusPromptNode("p", "codex-plus-prompt-caption", "答案和结果已保留"));
     } else if (state.phase === "ready") {
       body.append(codexPlusPromptNode("p", "codex-plus-prompt-caption", "流程已暂停。"));
     }
@@ -907,9 +909,10 @@
       const pager = codexPlusPromptNode("span", "codex-plus-prompt-pager");
       pager.append(codexPlusPromptButton("‹", "prev", { title: "上一题", disabled: state.activeQuestion === 0 || state.locked }));
       pager.append(codexPlusPromptNode("span", "", `${state.activeQuestion + 1} / ${state.questions.length}`));
-      pager.append(codexPlusPromptButton("›", "next", { title: "下一题", disabled: state.locked }));
+      pager.append(codexPlusPromptButton("›", "next", { title: "下一题", disabled: state.locked || state.activeQuestion >= state.questions.length - 1 }));
       footer.append(pager, codexPlusPromptNode("span", "codex-plus-prompt-grow"));
-      footer.append(codexPlusPromptButton("不问了，直接写", "direct", { disabled: state.locked }));
+      footer.append(codexPlusPromptButton("跳过此题", "skip", { disabled: state.locked }));
+      footer.append(codexPlusPromptButton("直接生成", "direct", { disabled: state.locked }));
     } else if (state.phase === "summary") {
       if (state.history.length) {
         const back = codexPlusPromptNode("button", "codex-plus-prompt-link", "‹ 改答案");
@@ -919,8 +922,8 @@
         footer.append(back);
       }
       footer.append(codexPlusPromptNode("span", "codex-plus-prompt-grow"));
-      footer.append(codexPlusPromptButton("接着问", "ask-more", { disabled: state.locked }));
-      footer.append(codexPlusPromptButton("写提示词", "write", { primary: true, disabled: state.locked }));
+      footer.append(codexPlusPromptButton("继续提问", "ask-more", { disabled: state.locked }));
+      footer.append(codexPlusPromptButton("生成提示词", "write", { primary: true, disabled: state.locked }));
     } else if (state.phase === "result") {
       const blocker = codexPlusPromptEnhanceReplaceBlocker();
       footer.append(codexPlusPromptIconButton("rotate", "重新生成", "regenerate", { disabled: state.locked }));
@@ -1201,7 +1204,7 @@
       state.other = "";
       renderCodexPlusPromptEnhance();
       event.preventDefault();
-    } else if (event.key === "ArrowRight") {
+    } else if (event.key === "ArrowRight" && state.activeQuestion < state.questions.length - 1) {
       advanceCodexPlusPromptEnhance();
       event.preventDefault();
     } else if (event.key === "ArrowLeft" && state.activeQuestion > 0) {

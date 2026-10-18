@@ -8,7 +8,7 @@ export type ImageOverlayFitMode = "fill" | "fit" | "stretch" | "tile" | "center"
 export type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
 export type StepwiseGenerationMode = "auto" | "manual";
 
-export type RelayProtocol = "responses" | "chatCompletions";
+export type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
 export type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
 export type RelaySessionProvider = "custom" | "openai";
 export type RelayContextSelection = { mcpServers: string[]; skills: string[]; plugins: string[] };
@@ -60,6 +60,11 @@ export type RelayProfile = {
   noAuth: boolean;
   standardOpenaiProtocol: boolean;
   webSearchHistoryCompat: boolean;
+  anthropicAuthHeader?: string;
+  anthropicMaxTokens?: number;
+  anthropicPromptCache?: boolean;
+  anthropicImpersonateClaudeCode?: boolean;
+  anthropicThinkingMode?: string;
   sub2apiEnabled: boolean;
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];
@@ -91,6 +96,9 @@ export type ToolShard = {
 };
 
 export type BackendSettings = WhaleBalanceSettings & {
+  revision?: string;
+  codexAppNativeFastUnlock: boolean;
+  relayPreserveNonproviderSettings: boolean;
   dictation: DictationSettings;
   promptEnhance: PromptEnhanceSettings;
   codexAppPath: string;

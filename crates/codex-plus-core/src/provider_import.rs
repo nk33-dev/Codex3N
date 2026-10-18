@@ -44,7 +44,15 @@ pub fn initialize_local_config_provider(
             use_common_config: false,
             ..RelayProfile::default()
         };
-        crate::relay_config::backfill_relay_profile_from_home(home, &mut profile)?;
+        let read_local = |name: &str| -> anyhow::Result<String> {
+            match std::fs::read_to_string(home.join(name)) {
+                Ok(contents) => Ok(contents),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+                Err(error) => Err(error).with_context(|| format!("无法读取本机 {name}")),
+            }
+        };
+        profile.config_contents = read_local("config.toml")?;
+        profile.auth_contents = read_local("auth.json")?;
         let config: toml::Value = profile
             .config_contents
             .parse()
@@ -87,7 +95,7 @@ pub fn initialize_local_config_provider(
                 .and_then(|value| value.get("requires_openai_auth"))
                 .and_then(toml::Value::as_bool)
                 == Some(false);
-        if !api_auth && !profile.no_auth {
+        if !api_auth && profile.api_key.is_empty() && !profile.no_auth {
             profile.relay_mode = RelayMode::Official;
             profile.official_mix_api_key = !profile.base_url.is_empty();
         }
@@ -104,10 +112,34 @@ pub fn initialize_local_config_provider(
                 &mut profile,
                 &mut String::new(),
             )?;
+        } else {
+            crate::relay_config::backfill_relay_profile_from_home_with_common_and_policy(
+                home,
+                &mut profile,
+                &mut String::new(),
+                crate::relay_config::RelayBackfillPolicy::AdoptLiveIdentity,
+            )?;
         }
+        let aggregate = if profile.relay_mode == RelayMode::Aggregate {
+            Some(
+                settings
+                    .aggregate_relay_profiles
+                    .iter()
+                    .find(|aggregate| aggregate.id == profile.id)
+                    .cloned()
+                    .context("当前聚合供应商缺少成员定义，无法导入本机配置")?,
+            )
+        } else {
+            None
+        };
         profile.id = format!("relay-{}", uuid::Uuid::new_v4());
         profile.name = "系统默认".to_string();
         profile.model_list = profile.model.clone();
+        if let Some(mut aggregate) = aggregate {
+            aggregate.id = profile.id.clone();
+            aggregate.name = profile.name.clone();
+            settings.aggregate_relay_profiles.push(aggregate);
+        }
 
         if settings.relay_profiles == crate::settings::default_relay_profiles() {
             let legacy = settings.active_relay_profile();
@@ -124,7 +156,7 @@ pub fn initialize_local_config_provider(
     }
     settings.local_config_provider_imported = true;
     store.save(&settings)?;
-    Ok(settings)
+    store.load()
 }
 
 pub fn import_provider_from_url(url: &str) -> anyhow::Result<ProviderImportResult> {
@@ -321,6 +353,11 @@ fn relay_profile_from_request(
         custom_headers: Vec::new(),
         standard_openai_protocol: false,
         web_search_history_compat: false,
+        anthropic_auth_header: String::new(),
+        anthropic_max_tokens: 0,
+        anthropic_prompt_cache: true,
+        anthropic_impersonate_claude_code: false,
+        anthropic_thinking_mode: String::new(),
     }
 }
 
@@ -351,6 +388,9 @@ fn normalize_request(mut request: ProviderImportRequest) -> anyhow::Result<Provi
 fn relay_protocol(value: &str) -> RelayProtocol {
     match value.trim().to_ascii_lowercase().as_str() {
         "chat" | "chat_completions" | "chat-completions" => RelayProtocol::ChatCompletions,
+        "anthropic" | "anthropic_messages" | "anthropic-messages" | "messages" => {
+            RelayProtocol::AnthropicMessages
+        }
         _ => RelayProtocol::Responses,
     }
 }

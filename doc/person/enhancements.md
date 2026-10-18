@@ -26,7 +26,7 @@
 
 图标栏入口由 `40-backend-settings.js::codexPlusRailInsertAnchor` 定位：优先插在自动化等非固定入口之后；启动时宿主先只渲染主页和自定义，自动化约晚 1 秒出现，这段时间退到主页那一项之后，下一轮侧栏扫描再挪到自动化后面。没有任何原生入口时暂不插入。第三方拓展入口（`92-extension-host.js::refreshCodexPlusRailNavigation`）共用该锚点。位置已正确时不写 DOM。验证见 `rail-navigation.test.ts`。
 
-服务模式按钮由 `90-action-groups.js::codexServiceTierBadgePlacement` 定位当前输入工具栏的原生模型选择器，穿过提示与普通包裹层，固定在模型组首、上下文圆环之前；仅识别模型选择器与 reasoning 导航标记，模型暂未挂载时保留当前输入区内的按钮。按钮沿用原生工具栏的透明背景、圆角与主题色，加载时显示“读取中”，状态不变时不重写文字与属性。悬停及键盘聚焦复用侧栏提示组件，支持换行、屏幕边界定位及 Escape 关闭；说明只展示当前作用范围、切换动作与费用提示。“模型与服务”设置区按默认模式和当前会话分组，沿用原有服务模式与覆盖逻辑。侧栏操作组、更多菜单及工具提示也纳入扫描排除，避免自己的 DOM 更新触发增强扫描。验证见 `service-tier-badge.test.ts`、`fast-support.test.ts`。
+原生 Fast 由 `codexAppNativeFastUnlock` 控制，默认关闭；通过官方原生开关选择服务等级，旧自定义徽章在重注入时清理。供应商仍决定实际支持和计费。
 
 实机验证范围：Windows 已验证真实会话的跨库用量读取，以及应用内隔离预览的深浅主题、420px 窄窗口、提示边界、键盘切换、开关状态与连续扫描。用量栏的等待、失败与恢复显示均在该预览中验证；macOS、Linux 尚未实机验证。
 

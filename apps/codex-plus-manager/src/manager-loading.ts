@@ -1,4 +1,4 @@
-export type ManagerRoute = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "claudeSessions" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings";
+export type ManagerRoute = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "claudeSessions" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "agentCollaboration" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings";
 
 type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "logs" | "diagnostics" | "watcher";
 export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
@@ -20,6 +20,7 @@ const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
   enhance: [["settings"]],
   dreamSkin: [["settings", "overview", "dreamSkinLibrary", "dreamSkinMarket", "dreamSkinCommunity", "dreamSkinStatus"]],
   agentCache: [],
+  agentCollaboration: [],
   pluginMarket: [],
   userScripts: [["settings"], ["scriptMarket"], ["userScriptInventory"]],
   maintenance: [["overview", "watcher"]],

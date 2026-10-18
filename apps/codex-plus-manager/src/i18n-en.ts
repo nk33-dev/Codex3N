@@ -1,6 +1,53 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "Agent 协作": "Agent collaboration",
+  "恢复这次未完成的修复？期间被其他操作修改的数据会保留，并报告冲突。": "Recover this incomplete repair? Changes made by other operations will be preserved and conflicts reported.",
+  "正在恢复…": "Restoring…",
+  "恢复历史会话修复": "Recover session repair",
+  "自动识别来源或新增": "Detect source or add new",
+  "关联已有": "Link existing",
+  "会话总数": "Total sessions",
+  "当前页会话": "Sessions on this page",
+  "当前页未归档": "Unarchived on this page",
+  "当前页已归档": "Archived on this page",
+  "会话修复": "Session repair",
+  "预览并修复本地会话与索引": "Preview and repair local sessions and indexes",
+  "恢复记录：": "Recovery record:",
+  "恢复未完成修复": "Recover incomplete repair",
+  "仍有改动：": "Remaining changes:",
+  "个会话文件，": "session files, ",
+  "行索引。请查看恢复记录处理剩余冲突。": "index rows. Check the recovery record for remaining conflicts.",
+  "输入供应商的 API Key": "Enter the provider API key",
+  "切换时保留缺失的项目信任设置与通知命令": "Preserve missing project trust settings and notification commands when switching",
+  "当前正在使用该供应商，请先切换到其他供应商后再删除。": "Switch to another provider before deleting the active provider.",
+  "无法识别仓库地址，请输入 GitHub 链接或 owner/repo。": "Enter a GitHub URL or owner/repo.",
+  "管理 Skills 仓库": "Manage skill repositories",
+  "已添加仓库": "Added repositories",
+  "还没有添加仓库。": "No repositories added.",
+  "待扫描": "Awaiting scan",
+  "编辑仓库": "Edit repository",
+  "删除仓库": "Delete repository",
+  "刷新仓库": "Refresh repository",
+  "Skill 数量": "Skill count",
+  "正在扫描…": "Scanning…",
+  "尚未扫描": "Not scanned",
+  "当前分支和目录中没有 SKILL.md。": "No SKILL.md in this branch and directory.",
+  "搜索此仓库的 Skills": "Search skills in this repository",
+  "暂无 Skills": "No skills",
+  "取消编辑": "Cancel editing",
+  "仓库地址": "Repository URL",
+  "解析中…": "Parsing…",
+  "解析": "Parse",
+  "检查仓库": "Check repository",
+  "保存修改": "Save changes",
+  "Skill ID": "Skill ID",
+  "仓库路径": "Repository path",
+  "介绍": "Description",
+  "从 cc-switch 导入": "Import from cc-switch",
+  "管理仓库": "Manage repositories",
+  "搜索 Skills 或仓库": "Search skills or repositories",
+  "启用技能": "Enable skill",
   "项目筛选": "Filter by project",
   "全部项目": "All projects",
   "已导入": "Imported",
@@ -19,8 +66,8 @@ export const EN_PLAIN: Record<string, string> = {
   "用逗号分隔": "Separate with commas",
   "导出": "Export",
   "在输入框旁显示入口": "Show tools beside the composer",
-  "补全并整理草稿": "Expand and organize the draft",
-  "通过问答确定方向": "Work through requirements with questions",
+  "整理草稿": "Expand and organize the draft",
+  "确认需求后生成提示词": "Work through requirements with questions",
   "关闭后单独配置模型服务": "Turn off to configure a separate model service",
   "优化规则": "Optimization rule",
   "提问规则": "Question rule",
@@ -98,10 +145,10 @@ export const EN_PLAIN: Record<string, string> = {
   "项目说明": "Project instructions",
   "读取根目录 AGENTS.md、CLAUDE.md，没有时读取 README 开头。": "Read root AGENTS.md and CLAUDE.md, falling back to the start of README.",
   "两层目录结构": "Two-level directory tree",
-  "勾选的项目内容会发送给模型，默认关闭。": "Selected project content is sent to the model. Off by default.",
+  "所选内容会发送给模型": "Selected project content is sent to the model. Off by default.",
   "最多两层，忽略依赖与构建目录。": "Up to two levels, excluding dependency and build directories.",
   "主要清单文件": "Project manifests",
-  "读取 Cargo.toml、package.json 等文件，帮助模型判断技术栈。": "Read Cargo.toml, package.json and other manifests to identify the stack.",
+  "Cargo.toml、package.json 等": "Read Cargo.toml, package.json and other manifests to identify the stack.",
 
   "检测中…": "Detecting…",
   "未检测": "Not checked",
@@ -235,7 +282,7 @@ export const EN_PLAIN: Record<string, string> = {
   "正在解析…": "Parsing…",
   "粘贴 mcpServers、servers 或单个服务器配置。": "Paste mcpServers, servers or a single server configuration.",
   "将导入：": "Will import:",
-  "添加 Skills 仓库": "Add Skills repository",
+  
   "所有者": "Owner",
   "仓库名": "Repository name",
   "分支": "Branch",
@@ -243,11 +290,11 @@ export const EN_PLAIN: Record<string, string> = {
   "启用仓库": "Enable repository",
   "刷新目录": "Refresh catalog",
   "添加仓库": "Add repository",
-  "搜索 Skills": "Search Skills",
+  
   "技能": "Skill",
   "暂无描述": "No description",
   "没有匹配的 Skill": "No matching Skills",
-  "刷新目录后从 GitHub 仓库发现 Skills。": "Refresh the catalog to discover Skills from GitHub repositories.",
+  
   "选择多个…": "Select multiple…",
   "搜索标题、目录或会话 ID": "Search title, directory or session ID",
   "按项目": "By project",
@@ -281,6 +328,10 @@ export const EN_PLAIN: Record<string, string> = {
   "关于": "About",
   "设置": "Settings",
   "中转站环境配置检测": "Relay environment check",
+  "设为当前 Key": "Select this key",
+  "Key 名称": "Key name",
+  "删除 Key": "Delete key",
+  "添加 Key": "Add key",
   "本地服务器状态": "Local server status",
   "调试连接状态": "Debug connection status",
   "未运行": "Not running",
@@ -455,8 +506,8 @@ export const EN_PLAIN: Record<string, string> = {
   "填入内置规则": "Fill in built-in rules",
   "恢复内置规则": "Restore built-in rules",
   "读取内置规则失败，请重试。": "Could not read the built-in rules. Try again.",
-  "单独配置提示词增强服务时需要填写 Base URL。": "Enter a Base URL to use a separate prompt enhancement service.",
-  "单独配置提示词增强服务时需要填写模型。": "Enter a model to use a separate prompt enhancement service.",
+  "请填写 Base URL": "Enter a Base URL to use a separate prompt enhancement service.",
+  "请填写模型": "Enter a model to use a separate prompt enhancement service.",
   "语音 API Key 环境变量名称只能包含字母、数字和下划线，且不能以数字开头。": "The speech API key environment variable name must contain only letters, numbers, and underscores, and must not start with a number.",
   "读取会话索引修复报告失败": "Failed to read the session index repair report",
   "最后检查：": "Last checked: ",
@@ -525,11 +576,11 @@ export const EN_PLAIN: Record<string, string> = {
   "正在等待 Codex 重新启动…": "Waiting for Codex to restart...",
   "快捷方式修复": "Shortcut repair",
   "GitHub Release 检查": "GitHub Release check",
-  "正在准备安装包下载…": "Preparing installer download…",
-  "正在获取 GitHub Release 信息…": "Fetching GitHub Release information…",
+  
+  
   "正在下载安装包…": "Downloading installer…",
-  "正在写入安装包…": "Writing installer…",
-  "下载或启动耗时较长，请保持窗口打开；完成或失败后会自动更新状态。": "The download or launch is taking longer than usual. Keep this window open; the status will update when it finishes or fails.",
+  
+  
   "更新安装": "Update install",
   "安装包更新失败，请查看错误提示后重试。": "Installer update failed. Check the error message and retry.",
   "设置保存": "Settings saved",
@@ -575,6 +626,38 @@ export const EN_PLAIN: Record<string, string> = {
   "实机验证": "Live verification",
   "选择 Codex 应用目录": "Select Codex app directory",
   "选择 Codex.exe 或 Codex.app": "Select Codex.exe or Codex.app",
+  "运行中（增强等待中）": "Running (waiting for enhancements)",
+  "已降级": "Degraded",
+  
+  
+  
+  "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。":
+    "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
+  "API Key 环境变量": "API Key environment variable",
+  "Chat Completions 转 Responses": "Chat Completions to Responses",
+  "Anthropic Messages 转 Responses": "Anthropic Messages to Responses",
+  "思考模式": "Thinking mode",
+  "自动（新代模型透传等级）": "Auto (pass level through on newer models)",
+  "等级透传（adaptive）": "Pass level through (adaptive)",
+  "经典预算（budget_tokens）": "Classic budget (budget_tokens)",
+  "关闭思考": "Disable thinking",
+  "思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。":
+    "Thinking follows Codex reasoning effort: in auto mode newer models receive the level as-is (adaptive + effort) while older ones fall back to a thinking budget. A declared 1M context window automatically adds the 1m context beta header.",
+  "提示缓存": "Prompt caching",
+  "给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。":
+    "Marks 5-minute cache breakpoints on the system prompt, tool definitions and the latest turn (up to 4), so long conversations are not re-billed in full every turn.",
+  "模拟 Claude Code 客户端": "Emulate the Claude Code client",
+  "伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。":
+    "Spoofs the User-Agent, anthropic-beta and x-app headers and injects the Claude Code identity as the first system line. Enable only when the gateway restricts usage to Claude Code.",
+  
+  "认证字段": "Auth header",
+  "x-api-key（Anthropic 原生）": "x-api-key (Anthropic native)",
+  "Authorization: Bearer": "Authorization: Bearer",
+  "最大输出 tokens": "Max output tokens",
+  "此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。":
+    "This upstream speaks Anthropic Messages (/v1/messages): the local proxy at 127.0.0.1:57321 converts requests to Anthropic and converts the responses back to Responses. Codex must be launched from Codex++.",
+  "Codex 启动参数": "Codex launch arguments",
+  "Codex MCP&插件": "Codex MCP & plugins",
   "Codex 应用": "Codex app",
   "Codex 应用路径": "Codex app path",
   "应用路径已保存，之后启动会自动复用。": "App path saved; future launches reuse it automatically.",
@@ -593,7 +676,9 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex++ 版本": "Codex++ version",
   "Codex-Dream-Skin 风格主题和换图": "Codex-Dream-Skin style themes and image replacement",
   "Debug 端口": "Debug port",
-  "服务模式切换": "Service mode switch",
+  "原生 Fast 强制解锁": "Force unlock native Fast",
+  "纯 API Key 模式恢复原生 Fast 开关；保存后重新启动 Codex 生效，实际支持与计费由供应商决定。":
+    "Restore the native Fast switch in API key mode; save and restart Codex to apply. Actual support and billing depend on the provider.",
   "GitHub Release 更新": "GitHub Release update",
   "Helper 端口": "Helper port",
   "MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。": "MCP, Skills and Plugins are managed independently as global config and merged in whenever you switch providers.",
@@ -716,7 +801,7 @@ export const EN_PLAIN: Record<string, string> = {
   "环境变量": "Environment variables",
   "自定义": "Custom",
   "高级参数": "Advanced parameters",
-  "API Key 环境变量": "API Key environment variable",
+  
   "连接": "Connection",
   "例如 gpt-5.4-mini": "e.g. gpt-5.4-mini",
   "协议": "Protocol",
@@ -727,17 +812,17 @@ export const EN_PLAIN: Record<string, string> = {
   "最多建议数": "Max suggestions",
   "超时毫秒": "Timeout milliseconds",
   "最大输入字符": "Max input characters",
-  "最大输出 tokens": "Max output tokens",
+  
   "启用 Codex增强": "Enable Codex enhancements",
   "有未保存修改": "Unsaved changes",
   "已保存": "Saved",
   "保存增强设置": "Save enhancement settings",
   "原生 Edge / Chrome 请求标识兼容（实验）": "Native Edge / Chrome request identifier compatibility (experimental)",
   "插件市场解锁": "Plugin marketplace unlock",
-  "API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。": "Expands plugin marketplace requests in API Key mode to show the full plugin list. Usually unnecessary in official/mixed mode.",
+  
   "模型白名单解锁": "Model whitelist unlock",
   "从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。": "Pull models from environment variables and config.toml's /v1/models and add them to the model list.",
-  "在输入框显示 Standard / Fast 切换按钮。": "Show the Standard / Fast switch in the composer.",
+  
   "在会话列表悬停显示删除按钮，并支持撤销。": "Show a delete button on hover in the session list, with undo support.",
   "在会话列表显示导出按钮，导出带时间戳的 Markdown。": "Show an export button in the session list to export timestamped Markdown.",
   "粘贴修复": "Paste fix",
@@ -882,6 +967,15 @@ export const EN_PLAIN: Record<string, string> = {
   "需要处理": "Needs attention",
   "验证失败": "Verification failed",
   "Codex 未运行或不可连接": "Codex is not running or cannot be reached",
+  
+  
+  
+  
+  
+  
+  
+  
+  
   "TOML 配置体": "TOML config body",
   "config.toml 预览": "config.toml preview",
   "」的供应商": "”",
@@ -1013,6 +1107,16 @@ export const EN_PLAIN: Record<string, string> = {
   "启动前自动修复历史会话": "Auto-repair historical sessions before launch",
   "启用": "Enable",
   "启用 Codex 图片覆盖层": "Enable Codex image overlay",
+  
+  "独立模式": "Standalone mode",
+  "增强总开关关闭后仍会生效的补丁。":
+    "Patches that still apply after the enhancement master switch is turned off.",
+  "官方额度解锁": "Official quota unlock",
+  "增强开启时此能力已自动生效；此开关只在关闭增强后生效。":
+    "This capability is already active while enhancements are on; the switch only applies after enhancements are turned off.",
+  "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。保存后重启 Codex 生效。":
+    "Official login + API providers can still send after the official subscription quota runs out. Only the client send state changes; real usage and billing are untouched. Restart Codex after saving.",
+  
   "启用此扩展项": "Enable this entry",
   "包含测试模型、上下文大小与压缩阈值；留空即沿用全局默认值。": "Covers the test model, context size and compaction threshold; leave blank to keep the global defaults.",
   "基础设置": "Basic settings",
@@ -1091,6 +1195,10 @@ export const EN_PLAIN: Record<string, string> = {
   "新增": "Add ",
   "新建供应商需要先保存到列表": "A new provider must be saved to the list first",
   "清理日志": "Clear logs",
+  
+  
+  
+  
   "多模态模型（支持图片输入的模型）请保持 send-as-is。": "Keep send-as-is for multimodal models that support image input.",
   "暂无描述。": "No description.",
   "暂无日志。": "No logs.",
@@ -1144,6 +1252,23 @@ export const EN_PLAIN: Record<string, string> = {
   "模型名称": "Model name",
   "图片处理方式": "Image handling",
   "模式。": " mode.",
+  
+  "正在准备下载安装包…": "Preparing installer download…",
+  "正在写入安装包并准备安装…": "Writing installer and preparing installation…",
+  "正在启动安装器…": "Launching installer…",
+  "更新包仍在处理中，请保持窗口打开；完成后会自动更新状态。": "The update package is still being processed. Keep this window open; the status will update automatically when it finishes.",
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   "正常": "OK",
   "此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。": "This upstream is converted to the Responses API via local 127.0.0.1:57321, which requires launching Codex from Codex++.",
   "此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。": "This provider keeps official login mode and mixes the current API Key into requests; Codex enhancements stay in compatible mode.",
@@ -1266,7 +1391,7 @@ export const EN_PLAIN: Record<string, string> = {
   "平铺": "Tile",
   "居中": "Center",
   "重置背景": "Reset background",
-  "Codex 启动参数": "Codex launch arguments",
+  
   "额外参数": "Extra arguments",
   "诊断报告": "Diagnostic report",
   "重新生成": "Regenerate",
@@ -1276,16 +1401,16 @@ export const EN_PLAIN: Record<string, string> = {
   "有未保存的模型修改，确定放弃吗？": "Discard unsaved model changes?",
   "诊断中": "Diagnosing",
   "保存中": "Saving",
-  "Codex MCP&插件": "Codex MCP & plugins",
-  "当前使用的 Key": "Current Key",
-  "设为当前 Key": "Use this Key",
-  "Key 名称": "Key name",
-  "例如 主账号": "For example, Primary account",
-  "输入 API Key": "Enter API key",
-  "删除 Key": "Delete Key",
-  "至少保留一个 Key": "Keep at least one Key",
-  "添加 Key": "Add Key",
-  "为 Key 命名后，可在 Codex++ 页面中快速切换当前使用项。": "Name each Key to switch the active one quickly from the Codex++ page.",
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   "模型配置": "Model configurations",
   "配置模型": "Configure models",
   "默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。": "The model name used by default when launching Codex; don't include a suffix. Configure context windows per model in the “Model list” below.",
@@ -1381,10 +1506,10 @@ export const EN_PLAIN: Record<string, string> = {
   "添加协议转换": "Add protocol conversion",
   "单模型协议转换需要填写模型名称和目标供应商。": "Each protocol conversion requires a model name and target provider.",
   "默认模型": "Default model",
-  "运行中（增强等待中）": "Running (waiting for enhancements)",
-  "已降级": "Degraded",
+  
+  
   "启动中": "Starting",
-  "Chat Completions 转 Responses": "Chat Completions to Responses",
+  
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "读取 cc-switch 供应商失败。": "Failed to read cc-switch providers.",
   "权重轮转": "Weighted round-robin",
@@ -1422,8 +1547,8 @@ export const EN_PLAIN: Record<string, string> = {
   "这个分页还没有需协议转换的供应商": "No providers requiring protocol conversion in this tab yet",
   "Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。": "Providers using Chat Completions or model routes appear here. Other providers remain in their respective tabs.",
   "启动失败": "Start failed",
-  "独立额度解锁": "Standalone quota unlock",
-  "官方登录 + 混入 API Key": "Official login + mixed API key",
+  
+  
   "用量状态栏": "Usage status line",
   "在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。": "Show generation speed, cache hit rate, and context usage below the composer. Read from local Codex session logs; requests are not modified.",
   "自动接管官方 App": "Auto-takeover of the official app",
@@ -1453,6 +1578,9 @@ export const EN_PLAIN: Record<string, string> = {
 };
 
 export const EN_TEMPLATE: Record<string, string> = {
+  "供应商「{0}」是聚合配置「{1}」的默认成员，请先调整聚合配置后再删除。": "Provider {0} is the default member of aggregate {1}. Update the aggregate before deleting it.",
+  "供应商「{0}」是聚合配置「{1}」的最后成员，请先调整聚合配置后再删除。": "Provider {0} is the last member of aggregate {1}. Update the aggregate before deleting it.",
+
   "已删除“{0}”": "Deleted “{0}”",
   "{0} 条读取提示": "{0} reading notices",
   "{0} 条消息": "{0} messages",
@@ -1464,6 +1592,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "选择会话“{0}”": "Select session “{0}”",
   "{0} 个文件": "{0} files",
   "将导入 {0} 条，跳过 {1} 条重复收藏。": "Import {0} favorites and skip {1} duplicates.",
+  "{0} 的 API Key": "API key for {0}",
   "文档里的上下文窗口是 {0}，当前列填的是 {1}，已保留当前值；要用文档的值请先清空窗口。": "The document's context window is {0}, but the column holds {1}. The current value was kept; clear the window to use the document's value.",
   "确定结束“{0}”吗？": "Stop \"{0}\"?",
   "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
@@ -1526,8 +1655,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "回退：{0}": "Fallback: {0}",
   "无内置元数据，生成时回退 {0} 官方模板": "No built-in metadata; generation falls back to the {0} official template",
   "已导入自定义元数据，生成时覆盖内置（{0}）": "Custom metadata imported; overrides the built-in data ({0}) at generation",
-  "使用 {0}": "Use {0}",
-  "{0} 的 API Key": "API Key for {0}",
+  
+  
   "以下字段由 Codex++ 计算或维护，导入不会覆盖：{0}": "Codex++ computes or maintains these fields; importing does not overwrite them: {0}",
   "留空使用默认：{0}": "Leave empty to use the default: {0}",
   "将导入 {0} 个：{1}": "Will import {0}: {1}",

@@ -662,6 +662,64 @@ pub(crate) fn terminate_verified_multi_worker(
     Ok(true)
 }
 
+#[cfg(windows)]
+pub(crate) fn process_arguments(process_id: u32) -> Option<Vec<String>> {
+    command_line_arguments(&process_command_line(process_id)?)
+}
+
+/// 命令行、创建时间、映像与终止共用同一句柄，拒绝按端口或 PID 猜测归属。
+#[cfg(windows)]
+pub(crate) fn terminate_verified_codex_instance(
+    identity: &crate::multi_worker::CodexInstanceIdentity,
+) -> anyhow::Result<bool> {
+    if identity.process_id == std::process::id() || identity.process_birth_id == 0 {
+        return Ok(false);
+    }
+    let Ok(handle) = (unsafe {
+        OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+            false,
+            identity.process_id,
+        )
+    }) else {
+        return Ok(false);
+    };
+    if handle.is_invalid() {
+        return Ok(false);
+    }
+    let _guard = HandleGuard(handle);
+    if process_birth_id_from_handle(handle) != Some(identity.process_birth_id) {
+        return Ok(false);
+    }
+    let Some(image) = process_image_path_from_handle(handle) else {
+        return Ok(false);
+    };
+    let normalize = |path: &std::path::Path| {
+        path.to_string_lossy()
+            .trim_start_matches(r"\\?\")
+            .to_ascii_lowercase()
+    };
+    if normalize(&image) != normalize(&identity.executable) {
+        return Ok(false);
+    }
+    let Some(arguments) =
+        process_command_line_from_handle(handle).and_then(|line| command_line_arguments(&line))
+    else {
+        return Ok(false);
+    };
+    if !crate::multi_worker::codex_arguments_match(
+        &arguments,
+        &identity.user_data_dir,
+        identity.debug_port,
+    ) || unique_listener_process_id(&loopback_listener_process_ids(identity.debug_port)?)?
+        != Some(identity.process_id)
+    {
+        return Ok(false);
+    }
+    unsafe { TerminateProcess(handle, 0) }.context("结束已验证的多开 Codex 实例失败")?;
+    Ok(true)
+}
+
 /// `ProcessBasicInformation` / `ProcessWow64Information`。
 #[cfg(windows)]
 const PROCESS_BASIC_INFORMATION_CLASS: u32 = 0;

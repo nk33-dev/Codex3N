@@ -16,6 +16,7 @@ export function routeSubtitle(route: ManagerRoute): string {
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("管理常用功能、语音输入与下一步建议。"),
     dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
+    agentCollaboration: t("Agent 协作"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     userScripts: t("内置和用户自定义拓展清单"),

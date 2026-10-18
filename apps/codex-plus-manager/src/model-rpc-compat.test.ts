@@ -50,6 +50,9 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
   const fiber = { child: { memoizedProps: { value: new Map([[token, node]]) } } };
   const windowValue = hasRoot ? { __codexRoot: { _internalRoot: { current: fiber } } } : {};
   const create = new Function("window", "models", "provider", "status", "includeNativeModels", `
+    const prepareCodexManagedSessionConnection = async (_method, params) => params;
+    const sendCodexManagedSessionTurn = async () => null;
+    const noteCodexManagedSessionStart = () => {};
     const codexPlusSettings = () => ({ includeNativeModels });
     const codexPlusBackendSettingsLoaded = true;
     const codexRemoteSessionActiveProfile = () => ({ id: provider, relayMode: provider === "openai" ? "official" : "pureApi" });

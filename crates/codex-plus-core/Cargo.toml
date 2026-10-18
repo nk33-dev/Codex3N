@@ -21,6 +21,7 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sha1 = "0.10"
 sherpa-onnx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "sync"] }
@@ -35,6 +36,7 @@ zstd.workspace = true
 windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_Security_Cryptography",
+  "Win32_Networking_WinHttp",
   "Win32_Storage_EnhancedStorage",
   "Win32_Storage_FileSystem",
   "Win32_Storage_Packaging_Appx",

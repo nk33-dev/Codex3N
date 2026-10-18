@@ -17,6 +17,8 @@ export const defaultSettings: BackendSettings = {
   dictation: defaultDictationSettings(),
   promptEnhance: defaultPromptEnhanceSettings(),
   codexAppPath: "",
+  codexAppNativeFastUnlock: false,
+  relayPreserveNonproviderSettings: false,
   codexAppAutoTakeover: false,
   codexAppAutoTakeoverWhenActive: "defer",
   codexExtraArgs: [],
