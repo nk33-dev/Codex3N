@@ -5386,29 +5386,33 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
               options={[{ value: "rewrite", label: t("增强提示词"), disabled: !form.promptEnhance.rewriteEnabled }, { value: "grill", label: t("需求对齐"), disabled: !form.promptEnhance.grillEnabled }]} />
           </Field>
           <FeatureToggle title={t("附带项目上下文")}
-            detail={t("将所选本机项目资料发送给模型")}
+            detail={t("勾选的项目内容会发送给模型，默认关闭。")}
             disabled={!form.enhancementsEnabled || !modesEnabled}
             checked={form.promptEnhance.context.enabled}
             onChange={(enabled) => updatePromptEnhance({ context: { ...form.promptEnhance.context, enabled } })} />
-          {form.promptEnhance.context.enabled ? <RelayFold
+          <RelayFold
             title={t("项目内容")}
             sectionId="prompt-enhance-context"
             className="prompt-context-fold"
             bodyClassName="prompt-context-body"
           >
             <FeatureToggle title={t("项目名与分支")}
+              disabled={!form.enhancementsEnabled || !modesEnabled || !form.promptEnhance.context.enabled}
               checked={form.promptEnhance.context.project}
               onChange={(project) => updatePromptEnhance({ context: { ...form.promptEnhance.context, project } })} />
             <FeatureToggle title={t("项目说明")} detail={t("读取根目录 AGENTS.md、CLAUDE.md，没有时读取 README 开头。")}
+              disabled={!form.enhancementsEnabled || !modesEnabled || !form.promptEnhance.context.enabled}
               checked={form.promptEnhance.context.instructions}
               onChange={(instructions) => updatePromptEnhance({ context: { ...form.promptEnhance.context, instructions } })} />
-            <FeatureToggle title={t("目录结构")} detail={t("最多两层，忽略依赖与构建目录。")}
+            <FeatureToggle title={t("两层目录结构")} detail={t("最多两层，忽略依赖与构建目录。")}
+              disabled={!form.enhancementsEnabled || !modesEnabled || !form.promptEnhance.context.enabled}
               checked={form.promptEnhance.context.directory}
               onChange={(directory) => updatePromptEnhance({ context: { ...form.promptEnhance.context, directory } })} />
             <FeatureToggle title={t("主要清单文件")} detail={t("读取 Cargo.toml、package.json 等文件，帮助模型判断技术栈。")}
+              disabled={!form.enhancementsEnabled || !modesEnabled || !form.promptEnhance.context.enabled}
               checked={form.promptEnhance.context.manifests}
               onChange={(manifests) => updatePromptEnhance({ context: { ...form.promptEnhance.context, manifests } })} />
-          </RelayFold> : null}
+          </RelayFold>
           <FeatureToggle
             title={t("使用下一步建议的连接")}
             detail={t("关闭后单独配置模型服务")}
