@@ -216,6 +216,10 @@
     if (!codexPlusPromptEnhanceEnabled() || !codexPlusPromptEnhanceModes().includes(state.mode)) {
       closeCodexPlusPromptEnhance(); return false;
     }
+    const config = codexPlusBackendSettings.promptEnhance || {};
+    if (state.preferenceKey && state.preferenceKey !== JSON.stringify([config.detail || "standard", config.audience || "p4"])) {
+      closeCodexPlusPromptEnhance(); return false;
+    }
     if (!codexPlusPromptEnhanceTargetAlive()) {
       closeCodexPlusPromptEnhance();
       return false;
@@ -431,6 +435,7 @@
       context: null, project: null, lastRequest: null, generated: "", metadata: null,
       messages: [], supplement: "", text: "", intro: "", locked: false, error: "",
       started: !target.original.trim(), resumePhase: "ready", extra: null,
+      preferenceKey: JSON.stringify([config.detail || "standard", config.audience || "p4"]),
     });
     renderCodexPlusPromptEnhance();
     if (state.phase === "loading") await requestCodexPlusPromptEnhance({ start: true });

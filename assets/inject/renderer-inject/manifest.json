@@ -123,7 +123,7 @@
     {
       "name": "93-prompt-enhance.js",
       "description": "提示词优化、需求问答与输入框上方的浮动卡片",
-      "lines": 1425
+      "lines": 1430
     },
     {
       "name": "93-prompt-library.js",

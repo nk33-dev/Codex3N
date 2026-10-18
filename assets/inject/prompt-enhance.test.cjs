@@ -151,6 +151,11 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   const continued = layout.mergeQuestions([layout.round()], [{ ...multiQuestion, id: "rules" }]);
   assert.equal(continued.answers.roles, layout.state.answers.roles);
   assert.equal(continued.questions.length, 3, "补问保留累计问卷");
+  const preferenceChange = fixture({ respond: () => ({ status: "ok", kind: "final", text: "具体方案" }) });
+  await preferenceChange.start({});
+  preferenceChange.context.codexPlusBackendSettings.promptEnhance.detail = "detailed";
+  assert.equal(preferenceChange.guard(), false);
+  assert.equal(preferenceChange.state.phase, "idle", "深度变化后关闭旧策略生成的流程");
 
   const read = fixture({ lines: ["第一行", "", "第三行"] });
   const firstRead = read.read(read.editor);
