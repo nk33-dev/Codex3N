@@ -14,6 +14,7 @@ Codex3N 是 CodexPlusPlus 的个人定制版。只开发用户要求的个人功
 - 同步前必须读[维护流程](doc/person/maintenance.md)。Git 无冲突不代表行为正确：按旧入口到新模块映射迁移上游行为，保持唯一运行入口，并覆盖上游修复与个人功能回归。
 - 大版本及重构重叠在独立同步分支验证后合回，保留上游合并历史；数据迁移先在副本验证，代码回退不等于数据回退。
 - 同步至少执行 `cargo fmt --check`、`cargo check --workspace`、`cargo test --workspace`，以及管理器目录下的 `npm test`、`npm run check`。日常修改运行相关检查；纯文档检查差异与链接。
+- 本地编译和测试使用维护文档中的低并发入口：`cargo local-build`、`cargo local-check`、`cargo local-test`、管理器 `npm run test:local`；重任务顺序执行，CI 保持原命令。
 - 平台相关改动检查 Windows、macOS、Linux 的实际行为；如实记录未验证范围和失败，编译或 mock 通过不能代替真实运行验证。
 
 ## 发布

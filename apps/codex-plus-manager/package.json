@@ -1,6 +1,6 @@
 {
   "name": "codex-plus-manager",
-  "version": "1.9.0-3n.3",
+  "version": "1.9.0-3n.4",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -10,6 +10,7 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "i18n": "node ../../tools/i18n-verify.mjs",
     "test": "node --test \"src/*.test.ts\" && node ../../tools/i18n-verify.mjs",
+    "test:local": "node --test --test-concurrency=2 \"src/*.test.ts\" && node ../../tools/i18n-verify.mjs",
     "vite:dev": "vite --host 127.0.0.1 --port 1420",
     "vite:build": "vite build"
   },

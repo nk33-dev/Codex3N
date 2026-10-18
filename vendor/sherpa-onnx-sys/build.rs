@@ -44,6 +44,7 @@ fn main() {
 }
 
 fn try_main() -> Result<(), DynError> {
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=SHERPA_ONNX_ARCHIVE_DIR");
     println!("cargo:rerun-if-env-changed=DOCS_RS");
@@ -58,6 +59,13 @@ fn try_main() -> Result<(), DynError> {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH")?;
     let link_mode = resolve_link_mode(&target_os)?;
     let (lib_dir, archive_stem) = resolve_lib_dir(link_mode, &target_os, &target_arch)?;
+
+    if link_mode == LinkMode::Static {
+        validate_static_libs(&lib_dir, &target_os)?;
+        for path in static_lib_paths(&lib_dir, &target_os) {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
@@ -123,6 +131,9 @@ fn resolve_lib_dir(
             )
             .into());
         }
+        if link_mode == LinkMode::Static {
+            validate_static_libs(&path, target_os)?;
+        }
         return Ok((path, None));
     }
 
@@ -164,7 +175,9 @@ fn download_prebuilt_libs(
     let lib_dir_name = if is_ios_sim { "lib-sim" } else { "lib" };
     let lib_dir = extracted_dir.join(lib_dir_name);
 
-    if lib_dir.is_dir() {
+    if lib_dir.is_dir()
+        && (link_mode != LinkMode::Static || validate_static_libs(&lib_dir, target_os).is_ok())
+    {
         return Ok((lib_dir, archive_stem.to_string()));
     }
 
@@ -282,6 +295,10 @@ fn download_prebuilt_libs(
             lib_dir.display()
         )
         .into());
+    }
+
+    if link_mode == LinkMode::Static {
+        validate_static_libs(&lib_dir, target_os)?;
     }
 
     eprintln!("Downloaded sherpa-onnx libs to {}", extracted_dir.display());
@@ -436,8 +453,16 @@ fn emit_shared_link_directives(target_os: &str) {
 }
 
 fn emit_static_link_directives(target_os: &str) {
+    // 开发构建在最终链接时读取原生库，避免每份 rlib 再装入一整套静态库。
+    let kind = if env::var("PROFILE").as_deref() == Ok("debug")
+        && matches!(target_os, "windows" | "linux" | "macos")
+    {
+        "static:-bundle"
+    } else {
+        "static"
+    };
     for lib in SHERPA_ONNX_STATIC_LIBS {
-        println!("cargo:rustc-link-lib=static={lib}");
+        println!("cargo:rustc-link-lib={kind}={lib}");
     }
 
     match target_os {
@@ -453,6 +478,28 @@ fn emit_static_link_directives(target_os: &str) {
         }
         _ => {}
     }
+}
+
+fn static_lib_paths(lib_dir: &Path, target_os: &str) -> Vec<PathBuf> {
+    SHERPA_ONNX_STATIC_LIBS
+        .iter()
+        .map(|name| {
+            lib_dir.join(if target_os == "windows" {
+                format!("{name}.lib")
+            } else {
+                format!("lib{name}.a")
+            })
+        })
+        .collect()
+}
+
+fn validate_static_libs(lib_dir: &Path, target_os: &str) -> Result<(), DynError> {
+    for path in static_lib_paths(lib_dir, target_os) {
+        if !fs::metadata(&path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0) {
+            return Err(format!("原生静态库缺失或为空：{}", path.display()).into());
+        }
+    }
+    Ok(())
 }
 
 fn target_dir_from_out_dir(out_dir: &Path) -> Result<PathBuf, DynError> {

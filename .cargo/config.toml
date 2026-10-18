@@ -1,3 +1,6 @@
 [alias]
 xtest = "test --workspace --all-targets"
 xcheck = "check --workspace --all-targets"
+local-build = "build --workspace -j 2"
+local-check = "check --workspace -j 2"
+local-test = "test --workspace -j 2 -- --test-threads=2"

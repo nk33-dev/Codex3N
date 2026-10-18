@@ -71,6 +71,18 @@ cargo test --workspace
 - 核对实际运行的构建、注入产物、宿主版本和个人更新源，避免缓存或旧进程掩盖结果。打包变化还需检查产物来源和升级路径。
 - 记录既有失败、新失败及未验证范围。检查未完成不标记为完整通过；同步分支验证完成后才合回 `personal`。官方发布大版本不等于个人版已兼容。
 
+### 本地构建占用
+
+开发和测试保留完整调试信息与增量编译。桌面管理器只生成供可执行入口调用的 `rlib`；如增加移动端客户端，需另行配置其原生库产物。
+
+本地使用 `cargo local-build`、`cargo local-check`、`cargo local-test`，管理器使用 `npm run test:local`：最多同时运行两个 Cargo 编译任务、两个 Rust 测试线程或两个前端测试文件。GitHub Actions 仍使用原有 `cargo build/check/test`、`npm test`，不受这些本地入口限制。局部 Rust 测试使用 `cargo test -p <包> -j 2 <过滤条件> -- --test-threads=2`。本地重任务顺序运行；这些参数限制任务并发，不是整个进程树的 CPU 百分比上限。
+
+`sherpa-onnx-sys` 在桌面 debug 构建中以 `static:-bundle` 引用 `target/sherpa-onnx-prebuilt` 的原生库，最终链接仍为静态链接；release 沿用打包静态库的方式。构建脚本跟踪全部必需静态库，缓存缺文件或含空文件时从已有压缩包重新解压，没有压缩包时下载。`SHERPA_ONNX_LIB_DIR` 指定的外部目录只校验，错误会列出文件路径。
+
+删除整个 `target` 后，下一次构建会重新下载并编译；只清理 `target/debug` 可保留原生库下载缓存和 release 产物。日常保持同一工具链和构建参数，使用自动管理的原生库路径，避免临时切换环境变量产生额外构建组合。缓存修复回归在 `cargo check --workspace` 后执行 `node --test scripts/sherpa-cache.test.mjs`，测试只操作临时目录；平台模拟不代表真实跨平台链接已经验证。
+
+2026-10-17 Windows 验证：格式、workspace 编译及测试通过（2,503 通过、11 忽略）；前端测试 866 通过、1 跳过，类型检查和 Vite 构建通过。缓存回归 10 项通过，真实原生调用完成 48 kHz 到 16 kHz 的重采样，独立状态目录下的管理器创建窗口成功。首次启动探针与已有 helper 端口冲突，独立状态文件改用未运行的调试端口后完成验证。清理旧开发产物并完成检查后，`target/debug` 从 Cargo 报告的 121.6 GiB 降至文件大小合计约 22.1 GiB，整个 `target` 约 25.2 GiB；差值包含历史缓存清理。`sherpa-onnx-sys` 的开发 `rlib` 约 321 KiB，保留原生库缓存约 1.1 GiB。macOS、Linux 的真实链接与启动尚未验证。
+
 ### Windows 与跨平台门禁
 
 `pr-build.yml` 的 `windows-artifacts` job 执行完整前端、Rust 和安全门禁，并构建 NSIS 安装包；独立并行的 `rust-lint` job 在 Windows 上只跑 `cargo fmt`、`cargo check` 与 relay clippy，把编译类失败提前到 2～3 分钟暴露，它不设 `needs`，产包 job 不等它。Ubuntu、macOS job 执行共享前端测试，macOS universal job 编译 x64/arm64 并合并为通用 DMG。job 所在系统只表示测试宿主：Windows 上的 `macos-dmg.test.ts` 是磁盘命令模拟，不能据此认定 Windows 安装包或真实 macOS 挂载已验证。
