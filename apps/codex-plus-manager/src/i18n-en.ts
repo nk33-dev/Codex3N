@@ -1,6 +1,8 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "增强深度": "Enhancement depth",
+  "受众画像": "Audience profile",
   "Agent 协作": "Agent collaboration",
   "恢复这次未完成的修复？期间被其他操作修改的数据会保留，并报告冲突。": "Recover this incomplete repair? Changes made by other operations will be preserved and conflicts reported.",
   "正在恢复…": "Restoring…",
@@ -48,8 +50,6 @@ export const EN_PLAIN: Record<string, string> = {
   "管理仓库": "Manage repositories",
   "搜索 Skills 或仓库": "Search skills or repositories",
   "启用技能": "Enable skill",
-  "项目筛选": "Filter by project",
-  "全部项目": "All projects",
   "已导入": "Imported",
   "没有匹配的收藏": "No matching prompts",
   "增强提示词": "Enhance prompt",
@@ -58,8 +58,6 @@ export const EN_PLAIN: Record<string, string> = {
   "在输入框旁显示收藏入口": "Show saved prompts beside the composer",
   "全部标签": "All tags",
   "通用": "General",
-  "所有项目都能用": "Available in all projects",
-  "仅当前项目": "This project only",
   "撤销": "Undo",
   "内容": "Content",
   "新建": "New",
@@ -110,10 +108,8 @@ export const EN_PLAIN: Record<string, string> = {
   "搜索": "Search",
   "范围": "Scope",
   "全部": "All",
-  "项目": "Project",
   "导入": "Import",
   "标题": "Title",
-  "主机": "Host",
 
   "未结束进程，请刷新后检查归属状态": "No processes stopped. Refresh to check process ownership.",
   "清理完成": "Cleanup completed",

@@ -20,6 +20,8 @@ export type PromptEnhanceSettings = {
   systemPrompt: string;
   grillSystemPrompt: string;
   defaultMode: "rewrite" | "grill";
+  detail: "concise" | "standard" | "detailed";
+  audience: "nontechnical" | "p4" | "p5" | "p6" | "p7" | "p8" | "p9" | "p10";
   context: PromptEnhanceContextSettings;
   timeoutSeconds: number;
 };
@@ -43,6 +45,8 @@ export function defaultPromptEnhanceSettings(): PromptEnhanceSettings {
     systemPrompt: "",
     grillSystemPrompt: "",
     defaultMode: "rewrite",
+    detail: "standard",
+    audience: "p4",
     context: { enabled: false, project: false, instructions: false, directory: false, manifests: false },
     timeoutSeconds: 60,
   };
@@ -67,6 +71,8 @@ export function normalizePromptEnhanceSettings(value: Partial<PromptEnhanceSetti
     systemPrompt: text(value?.systemPrompt),
     grillSystemPrompt: text(value?.grillSystemPrompt),
     defaultMode: value?.defaultMode === "grill" ? "grill" : "rewrite",
+    detail: promptDetails.some(item => item.value === value?.detail) ? value!.detail! : defaults.detail,
+    audience: promptAudiences.some(item => item.value === value?.audience) ? value!.audience! : defaults.audience,
     context: {
       enabled: value?.context?.enabled === true,
       project: value?.context?.project === true,
@@ -87,3 +93,8 @@ export function promptEnhanceSettingsIssue(settings: PromptEnhanceSettings): Pro
   if (!settings.model.trim()) return "model";
   return null;
 }
+import preferences from "../../../assets/prompt-enhance/preferences.json" with { type: "json" };
+export const promptDetails = preferences.details;
+export const promptAudiences = preferences.audiences;
+export const promptDetailLabelsEn = preferences.detailLabelsEn;
+export const promptAudienceLabelsEn = preferences.audienceLabelsEn;

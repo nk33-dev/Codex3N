@@ -32,7 +32,7 @@ window.fixtureRequest=async(action,payload={})=>{
   if(action==='library/use')return{status:'ok'};
   if(action==='generate'){
     if(payload.mode==='grill'&&!payload.forceFinal){
-      if((payload.history||[]).length>=4)return{status:'ok',kind:'summary',text:'图书管理系统\\n后端：Java\\n主要功能：图书、借阅、搜索\\n待定：前端框架'};
+      if((payload.history||[]).length)return{status:'ok',kind:'final',text:'实现图书管理系统，后端使用 Java，包含图书、借阅和搜索。'};
       return{status:'ok',kind:'questions',questions:[{id:'stack',title:'技术方向',question:'后端打算用什么语言？',options:[{label:'Java',description:'适合 Spring Boot 项目'},{label:'Python',description:'适合 Django 或 FastAPI 项目'}],recommended:0},{id:'features',title:'功能范围',question:'第一版需要哪些功能？',options:[{label:'图书和借阅',description:'先做基本流程'},{label:'加上用户管理',description:'区分管理员和读者'}],recommended:0}]};
     }
     return{status:'ok',kind:'final',text:'请修复登录错误，并补充回归验证。',metadata:{mode:payload.mode||'rewrite',scenario:payload.scenario||'general',model:'fixture',systemPrompt:'规则'}};
@@ -184,7 +184,7 @@ try {
   assert.equal(await evaluate("document.querySelector('[data-prompt-enhance-trigger]').title"), "增强提示词");
   await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel [aria-label=关闭]').click()");
 
-  // 需求对齐：点选自动下一题、答完自动提交、四轮后小结。
+  // 需求对齐：点选自动下一题，答完后直接进入可编辑结果。
   await evaluate("promptFixture.settings.promptEnhance.rewriteEnabled=true;promptFixture.settings.promptEnhance.grillEnabled=true;promptFixture.install();document.querySelector('[data-prompt-enhance-trigger]').click()");
   await eventually(() => evaluate("!!document.querySelector('[data-prompt-enhance-menu]')"), "双模式菜单");
   await click("需求对齐", "document.querySelector('[data-prompt-enhance-menu]')");
@@ -193,17 +193,13 @@ try {
   await call("Emulation.setDeviceMetricsOverride", { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
   await shot("questions-dark-1200.png");
   await call("Emulation.setDeviceMetricsOverride", { width: 400, height: 800, deviceScaleFactor: 1, mobile: false });
-  for (let round = 0; round < 4; round++) {
-    await eventually(() => evaluate("promptFixture.state.phase==='questions'&&promptFixture.state.activeQuestion===0"), `第 ${round + 1} 轮题目`);
-    await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option').click()");
-    await eventually(() => evaluate("promptFixture.state.activeQuestion===1"), "自动下一题");
-    await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option').click()");
-    await eventually(() => evaluate(`promptFixture.state.history.length===${round + 1}&&promptFixture.state.phase!=='loading'`), "自动提交");
-  }
-  await eventually(() => evaluate("promptFixture.state.phase==='summary'"), "需求小结");
-  await shot("summary-400.png");
-  await click("写提示词", "document.querySelector('#codex-plus-prompt-enhance-panel')");
-  await eventually(() => evaluate("promptFixture.state.phase==='result'"), "确认生成");
+  await eventually(() => evaluate("promptFixture.state.activeQuestion===0"), "首题");
+  await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option').click()");
+  await eventually(() => evaluate("promptFixture.state.activeQuestion===1"), "自动下一题");
+  assert.equal(await evaluate("document.querySelector('[data-prompt-enhance-action=next]').disabled"), true);
+  await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option').click()");
+  await eventually(() => evaluate("promptFixture.state.phase==='result'"), "完成问卷直接生成");
+  await shot("result-400.png");
   assert.equal(await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel').getBoundingClientRect().right<=innerWidth&&document.querySelector('#codex-plus-prompt-enhance-panel').getBoundingClientRect().left>=0"), true, "card stays inside the window");
   await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel [aria-label=关闭]').click()");
 
@@ -235,15 +231,15 @@ try {
     await evaluate("document.querySelector('.pk-option').click()");
     await eventually(() => evaluate("document.querySelector('.pk-question')?.textContent==='第一版需要哪些功能？'"), "Harness 自动下一题");
     await evaluate("document.querySelector('.pk-option').click()");
-    await eventually(() => evaluate("pk.calls.filter(x=>x.action==='generate').length===2"), "Harness 下一轮");
+    await eventually(() => evaluate("!!document.querySelector('.pk-result')&&pk.calls.filter(x=>x.action==='generate').length===2"), "Harness 生成结果");
     await evaluate("document.querySelector('button[aria-label=关闭]').click()");
     await evaluate("document.querySelector('button[aria-label=增强提示词]').click()");
     await eventually(() => evaluate("!!document.querySelector('.pk-mode-menu')"), "Harness 模式菜单");
     await evaluate("[...document.querySelectorAll('.pk-mode-menu button')].find(b=>b.textContent.includes('需求对齐')).click()");
-    await eventually(() => evaluate("!!document.querySelector('.pk-question')"), "Harness 恢复");
+    await eventually(() => evaluate("!!document.querySelector('.pk-result')"), "Harness 恢复");
     assert.equal(await evaluate("pk.calls.filter(x=>x.action==='generate').length"), 2, "reopen keeps the workflow");
   }
-  console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "live-search", "draft-append", "delete-undo", "mode-menu", "replace-undo", "single-mode", "auto-advance", "four-rounds", "summary", "manager-create", "400px-layout"] }));
+  console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "live-search", "draft-append", "delete-undo", "mode-menu", "replace-undo", "single-mode", "auto-advance", "last-question-disabled", "ready-final", "manager-create", "400px-layout"] }));
 } finally {
   if (socket?.readyState === WebSocket.OPEN) { try { await call("Browser.close"); } catch {} socket.close(); }
   child.kill(); server.close();

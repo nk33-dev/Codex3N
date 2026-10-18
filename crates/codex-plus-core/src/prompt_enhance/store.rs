@@ -332,6 +332,8 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
             let mut items = favorites(&conn)?;
             items.retain(|item| {
                 let visible = match scope {
+                    "all" => true,
+                    "untagged" => item.tags.is_empty(),
                     "global" => item.project.is_none(),
                     "project" => item.project.is_some() && (all || item.project == project),
                     _ => {

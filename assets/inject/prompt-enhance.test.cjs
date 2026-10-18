@@ -94,6 +94,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     keydown: codexPlusPromptEnhanceKeyHandler,
     modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
+    mergeQuestions: codexPlusPromptMergeQuestions, pick: pickCodexPlusPromptEnhanceAnswer,
   };`, context);
   context.renderCodexPlusPromptEnhance = () => {};
   // 跳过 DOM 布局查询，直接把 footer 映射到测试输入框。
@@ -137,6 +138,19 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   layout.keydown({ key: "ArrowRight", target: { closest: () => null }, preventDefault() {} });
   assert.equal(layout.state.activeQuestion, 1);
   assert.equal(Object.keys(layout.state.answers).length, 0, "翻页不能替用户决定答案");
+  const multiQuestion = { id: "roles", title: "角色", question: "需要哪些角色？", multiSelect: true, options: [{ label: "管理员" }, { label: "读者" }], recommended: 1 };
+  const queue = layout.mergeQuestions([], [multiQuestion, { ...multiQuestion, id: "scope", multiSelect: false }]);
+  assert.equal(queue.questions[0].options[0].label, "读者", "推荐项始终排在第一位");
+  Object.assign(layout.state, { phase: "questions", ...queue, history: [] });
+  layout.pick("读者");
+  layout.pick("管理员");
+  assert.equal(layout.state.activeQuestion, 0, "多选确认之前保持当前题目");
+  assert.deepEqual(JSON.parse(layout.state.answers.roles), ["读者", "管理员"]);
+  layout.pick(layout.state.answers.roles, true);
+  assert.equal(layout.state.activeQuestion, 1);
+  const continued = layout.mergeQuestions([layout.round()], [{ ...multiQuestion, id: "rules" }]);
+  assert.equal(continued.answers.roles, layout.state.answers.roles);
+  assert.equal(continued.questions.length, 3, "补问保留累计问卷");
 
   const read = fixture({ lines: ["第一行", "", "第三行"] });
   const firstRead = read.read(read.editor);
@@ -297,11 +311,9 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   // 需求对齐允许空草稿，先问「你想做什么？」，用户填写后才请求。
   const intro = fixture({ lines: ["  "], respond: () => ({ status: "ok", kind: "questions", questions: [question()] }) });
   await intro.start({}, "grill");
-  assert.equal(intro.state.phase, "intro");
+  assert.equal(intro.state.phase, "idle");
   assert.equal(intro.requests.length, 0);
-  await intro.request({ intro: "做个待办应用" });
-  assert.equal(intro.requests[0].payload.prompt, "做个待办应用");
-  assert.equal(intro.state.phase, "questions", intro.state.error);
+  assert.equal(intro.toasts.length, 1, "两种入口都要求草稿有内容");
   const grill = fixture({ respond: payload => payload.forceFinal ? { status: "ok", kind: "final", text: "最终提示词" }
     : { status: "ok", kind: "questions", questions: [question()] } });
   await grill.start({}, "grill");
@@ -311,15 +323,15 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   grill.state.answers.goal = "管理图书";
   await grill.request();
   assert.equal(grill.state.history.length, 1);
-  assert.equal(grill.state.answers.goal, undefined, "each new round needs fresh confirmation");
+  assert.equal(grill.state.answers.goal, "管理图书", "同一决策补问时保留已填答案");
   grill.state.answers.goal = "图书管理和导出";
   await grill.request();
-  assert.equal(grill.state.history.length, 2);
-  assert.equal(grill.requests[2].payload.history[1].answers[0].answer, "图书管理和导出");
+  assert.equal(grill.state.history.length, 1);
+  assert.equal(grill.requests[2].payload.history[0].answers[0].answer, "图书管理和导出");
   grill.state.answers.goal = "包含借阅";
   await grill.request();
   assert.equal(grill.requests[3].payload.forceFinal, false);
-  assert.equal(grill.requests[3].payload.history.length, 3);
+  assert.equal(grill.requests[3].payload.history.length, 1, "累计问卷只发送一份当前答案快照");
   assert.equal(grill.state.phase, "questions");
   grill.state.answers.goal = "包含借阅";
   await grill.request({ forceFinal: true });

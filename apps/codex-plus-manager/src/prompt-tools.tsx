@@ -28,15 +28,14 @@ const emptyFavorite = (): Favorite => ({ id: "", title: "", body: "", tags: [], 
 
 export function PromptToolsPanel() {
   const [items, setItems] = useState<Favorite[]>([]), [query, setQuery] = useState(""),
-    [scope, setScope] = useState("available"), [tag, setTag] = useState(""), [projectFilter, setProjectFilter] = useState(""),
+    [scope, setScope] = useState("all"), [tag, setTag] = useState(""),
     [tags, setTags] = useState<string[]>([]), [selected, setSelected] = useState<Favorite | null>(null),
     [edit, setEdit] = useState<Favorite | null>(null), [tagsText, setTagsText] = useState(""),
     [error, setError] = useState(""), [message, setMessage] = useState(""),
     [busy, setBusy] = useState(false), [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<string | null>(null),
     [importData, setImportData] = useState<{ data: unknown; added: number; skipped: number } | null>(null);
   const revision = useRef(0), fileInput = useRef<HTMLInputElement>(null);
-  const projects = [...new Map(items.filter(item => item.project).map(item => [JSON.stringify(item.project), item.project!])).entries()];
-  const visibleItems = items.filter(item => !projectFilter || JSON.stringify(item.project) === projectFilter);
+  const visibleItems = items;
   async function load() {
     const token = ++revision.current;
     const result = await request("library/list", { all: true, query, scope, tag });
@@ -102,11 +101,9 @@ export function PromptToolsPanel() {
       <details className="prompt-tools-options" open><summary>{t("筛选与导入导出")}</summary>
         <div className="prompt-tools-toolbar">
           <Field label={t("范围")}><AppSelect value={scope} onChange={setScope} options={[
-            { value: "available", label: t("全部") }, { value: "global", label: t("通用") }, { value: "project", label: t("项目") }]} /></Field>
+            { value: "all", label: t("全部") }, { value: "untagged", label: t("通用") }]} /></Field>
           <Field label={t("标签")}><AppSelect value={tag} onChange={setTag} options={[
             { value: "", label: t("全部标签") }, ...tags.map(value => ({ value, label: value }))]} /></Field>
-          <Field label={t("项目筛选")}><AppSelect value={projectFilter} onChange={setProjectFilter} options={[
-            { value: "", label: t("全部项目") }, ...projects.map(([value, project]) => ({ value, label: `${project.hostId} · ${project.workingDirectory}` }))]} /></Field>
           <Button variant="outline" disabled={busy} title={t("导入")} aria-label={t("导入")} onClick={() => fileInput.current?.click()}><Upload size={16} /></Button>
           <Button variant="outline" disabled={busy} title={t("导出")} aria-label={t("导出")} onClick={() => void run(async () => {
             const path = await save({ defaultPath: "prompt-favorites.json", filters: [{ name: "JSON", extensions: ["json"] }] });
@@ -134,7 +131,7 @@ export function PromptToolsPanel() {
       </div>}
       {edit ? <form className="prompt-tools-editor" onSubmit={event => {
         event.preventDefault(); void run(async () => {
-          await request("library/save", { ...edit, tags: tagsText.split(/[,，]/).map(value => value.trim()).filter(Boolean) });
+          await request("library/save", { ...edit, project: null, tags: tagsText.split(/[,，]/).map(value => value.trim()).filter(Boolean) });
           setEdit(null); await load(); setMessage(t("已保存"));
         });
       }}>
@@ -142,13 +139,6 @@ export function PromptToolsPanel() {
         <Field label={t("内容")}><Textarea required maxLength={20000} rows={12} value={edit.body} onChange={event => setEdit({ ...edit, body: event.currentTarget.value })} /></Field>
         <details><summary>{t("更多选项")}</summary>
           <Field label={t("标签")}><Input value={tagsText} placeholder={t("用逗号分隔")} onChange={event => setTagsText(event.currentTarget.value)} /></Field>
-          <Field label={t("范围")}><AppSelect value={edit.project ? "project" : "global"}
-            onChange={value => setEdit({ ...edit, project: value === "project" ? edit.project || { hostId: "local", workingDirectory: "" } : null })}
-            options={[{ value: "global", label: t("所有项目都能用") }, { value: "project", label: t("仅当前项目") }]} /></Field>
-          {edit.project && <>
-            <Field label={t("主机")}><Input required value={edit.project.hostId} onChange={event => setEdit({ ...edit, project: { ...edit.project!, hostId: event.currentTarget.value } })} /></Field>
-            <Field label={t("项目目录")}><Input required value={edit.project.workingDirectory} onChange={event => setEdit({ ...edit, project: { ...edit.project!, workingDirectory: event.currentTarget.value } })} /></Field>
-          </>}
         </details>
         <div className="prompt-tools-toolbar"><Button type="submit" disabled={busy}>{t("保存")}</Button>
           <Button type="button" variant="outline" onClick={() => setEdit(null)}>{t("取消")}</Button></div>
@@ -172,7 +162,6 @@ export function PromptToolsPanel() {
         {selected ? <section className="prompt-manager-preview">
           <Button variant="ghost" className="prompt-manager-back" title={t("返回列表")} aria-label={t("返回列表")} onClick={() => setSelected(null)}><ArrowLeft size={16} /></Button>
           <h3>{selected.title}</h3>
-          {selected.project && <p className="field-hint">{selected.project.workingDirectory}</p>}
           <pre>{selected.body}</pre>
           <div className="prompt-tools-toolbar">
             <Button variant="outline" title={t("编辑")} aria-label={t("编辑")} onClick={() => startEdit(selected)}><Pencil size={16} /></Button>

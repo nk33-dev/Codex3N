@@ -118,6 +118,10 @@ import {
 import {
   normalizePromptEnhanceSettings,
   promptEnhanceSettingsIssue,
+  promptDetails,
+  promptAudiences,
+  promptDetailLabelsEn,
+  promptAudienceLabelsEn,
   type PromptEnhanceSettings,
   type PromptEnhanceSettingsIssue,
 } from "./prompt-enhance-settings";
@@ -5450,6 +5454,18 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
             <AppSelect value={effectiveDefault} disabled={!modesEnabled}
               onChange={(value) => updatePromptEnhance({ defaultMode: value === "grill" ? "grill" : "rewrite" })}
               options={[{ value: "rewrite", label: t("增强提示词"), disabled: !form.promptEnhance.rewriteEnabled }, { value: "grill", label: t("需求对齐"), disabled: !form.promptEnhance.grillEnabled }]} />
+          </Field>
+          <Field label={t("增强深度")}>
+            <AppSelect value={form.promptEnhance.detail}
+              onChange={(value) => updatePromptEnhance({ detail: value as PromptEnhanceSettings["detail"] })}
+              options={promptDetails.map((item, index) => ({ value: item.value, label: getLanguage() === "en" ? promptDetailLabelsEn[index] : item.label }))} />
+            {getLanguage() === "zh" && <p className="field-hint">{promptDetails.find(item => item.value === form.promptEnhance.detail)?.description}</p>}
+          </Field>
+          <Field label={t("受众画像")}>
+            <AppSelect value={form.promptEnhance.audience}
+              onChange={(value) => updatePromptEnhance({ audience: value as PromptEnhanceSettings["audience"] })}
+              options={promptAudiences.map((item, index) => ({ value: item.value, label: getLanguage() === "en" ? promptAudienceLabelsEn[index] : item.label }))} />
+            {getLanguage() === "zh" && <p className="field-hint">{promptAudiences.find(item => item.value === form.promptEnhance.audience)?.description}</p>}
           </Field>
           <FeatureToggle title={t("附带项目上下文")}
             detail={t("所选内容会发送给模型")}

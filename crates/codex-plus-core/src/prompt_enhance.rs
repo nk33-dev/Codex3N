@@ -4,6 +4,7 @@
 
 mod context;
 mod grill;
+mod preferences;
 pub mod store;
 
 pub use grill::{Answer, Question, QuestionOption, Round};
@@ -24,7 +25,6 @@ use crate::settings::BackendSettings;
 use crate::stepwise::{StepwiseProtocol, insert_bearer_header, redact_secret, stepwise_protocols};
 
 const MAX_INPUT_CHARS: usize = 20_000;
-const MAX_OUTPUT_TOKENS: u32 = 4096;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// 内置改写规则放在 `assets/prompt-enhance/system-prompt.md`，改规则不用动代码。
@@ -239,6 +239,8 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
         }
     }
     .to_string();
+    system_prompt.push('\n');
+    system_prompt.push_str(&preferences::guidance(&config.detail, &config.audience));
     if !scenario_prompt.is_empty() {
         system_prompt.push('\n');
         system_prompt.push_str(scenario_prompt);
@@ -303,6 +305,7 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
             model,
             &system_prompt,
             &conversation,
+            preferences::output_budget(&config.detail),
         ) {
             Ok(parts) => parts,
             Err(error) => return failed(format!("构建请求失败：{error}")),
@@ -372,7 +375,11 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
             return failed("模型没有返回内容，请重试");
         };
         let mut result = if is_grill {
-            grill::parse(&enhanced, force_final)
+            grill::parse(
+                &enhanced,
+                force_final,
+                preferences::question_limit(&config.detail),
+            )
         } else {
             json!({"status":"ok","kind":"final","text":enhanced})
         };
@@ -408,6 +415,7 @@ fn build_request(
     model: &str,
     system_prompt: &str,
     conversation: &[Value],
+    output_budget: u32,
 ) -> anyhow::Result<(String, HeaderMap, Value)> {
     let mut headers = HeaderMap::new();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
@@ -422,7 +430,7 @@ fn build_request(
                     "model": model,
                     "messages": messages,
                     "temperature": 0.3,
-                    "max_tokens": MAX_OUTPUT_TOKENS,
+                    "max_tokens": output_budget,
                 }),
             )
         }
@@ -433,7 +441,7 @@ fn build_request(
                 json!({
                     "model": model,
                     "input": messages,
-                    "max_output_tokens": MAX_OUTPUT_TOKENS,
+                    "max_output_tokens": output_budget,
                 }),
             )
         }
@@ -452,7 +460,7 @@ fn build_request(
                     "model": model,
                     "system": system_prompt,
                     "messages": conversation,
-                    "max_tokens": MAX_OUTPUT_TOKENS,
+                    "max_tokens": output_budget,
                 }),
             )
         }
@@ -647,7 +655,7 @@ mod tests {
             .and(body_partial_json(json!({
                 "model": "enhance-model",
                 "messages": [
-                    { "role": "system", "content": default_system_prompt() },
+                    { "role": "system", "content": format!("{}\n{}", default_system_prompt(), preferences::guidance("standard", "p4")) },
                     { "role": "user", "content": "修一下登录页" }
                 ]
             })))
@@ -672,7 +680,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/messages"))
             .and(header("x-api-key", "sk-enhance-test"))
-            .and(body_partial_json(json!({ "system": "只补充验收标准" })))
+            .and(body_partial_json(json!({ "system": format!("只补充验收标准\n{}", preferences::guidance("standard", "p4")) })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "content": [{ "type": "text", "text": "增强后" }]
             })))
@@ -755,6 +763,8 @@ mod tests {
                 id: "goal".into(),
                 title: "目标".into(),
                 question: "覆盖哪些功能？".into(),
+                basis: String::new(),
+                multi_select: false,
                 options: vec![
                     QuestionOption {
                         label: "管理图书".into(),
@@ -765,7 +775,7 @@ mod tests {
                         description: "借还流程".into(),
                     },
                 ],
-                recommended: 0,
+                recommended: Some(0),
             }],
             answers: vec![Answer {
                 question_id: "goal".into(),
@@ -893,7 +903,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn further_rounds_wait_for_confirmation_and_custom_rules_apply() {
+    async fn further_rounds_accept_ready_final_and_custom_rules_apply() {
         let server = MockServer::start().await;
         Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "choices":[{"message":{"content":"{\"kind\":\"final\",\"text\":\"管理图书并提供导出\"}"}}]
@@ -909,7 +919,7 @@ mod tests {
         let mut config = settings(server.uri(), "chat_completions");
         config.prompt_enhance.grill_system_prompt = "追问专用规则".into();
         let result = generate(req, &config).await;
-        assert_eq!(result["kind"], "summary");
+        assert_eq!(result["kind"], "final");
         assert_eq!(result["text"], "管理图书并提供导出");
         let requests = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
@@ -981,25 +991,59 @@ mod tests {
         req.history[0].answers[0].question_id = "unknown".into();
         assert_eq!(generate(req.clone(), &config).await["status"], "failed");
         req.history[0].answers[0].question_id = "goal".into();
-        req.history[0].questions[0].recommended = 8;
+        req.history[0].questions[0].recommended = Some(8);
         assert_eq!(generate(req, &config).await["status"], "failed");
     }
 
     #[test]
-    fn grill_format_and_force_final_are_bounded() {
-        assert_eq!(grill::parse("普通提示词", false)["status"], "failed");
-        assert_eq!(grill::parse("{broken JSON", false)["status"], "failed");
+    fn question_limits_follow_detail_and_preserve_accumulated_history() {
+        for (detail, limit) in [("concise", 3), ("standard", 7), ("detailed", 15)] {
+            let mut questions = Vec::new();
+            for index in 0..limit {
+                let mut question = sample_round("查询").questions.remove(0);
+                question.id = index.to_string();
+                question.multi_select = true;
+                question.basis = "功能决定范围".into();
+                question.recommended = None;
+                questions.push(question);
+            }
+            assert_eq!(preferences::question_limit(detail), limit);
+            let raw = json!({"kind":"questions","questions":questions}).to_string();
+            assert_eq!(grill::parse(&raw, false, limit)["status"], "ok");
+            let mut extra = questions[0].clone();
+            extra.id = "extra".into();
+            questions.push(extra);
+            let raw = json!({"kind":"questions","questions":questions}).to_string();
+            assert_eq!(grill::parse(&raw, false, limit)["status"], "failed");
+            assert!(
+                grill::validate(&[Round {
+                    questions,
+                    answers: vec![]
+                }])
+                .is_ok()
+            );
+        }
         assert_eq!(
-            grill::parse(r#"{"kind":"summary","text":"方向已明确"}"#, false)["kind"],
+            grill::parse(r#"{"kind":"final","text":"完整提示词"}"#, false, 3)["kind"],
+            "final"
+        );
+    }
+
+    #[test]
+    fn grill_format_and_force_final_are_bounded() {
+        assert_eq!(grill::parse("普通提示词", false, 7)["status"], "failed");
+        assert_eq!(grill::parse("{broken JSON", false, 7)["status"], "failed");
+        assert_eq!(
+            grill::parse(r#"{"kind":"summary","text":"方向已明确"}"#, false, 7)["kind"],
             "summary"
         );
         assert_eq!(
-            grill::parse(r#"{"kind":"final","text":"提示词"}"#, true)["kind"],
+            grill::parse(r#"{"kind":"final","text":"提示词"}"#, true, 7)["kind"],
             "final"
         );
         let questions =
             json!({"kind":"questions","questions":sample_round("x").questions}).to_string();
-        assert_eq!(grill::parse(&questions, true)["status"], "failed");
+        assert_eq!(grill::parse(&questions, true, 7)["status"], "failed");
         let mut round = sample_round("😀".repeat(3001).as_str());
         assert!(grill::validate(&[round.clone()]).is_err());
         round.answers[0].answer = "有效".into();

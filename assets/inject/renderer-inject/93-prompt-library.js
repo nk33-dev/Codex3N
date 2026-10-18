@@ -1,7 +1,7 @@
   // 常用提示词：浮在输入框上方，点一条就追加；拖动手柄调整顺序，删除可从提示条撤销。
   const codexPlusPromptLibrary = {
     revision: 0, target: null, project: null, panel: null, searchTimer: null,
-    items: [], tags: [], total: 0, edit: null, query: "", scope: "available", tag: "", limit: 50,
+    items: [], tags: [], total: 0, edit: null, query: "", scope: "all", tag: "", limit: 50,
     returnToEnhance: null, cacheKey: "", loading: false, message: "", error: "", editId: "",
     dragging: null, over: null,
   };
@@ -73,7 +73,7 @@
     state.cacheKey = JSON.stringify([target.href, target.location?.sessionId || "", target.location?.hostId || "", target.location?.workingDirectory || ""]);
     const saved = codexPlusPromptLibraries.get(state.cacheKey);
     Object.assign(state, {
-      target, project: null, items: [], tags: [], total: 0, query: "", scope: "available", tag: "",
+      target, project: null, items: [], tags: [], total: 0, query: "", scope: "all", tag: "",
       limit: 50, returnToEnhance: back, loading: true, message: "", error: "", editId,
     }, saved || {});
     if (seed !== undefined) state.edit = {
@@ -98,7 +98,7 @@
     try {
       const result = await codexPlusPromptToolsRequest("library/list", {
         project: state.project, query: state.query,
-        scope: state.scope === "all" ? "available" : state.scope,
+        scope: state.scope,
         tag: state.tag, sort: "manual", limit: state.limit,
       });
       if (revision !== state.revision || !state.panel) return;
@@ -176,7 +176,7 @@
     if (!draft?.text.trim()) { showToast("当前输入为空", null); return; }
     try {
       const result = await codexPlusPromptToolsRequest("library/add", {
-        body: draft.text, project: state.project,
+        body: draft.text, project: null,
       });
       state.editId = result.favorite?.id || "";
       await refreshCodexPlusPromptLibrary();
@@ -201,7 +201,7 @@
       await codexPlusPromptToolsRequest("library/save", {
         id: item.id, title: item.title.trim() || item.body.trim().split("\n")[0].slice(0, 80),
         body: item.body, tags: item.tags,
-        project: item.project,
+        project: null,
       });
       state.edit = null;
       await refreshCodexPlusPromptLibrary();
@@ -291,13 +291,13 @@
     const chips = codexPlusPromptLibraryNode("div", "codex-plus-prompt-chips");
     chips.setAttribute("role", "group");
     chips.setAttribute("aria-label", "筛选");
-    const filters = ["all", "project", "global", ...state.tags];
+    const filters = ["all", "untagged", ...state.tags];
     for (const value of filters) {
-      const label = value === "all" ? "全部" : value === "project" ? "本项目" : value === "global" ? "通用" : value;
+      const label = value === "all" ? "全部" : value === "untagged" ? "通用" : value;
       const chip = codexPlusPromptLibraryButton(label, "codex-plus-prompt-chip");
       chip.setAttribute("aria-pressed", String(state.scope === value || state.tag === value));
       chip.addEventListener("click", () => {
-        if (value === "all" || value === "project" || value === "global") { state.scope = value; state.tag = ""; }
+        if (value === "all" || value === "untagged") { state.scope = value; state.tag = ""; }
         else { state.scope = "all"; state.tag = value; }
         state.limit = 50;
         void refreshCodexPlusPromptLibrary();
@@ -363,11 +363,6 @@
         const titleRow = codexPlusPromptLibraryNode("span", "codex-plus-prompt-row-title");
         titleRow.append(codexPlusPromptLibraryNode("strong", "", item.title));
         for (const tag of item.tags) titleRow.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-pill", tag));
-        if (item.project && item.project.workingDirectory !== state.project?.workingDirectory) {
-          const pill = codexPlusPromptLibraryNode("span", "codex-plus-prompt-pill", item.project.workingDirectory.split(/[\\/]/).filter(Boolean).at(-1) || "");
-          pill.title = item.project.workingDirectory;
-          titleRow.append(pill);
-        }
         main.append(titleRow, codexPlusPromptLibraryNode("small", "", item.body.replace(/\s+/g, " ").slice(0, 160)));
         main.addEventListener("click", () => void useCodexPlusPromptFavorite(item, "append"));
         const actions = codexPlusPromptLibraryNode("span", "codex-plus-prompt-row-actions");
@@ -440,14 +435,6 @@
     const title = field("标题", "input", item.title, { maxLength: 200 });
     const text = field("内容", "textarea", item.body, { maxLength: 20000, rows: 7 });
     const tags = field("标签", "input", item.tags.join("，"), { placeholder: "用逗号分隔，如：修 bug，审查" });
-    const scope = codexPlusPromptLibraryNode("label", "codex-plus-prompt-field codex-plus-prompt-check");
-    const all = document.createElement("input");
-    all.type = "checkbox";
-    all.checked = !item.project;
-    all.disabled = !item.project && !state.project;
-    all.addEventListener("change", () => { item.project = all.checked ? null : (item.project || state.project); });
-    scope.append(all, codexPlusPromptLibraryNode("span", "", "所有项目都能用"));
-    body.append(scope);
     title.addEventListener("input", () => { item.title = title.value; });
     text.addEventListener("input", () => { item.body = text.value; });
     tags.addEventListener("input", () => {

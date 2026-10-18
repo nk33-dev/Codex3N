@@ -658,6 +658,8 @@ pub struct PromptEnhanceSettings {
     pub system_prompt: String,
     pub grill_system_prompt: String,
     pub default_mode: String,
+    pub detail: String,
+    pub audience: String,
     pub context: PromptEnhanceContextSettings,
     pub timeout_seconds: u64,
 }
@@ -678,6 +680,8 @@ impl Default for PromptEnhanceSettings {
             system_prompt: String::new(),
             grill_system_prompt: String::new(),
             default_mode: "rewrite".to_string(),
+            detail: "standard".to_string(),
+            audience: "p4".to_string(),
             context: PromptEnhanceContextSettings::default(),
             timeout_seconds: 60,
         }
@@ -700,6 +704,14 @@ impl PromptEnhanceSettings {
         }
         .to_string();
         self.timeout_seconds = self.timeout_seconds.clamp(5, 300);
+        if !["concise", "standard", "detailed"].contains(&self.detail.as_str()) {
+            self.detail = "standard".to_string();
+        }
+        if !["nontechnical", "p4", "p5", "p6", "p7", "p8", "p9", "p10"]
+            .contains(&self.audience.as_str())
+        {
+            self.audience = "p4".to_string();
+        }
     }
 }
 
@@ -2476,6 +2488,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             "systemPrompt",
             "grillSystemPrompt",
             "defaultMode",
+            "detail",
+            "audience",
         ] {
             if let Some(value) = patch.get(key).and_then(Value::as_str) {
                 prompt_enhance.insert(key.to_string(), Value::String(value.trim().to_string()));
@@ -3488,9 +3502,11 @@ mod tests {
             .update(json!({"promptEnhance":{"enabled":true,"systemPrompt":"改写规则"}}))
             .unwrap();
         assert_eq!(old.prompt_enhance.default_mode, "rewrite");
+        assert_eq!(old.prompt_enhance.detail, "standard");
+        assert_eq!(old.prompt_enhance.audience, "p4");
         assert!(!old.prompt_enhance.context.enabled);
         let saved = store.update(json!({"promptEnhance":{
-            "defaultMode":"grill","grillSystemPrompt":"  追问规则  ",
+            "defaultMode":"grill","grillSystemPrompt":"  追问规则  ","detail":"detailed","audience":"p6",
             "context":{"enabled":true,"project":true,"instructions":true,"directory":false,"manifests":true}
         }})).unwrap();
         assert_eq!(saved.prompt_enhance.grill_system_prompt, "追问规则");
@@ -3501,6 +3517,8 @@ mod tests {
             .unwrap();
         let loaded = store.load().unwrap();
         assert_eq!(loaded.prompt_enhance.default_mode, "grill");
+        assert_eq!(loaded.prompt_enhance.detail, "detailed");
+        assert_eq!(loaded.prompt_enhance.audience, "p6");
         assert!(loaded.prompt_enhance.context.project);
         assert!(loaded.prompt_enhance.context.directory);
         assert!(loaded.prompt_enhance.context.manifests);

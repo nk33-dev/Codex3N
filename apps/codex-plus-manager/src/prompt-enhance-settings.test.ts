@@ -13,6 +13,22 @@ test("prompt enhance is off by default and reuses the next-step connection", () 
   assert.equal(settings.useStepwiseConnection, true);
 });
 
+test("detail and audience survive settings round trips and legacy defaults", () => {
+  assert.equal(normalizePromptEnhanceSettings(undefined).detail, "standard");
+  assert.equal(normalizePromptEnhanceSettings(undefined).audience, "p4");
+  for (const detail of ["concise", "standard", "detailed"] as const) {
+    for (const audience of ["nontechnical", "p4", "p5", "p6", "p7", "p8", "p9", "p10"] as const) {
+      const value = normalizePromptEnhanceSettings({ detail, audience, systemPrompt: "个人规则" });
+      assert.equal(value.detail, detail);
+      assert.equal(value.audience, audience);
+      assert.deepEqual(normalizePromptEnhanceSettings(JSON.parse(JSON.stringify(value))), value);
+    }
+  }
+  const invalid = normalizePromptEnhanceSettings(JSON.parse('{"detail":"unknown","audience":"unknown"}'));
+  assert.equal(invalid.detail, "standard");
+  assert.equal(invalid.audience, "p4");
+});
+
 test("prompt enhance normalization trims fields and clamps values", () => {
   const settings = normalizePromptEnhanceSettings({
     enabled: true,
