@@ -5148,14 +5148,13 @@ fn injection_script_leaves_new_threads_to_the_codex_app() {
 }
 
 #[test]
-fn injection_script_restores_thread_scroll_positions() {
+fn injection_script_leaves_thread_scrolling_to_the_host() {
     let script = assets::injection_script(57321);
 
-    assert!(script.contains("threadScrollRestore"));
-    assert!(script.contains("codexThreadScroll"));
-    assert!(script.contains("installThreadScrollRouteHooks"));
-    assert!(script.contains("scheduleThreadScrollSync"));
-    assert!(script.contains("localStorage.removeItem(codexThreadScrollKey)"));
+    assert!(script.contains("releaseThreadScrollControl();"));
+    assert!(!script.contains("function installThreadScrollRouteHooks"));
+    assert!(!script.contains("function restoreThreadScrollPosition"));
+    assert!(!script.contains("data-codex-plus-setting=\"threadScrollRestore\""));
 }
 
 #[test]

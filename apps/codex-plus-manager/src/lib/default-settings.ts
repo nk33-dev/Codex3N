@@ -45,7 +45,7 @@ export const defaultSettings: BackendSettings = {
   codexAppThreadIdBadge: false,
   codexAppLowPower: false,
   codexAppConversationView: false,
-  codexAppThreadScrollRestore: true,
+  codexAppThreadScrollRestore: false,
   codexAppNativeMenuPlacement: true,
   codexAppServiceTierControls: false,
   codexAppPetRealMouseLook: false,

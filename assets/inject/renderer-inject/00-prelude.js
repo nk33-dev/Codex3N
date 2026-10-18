@@ -372,7 +372,6 @@
   const codexArchiveRowActionsVersion = "1";
   const codexArchiveDeleteAllVersion = "2";
   const codexConversationViewVersion = "1";
-  const codexThreadScrollVersion = "1";
   const codexThreadIdBadgeVersion = "1";
   const codexThreadServiceTierVersion = "1";
   const codexServiceTierBadgeClass = "codex-service-tier-badge";
@@ -381,7 +380,6 @@
   const codexPlusBuild = window.__CODEX_PLUS_BUILD__ || "unknown";
   let lastSessionActionTrigger = null;
   const codexPlusSettingsKey = "codexPlusSettings";
-  const codexThreadScrollKey = "codexThreadScroll";
   const codexThreadServiceTierKey = "codexThreadServiceTierOverrides";
   const codexThreadServiceTierMaxEntries = 120;
   const codexThreadServiceTierDraftBindWindowMs = 60 * 1000;
@@ -391,26 +389,10 @@
   const codexAppServerClientCaptureAnchor = "async sendRequest(";
   const codexRemoteSessionRecoveryVersion = "5";
   const codexPluginMarketplaceUnlockVersion = "17";
-  const codexThreadScrollMaxEntries = 120;
-  const codexThreadScrollSaveThrottleMs = 120;
-  const codexThreadScrollRestoreWindowMs = 3200;
-  const codexThreadScrollRestoreDelaysMs = [0, 80, 220, 500, 1000, 1800, 2800];
-  const codexThreadScrollUserIntentWindowMs = 1200;
-  const codexThreadScrollProgrammaticGuardVersion = "dispatcher:2";
-  const codexThreadScrollRouteHooksVersion = "dispatcher:2";
-  const codexThreadScrollListenerVersion = "4";
-  const codexThreadScrollUserIntentVersion = "dispatcher:2";
   const codexPlusImageOverlayId = "codex-plus-image-overlay";
   const codexPlusDreamSkinStyleId = "codex-dream-skin-style";
   const codexPlusDreamSkinPlatform = String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || "macos");
   const codexPlusDreamSkinRevision = String(window.__CODEX_PLUS_DREAM_SKIN_REVISION__ || "1");
-  clearTimeout(window.__codexThreadScrollSaveTimer);
-  window.__codexThreadScrollSaveTimer = null;
-  (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-  window.__codexThreadScrollRestoreTimers = [];
-  (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-  window.__codexThreadScrollSyncTimers = [];
-  window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
 
   function installCodexPlusImageOverlay() {
     const config = window.__CODEX_PLUS_IMAGE_OVERLAY__ || {};
@@ -1711,7 +1693,6 @@
   }
 
   scheduleCodexPlusImageOverlay();
-  window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
   ["__codexPlusHtmlCenteredThreadWidth", "__codexPlusViewportCenteredThreadWidth", "__codexPlusBoundedThreadCenter"].forEach((key) => {
     try {
       window[key]?.cleanup?.();

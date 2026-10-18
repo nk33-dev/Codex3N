@@ -238,14 +238,6 @@
       scheduleBackendHeartbeat();
       installDeleteButtonEventDelegation();
     }
-    if (work.shell || work.conversation) {
-      updateThreadScrollHandlers();
-      installThreadScrollProgrammaticScrollGuard();
-      installThreadScrollNavigationCapture();
-      installThreadScrollUserIntentCapture();
-      installThreadScrollRouteHooks();
-      scheduleThreadScrollSync(true);
-    }
     if (work.shell || work.conversation || work.menus) {
       refreshCodexServiceTierControls();
     }

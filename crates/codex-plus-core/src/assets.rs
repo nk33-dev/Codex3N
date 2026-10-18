@@ -817,7 +817,7 @@ mod tests {
             "function installPluginMarketplaceBridgePatch()",
             "const invalidSessionStorageKey = \"codex3n.hiddenInvalidSessions.v1\";",
             "function installThreadIdBadge(row)",
-            "function installThreadScrollProgrammaticScrollGuard()",
+            "function releaseThreadScrollControl()",
             "function downloadMarkdownFallback(filename, markdown)",
             "function patchAppServerModelResult(method, result, hostId)",
             "function installSessionShareButton()",

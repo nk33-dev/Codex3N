@@ -1944,7 +1944,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, includeNativeModels: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, threadScrollRestore: true, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, includeNativeModels: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, nativeMenuPlacement: true, serviceTierControls: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1957,7 +1957,6 @@
     threadIdBadge: "codexAppThreadIdBadge",
     conversationView: "codexAppConversationView",
     whaleWidget: "codexAppWhaleWidgetEnabled",
-    threadScrollRestore: "codexAppThreadScrollRestore",
     nativeMenuPlacement: "codexAppNativeMenuPlacement",
     serviceTierControls: "codexAppServiceTierControls",
     petRealMouseLook: "codexAppPetRealMouseLook",
@@ -2001,7 +2000,6 @@
         conversationView: false,
         whaleWidget: false,
         conversationViewMaxWidth: conversationViewDefaultWidth,
-        threadScrollRestore: false,
         nativeMenuPlacement: false,
         serviceTierControls: false,
         petRealMouseLook: false,
@@ -2032,6 +2030,7 @@
       }
       const settings = { ...defaultCodexPlusSettings(), ...JSON.parse(raw), ...backendCodexPlusSettings() };
       delete settings.customLayout;
+      delete settings.threadScrollRestore;
       codexPlusSettings.__cache = {
         raw,
         backend: codexPlusBackendSettings,
@@ -2811,17 +2810,6 @@
     }
     const next = { ...stored, [key]: value };
     localStorage.setItem(codexPlusSettingsKey, JSON.stringify(next));
-    if (key === "threadScrollRestore" && !value) {
-      clearTimeout(window.__codexThreadScrollSaveTimer);
-      window.__codexThreadScrollSaveTimer = null;
-      window.__codexThreadScrollRestoreRevision = (window.__codexThreadScrollRestoreRevision || 0) + 1;
-      window.__codexThreadScrollSyncRevision = (window.__codexThreadScrollSyncRevision || 0) + 1;
-      (window.__codexThreadScrollRestoreTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollRestoreTimers = [];
-      (window.__codexThreadScrollSyncTimers || []).forEach((timer) => clearTimeout(timer));
-      window.__codexThreadScrollSyncTimers = [];
-      window.__codexThreadScrollRuntime = null;
-    }
     if (key === "serviceTierControls") {
       if (value) {
         void loadCodexServiceTierState();

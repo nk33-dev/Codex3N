@@ -54,5 +54,5 @@ fn capacity_auto_retry_round_trips_through_partial_updates() {
     assert_eq!(raw["codexAppCapacityAutoRetry"], json!(true));
 
     // 只改这一个键不该动到别的增强开关。
-    assert!(raw["codexAppThreadScrollRestore"].as_bool().unwrap());
+    assert!(!raw["codexAppThreadScrollRestore"].as_bool().unwrap());
 }

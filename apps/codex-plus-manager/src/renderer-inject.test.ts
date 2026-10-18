@@ -490,14 +490,14 @@ describe("renderer injection header compatibility", () => {
       };
     };
     const mapped = createButton("pluginMarketplaceUnlock", "插件市场解锁");
-    const local = createButton("threadScrollRestore", "切换对话保留位置");
+    const local = createButton("conversationView", "对话居中宽度");
     const unavailable = createButton("modelWhitelistUnlock", "模型白名单解锁", true);
     const buttons = [mapped, local, unavailable];
     const labelStart = renderer.indexOf('    overlay.querySelectorAll(".codex-plus-toggle[data-codex-plus-setting],');
     const labelEnd = renderer.indexOf("    const closeButton", labelStart);
     assert.ok(labelStart >= 0 && labelEnd > labelStart);
     new Function("overlay", renderer.slice(labelStart, labelEnd))({ querySelectorAll: () => buttons });
-    for (const [button, label] of [[mapped, "插件市场解锁"], [local, "切换对话保留位置"], [unavailable, "模型白名单解锁"]] as const) {
+    for (const [button, label] of [[mapped, "插件市场解锁"], [local, "对话居中宽度"], [unavailable, "模型白名单解锁"]] as const) {
       assert.equal(button.attributes.role, "switch");
       assert.equal(button.attributes["aria-label"], label);
       assert.equal(button.attributes["aria-checked"], "false");
@@ -506,7 +506,7 @@ describe("renderer injection header compatibility", () => {
     const renderStart = renderer.indexOf("  function renderCodexPlusMenu()");
     const renderEnd = renderer.indexOf("\n  let codexPlusBackendSettings =", renderStart);
     assert.ok(renderStart >= 0 && renderEnd > renderStart);
-    const settings: Record<string, boolean> = { pluginMarketplaceUnlock: true, threadScrollRestore: true, modelWhitelistUnlock: true };
+    const settings: Record<string, boolean> = { pluginMarketplaceUnlock: true, conversationView: true, modelWhitelistUnlock: true };
     const render = new Function("document", "codexPlusSettings", "codexPlusBackendMappedSettings", "refreshConversationViewControls", "refreshCodexServiceTierControls",
       `let codexPlusBackendSettingsLoaded = false; const codexPlusBackendSettings = {};
 ${renderer.slice(renderStart, renderEnd)}

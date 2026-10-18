@@ -1372,10 +1372,6 @@
                   </div>
                 </div>
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">切换对话保留位置</div><div class="codex-plus-row-description">开启后在不同 thread 之间切换时恢复到上一次浏览位置，不再自动跳到底部。</div></div>
-                  <button type="button" class="codex-plus-toggle" data-codex-plus-setting="threadScrollRestore"><span></span></button>
-                </div>
-                <div class="codex-plus-row">
                   <div><div class="codex-plus-row-title">Codex 用量挂件</div><div class="codex-plus-row-description">显示当前 Codex 会话用量、任务状态与可用的供应商余额。可拖动、上传角色图片和设置提醒；默认静音。</div></div>
                   <button type="button" class="codex-plus-toggle" data-codex-plus-setting="whaleWidget"><span></span></button>
                 </div>

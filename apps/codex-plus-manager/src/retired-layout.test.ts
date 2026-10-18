@@ -38,7 +38,7 @@ test("retired layout preferences are hidden while existing local enhancement cho
   assert.equal("customLayout" in settings, false);
   assert.equal(settings.conversationView, true); assert.equal(settings.whaleWidget, true);
   assert.equal(settings.typingEffect, "stars"); assert.equal(settings.nativeMenuPlacement, false);
-  assert.equal(settings.threadScrollRestore, true);
+  assert.equal("threadScrollRestore" in settings, false);
   assert.equal(stored.get("settings"), oldPreferences, "reading preferences must not rewrite other saved choices");
 });
 
