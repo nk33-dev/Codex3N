@@ -9,10 +9,12 @@ export async function initializePreferences(): Promise<void> {
   const { values: saved, importLegacy } = await invoke<{ values: Record<string, string>; importLegacy: boolean }>("load_ui_preferences");
   const imported: Record<string, string> = {};
   // 只在后端没有该键时导入 WebView 旧偏好，后续以后端为准。
-  for (let index = 0; importLegacy && index < localStorage.length; index++) {
-    const key = localStorage.key(index);
-    if (key && allowed(key) && !(key in saved)) imported[key] = localStorage.getItem(key) || "";
-  }
+  try {
+    for (let index = 0; importLegacy && index < localStorage.length; index++) {
+      const key = localStorage.key(index);
+      if (key && allowed(key) && !(key in saved)) imported[key] = localStorage.getItem(key) || "";
+    }
+  } catch { /* WebView 存储不可用时仍读取用户目录中的偏好。 */ }
   if (importLegacy) await invoke("save_ui_preferences", { values: imported });
   values = { ...imported, ...saved };
   ready = true;

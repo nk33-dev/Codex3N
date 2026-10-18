@@ -89,6 +89,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     blocker: codexPlusPromptEnhanceReplaceBlocker, enabled: codexPlusPromptEnhanceEnabled,
     request: requestCodexPlusPromptEnhance, guard: guardCodexPlusPromptEnhance,
     position: positionCodexPlusPromptCard,
+    keydown: codexPlusPromptEnhanceKeyHandler,
     modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
   };`, context);
@@ -127,6 +128,9 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   assert.equal(panel.style.zoom, "1.25");
   assert.equal(panel.style.width, "800px");
   assert.equal(panel.style.bottom, "168px", "缩放后仍保持同宽与边缘间距");
+  Object.assign(layout.state, { phase: "questions", activeQuestion: 0, questions: [{ id: "only", options: [{ label: "A" }, { label: "B" }] }] });
+  layout.keydown({ key: "ArrowRight", target: { closest: () => null }, preventDefault() {} });
+  assert.equal(layout.requests.length, 0, "末题方向键不能隐式跳过并提交");
 
   const read = fixture({ lines: ["第一行", "", "第三行"] });
   const firstRead = read.read(read.editor);

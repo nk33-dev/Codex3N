@@ -6,7 +6,7 @@ use std::path::Path;
 /// 在日志、数据库和 GUI 启动前迁移；显式实例目录始终保持原有隔离。
 pub fn initialize_user_state() -> anyhow::Result<()> {
     if super::state_dir_override().is_some() {
-        return Ok(());
+        return crate::settings::SettingsStore::default().migrate();
     }
     let target = super::default_app_state_dir();
     anyhow::ensure!(target.is_absolute(), "无法定位用户配置目录");
@@ -26,8 +26,12 @@ fn import_state(legacy: &Path, target: &Path) -> anyhow::Result<()> {
         .write(true)
         .open(target.with_extension("migration.lock"))?;
     lock.lock_exclusive()?;
-    // 目录本身是导入完成标记，用户删除 settings.json 后也不会重新读旧配置。
-    if target.try_exists()? {
+    let marker = target.join(".state-imported");
+    if marker.try_exists()? {
+        return Ok(());
+    }
+    if target.join("settings.json").try_exists()? {
+        crate::settings::atomic_write(&marker, b"1")?;
         return Ok(());
     }
     let staging = parent.join(format!(".Codex3N-import-{}", uuid::Uuid::new_v4()));
@@ -69,7 +73,19 @@ fn import_state(legacy: &Path, target: &Path) -> anyhow::Result<()> {
             &staging.join("migration.log"),
             b"state-directory: imported to platform user configuration directory\n",
         )?;
-        fs::rename(&staging, target).context("发布用户配置目录失败")?;
+        crate::settings::atomic_write(&staging.join(".state-imported"), b"1")?;
+        // 日志等后台读写可能提前建目录；先归档这份目录，不能因此跳过旧配置导入。
+        let prior = target.with_extension(format!("before-import-{}", uuid::Uuid::new_v4()));
+        let had_target = target.try_exists()?;
+        if had_target {
+            fs::rename(target, &prior)?;
+        }
+        if let Err(error) = fs::rename(&staging, target) {
+            if had_target {
+                fs::rename(&prior, target).context("恢复导入前目录失败")?;
+            }
+            return Err(error).context("发布用户配置目录失败");
+        }
         Ok(())
     })();
     if result.is_err() {
@@ -187,6 +203,8 @@ mod tests {
         fs::write(old.join("settings.json"), bytes).unwrap();
         fs::write(old.join("secret.key"), b"synthetic-key").unwrap();
         fs::write(old.join("plugins/custom.js"), b"synthetic-plugin").unwrap();
+        fs::create_dir(&new).unwrap();
+        fs::write(new.join("early.log"), b"synthetic-startup-log").unwrap();
         let db = rusqlite::Connection::open(old.join("prompt-enhance.sqlite3")).unwrap();
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE saved(value TEXT); INSERT INTO saved VALUES('kept');").unwrap();
         import_state(&old, &new).unwrap();

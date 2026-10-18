@@ -1,7 +1,7 @@
 //! 同步补偿日志：只恢复本操作改过且仍等于本操作后值的行/列，不恢复整份数据库。
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::File,
+    fs::OpenOptions,
     path::{Path, PathBuf},
 };
 
@@ -273,7 +273,10 @@ impl SyncJournal {
     }
     pub(crate) fn persist(&self) -> anyhow::Result<()> {
         crate::backup::private_atomic_write(&self.path, &serde_json::to_vec(self)?)?;
-        File::open(&self.path)?.sync_all()?;
+        OpenOptions::new()
+            .write(true)
+            .open(&self.path)?
+            .sync_all()?;
         Ok(())
     }
     pub(crate) fn commit(

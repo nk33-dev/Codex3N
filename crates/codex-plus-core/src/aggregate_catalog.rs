@@ -801,7 +801,9 @@ mod tests {
     fn publication_fixture() -> (tempfile::TempDir, SettingsStore, std::path::PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let store = SettingsStore::new(temp.path().join("settings.json"));
-        store.save(&settings()).unwrap();
+        let mut settings = settings();
+        settings.relay_profiles_enabled = true;
+        store.save(&settings).unwrap();
         let loaded = store.load().unwrap();
         let aggregate = active_model_aggregation(&loaded).unwrap();
         let home = temp.path().join("home");

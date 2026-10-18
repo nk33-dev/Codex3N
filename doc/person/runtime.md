@@ -200,7 +200,7 @@ Windows 官方 App 26.1013.3656.0 的三轮 60 秒采样分别捕获 `thread/lis
 
 默认状态目录由 `paths.rs::default_app_state_dir` 统一提供：Windows `%APPDATA%/Codex3N`、macOS `~/Library/Application Support/Codex3N`、Linux `$XDG_CONFIG_HOME/Codex3N`（缺省 `~/.config/Codex3N`）。`CODEX_PLUS_STATE_DIR` 仍可为多开和测试显式指定独立目录。
 
-GUI 和 MCP 启动前执行 `paths/migration.rs::initialize_user_state`。新目录不存在时从 `~/.codex-session-delete` 一次导入，旧 `settings.json` 先写同目录 `.bak`；在临时目录完成复制后 rename 发布。SQLite 使用在线备份包含 WAL 已提交事务，锁、状态回执和 SQLite 边车不复制。密钥文件、插件、主题资源、收藏、Skills 和缓存等共用状态目录一起迁移，用户另选的外部路径保持配置。旧目录保留用于恢复；新目录存在后不再读取旧设置，因此删除新设置不会复活旧值。
+GUI 和 MCP 启动前执行 `paths/migration.rs::initialize_user_state`。首次启动且没有导入标记或新设置时，从 `~/.codex-session-delete` 一次导入，旧 `settings.json` 先写同目录 `.bak`；在临时目录完成复制后 rename 发布。SQLite 使用在线备份包含 WAL 已提交事务，锁、状态回执和 SQLite 边车不复制。密钥文件、插件、主题资源、收藏、Skills 和缓存等共用状态目录一起迁移，用户另选的外部路径保持配置。旧目录保留用于恢复；`.state-imported` 标记存在后不再读取旧设置，因此删除新设置不会复活旧值。只有日志等文件提前创建的新目录会先归档，再导入旧设置。
 
 `SettingsStore::migrate` 按 `schemaVersion` 逐版本迁移，当前为 1；原始 JSON 与密文先备份，保留未知字段，只更新迁移字段。缺键在反序列化时使用代码默认值。未来版本和损坏配置拒绝保存；修订号防止旧表单覆盖其他进程的更新。写入共用跨进程锁和唯一临时文件，flush、sync 后原子替换。
 

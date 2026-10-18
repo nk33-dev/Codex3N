@@ -232,6 +232,7 @@ fn local_proxy_import_keeps_real_upstream_and_protocol() {
 
 #[test]
 fn imported_aggregate_preserves_members_and_routes_after_switching_away_and_back() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let aggregate = AggregateRelayProfile {
@@ -346,6 +347,7 @@ fn imported_aggregate_preserves_members_and_routes_after_switching_away_and_back
 
 #[test]
 fn default_provider_uses_the_same_switch_path_as_other_providers() {
+    redirect_secret_key();
     let temp = tempfile::tempdir().unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let local = api_profile("local");

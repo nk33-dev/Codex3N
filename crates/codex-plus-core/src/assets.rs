@@ -892,7 +892,6 @@ mod tests {
             "function defaultCodexPlusSettings()",
             "function installDreamSkin(settings)",
             "function setCodexPlusSetting(key, value)",
-            "function syncCodexServiceTierEffectiveState()",
             "function codexRemoteSessionActiveProfile()",
             "function loadBackendSettingsForStartup(attempt = 0)",
             "function openCodexPlusModal(options = {})",

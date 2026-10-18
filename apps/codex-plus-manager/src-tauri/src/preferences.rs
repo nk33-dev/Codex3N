@@ -49,7 +49,7 @@ fn update(change: impl FnOnce(&mut Preferences)) -> anyhow::Result<()> {
 #[tauri::command]
 pub fn load_ui_preferences() -> Result<serde_json::Value, String> {
     read()
-        .map(|prefs| serde_json::json!({"values": prefs.values, "importLegacy": !path().exists() && !path().with_extension("imported").exists()}))
+        .map(|prefs| serde_json::json!({"values": prefs.values, "importLegacy": !path().with_extension("imported").exists()}))
         .map_err(|error| error.to_string())
 }
 

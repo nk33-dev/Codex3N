@@ -1824,7 +1824,6 @@ impl SettingsStore {
     /// 应用启动即崩。触发条件：聚合供应商的 `configContents` 非空（切换供应商时
     /// `backfill_relay_profile_from_live` 会把 live 配置回填进聚合档案）。
     pub fn load(&self) -> anyhow::Result<BackendSettings> {
-        self.migrate()?;
         let contents = match self.read_contents()? {
             Some(contents) => contents,
             None => {
@@ -1841,6 +1840,7 @@ impl SettingsStore {
                 self.path.display()
             )
         })?;
+        config_schema_version(&parsed)?;
         if let Some(map) = parsed.as_object_mut() {
             decrypt_settings_secrets(map);
         }
@@ -1924,7 +1924,6 @@ impl SettingsStore {
         prepare: impl FnOnce(&str) -> anyhow::Result<()>,
         publish: impl FnOnce(&str) -> anyhow::Result<()>,
     ) -> anyhow::Result<String> {
-        self.migrate()?;
         let _lock = self.write_lock()?;
         let revision = self.revision()?;
         if settings.settings_revision != revision
@@ -1962,6 +1961,8 @@ impl SettingsStore {
         // 旧文件超限、不可读或 JSON 损坏时拒绝写入，不能把读取失败当成空配置。
         let raw = self.load_raw_object()?;
         validate_profile_updates(settings, &raw)?;
+        serialize_settings_bounded(settings)?;
+        let mut settings = normalize_settings_config_sections(settings.clone());
         let existing_profiles = raw.get("relayProfiles").and_then(Value::as_array).cloned();
         let existing_profile_count = existing_profiles.as_ref().map(Vec::len).unwrap_or(0);
         if settings.relay_profiles.is_empty() && existing_profile_count > 0 {
@@ -2003,8 +2004,6 @@ impl SettingsStore {
                 }
             }
         }
-        serialize_settings_bounded(settings)?;
-        let mut settings = normalize_settings_config_sections(settings.clone());
         settings.codex_extra_args = normalize_codex_extra_args(&settings.codex_extra_args);
         let mut next = settings_to_object(&settings);
         next.remove("revision");
@@ -2056,7 +2055,6 @@ impl SettingsStore {
     }
 
     pub fn update(&self, payload: Value) -> anyhow::Result<BackendSettings> {
-        self.migrate()?;
         let Value::Object(payload) = payload else {
             return self.load();
         };
@@ -2146,6 +2144,7 @@ impl SettingsStore {
 
         match serde_json::from_str::<Value>(&contents) {
             Ok(Value::Object(mut map)) => {
+                config_schema_version(&Value::Object(map.clone()))?;
                 decrypt_settings_secrets_preserving(&mut map);
                 Ok(map)
             }
@@ -4548,6 +4547,7 @@ experimental_bearer_token = "sk-existing""#
         let store = SettingsStore::new(path.clone());
         // 管理器某条重建路径漏带 apiKeys/apiKey 时的形态：整条供应商的密钥都没了。
         let wiped = BackendSettings {
+            settings_revision: store.revision().unwrap(),
             relay_profiles: vec![RelayProfile {
                 id: "relay-a".to_string(),
                 name: "A".to_string(),
@@ -6001,6 +6001,7 @@ mod persistence_tests {
         let old = br#"{"codexAppSessionDelete":false,"codexAppUsageStatusLine":false,"codexAppLowPower":true,"future":{"enabled":true},"promptEnhance":{"enabled":true}}"#;
         fs::write(&path, old).unwrap();
         let store = SettingsStore::new(path.clone());
+        store.migrate().unwrap();
         let loaded = store.load().unwrap();
         assert!(!loaded.codex_app_session_delete);
         assert!(!loaded.codex_app_usage_status_line);
