@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.9.0-3n.3"
+version = "1.9.0-3n.4"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/nk33-dev/Codex3N"
