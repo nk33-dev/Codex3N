@@ -262,11 +262,33 @@ pub fn execute(path: &Path, action: &str, payload: Value) -> Value {
     if action == "feedback/save" {
         return json!({"status":"failed","message":"反馈记录已停用"});
     }
-    match execute_inner(path, action, payload) {
-        Ok(value) => value,
-        // SQLite、JSON 错误可能带正文；响应和日志均不转发原始错误。
-        Err(_) => json!({"status":"failed","message":"收藏操作失败，请检查内容后重试"}),
+    // 多个连接同时写入时，SQLite 偶尔会在拿到锁前返回 BUSY；短暂退避后重试，
+    // 最终失败仍统一返回泛化错误。所有写操作都走事务或单条语句，重试不会重复提交。
+    let mut attempt = 0;
+    loop {
+        match execute_inner(path, action, payload.clone()) {
+            Ok(value) => return value,
+            Err(error) if attempt < 3 && transient(&error) => {
+                std::thread::sleep(Duration::from_millis(50 * (1 << attempt)));
+                attempt += 1;
+            }
+            Err(error) => {
+                #[cfg(test)]
+                eprintln!("store action {action} failed: {error:#}");
+                // SQLite、JSON 错误可能带正文；响应和日志均不转发原始错误。
+                return json!({"status":"failed","message":"收藏操作失败，请检查内容后重试"});
+            }
+        }
     }
+}
+
+fn transient(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let text = cause.to_string().to_ascii_lowercase();
+        text.contains("database is locked")
+            || text.contains("database table is locked")
+            || text.contains("database is busy")
+    })
 }
 
 fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Value> {
