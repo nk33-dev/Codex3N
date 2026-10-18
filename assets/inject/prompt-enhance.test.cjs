@@ -361,33 +361,33 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
 
   const withContext = fixture({ respond: () => ({ status: "ok", text: "结果", context: { enabled: true, sections: [] } }) });
   withContext.context.codexPlusBackendSettings.promptEnhance.context = { enabled: true, project: true };
-  withContext.editor.__reactFiber$test = { memoizedProps: { conversationId: "thread-one", hostId: "local", cwd: "D:/project" },
+  withContext.editor.__reactFiber$test = { memoizedProps: { conversationId: "thread-one", hostId: "local", cwd: "/workspace/project" },
     memoizedState: { memoizedState: { current: { get() {}, value: { routeKind: "local-thread", conversationId: "thread-one", hostId: "local" } } } } };
   await withContext.start({});
-  assert.equal(withContext.requests[0].payload.workingDirectory, "D:/project");
+  assert.equal(withContext.requests[0].payload.workingDirectory, "/workspace/project");
   assert.equal(withContext.requests[0].payload.sessionId, "thread-one");
   assert.equal(withContext.requests[0].payload.hostId, "local");
-  withContext.editor.__reactFiber$test.memoizedProps.cwd = "D:/different";
+  withContext.editor.__reactFiber$test.memoizedProps.cwd = "/workspace/different";
   assert.equal(withContext.apply("append", "结果"), false, "same-URL project changes cannot receive an old result");
 
   const remote = fixture({ respond: () => ({ status: "ok", text: "结果" }) });
   remote.context.codexPlusBackendSettings.promptEnhance.context = { enabled: true, project: true };
-  remote.editor.__reactFiber$test = { memoizedProps: { conversationId: "remote", hostId: "ssh:test", cwd: "D:/private" },
+  remote.editor.__reactFiber$test = { memoizedProps: { conversationId: "remote", hostId: "ssh:test", cwd: "/workspace/private" },
     memoizedState: { memoizedState: { current: { get() {}, value: { routeKind: "local-thread", conversationId: "remote", hostId: "ssh:test" } } } } };
   await remote.start({});
   assert.equal(remote.requests[0].payload.workingDirectory, "");
   assert.match(remote.state.project.reason, /远程/);
 
   const blank = fixture();
-  blank.editor.__reactFiber$test = { memoizedProps: { composerId: "composer-new", hostId: "local", cwd: "D:/new-project" } };
-  assert.equal(blank.location(blank.editor, "composer-new").workingDirectory, "D:/new-project");
+  blank.editor.__reactFiber$test = { memoizedProps: { composerId: "composer-new", hostId: "local", cwd: "/workspace/new-project" } };
+  assert.equal(blank.location(blank.editor, "composer-new").workingDirectory, "/workspace/new-project");
   assert.equal(blank.location(blank.editor, "unrelated").workingDirectory, undefined);
 
   const home = fixture();
   home.editor.__reactFiber$test = { memoizedState: { memoizedState: { current: { get() {}, value: {
-    routeKind: "home", projectContext: { hostId: "local", projectId: "D:/home-project" },
+    routeKind: "home", projectContext: { hostId: "local", projectId: "/workspace/home-project" },
   } } } } };
-  assert.equal(home.location(home.editor).workingDirectory, "D:/home-project");
+  assert.equal(home.location(home.editor).workingDirectory, "/workspace/home-project");
   home.editor.__reactFiber$test.memoizedState.memoizedState.current.value.projectContext.projectId = "project-opaque-id";
   assert.equal(home.location(home.editor).workingDirectory, undefined, "opaque project IDs cannot become filesystem paths");
 
@@ -397,10 +397,10 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     memoizedState: { memoizedState: { current: { get() {}, value: { routeKind: "local-thread", conversationId: "thread-one", hostId: "local" } } } } };
   const metaCalls = [];
   metadata.context.nativeHostClient = host => ({ sendRequest: async (method, params) => {
-    metaCalls.push({ host, method, params }); return { thread: { id: "thread-one", cwd: "D:/metadata" } };
+    metaCalls.push({ host, method, params }); return { thread: { id: "thread-one", cwd: "/workspace/metadata" } };
   } });
   const project = await metadata.project({ editor: metadata.editor, href: metadata.context.window.location.href });
-  assert.equal(project.workingDirectory, "D:/metadata");
+  assert.equal(project.workingDirectory, "/workspace/metadata");
   assert.equal(metaCalls[0].params.includeTurns, false);
   assert.equal(metaCalls[0].host, "local");
 

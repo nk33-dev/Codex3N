@@ -9455,11 +9455,12 @@ last_updated = "2026-05-25T11:52:46Z"
     #[test]
     fn normalize_settings_before_save_removes_model_catalog_from_common_config() {
         let settings = BackendSettings {
-            relay_common_config_contents: r#"model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
+            relay_common_config_contents:
+                r#"model_catalog_json = "C:\\Users\\me\\.codex\\model-catalogs\\relay-a.json"
 model_catalog_json = 'C:\Users\me\.codex\model-catalogs\relay-b.json'
 model_reasoning_effort = "high"
 "#
-            .to_string(),
+                .to_string(),
             ..BackendSettings::default()
         };
 

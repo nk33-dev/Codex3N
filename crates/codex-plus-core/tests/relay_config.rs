@@ -411,7 +411,7 @@ OPENAI_API_KEY = "sk-should-be-removed"
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://relay-legacy.example.test/v1"
+base_url = "https://relay-legacy.example.test/v1"
 experimental_bearer_token = "sk-test-redacted"
 "#,
     )
@@ -687,7 +687,7 @@ model_provider = "custom1"
 name = "custom1"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://relay-legacy.example.test/v1"
+base_url = "https://relay-legacy.example.test/v1"
 [profiles.default]
 model = "gpt-5-mini"
 "#,
@@ -1814,7 +1814,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
 
     let result = apply_pure_api_config_to_home(
         temp.path(),
-        "http://relay-legacy.example.test/v1",
+        "https://relay-legacy.example.test/v1",
         "sk-test-redacted",
     )
     .unwrap();
@@ -1834,7 +1834,7 @@ fn apply_pure_api_config_switches_auth_json_and_writes_provider_token() {
     assert!(config.contains(r#"name = "custom""#));
     assert!(config.contains(r#"wire_api = "responses""#));
     assert!(!config.contains("requires_openai_auth"));
-    assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
+    assert!(config.contains(r#"base_url = "https://relay-legacy.example.test/v1""#));
     assert!(config.contains(r#"experimental_bearer_token = "sk-test-redacted""#));
 }
 
@@ -4684,7 +4684,7 @@ model_provider = "custom"
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://relay-legacy.example.test/v1"
+base_url = "https://relay-legacy.example.test/v1"
 "#
         .to_string(),
         auth_contents: "{}".to_string(),
@@ -4697,7 +4697,7 @@ base_url = "http://relay-legacy.example.test/v1"
     assert!(config.contains(r#"model = "gpt-5.5""#));
     assert!(config.contains(r#"model_provider = "custom""#));
     assert!(config.contains("[model_providers.custom]"));
-    assert!(config.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
+    assert!(config.contains(r#"base_url = "https://relay-legacy.example.test/v1""#));
     assert!(config.contains("requires_openai_auth = true"));
 }
 
@@ -4719,7 +4719,7 @@ model_provider = "custom"
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://relay-legacy.example.test/v1"
+base_url = "https://relay-legacy.example.test/v1"
 experimental_bearer_token = "sk-provider-token"
 "#
         .to_string(),
@@ -4855,7 +4855,7 @@ model_provider = "custom"
 name = "custom"
 wire_api = "responses"
 requires_openai_auth = true
-base_url = "http://relay-legacy.example.test/v1"
+base_url = "https://relay-legacy.example.test/v1"
 "#;
     let common = r#"model_reasoning_effort = "high"
 
@@ -4875,7 +4875,7 @@ command = "python"
     assert!(stripped.contains(r#"model = "gpt-5.5""#));
     assert!(stripped.contains(r#"model_provider = "custom""#));
     assert!(stripped.contains("[model_providers.custom]"));
-    assert!(stripped.contains(r#"base_url = "http://relay-legacy.example.test/v1""#));
+    assert!(stripped.contains(r#"base_url = "https://relay-legacy.example.test/v1""#));
 }
 
 #[test]

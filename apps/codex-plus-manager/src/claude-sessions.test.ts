@@ -12,7 +12,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const session = (key = "one", id = "same-id"): model.ClaudeSession => ({
-  key, id, title: `title-${key}`, cwd: "D:/project", createdAtMs: 1, updatedAtMs: 2,
+  key, id, title: `title-${key}`, cwd: "/workspace/project", createdAtMs: 1, updatedAtMs: 2,
   transcriptPath: `/workspace/claude/projects/project/${key}.jsonl`, fileSize: 100,
   desktop: false, protectedReason: null, warnings: [],
 });
@@ -149,7 +149,7 @@ test("取消项目删除不会执行删除，重复点击不会创建并发预�
   remove.props.onClick(); remove.props.onClick();
   assert.equal(screen.calls.length, 2);
   assert.equal(screen.calls[1].command, "preview_claude_session_deletion");
-  assert.equal(screen.calls[1].args.projectPath, "D:/project");
+  assert.equal(screen.calls[1].args.projectPath, "/workspace/project");
   screen.calls[1].resolve({ status: "ok", token: "preview", sessions: Array.from({ length: 52 }, (_, i) => session(String(i))), fileCount: 52, backupRoot: "backup" });
   await tick();
   assert.match(screen.confirmations[0], /删除 52 个会话/);
@@ -206,7 +206,7 @@ test("切换备份视图并恢复，先确认再发送恢复请求", async () =>
   screen.render();
   assert.equal(screen.calls[1].command, "list_claude_session_backups");
   screen.calls[1].resolve({ status: "ok", backups: [
-    { token: "backup-token", title: "restore title", sessionId: "one", cwd: "D:/project", createdAtMs: 1, complete: false, restored: false, fileCount: 2 },
+    { token: "backup-token", title: "restore title", sessionId: "one", cwd: "/workspace/project", createdAtMs: 1, complete: false, restored: false, fileCount: 2 },
   ], warnings: [] });
   await tick();
   find(screen.render(), (node) => node.props.label === "恢复会话").props.onClick();
