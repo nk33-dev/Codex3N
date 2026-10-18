@@ -137,3 +137,5 @@ cargo test --workspace
 重叠区域按当前入口合并：设置保留修订号、未知字段及个人密钥加密；供应商类型和默认值迁入 `provider-types.ts` 与 `lib/default-settings.ts`；会话修复挂在现有维护区，保留项目删除；原生 Fast 取代旧服务模式控件；注入扫描保留个人调度，增加官方受管会话连接；更新进度继续经过个人版校验和与降级检查。保持个人更新源及无广告入口。
 
 同步分支的编译、前端检查与回归完成后才合回 `personal`，平台实测范围随最终发布验证记录。
+
+2026-10-18 Windows 同步验证：`cargo test --workspace -j 2 --no-fail-fast -- --test-threads=2` 共 2,739 通过、24 忽略；`cargo local-check`、格式检查通过。Node 22.23.3 下 `npm run test:local` 共 952 通过、1 跳过，TypeScript、Vite 构建、npm 高危审计及 cargo audit 通过。配置专项覆盖备份、一次性导入、SQLite WAL、旧快照冲突、未知字段、程序文件替换及删除配置后默认值。干净克隆已完成 `npm ci` 与 `npm run vite:build`。浏览器预览使用真实弹窗代码与模拟模型数据，不能代替客户端模型调用实测。macOS、Linux 原生启动与安装升级未在本机验证。
