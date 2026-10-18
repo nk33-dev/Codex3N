@@ -94,6 +94,7 @@ export const EN_PLAIN: Record<string, string> = {
   "添加 --disable-direct-composition，效果因显卡而异，需重启官方 App。": "Add --disable-direct-composition. Results vary by GPU; restart the official app to apply.",
   "默认模式": "Default mode",
   "附带项目上下文": "Include project context",
+  "项目内容": "Project content",
   "项目名与分支": "Project and branch",
   "项目说明": "Project instructions",
   "读取根目录 AGENTS.md、CLAUDE.md，没有时读取 README 开头。": "Read root AGENTS.md and CLAUDE.md, falling back to the start of README.",

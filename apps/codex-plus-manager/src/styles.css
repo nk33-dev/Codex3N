@@ -4434,6 +4434,27 @@ details.relay-fold[open] > .relay-fold-body {
   border-top: 1px solid hsl(var(--border));
 }
 
+.prompt-context-fold > .relay-fold-summary {
+  min-height: 28px;
+  padding: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.prompt-context-fold > .relay-fold-summary:hover {
+  background: transparent;
+}
+
+.prompt-context-fold > .relay-fold-summary > strong {
+  font-weight: 500;
+}
+
+.prompt-context-body {
+  display: grid;
+  gap: 12px;
+  padding-top: 8px;
+}
+
 .settings-block .form-row {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: end;

@@ -5390,7 +5390,12 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
             disabled={!form.enhancementsEnabled || !modesEnabled}
             checked={form.promptEnhance.context.enabled}
             onChange={(enabled) => updatePromptEnhance({ context: { ...form.promptEnhance.context, enabled } })} />
-          {form.promptEnhance.context.enabled ? <div className="settings-block">
+          {form.promptEnhance.context.enabled ? <RelayFold
+            title={t("项目内容")}
+            sectionId="prompt-enhance-context"
+            className="prompt-context-fold"
+            bodyClassName="prompt-context-body"
+          >
             <FeatureToggle title={t("项目名与分支")}
               checked={form.promptEnhance.context.project}
               onChange={(project) => updatePromptEnhance({ context: { ...form.promptEnhance.context, project } })} />
@@ -5403,7 +5408,7 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
             <FeatureToggle title={t("主要清单文件")} detail={t("读取 Cargo.toml、package.json 等文件，帮助模型判断技术栈。")}
               checked={form.promptEnhance.context.manifests}
               onChange={(manifests) => updatePromptEnhance({ context: { ...form.promptEnhance.context, manifests } })} />
-          </div> : null}
+          </RelayFold> : null}
           <FeatureToggle
             title={t("使用下一步建议的连接")}
             detail={t("关闭后单独配置模型服务")}
