@@ -8,6 +8,7 @@ export function routeSubtitle(route: ManagerRoute): string {
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     grok: t("管理 Grok CLI 的模型与 API 端点"),
     claude: t("保留官方 Claude.app 原样，通过受管副本为 Claude 应用增强功能"),
+    claudeSessions: t("查看、删除和恢复 Claude Code 本地会话"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),
     sessions: t("查看、删除和修复 Codex 本地会话"),
     context: t("独立管理 MCP 服务器与插件"),

@@ -104,3 +104,14 @@ pub fn windows_apply_codexplusplus_icon_to_process_window(
 pub fn windows_enumerate_processes() -> Vec<windows_integration::WindowsProcessInfo> {
     windows_integration::enumerate_processes()
 }
+
+#[cfg(windows)]
+pub fn windows_try_enumerate_processes()
+-> anyhow::Result<Vec<windows_integration::WindowsProcessInfo>> {
+    windows_integration::try_enumerate_processes()
+}
+
+#[cfg(windows)]
+pub fn windows_process_command_line(process_id: u32) -> Option<String> {
+    windows_integration::process_command_line(process_id)
+}

@@ -99,6 +99,7 @@ import { AgentCachePanel } from "./agent-cache";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { McpPage, PageHeader } from "./ManagementPages";
 import { SkillsPage, SessionPage } from "./ManagementExtra";
+import { ClaudeSessionsScreen } from "./screens/ClaudeSessionsScreen";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
 import { autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
 import { normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
@@ -846,7 +847,7 @@ const TOOL_ICONS: Record<string, string> = {
   claude: new URL("./assets/agents/claude.svg", import.meta.url).href,
 };
 
-type Route = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "maintenance" | "about" | "settings";
+type Route = ManagerLoadingRoute;
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
@@ -867,6 +868,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "multiLaunch", label: t("Codex多开"), icon: Layers3, badge: "NEW", tool: "codex" },
   { id: "grok", label: t("Grok 配置"), icon: Blocks, tool: "grok" },
   { id: "claude", label: t("Claude 增强"), icon: Languages, tool: "claude" },
+  { id: "claudeSessions", label: t("会话管理"), icon: MessageCircle, tool: "claude" },
   { id: "sessions", label: t("会话管理"), icon: MessageCircle, tool: "codex" },
   { id: "context", label: "MCP", icon: Network, tool: "codex" },
   { id: "skills", label: "Skills", icon: BookOpen, tool: "codex" },
@@ -890,7 +892,7 @@ const navigationSections: Array<{ label: string; routes: Route[]; placement?: "b
   },
   {
     label: t("全局管理"),
-    routes: ["context", "skills", "sessions"],
+    routes: ["context", "skills", "sessions", "claudeSessions"],
   },
   {
     label: t("扩展"),
@@ -3343,7 +3345,7 @@ export function App() {
     [route, launchForm, settingsForm, settings, overview, autoTakeover, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, relaySwitching, providerSyncProgress, sessionIndexRepairActive, sessionIndexRepairReport, sessionIndexRepairReportError],
   );
   const isGlobalPage = globalNavigationRoutes.includes(route);
-  const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "context" || route === "skills";
+  const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "claudeSessions" || route === "context" || route === "skills";
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
 
   return (
@@ -3458,6 +3460,7 @@ export function App() {
             <GrokScreen settings={settings} form={settingsForm} actions={actions} />
           ) : null}
           {route === "claude" ? <ClaudeLocalizationScreen /> : null}
+          {route === "claudeSessions" ? <ClaudeSessionsScreen /> : null}
           {route === "sessions" ? (
             <SessionPage
               maintenance={<SessionMaintenance
@@ -5358,35 +5361,37 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
   return (
     <>
     <Panel className="enhance-service-panel">
-      <CardHead title={t("提示词增强")} detail={t("把输入框里的草稿改写得更清楚，确认后再写回输入框。")} />
+      <CardHead title={t("提示词增强")} />
       <CardContent className="settings-content">
         <div className="settings-block enhance-service-block" id={ENHANCEMENT_SECTION_IDS.promptEnhance}>
           <FeatureToggle
             title={t("启用提示词增强")}
-            detail={t("输入框底部显示增强按钮。结果先在预览框里显示，可以修改，确认替换或插入后才写回输入框。")}
+            detail={t("在输入框旁显示入口")}
             disabled={!form.enhancementsEnabled}
             checked={form.promptEnhance.enabled}
             onChange={(enabled) => updatePromptEnhance({ enabled })}
           />
-          <FeatureToggle title={t("普通改写")} detail={t("直接改写草稿，先预览再写回。")}
+          <FeatureToggle title={t("增强提示词")} detail={t("补全并整理草稿")}
             disabled={!form.enhancementsEnabled} checked={form.promptEnhance.rewriteEnabled}
             onChange={(rewriteEnabled) => updatePromptEnhance({ rewriteEnabled })} />
-          <FeatureToggle title={t("追问")} detail={t("先确认需要取舍的事项，再生成提示词。")}
+          <FeatureToggle title={t("需求对齐")} detail={t("通过问答确定方向")}
             disabled={!form.enhancementsEnabled} checked={form.promptEnhance.grillEnabled}
             onChange={(grillEnabled) => updatePromptEnhance({ grillEnabled })} />
+          <FeatureToggle title={t("常用提示词")} detail={t("在输入框旁显示收藏入口")}
+            disabled={!form.enhancementsEnabled} checked={form.promptEnhance.favoritesEnabled}
+            onChange={(favoritesEnabled) => updatePromptEnhance({ favoritesEnabled })} />
           <Field label={t("默认模式")}>
             <AppSelect value={effectiveDefault} disabled={!modesEnabled}
               onChange={(value) => updatePromptEnhance({ defaultMode: value === "grill" ? "grill" : "rewrite" })}
-              options={[{ value: "rewrite", label: t("普通改写"), disabled: !form.promptEnhance.rewriteEnabled }, { value: "grill", label: t("追问"), disabled: !form.promptEnhance.grillEnabled }]} />
+              options={[{ value: "rewrite", label: t("增强提示词"), disabled: !form.promptEnhance.rewriteEnabled }, { value: "grill", label: t("需求对齐"), disabled: !form.promptEnhance.grillEnabled }]} />
           </Field>
           <FeatureToggle title={t("附带项目上下文")}
-            detail={t("所选项目内容会发送给当前配置的模型服务。仅读取当前输入框所属的本机项目。")}
+            detail={t("将所选本机项目资料发送给模型")}
             disabled={!form.enhancementsEnabled || !modesEnabled}
             checked={form.promptEnhance.context.enabled}
             onChange={(enabled) => updatePromptEnhance({ context: { ...form.promptEnhance.context, enabled } })} />
-          {!modesEnabled ? <p className="field-hint">{t("启用普通改写或追问后，项目上下文会随所选模式使用。")}</p> : null}
           {form.promptEnhance.context.enabled ? <div className="settings-block">
-            <FeatureToggle title={t("项目名与分支")} detail={t("帮助模型识别当前项目。")}
+            <FeatureToggle title={t("项目名与分支")}
               checked={form.promptEnhance.context.project}
               onChange={(project) => updatePromptEnhance({ context: { ...form.promptEnhance.context, project } })} />
             <FeatureToggle title={t("项目说明")} detail={t("读取根目录 AGENTS.md、CLAUDE.md，没有时读取 README 开头。")}
@@ -5401,7 +5406,7 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
           </div> : null}
           <FeatureToggle
             title={t("使用下一步建议的连接")}
-            detail={t("沿用下一步建议页填写的 Base URL、API Key、协议和模型。关闭后可以单独指定服务。")}
+            detail={t("关闭后单独配置模型服务")}
             disabled={!form.enhancementsEnabled}
             checked={form.promptEnhance.useStepwiseConnection}
             onChange={(useStepwiseConnection) => updatePromptEnhance({ useStepwiseConnection })}
@@ -5458,11 +5463,11 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
           </>}
           <details className="stepwise-advanced enhance-service-advanced">
             <summary>{t("高级参数")}</summary>
-            <Field label={t("改写规则")}>
+            <Field label={t("优化规则")}>
               <Textarea
                 value={form.promptEnhance.systemPrompt}
                 onChange={(event) => updatePromptEnhance({ systemPrompt: event.currentTarget.value })}
-                placeholder={t("留空使用内置规则：推断真实意图，补充范围、关键功能、技术约束、交付物和验收方式；需要取舍时写明合理假设，保留原文的代码、路径和 @引用。")}
+                placeholder={t("留空使用内置规则")}
                 rows={5}
               />
             </Field>
@@ -5470,12 +5475,11 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
               <Button type="button" variant="outline" onClick={() => void fillDefaultRule()}>{t("填入内置规则")}</Button>
               <Button type="button" variant="outline" disabled={!form.promptEnhance.systemPrompt} onClick={() => updatePromptEnhance({ systemPrompt: "" })}>{t("恢复内置规则")}</Button>
             </div>
-            <p className="field-hint">{t("改写规则可先填入内置规则再改，清空即恢复内置规则。")}</p>
             {ruleError ? <p className="field-hint" role="alert">{ruleError}</p> : null}
-            <Field label={t("追问规则")}>
+            <Field label={t("提问规则")}>
               <Textarea value={form.promptEnhance.grillSystemPrompt}
                 onChange={(event) => updatePromptEnhance({ grillSystemPrompt: event.currentTarget.value })}
-                placeholder={t("留空使用内置追问规则：只问需要用户决定的事项，信息足够后生成提示词。")}
+                placeholder={t("留空使用内置规则")}
                 rows={5} />
             </Field>
             <div className="form-row">
@@ -5483,7 +5487,6 @@ function PromptEnhanceSettingsPanel({ form, onFormChange }: {
               <Button type="button" variant="outline" disabled={!form.promptEnhance.grillSystemPrompt}
                 onClick={() => updatePromptEnhance({ grillSystemPrompt: "" })}>{t("恢复内置规则")}</Button>
             </div>
-            <p className="field-hint">{t("每轮最多 3 题，最多 3 轮；可随时直接生成。追问期间改动草稿需重新开始。")}</p>
             <Field label={t("超时（秒）")}>
               <Input
                 type="number"
@@ -5774,7 +5777,6 @@ function EnhanceScreen({
                 <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
                 <FeatureToggle title={t("低功耗模式")} detail={t("减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。")} checked={form.codexAppLowPower} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppLowPower", value)} />
                 <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
-                <FeatureToggle title={t("切换对话保留位置")} detail={t("切换 thread 时恢复上一次浏览位置。")} checked={form.codexAppThreadScrollRestore} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadScrollRestore", value)} />
                 <FeatureToggle title={t("用量状态栏")} detail={t("在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。")} checked={form.codexAppUsageStatusLine} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUsageStatusLine", value)} />
               </FeatureGroup>
               <FeatureGroup title={t("挂件与桌宠")} detail={t("在 Codex 中查看用量，设置自己的角色和互动方式。")}>
@@ -10988,7 +10990,7 @@ function FeatureToggle({
   onChange,
 }: {
   title: string;
-  detail: string;
+  detail?: string;
   checked: boolean;
   disabled?: boolean;
   onChange: (value: boolean) => void;
@@ -11003,7 +11005,7 @@ function FeatureToggle({
       />
       <span>
         <strong>{title}</strong>
-        <small>{detail}</small>
+        {detail && <small>{detail}</small>}
       </span>
       <ToggleVisual />
     </label>
@@ -11562,11 +11564,11 @@ function ClaudeLocalizationScreen() {
   );
 }
 
-function CardHead({ title, detail }: { title: string; detail: string }) {
+function CardHead({ title, detail }: { title: string; detail?: string }) {
   return (
     <CardHeader className="panel-head">
       <CardTitle>{title}</CardTitle>
-      <CardDescription>{detail}</CardDescription>
+      {detail && <CardDescription>{detail}</CardDescription>}
     </CardHeader>
   );
 }

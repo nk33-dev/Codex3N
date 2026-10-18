@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod claude_sessions;
 pub mod markdown;
 pub mod provider_sync;
 pub mod session_health;

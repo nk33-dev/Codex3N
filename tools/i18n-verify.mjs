@@ -34,6 +34,7 @@ const SRC_FILES = [
   "src/components/providers/RelayProfileList.tsx",
   "src/components/ui/manager-primitives.tsx",
   "src/screens/GrokScreen.tsx",
+  "src/screens/ClaudeSessionsScreen.tsx",
   "src/screens/WeixinConnectScreen.tsx",
   "src/lib/default-settings.ts",
   "src/provider-utils.ts",

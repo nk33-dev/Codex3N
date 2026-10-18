@@ -52,3 +52,17 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 ## 删除请求的主机归属
 
 `SessionRef.host_id` 接受 snake_case 和 camelCase；缺失、空值或双字段不一致视为未知来源。桥接 `/delete` 与启动器数据服务都要求 `require_local_delete()`，只有明确 `local` 才进入本机 SQLite 删除。管理器从本机数据库列表发起的删除明确传 `local`；远程请求通过捕获的原生主机客户端处理，不能因为 thread ID 相同回退到本机。会话保护与备份删除响应仍沿用 `deletion` 包装。验证在 models、routes 与 `cdp_bridge.rs` 的主机归属用例。
+
+## Claude Code 会话管理
+
+- Claude 工具的“全局管理 → 会话管理”使用独立 `claudeSessions` 路由和 `screens/ClaudeSessionsScreen.tsx`，不触发 Codex 会话维护。列表按项目或时间分组，默认每页 50 条；标题、目录、ID 搜索由后端在分页前执行。详情按需读取用户与 Claude 对话，工具调用和思考默认折叠，附件只显示类型和名称。
+- 数据入口为 `crates/codex-plus-data/src/claude_sessions/`。扫描默认 `~/.claude` 和 `CLAUDE_CONFIG_DIR`，规范化并去重配置目录；只列出 `projects/<project>/<uuid>.jsonl` 主会话，子代理目录随主会话处理。摘要缓存文件长度和修改时间，读取文件头尾；正文按 UUID、parentUuid 重建最新分支，合并同一回复的流式块。单行超过 16 MiB 会跳过并提示；正文扫描超过 512 MiB 或 10 万节点时停止，提示从 Claude Code 导出。
+- 每个会话使用文件路径摘要作为 `key`，不能用会话 ID 合并不同位置的文件。项目删除在全量本机会话中匹配规范化目录，预览返回固定目标集合；预览最多保留 10 分钟，执行只接受后端 token。异常会话、重复 ID 或桌面端关联歧义受保护。
+- 桌面端附加信息从用户数据目录下 `Claude/claude-code-sessions`、`Claude-3p/claude-code-sessions` 读取，Windows 检查 Local 与 Roaming，macOS 使用 Application Support，Linux 使用 XDG 配置目录。只处理 `cliSessionId` 与 cwd 可明确匹配的 `local_*.json`；目录缺失不影响正文列表。无法完整检查桌面信息时拒绝删除，防止留下无法判断归属的记录。
+- Tauri 接口独立注册于 `commands/claude_sessions.rs`：`list_claude_sessions`、`read_claude_session`、`preview_claude_session_deletion`、`delete_claude_sessions`、`list_claude_session_backups`、`restore_claude_session`。列表保留 `sessions/offset/limit/totalCount/hasMore/warnings`；详情使用 `messages` 分页；删除返回 `outcomes` 内的逐项 `status/message/backupToken` 与 `stopped`，部分完成时外层状态为 `partial`。
+- 删除和恢复要求 Claude 桌面端、原生 CLI、Node/Bun/Deno 启动的 CLI 全部退出；无法读取相关脚本进程命令行时也拒绝操作。逐项复核进程和文件 SHA-256，重新启动或文件变化即停止。路径校验拒绝上级目录、符号链接和 Windows 重解析点。
+- 删除先备份主记录、对应会话目录及明确关联的 `history.jsonl` 条目、`sessions-index.json` 条目和桌面元数据，再修改源文件。项目源码、工作树和共享 memory 保留。共享索引保留其他记录与未知字段；索引损坏时不继续删除。
+- 备份位于管理器状态目录的 `backups/claude-sessions/<token>/`，包含清单与原始文件，保留最近 50 份及 7 天内全部快照。删除部分完成仍返回备份 token；恢复先检查全部冲突，再还原文件并合并该会话的索引条目，已有不同内容时停止，重复恢复不追加重复记录。
+- 首版管理本机文件，不接入云端、SSH、WSL，也不创建桌面端历史索引。默认开启后台写入的应用必须完全退出后再操作。
+
+验证入口：数据层 `claude_sessions/tests.rs`、`claude_sessions/deletion/tests.rs`；管理器 `claude-sessions.test.ts`。`cargo test -p codex-plus-data inspect_local_claude_sessions -- --ignored --nocapture` 可显式执行本机只读检查，不输出标题或消息正文。Windows 本机读盘、消息读取和进程保护已验证；桌面端元数据使用测试样本，macOS、Linux 的真实应用行为尚未验证。

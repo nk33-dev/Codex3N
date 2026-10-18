@@ -1,7 +1,9 @@
+mod claude_sessions;
 mod dream_skin;
 mod external_url;
 mod provider_import;
 mod shared;
+pub use claude_sessions::*;
 pub use dream_skin::*;
 pub use external_url::*;
 pub use provider_import::*;
