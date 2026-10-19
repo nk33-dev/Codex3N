@@ -72,4 +72,23 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn depth_calibration_is_only_sent_with_its_selected_rule() {
+        let entries = super::PREFERENCES["details"].as_array().unwrap();
+        for selected in entries {
+            let detail = selected["value"].as_str().unwrap();
+            let guidance = super::guidance(detail, "p4");
+            for entry in entries {
+                assert_eq!(
+                    guidance.contains(entry["rule"].as_str().unwrap()),
+                    entry["value"] == detail
+                );
+            }
+            assert_eq!(
+                guidance.contains("给小团队做任务看板，本地先跑"),
+                detail == "detailed"
+            );
+        }
+    }
 }
