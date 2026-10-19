@@ -123,12 +123,12 @@
     {
       "name": "93-prompt-enhance.js",
       "description": "提示词优化、需求问答与输入框上方的浮动卡片",
-      "lines": 1430
+      "lines": 1494
     },
     {
       "name": "93-prompt-library.js",
       "description": "常用提示词列表、拖拽排序、编辑与撤销删除",
-      "lines": 538
+      "lines": 537
     },
     {
       "name": "94-typing-effects.js",

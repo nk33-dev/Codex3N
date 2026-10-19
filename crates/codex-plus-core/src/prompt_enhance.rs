@@ -40,6 +40,7 @@ pub fn default_system_prompt() -> &'static str {
 pub struct PromptEnhanceRequest {
     pub prompt: String,
     pub mode: String,
+    pub detail: Option<String>,
     pub scenario: String,
     pub working_directory: String,
     pub host_id: String,
@@ -239,8 +240,12 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
         }
     }
     .to_string();
+    let detail = request.detail.as_deref().unwrap_or(&config.detail);
+    if !["concise", "standard", "detailed"].contains(&detail) {
+        return failed("未知的增强深度");
+    }
     system_prompt.push('\n');
-    system_prompt.push_str(&preferences::guidance(&config.detail, &config.audience));
+    system_prompt.push_str(&preferences::guidance(detail, &config.audience));
     if !scenario_prompt.is_empty() {
         system_prompt.push('\n');
         system_prompt.push_str(scenario_prompt);
@@ -305,7 +310,7 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
             model,
             &system_prompt,
             &conversation,
-            preferences::output_budget(&config.detail),
+            preferences::output_budget(detail),
         ) {
             Ok(parts) => parts,
             Err(error) => return failed(format!("构建请求失败：{error}")),
@@ -375,11 +380,7 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
             return failed("模型没有返回内容，请重试");
         };
         let mut result = if is_grill {
-            grill::parse(
-                &enhanced,
-                force_final,
-                preferences::question_limit(&config.detail),
-            )
+            grill::parse(&enhanced, force_final, preferences::question_limit(detail))
         } else {
             json!({"status":"ok","kind":"final","text":enhanced})
         };
@@ -644,6 +645,42 @@ mod tests {
         let enabled = settings("http://127.0.0.1:9".to_string(), "chat_completions");
         let result = generate(request("   "), &enabled).await;
         assert_eq!(result["message"], "输入框为空，没有可增强的内容");
+    }
+
+    #[tokio::test]
+    async fn request_depth_overrides_saved_default_without_mutating_settings() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"message":{"content":"按角色管理权限（RBAC）。"}}]
+            })))
+            .mount(&server)
+            .await;
+        let config = settings(server.uri(), "chat_completions");
+        let mut req = request("按角色设置权限");
+        req.detail = Some("concise".into());
+        let result = generate(req, &config).await;
+        assert_eq!(result["status"], "ok");
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["max_tokens"], 2048);
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("最多提出 5 题")
+        );
+        assert_eq!(config.prompt_enhance.detail, "standard");
+    }
+
+    #[tokio::test]
+    async fn unknown_request_depth_fails_without_calling_upstream() {
+        let server = MockServer::start().await;
+        let config = settings(server.uri(), "chat_completions");
+        let mut req = request("草稿");
+        req.detail = Some("unknown".into());
+        assert_eq!(generate(req, &config).await["message"], "未知的增强深度");
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -997,7 +1034,7 @@ mod tests {
 
     #[test]
     fn question_limits_follow_detail_and_preserve_accumulated_history() {
-        for (detail, limit) in [("concise", 3), ("standard", 7), ("detailed", 15)] {
+        for (detail, limit) in [("concise", 5), ("standard", 10), ("detailed", 15)] {
             let mut questions = Vec::new();
             for index in 0..limit {
                 let mut question = sample_round("查询").questions.remove(0);

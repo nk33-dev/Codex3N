@@ -237,6 +237,7 @@
     if (!panel) {
       panel = document.createElement("div");
       panel.id = "codex-plus-prompt-library";
+      panel.tabIndex = -1;
       panel.dataset.codexPlusExt = "builtin-prompt-library";
       panel.setAttribute("role", "dialog");
       panel.setAttribute("aria-label", "常用提示词");
@@ -257,7 +258,6 @@
     panel.replaceChildren();
     const header = codexPlusPromptLibraryNode("header", "codex-plus-prompt-head");
     header.append(codexPlusPromptLibraryNode("h2", "", "常用提示词"));
-    if (!state.edit) header.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-meta", "点一条追加到输入框"));
     const close = codexPlusPromptIconButton("trash", "关闭", "library-close");
     close.replaceChildren(codexPlusPromptLibraryNode("span", "codex-plus-prompt-close", "×"));
     close.className = "codex-plus-prompt-icon codex-plus-prompt-close-button";
@@ -310,11 +310,6 @@
       const empty = codexPlusPromptLibraryNode("div", "codex-plus-prompt-empty");
       const filtered = state.query || state.tag || !["all", "available"].includes(state.scope);
       empty.append(codexPlusPromptLibraryNode("p", "codex-plus-prompt-caption", filtered ? "没有找到提示词" : "还没有常用提示词"));
-      if (filtered) {
-        const clear = codexPlusPromptLibraryButton("清除筛选", "codex-plus-prompt-action");
-        clear.addEventListener("click", () => { state.query = ""; state.tag = ""; state.scope = "all"; void refreshCodexPlusPromptLibrary(); });
-        empty.append(clear);
-      }
       body.append(empty);
     }
     if (state.items.length) {
@@ -407,6 +402,9 @@
     footer.append(save, codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"));
     if (state.items.length > 1) footer.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-caption", "拖动 ⠿ 调整顺序"));
     panel.append(footer);
+    const focused = document.activeElement;
+    if (!searchFocused && (!focused || focused === document.body || focused === state.target?.editor || !focused.isConnected))
+      panel.focus({ preventScroll: true });
     requestAnimationFrame(() => {
       if (!searchInput.isConnected) return;
       if (searchFocused) {
@@ -491,7 +489,7 @@
         .codex-plus-prompt-row-actions{display:flex;gap:1px;flex:none;opacity:0}
         .codex-plus-prompt-row:hover .codex-plus-prompt-row-actions,.codex-plus-prompt-row:focus-within .codex-plus-prompt-row-actions{opacity:1}
         .codex-plus-prompt-row-actions .codex-plus-prompt-icon{width:26px;height:26px;border:0}
-        .codex-plus-prompt-empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:12px 2px}
+        .codex-plus-prompt-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100px;gap:8px;padding:28px 12px;text-align:center}
         .codex-plus-prompt-empty p{margin:0}
         .codex-plus-prompt-field{display:flex;flex-direction:column;gap:4px;color:var(--color-token-text-tertiary,inherit);font-size:12px}
         .codex-plus-prompt-field .codex-plus-prompt-input{color:var(--color-token-text-primary,inherit);font-size:13px}
@@ -525,7 +523,8 @@
           closeCodexPlusPromptLibrary();
           return;
         }
-        void openCodexPlusPromptLibrary(footer);
+        const currentFooter = button.closest(".composer-footer, [data-composer-footer-responsive]");
+        if (currentFooter) void openCodexPlusPromptLibrary(currentFooter);
       });
       host.append(button);
     }

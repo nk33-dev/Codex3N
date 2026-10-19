@@ -28,7 +28,7 @@ pub(super) fn guidance(detail: &str, audience: &str) -> String {
 }
 
 pub(super) fn question_limit(detail: &str) -> usize {
-    PREFERENCES["questionLimits"][detail].as_u64().unwrap_or(7) as usize
+    PREFERENCES["questionLimits"][detail].as_u64().unwrap_or(10) as usize
 }
 
 pub(super) fn output_budget(detail: &str) -> u32 {

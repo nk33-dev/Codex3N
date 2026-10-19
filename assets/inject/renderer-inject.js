@@ -17096,6 +17096,8 @@
     intro: "", busyText: "", started: false, other: null, extra: null,
   };
   const codexPlusPromptWorkflows = new Map();
+  const codexPlusPromptToolGroups = new WeakMap();
+  let codexPlusPromptDetail = null;
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-prompt-enhance"]');
 
   function codexPlusPromptEnhanceMasterEnabled() {
@@ -17362,7 +17364,10 @@
       for (const question of round.questions) questions.set(question.id, codexPlusPromptOrderedQuestion(question));
       for (const answer of round.answers) answers[answer.questionId] = answer.answer;
     }
-    for (const question of incoming) questions.set(question.id, codexPlusPromptOrderedQuestion(question));
+    for (const question of incoming) {
+      questions.set(question.id, codexPlusPromptOrderedQuestion(question));
+      delete answers[question.id];
+    }
     const all = [...questions.values()];
     if (all.length > 128) throw new Error("问题记录过长，请直接生成");
     const first = incoming[0];
@@ -17407,6 +17412,7 @@
       payload = {
         prompt,
         mode: state.mode,
+        detail: state.detail,
         scenario: "general",
         history: rounds,
         forceFinal: !!options.forceFinal,
@@ -17504,7 +17510,8 @@
     if (revision !== state.revision || !target) return;
     if (!target.original.trim()) { showToast("先在输入框里写点内容", null); return; }
     const config = codexPlusBackendSettings.promptEnhance || {};
-    const cacheKey = JSON.stringify([target.href, target.location?.sessionId || "", target.location?.hostId || "", target.location?.workingDirectory || "", mode, config.detail, config.audience]);
+    const detail = options.detail || codexPlusPromptDetail || config.detail || "standard";
+    const cacheKey = JSON.stringify([target.href, target.location?.sessionId || "", target.location?.hostId || "", target.location?.workingDirectory || "", mode, detail, config.audience]);
     const saved = options.fresh ? null : codexPlusPromptWorkflows.get(cacheKey);
     if (saved) {
       Object.assign(state, saved, {
@@ -17517,7 +17524,7 @@
     }
     codexPlusPromptWorkflows.delete(cacheKey);
     Object.assign(state, {
-      target, mode, revision, cacheKey, phase: target.original.trim() ? "loading" : "intro",
+      target, mode, detail, revision, cacheKey, phase: target.original.trim() ? "loading" : "intro",
       history: [], questions: [], answers: Object.create(null), activeQuestion: 0, other: null,
       context: null, project: null, lastRequest: null, generated: "", metadata: null,
       messages: [], supplement: "", text: "", intro: "", locked: false, error: "",
@@ -17764,11 +17771,9 @@
         else if (action === "change-answers") changeCodexPlusPromptEnhanceAnswers();
         else if (action === "prev") {
           if (state.activeQuestion > 0) { state.activeQuestion -= 1; state.other = null; renderCodexPlusPromptEnhance(); }
-        } else if (action === "next") {
-          if (state.activeQuestion < state.questions.length - 1) advanceCodexPlusPromptEnhance();
-        } else if (action === "defer") pickCodexPlusPromptEnhanceAnswer(codexPlusPromptDeferred);
+        } else if (action === "next") advanceCodexPlusPromptEnhance();
+        else if (action === "defer") pickCodexPlusPromptEnhanceAnswer(codexPlusPromptDeferred);
         else if (action === "delegate") pickCodexPlusPromptEnhanceAnswer(codexPlusPromptDelegated);
-        else if (action === "confirm-choices") pickCodexPlusPromptEnhanceAnswer(codexPlusPromptEnhanceAnswer(state.questions[state.activeQuestion]), true);
         else if (action === "add-option" || action === "add-question") {
           state.extra = action;
           ++state.revision;
@@ -17790,38 +17795,45 @@
     return panel;
   }
 
-  function pickCodexPlusPromptEnhanceAnswer(answer, complete = false) {
+  function pickCodexPlusPromptEnhanceAnswer(answer) {
     const state = codexPlusPromptEnhance;
     const question = state.questions[state.activeQuestion];
     if (!question || state.locked || state.phase !== "questions") return;
     const decision = [codexPlusPromptDeferred, codexPlusPromptDelegated].includes(answer);
     let value = answer;
-    if (question.multiSelect && !decision && !complete) {
+    if (question.multiSelect && !decision) {
       const values = codexPlusPromptAnswerValues(codexPlusPromptEnhanceAnswer(question));
-      value = JSON.stringify(values.includes(answer) ? values.filter(item => item !== answer) : [...values, answer]);
-    }
-    const baseline = state.history.flatMap(round => round.answers).find(item => item.questionId === question.id)?.answer;
-    const changed = baseline && baseline !== value;
-    if (changed) {
-      state.questions = state.questions.slice(0, state.activeQuestion + 1);
-      state.answers = Object.fromEntries(state.questions.flatMap(q => state.answers[q.id] ? [[q.id, state.answers[q.id]]] : []));
-      state.history = [];
-      state.messages = [];
+      const next = values.includes(answer) ? values.filter(item => item !== answer) : [...values, answer];
+      value = next.length ? JSON.stringify(next) : "";
     }
     state.answers[question.id] = value;
     state.other = null;
     ++state.revision;
-    if (question.multiSelect && !decision && !complete) { renderCodexPlusPromptEnhance(); return; }
+    if (question.multiSelect && !decision) { renderCodexPlusPromptEnhance(); return; }
     if (state.activeQuestion < state.questions.length - 1) {
       state.activeQuestion += 1;
       renderCodexPlusPromptEnhance();
-    } else void requestCodexPlusPromptEnhance();
+    } else {
+      const missing = state.questions.findIndex(q => !codexPlusPromptEnhanceAnswer(q));
+      if (missing >= 0) { state.activeQuestion = missing; renderCodexPlusPromptEnhance(); }
+      else void requestCodexPlusPromptEnhance();
+    }
   }
 
-  // 分页只切换题目；跳过通过独立按钮提交。
+  function codexPlusPromptCanSubmitAnswers() {
+    const state = codexPlusPromptEnhance;
+    return state.questions.length > 0
+      && state.questions.every(q => codexPlusPromptEnhanceAnswer(q));
+  }
+
+  // 多选即时记录，完整问卷在末题通过箭头提交检查。
   function advanceCodexPlusPromptEnhance() {
     const state = codexPlusPromptEnhance;
-    if (state.locked || state.phase !== "questions" || state.activeQuestion >= state.questions.length - 1) return;
+    if (state.locked || state.phase !== "questions") return;
+    if (state.activeQuestion >= state.questions.length - 1) {
+      if (codexPlusPromptCanSubmitAnswers()) void requestCodexPlusPromptEnhance();
+      return;
+    }
     state.activeQuestion += 1;
     state.other = null;
     renderCodexPlusPromptEnhance();
@@ -17927,7 +17939,6 @@
       button.setAttribute("aria-pressed", String(current === value));
       decisions.append(button);
     }
-    if (question.multiSelect) decisions.append(codexPlusPromptButton("选好了", "confirm-choices", { primary: true, disabled: state.locked || !codexPlusPromptAnswerValues(current).length }));
     wrapper.append(decisions);
     if (state.extra) {
       const row = codexPlusPromptNode("form", "codex-plus-prompt-follow-row");
@@ -18109,7 +18120,8 @@
         dots.append(button);
       });
       pager.append(dots);
-      pager.append(codexPlusPromptButton("›", "next", { title: "下一题", disabled: state.locked || state.activeQuestion >= state.questions.length - 1 }));
+      const submitAnswers = state.activeQuestion === state.questions.length - 1 && codexPlusPromptCanSubmitAnswers();
+      pager.append(codexPlusPromptButton("›", "next", { title: submitAnswers ? "继续检查回答" : "下一题", disabled: state.locked || (state.activeQuestion >= state.questions.length - 1 && !submitAnswers) }));
       footer.append(pager, codexPlusPromptNode("span", "codex-plus-prompt-grow"));
       const more = codexPlusPromptNode("details", "codex-plus-prompt-more");
       more.append(codexPlusPromptNode("summary", "", "更多"));
@@ -18208,10 +18220,27 @@
       menu.dataset.promptEnhanceMenu = "true";
       menu.dataset.codexPlusExt = "builtin-prompt-enhance";
       menu.className = "codex-plus-prompt-mode-menu";
+      menu.tabIndex = -1;
+      menu.dataset.keyboard = String(event.detail === 0);
       menu.setAttribute("role", "menu");
       menu.setAttribute("aria-label", "选择增强模式");
       const defaultMode = codexPlusBackendSettings.promptEnhance?.defaultMode || "rewrite";
       modes.sort((a, b) => Number(b === defaultMode) - Number(a === defaultMode));
+      const depth = codexPlusPromptNode("div", "codex-plus-prompt-depth-row");
+      depth.append(codexPlusPromptNode("span", "", "增强深度"));
+      const levels = codexPlusPromptNode("div", "codex-plus-prompt-depth");
+      levels.setAttribute("role", "group"); levels.setAttribute("aria-label", "增强深度");
+      const selectedDetail = codexPlusPromptDetail || codexPlusBackendSettings.promptEnhance?.detail || "standard";
+      for (const [value, label] of [["concise", "微调"], ["standard", "标准"], ["detailed", "详细"]]) {
+        const level = codexPlusPromptNode("button", "", label);
+        level.type = "button"; level.setAttribute("aria-pressed", String(selectedDetail === value));
+        level.addEventListener("click", () => {
+          codexPlusPromptDetail = value;
+          for (const item of levels.children) item.setAttribute("aria-pressed", String(item === level));
+        });
+        levels.append(level);
+      }
+      depth.append(levels); menu.append(depth);
       const empty = !codexPlusPromptEnhanceDraftOf(footer);
       for (const mode of modes) {
         const blocked = empty;
@@ -18220,6 +18249,7 @@
         });
         delete choice.dataset.promptEnhanceAction;
         choice.setAttribute("role", "menuitem");
+        choice.prepend(codexPlusPromptIcon(mode === "grill" ? "pencil" : "sparkles"));
         if (blocked) choice.setAttribute("aria-disabled", "true");
         choice.addEventListener("click", () => {
           if (blocked) return;
@@ -18228,22 +18258,34 @@
         });
         menu.append(choice);
       }
-      const rect = button.getBoundingClientRect();
-      const zoom = typeof codexPlusWindowZoom === "function" ? codexPlusWindowZoom() || 1 : 1;
-      menu.style.zoom = String(zoom);
-      menu.style.left = `${Math.max(8, Math.min(rect.left / zoom, window.innerWidth / zoom - 152))}px`;
-      menu.style.bottom = `${Math.max(8, (window.innerHeight - rect.top) / zoom + 6)}px`;
+      menu.promptPosition = () => {
+        if (!button.isConnected) { menu.remove(); return; }
+        const rect = button.getBoundingClientRect();
+        const zoom = typeof codexPlusWindowZoom === "function" ? codexPlusWindowZoom() || 1 : 1;
+        const width = window.innerWidth / zoom, height = window.innerHeight / zoom;
+        menu.style.zoom = String(zoom);
+        menu.style.maxWidth = `${Math.max(0, width - 16)}px`;
+        menu.style.maxHeight = `${Math.max(0, height - 16)}px`;
+        const bounds = menu.getBoundingClientRect();
+        const above = rect.top / zoom - bounds.height / zoom - 6;
+        menu.style.left = `${Math.max(8, Math.min(rect.left / zoom, width - bounds.width / zoom - 8))}px`;
+        menu.style.top = `${Math.max(8, Math.min(above >= 8 ? above : rect.bottom / zoom + 6, height - bounds.height / zoom - 8))}px`;
+      };
       menu.addEventListener("keydown", (keyEvent) => {
+        menu.dataset.keyboard = "true";
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(keyEvent.key)) return;
+        if (keyEvent.target.closest?.(".codex-plus-prompt-depth")) return;
         keyEvent.preventDefault(); keyEvent.stopPropagation();
-        const items = [...menu.querySelectorAll("button:not(:disabled)")];
+        const items = [...menu.querySelectorAll('[role="menuitem"]:not(:disabled)')];
         const index = items.indexOf(document.activeElement);
         const next = keyEvent.key === "Home" ? 0 : keyEvent.key === "End" ? items.length - 1
           : (index + (keyEvent.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
         items[next]?.focus();
       });
       document.body.append(menu);
-      menu.querySelector("button:not(:disabled)")?.focus();
+      menu.promptPosition();
+      if (event.detail === 0) menu.querySelector('[role="menuitem"]:not(:disabled)')?.focus();
+      else menu.focus();
     });
     return button;
   }
@@ -18262,13 +18304,18 @@
     if (!host || !footer.contains(host)) host = footer;
     let slot = anchor;
     while (slot && slot.parentElement !== host) slot = slot.parentElement;
-    let group = footer.querySelector("[data-prompt-tools]");
+    const scope = footer.closest?.('[data-codex-composer-root], [data-composer-surface-variant], form')
+      || codexPlusDictationScope(footer) || footer;
+    const cached = codexPlusPromptToolGroups.get(scope);
+    let group = footer.querySelector("[data-prompt-tools]")
+      || (cached?.href === window.location.href ? cached.group : null);
     if (!group) {
       group = document.createElement("span");
       group.dataset.promptTools = "true";
       group.dataset.codexPlusExt = "builtin-prompt-tools";
       group.className = "codex-plus-prompt-tools";
     }
+    codexPlusPromptToolGroups.set(scope, { group, href: window.location.href });
     // 原生重渲染可能替换或挪动权限入口，每次都恢复到它后面的同一个工具组。
     if (slot && slot.nextElementSibling !== group) slot.after(group);
     else if (!slot && group.parentElement !== host) host.append(group);
@@ -18286,16 +18333,24 @@
   function codexPlusPromptEnhanceFooters() {
     // 与语音入口同样的去重：一个输入框只挂一个按钮，优先挂在包含输入框的 footer 上。
     const hosts = new Map();
+    const transient = new Set();
     document.querySelectorAll(".composer-footer, [data-composer-footer-responsive]").forEach((footer) => {
-      if (!visibleElement(footer) || isExtensionUiNode(footer)) return;
+      if (isExtensionUiNode(footer)) return;
+      if (!visibleElement(footer)) {
+        if (footer.querySelector("[data-prompt-tools]")) transient.add(footer);
+        return;
+      }
       const scope = codexPlusDictationScope(footer);
       const editor = scope && codexPlusDictationEditor(scope);
-      if (!editor) return;
+      if (!editor) {
+        if (footer.querySelector("[data-prompt-tools]")) transient.add(footer);
+        return;
+      }
       const score = codexPlusDictationFooterScore(footer, editor);
       const current = hosts.get(editor);
       if (!current || score >= current.score) hosts.set(editor, { footer, score });
     });
-    const footers = new Set([...hosts.values()].map((item) => item.footer));
+    const footers = new Set([...transient, ...[...hosts.values()].map((item) => item.footer)]);
     return footers;
   }
 
@@ -18372,9 +18427,16 @@
       .codex-plus-prompt-link:disabled{opacity:.45;cursor:default}
       .codex-plus-prompt-stale{display:flex;align-items:center;gap:10px;flex:none;margin:12px 18px 0;padding:8px 10px;border-radius:9px;background:var(--color-token-interactive-bg-secondary-hover,#8882);color:var(--color-token-editor-warning-foreground,#ff8549);font-size:12px}
       .codex-plus-prompt-error-bar{display:flex;align-items:center;gap:10px;flex:none;margin:0 18px 12px;padding:8px 10px;border-radius:9px;background:color-mix(in srgb,#e5484d 14%,transparent);color:#e5484d;font-size:12px;overflow-wrap:anywhere}
-      .codex-plus-prompt-mode-menu{position:fixed;z-index:2147483001;display:flex;flex-direction:column;gap:2px;min-width:136px;padding:4px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:10px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));color:var(--color-token-text-primary,#eee)}
-      .codex-plus-prompt-mode-menu .codex-plus-prompt-action{display:block;width:100%;text-align:left;border:0;border-radius:6px;padding:7px 10px;height:auto}
+      .codex-plus-prompt-mode-menu{position:fixed;z-index:2147483001;display:flex;flex-direction:column;gap:2px;box-sizing:border-box;width:280px;overflow:auto;padding:4px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:10px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));color:var(--color-token-text-primary,#eee)}
+      .codex-plus-prompt-mode-menu .codex-plus-prompt-action{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;border-radius:6px;padding:10px 12px;height:auto}
       .codex-plus-prompt-mode-menu .codex-plus-prompt-action:hover{background:var(--color-token-interactive-bg-secondary-hover,#8883)}
+      .codex-plus-prompt-depth-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:4px 6px 9px;margin-bottom:4px;border-bottom:1px solid var(--color-token-border-heavy,#8884);font:12px system-ui;color:var(--color-token-text-tertiary,inherit)}
+      .codex-plus-prompt-depth{display:flex;gap:2px;padding:2px;border:1px solid var(--color-token-border-heavy,#8884);border-radius:8px}
+      .codex-plus-prompt-depth button{padding:5px 10px;border:0;border-radius:6px;background:transparent;color:inherit;font:12px system-ui;cursor:pointer}
+      .codex-plus-prompt-depth button[aria-pressed=true]{background:var(--color-token-interactive-bg-secondary-hover,#8883);color:var(--color-token-text-primary,inherit)}
+      #codex-plus-prompt-enhance-panel:focus,#codex-plus-prompt-library:focus,.codex-plus-prompt-mode-menu:focus{outline:none}
+      #codex-plus-prompt-enhance-panel button:focus,#codex-plus-prompt-library button:focus,.codex-plus-prompt-mode-menu button:focus{outline:none;box-shadow:none}
+      #codex-plus-prompt-enhance-panel[data-keyboard=true] button:focus-visible,#codex-plus-prompt-library[data-keyboard=true] button:focus-visible,.codex-plus-prompt-mode-menu[data-keyboard=true] button:focus-visible{outline:2px solid var(--color-token-text-link,#8ab4f8);outline-offset:2px}
       .codex-plus-prompt-close-button{font-size:24px;line-height:1}
       @media(max-width:480px){.codex-plus-prompt-head,.codex-plus-prompt-foot{padding:10px 12px}.codex-plus-prompt-body{padding:12px}.codex-plus-prompt-meta{font-size:12px}.codex-plus-prompt-action{padding:0 9px}}
       .codex-plus-prompt-close{line-height:1}
@@ -18419,6 +18481,7 @@
   }
 
   const codexPlusPromptEnhanceKeyHandler = (event) => {
+    document.querySelectorAll('#codex-plus-prompt-enhance-panel, #codex-plus-prompt-library, [data-prompt-enhance-menu]').forEach(node => { node.dataset.keyboard = "true"; });
     if (event.isComposing) return;
     if (event.key === "Escape") {
       // 「其他…」里的 Esc 只收起输入框，交给卡片内部的处理器。
@@ -18455,7 +18518,7 @@
       state.other = "";
       renderCodexPlusPromptEnhance();
       event.preventDefault();
-    } else if (event.key === "ArrowRight" && state.activeQuestion < state.questions.length - 1) {
+    } else if (event.key === "ArrowRight" && (state.activeQuestion < state.questions.length - 1 || codexPlusPromptCanSubmitAnswers())) {
       advanceCodexPlusPromptEnhance();
       event.preventDefault();
     } else if (event.key === "ArrowLeft" && state.activeQuestion > 0) {
@@ -18466,6 +18529,7 @@
     }
   };
   const codexPlusPromptEnhancePointer = (event) => {
+    document.querySelectorAll('#codex-plus-prompt-enhance-panel, #codex-plus-prompt-library, [data-prompt-enhance-menu]').forEach(node => { node.dataset.keyboard = "false"; });
     const target = event.target;
     if (!target.closest?.("[data-prompt-enhance-menu], [data-prompt-enhance-trigger], #codex-plus-prompt-enhance-panel, #codex-plus-prompt-library")) {
       document.querySelectorAll("[data-prompt-enhance-menu]").forEach((menu) => menu.remove());
@@ -18475,7 +18539,7 @@
   };
   document.addEventListener("pointerdown", codexPlusPromptEnhancePointer, true);
   const codexPlusPromptEnhanceResize = () => {
-    document.querySelectorAll("[data-prompt-enhance-menu]").forEach((menu) => menu.remove());
+    document.querySelectorAll("[data-prompt-enhance-menu]").forEach((menu) => menu.promptPosition?.());
     const panel = document.getElementById("codex-plus-prompt-enhance-panel");
     if (panel) positionCodexPlusPromptCard(panel);
     if (codexPlusPromptLibrary.panel) positionCodexPlusPromptCard(codexPlusPromptLibrary.panel);
@@ -18754,6 +18818,7 @@
     if (!panel) {
       panel = document.createElement("div");
       panel.id = "codex-plus-prompt-library";
+      panel.tabIndex = -1;
       panel.dataset.codexPlusExt = "builtin-prompt-library";
       panel.setAttribute("role", "dialog");
       panel.setAttribute("aria-label", "常用提示词");
@@ -18774,7 +18839,6 @@
     panel.replaceChildren();
     const header = codexPlusPromptLibraryNode("header", "codex-plus-prompt-head");
     header.append(codexPlusPromptLibraryNode("h2", "", "常用提示词"));
-    if (!state.edit) header.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-meta", "点一条追加到输入框"));
     const close = codexPlusPromptIconButton("trash", "关闭", "library-close");
     close.replaceChildren(codexPlusPromptLibraryNode("span", "codex-plus-prompt-close", "×"));
     close.className = "codex-plus-prompt-icon codex-plus-prompt-close-button";
@@ -18827,11 +18891,6 @@
       const empty = codexPlusPromptLibraryNode("div", "codex-plus-prompt-empty");
       const filtered = state.query || state.tag || !["all", "available"].includes(state.scope);
       empty.append(codexPlusPromptLibraryNode("p", "codex-plus-prompt-caption", filtered ? "没有找到提示词" : "还没有常用提示词"));
-      if (filtered) {
-        const clear = codexPlusPromptLibraryButton("清除筛选", "codex-plus-prompt-action");
-        clear.addEventListener("click", () => { state.query = ""; state.tag = ""; state.scope = "all"; void refreshCodexPlusPromptLibrary(); });
-        empty.append(clear);
-      }
       body.append(empty);
     }
     if (state.items.length) {
@@ -18924,6 +18983,9 @@
     footer.append(save, codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"));
     if (state.items.length > 1) footer.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-caption", "拖动 ⠿ 调整顺序"));
     panel.append(footer);
+    const focused = document.activeElement;
+    if (!searchFocused && (!focused || focused === document.body || focused === state.target?.editor || !focused.isConnected))
+      panel.focus({ preventScroll: true });
     requestAnimationFrame(() => {
       if (!searchInput.isConnected) return;
       if (searchFocused) {
@@ -19008,7 +19070,7 @@
         .codex-plus-prompt-row-actions{display:flex;gap:1px;flex:none;opacity:0}
         .codex-plus-prompt-row:hover .codex-plus-prompt-row-actions,.codex-plus-prompt-row:focus-within .codex-plus-prompt-row-actions{opacity:1}
         .codex-plus-prompt-row-actions .codex-plus-prompt-icon{width:26px;height:26px;border:0}
-        .codex-plus-prompt-empty{display:flex;flex-direction:column;align-items:flex-start;gap:8px;padding:12px 2px}
+        .codex-plus-prompt-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100px;gap:8px;padding:28px 12px;text-align:center}
         .codex-plus-prompt-empty p{margin:0}
         .codex-plus-prompt-field{display:flex;flex-direction:column;gap:4px;color:var(--color-token-text-tertiary,inherit);font-size:12px}
         .codex-plus-prompt-field .codex-plus-prompt-input{color:var(--color-token-text-primary,inherit);font-size:13px}
@@ -19042,7 +19104,8 @@
           closeCodexPlusPromptLibrary();
           return;
         }
-        void openCodexPlusPromptLibrary(footer);
+        const currentFooter = button.closest(".composer-footer, [data-composer-footer-responsive]");
+        if (currentFooter) void openCodexPlusPromptLibrary(currentFooter);
       });
       host.append(button);
     }

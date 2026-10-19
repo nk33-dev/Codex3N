@@ -95,6 +95,8 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
     mergeQuestions: codexPlusPromptMergeQuestions, pick: pickCodexPlusPromptEnhanceAnswer,
+    advance: advanceCodexPlusPromptEnhance, canSubmit: codexPlusPromptCanSubmitAnswers,
+    footers: codexPlusPromptEnhanceFooters, install: installCodexPlusPromptEnhance,
   };`, context);
   context.renderCodexPlusPromptEnhance = () => {};
   // 跳过 DOM 布局查询，直接把 footer 映射到测试输入框。
@@ -144,13 +146,34 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   Object.assign(layout.state, { phase: "questions", ...queue, history: [] });
   layout.pick("读者");
   layout.pick("管理员");
-  assert.equal(layout.state.activeQuestion, 0, "多选确认之前保持当前题目");
+  assert.equal(layout.state.activeQuestion, 0, "多选即时记录，保持当前题目");
   assert.deepEqual(JSON.parse(layout.state.answers.roles), ["读者", "管理员"]);
-  layout.pick(layout.state.answers.roles, true);
+  layout.advance();
   assert.equal(layout.state.activeQuestion, 1);
   const continued = layout.mergeQuestions([layout.round()], [{ ...multiQuestion, id: "rules" }]);
   assert.equal(continued.answers.roles, layout.state.answers.roles);
   assert.equal(continued.questions.length, 3, "补问保留累计问卷");
+  const rephrased = layout.mergeQuestions([layout.round()], [{ ...multiQuestion, question: "哪些人需要登录？" }]);
+  assert.equal(rephrased.answers.roles, undefined, "重新设计的问题需重新作答");
+  const completed = fixture({ respond: payload => payload.history.length
+    ? { status: "ok", kind: "final", text: "图书管理" }
+    : { status: "ok", kind: "questions", questions: [multiQuestion, { ...multiQuestion, id: "scope", multiSelect: false }] } });
+  await completed.start({}, "grill", { detail: "concise" });
+  assert.equal(completed.requests[0].payload.detail, "concise");
+  completed.advance();
+  completed.pick("管理员");
+  assert.equal(completed.state.activeQuestion, 0, "末题作答后返回遗漏的题目");
+  completed.pick("读者");
+  completed.pick("读者");
+  assert.equal(completed.canSubmit(), false, "取消全部多选后问卷不完整");
+  completed.pick("管理员");
+  completed.advance();
+  assert.equal(completed.canSubmit(), true, "回到已答单选末题仍可提交");
+  completed.advance();
+  await flush();
+  assert.equal(completed.state.phase, "result");
+  assert.equal(completed.requests[1].payload.forceFinal, false);
+  assert.equal(completed.requests[1].payload.history[0].answers.length, 2);
   const preferenceChange = fixture({ respond: () => ({ status: "ok", kind: "final", text: "具体方案" }) });
   await preferenceChange.start({});
   preferenceChange.context.codexPlusBackendSettings.promptEnhance.detail = "detailed";
@@ -328,7 +351,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   grill.state.answers.goal = "管理图书";
   await grill.request();
   assert.equal(grill.state.history.length, 1);
-  assert.equal(grill.state.answers.goal, "管理图书", "同一决策补问时保留已填答案");
+  assert.equal(grill.state.answers.goal, undefined, "同一决策补问时重新作答，原答案仍在请求历史中");
   grill.state.answers.goal = "图书管理和导出";
   await grill.request();
   assert.equal(grill.state.history.length, 1);
@@ -536,6 +559,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     remove() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); this.parentElement = null; }
     replaceChildren(...nodes) { for (const node of [...this.children]) node.remove(); this.append(...nodes); }
     setAttribute(key, value) { this.attributes[key] = value; }
+    focus() { dom.context.document.activeElement = this; }
     appendChild(node) { this.append(node); }
     addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
     emit(name, props = {}) {
@@ -613,10 +637,31 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   assert.equal(group.parentElement, replacement, "布局重建后复用原工具组");
   assert.equal(footer.querySelectorAll("[data-prompt-tools]").length, 1);
   assert.deepEqual(group.children, [favorite, trigger]);
+  const stableScope = new Element("form"), rebuiltFooter = new Element();
+  stableScope.append(footer);
+  const scopeGroup = dom.toolsHost(footer);
+  footer.remove(); stableScope.append(rebuiltFooter);
+  assert.equal(dom.toolsHost(rebuiltFooter), scopeGroup, "同一输入框重建底栏时复用原工具组");
+  assert.deepEqual(scopeGroup.children, [favorite, trigger]);
+  rebuiltFooter.remove(); stableScope.append(footer); dom.toolsHost(footer);
+  footer.className = "composer-footer";
+  const originalQuery = dom.context.document.querySelectorAll;
+  dom.context.document.querySelectorAll = selector => selector.startsWith(".composer-footer") ? [footer] : originalQuery(selector);
+  const originalEditor = dom.context.codexPlusDictationEditor;
+  dom.context.codexPlusDictationEditor = () => null;
+  assert.equal(dom.footers().has(footer), true, "发送时编辑器暂不可用仍保留已有工具组");
+  dom.context.codexPlusDictationEditor = originalEditor;
+  dom.context.document.querySelectorAll = originalQuery;
   const toggle = dom.context.createCodexPlusPromptEnhanceTrigger();
   toggle.emit("pointerdown");
   toggle.emit("click", { stopPropagation() {} });
   assert.equal(dom.state.phase, "idle", "再次点击增强入口关闭当前卡片");
+  dom.library.target = { editor: dom.editor, footer };
+  dom.library.panel = new Element();
+  dom.context.document.activeElement = dom.editor;
+  dom.context.renderCodexPlusPromptLibrary();
+  assert.equal(dom.context.document.activeElement, dom.library.panel, "收藏打开后焦点留在面板内");
+  assert.equal(dom.library.panel.querySelector(".codex-plus-prompt-empty").querySelector("button"), null);
 
   console.log("prompt enhance read, preview, replace, append, cancel and stale-draft contracts passed");
 })().catch(error => { console.error(error); process.exit(1); });
