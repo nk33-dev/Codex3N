@@ -202,6 +202,17 @@ jobs:
             $makensis = $null
             if ($attempt -lt 3) { Start-Sleep -Seconds (10 * $attempt) }
           }
+          if (-not $makensis) {
+            # Chocolatey 源不可用时，改用 SourceForge 上固定版本的官方压缩包并校验哈希。
+            $zip = Join-Path $env:RUNNER_TEMP "nsis-3.13.zip"
+            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip" -OutFile $zip -UserAgent "curl" -MaximumRetryCount 3 -RetryIntervalSec 10
+            if ((Get-FileHash -Algorithm SHA256 $zip).Hash -ne "BA63DFFC4410EE89193E1CB5A41989991BD77C61068DA17E3156D136B7B0B3D8") { throw "NSIS 压缩包哈希不匹配。" }
+            Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP -Force
+            $makensis = Join-Path $env:RUNNER_TEMP "nsis-3.13\makensis.exe"
+            & $makensis /VERSION
+            if ($LASTEXITCODE -ne 0) { $makensis = $null }
+            else { Add-Content -Path $env:GITHUB_PATH -Value (Split-Path $makensis) }
+          }
           if (-not $makensis) { throw "NSIS 安装失败或编译器不可用，停止发布构建。" }
 
       - name: Install frontend dependencies
@@ -233,7 +244,7 @@ jobs:
         shell: pwsh
         run: |
           $version = ($env:RELEASE_TAG).TrimStart("v", "V")
-          # NSIS 的 64 位安装目录与 Chocolatey PATH 更新均需要兼容。
+          # 兼容 Chocolatey 的安装目录与压缩包回退写入的 PATH。
           $candidates = @(
             "${env:ProgramFiles(x86)}\NSIS\makensis.exe",
             "$env:ProgramFiles\NSIS\makensis.exe"
@@ -244,7 +255,7 @@ jobs:
             if ($command) { $makensis = $command.Source }
           }
           if (-not $makensis) {
-            throw "NSIS 编译器未找到，检查 Chocolatey 安装结果。"
+            throw "NSIS 编译器未找到，检查 Install NSIS 步骤。"
           }
           Push-Location scripts/installer/windows
           try {
