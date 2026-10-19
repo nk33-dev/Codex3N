@@ -96,6 +96,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
     mergeQuestions: codexPlusPromptMergeQuestions, pick: pickCodexPlusPromptEnhanceAnswer,
     advance: advanceCodexPlusPromptEnhance, canSubmit: codexPlusPromptCanSubmitAnswers,
+    changeAnswers: changeCodexPlusPromptEnhanceAnswers,
     footers: codexPlusPromptEnhanceFooters, install: installCodexPlusPromptEnhance,
   };`, context);
   context.renderCodexPlusPromptEnhance = () => {};
@@ -399,6 +400,18 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   await clarify.request({ forceFinal: true });
   assert.equal(clarify.requests[2].payload.messages.length, 0, "重述请求已落实，提交答案时不再重发");
   assert.equal(clarify.state.phase, "result");
+  clarify.changeAnswers();
+  assert.equal(clarify.state.phase, "questions");
+  await clarify.request({ forceFinal: true });
+  assert.equal(clarify.requests.length, 3, "改答案后未改动直接生成，不再请求模型");
+  assert.equal(clarify.state.phase, "result");
+  assert.equal(clarify.state.text, "结果");
+  assert.equal(clarify.state.history.length, 1);
+  clarify.changeAnswers();
+  clarify.state.answers.two = "不含借阅";
+  await clarify.request({ forceFinal: true });
+  assert.equal(clarify.requests.length, 4, "改了答案才重新生成");
+  assert.equal(clarify.requests[3].payload.history[0].answers[1].answer, "不含借阅");
 
   const changed = fixture();
   const changing = changed.start({}, "grill");

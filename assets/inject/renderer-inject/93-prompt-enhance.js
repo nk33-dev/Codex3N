@@ -6,7 +6,7 @@
     mode: "rewrite", history: [], questions: [], answers: Object.create(null), activeQuestion: 0,
     lastRequest: null, context: null, project: null, metadata: null,
     messages: [], supplement: "", resumePhase: "ready", cacheKey: "", locked: false, panel: null,
-    intro: "", busyText: "", started: false, other: null, extra: null,
+    intro: "", busyText: "", started: false, other: null, extra: null, reopened: null,
   };
   const codexPlusPromptWorkflows = new Map();
   const codexPlusPromptToolGroups = new WeakMap();
@@ -287,6 +287,12 @@
     return { questions: all, answers, activeQuestion: Math.max(0, all.findIndex(question => question.id === first?.id)) };
   }
 
+  function codexPlusPromptConfirmedAnswers() {
+    return codexPlusPromptEnhance.questions
+      .map((question) => ({ questionId: question.id, answer: codexPlusPromptEnhanceAnswer(question) }))
+      .filter((answer) => answer.answer);
+  }
+
   async function requestCodexPlusPromptEnhance(options = {}) {
     const state = codexPlusPromptEnhance;
     const target = state.target;
@@ -296,6 +302,16 @@
     if (!codexPlusPromptEnhanceEnabled() || !codexPlusPromptEnhanceModes().includes(state.mode)) {
       showToast("本次增强模式已关闭", null); return;
     }
+    const reopened = state.reopened;
+    state.reopened = null;
+    // 改答案后什么都没动就继续或直接生成，恢复上次结果，不再请求模型。
+    if (reopened && state.phase === "questions" && !options.start && !options.retry && !options.addition
+      && state.questions === reopened.questions && JSON.stringify(codexPlusPromptConfirmedAnswers()) === reopened.answers) {
+      Object.assign(state, reopened.restore, { questions: [], answers: Object.create(null), activeQuestion: 0, other: null, extra: null, error: "" });
+      renderCodexPlusPromptEnhance();
+      showToast("答案未改动，已恢复上次结果", null);
+      return;
+    }
     let payload;
     if (options.retry && state.lastRequest) {
       payload = { ...state.lastRequest, requestId: crypto.randomUUID() };
@@ -304,9 +320,7 @@
       const addition = options.addition ?? "";
       let rounds = start ? [] : (options.rounds ?? state.history);
       if (!start && options.rounds === undefined && state.phase === "questions" && state.questions.length) {
-        const confirmed = state.questions
-          .map((question) => ({ questionId: question.id, answer: codexPlusPromptEnhanceAnswer(question) }))
-          .filter((answer) => answer.answer);
+        const confirmed = codexPlusPromptConfirmedAnswers();
         if (!options.supplementOnly || confirmed.length)
           rounds = [{ questions: state.questions, answers: confirmed }];
       }
@@ -342,7 +356,7 @@
       ? (state.phase === "result" && payload.messages?.some((message) => message.role === "user") ? "正在按你的意见修改…" : "正在改写…")
       : (payload.forceFinal
         ? (state.phase === "result" ? "正在按你的意见修改…" : "正在写提示词…")
-        : "正在想问题…");
+        : "正在处理…");
     state.phase = "loading";
     state.error = "";
     state.lastRequest = payload;
@@ -445,7 +459,7 @@
       history: [], questions: [], answers: Object.create(null), activeQuestion: 0, other: null,
       context: null, project: null, lastRequest: null, generated: "", metadata: null,
       messages: [], supplement: "", text: "", intro: "", locked: false, error: "",
-      started: !target.original.trim(), resumePhase: "ready", extra: null,
+      started: !target.original.trim(), resumePhase: "ready", extra: null, reopened: null,
       preferenceKey: JSON.stringify([config.detail || "standard", config.audience || "p4"]),
     });
     renderCodexPlusPromptEnhance();
@@ -761,6 +775,10 @@
     const index = state.history.length - 1;
     const round = state.history[index];
     if (!round || state.locked) return;
+    const restore = {
+      phase: state.phase, text: state.text, generated: state.generated,
+      history: state.history, messages: state.messages, supplement: state.supplement,
+    };
     state.history = state.history.slice(0, index);
     state.messages = state.messages.filter((message) => (message.round ?? 0) <= index);
     state.questions = round.questions;
@@ -771,6 +789,7 @@
     state.generated = "";
     state.phase = "questions";
     state.error = "";
+    state.reopened = { questions: round.questions, answers: JSON.stringify(codexPlusPromptConfirmedAnswers()), restore };
     renderCodexPlusPromptEnhance();
   }
 
@@ -846,17 +865,6 @@
       group.append(button);
     }
     wrapper.append(group);
-    const decisions = codexPlusPromptNode("div", "codex-plus-prompt-decisions");
-    for (const [label, action, value, hint] of [
-      ["暂不决定", "defer", codexPlusPromptDeferred, "保留待定，暂不代选"],
-      ["你来决定", "delegate", codexPlusPromptDelegated, "由 AI 选择并说明依据"],
-    ]) {
-      const button = codexPlusPromptButton(label, action, { disabled: state.locked, title: hint });
-      button.className = "codex-plus-prompt-link";
-      button.setAttribute("aria-pressed", String(current === value));
-      decisions.append(button);
-    }
-    wrapper.append(decisions);
     if (state.extra) {
       const row = codexPlusPromptNode("form", "codex-plus-prompt-follow-row");
       const input = codexPlusPromptNode("input", "codex-plus-prompt-input");
@@ -882,6 +890,23 @@
       requestAnimationFrame(() => { if (input.isConnected) input.focus(); });
     }
     return wrapper;
+  }
+
+  // 暂不决定/你来决定放在滚动区外，长选项列表滚动时不会压住选项。
+  function createCodexPlusPromptEnhanceDecisions() {
+    const state = codexPlusPromptEnhance;
+    const current = codexPlusPromptEnhanceAnswer(state.questions[state.activeQuestion]);
+    const decisions = codexPlusPromptNode("div", "codex-plus-prompt-decisions");
+    for (const [label, action, value, hint] of [
+      ["暂不决定", "defer", codexPlusPromptDeferred, "保留待定，暂不代选"],
+      ["你来决定", "delegate", codexPlusPromptDelegated, "由 AI 选择并说明依据"],
+    ]) {
+      const button = codexPlusPromptButton(label, action, { disabled: state.locked, title: hint });
+      button.className = "codex-plus-prompt-link";
+      button.setAttribute("aria-pressed", String(current === value));
+      decisions.append(button);
+    }
+    return decisions;
   }
 
   function renderCodexPlusPromptEnhance() {
@@ -1007,6 +1032,7 @@
       body.append(codexPlusPromptNode("p", "codex-plus-prompt-caption", "流程已暂停。"));
     }
     children.push(body);
+    if (state.phase === "questions" && state.questions[state.activeQuestion]) children.push(createCodexPlusPromptEnhanceDecisions());
     if (state.error) {
       const error = codexPlusPromptNode("div", "codex-plus-prompt-error-bar", state.error);
       error.setAttribute("role", "alert");
@@ -1335,7 +1361,7 @@
       .codex-plus-prompt-dots .codex-plus-prompt-dot{flex:none;width:24px;height:24px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:50%;background:transparent;color:inherit;font:11px system-ui;cursor:pointer}
       .codex-plus-prompt-dot[aria-current=step]{border-color:var(--color-token-text-link,#8ab4f8)}.codex-plus-prompt-dot[data-answered=true]{background:var(--color-token-interactive-bg-secondary-hover,#8882)}
       .codex-plus-prompt-basis{margin:16px 0 0;line-height:1.7}
-      .codex-plus-prompt-decisions{position:sticky;bottom:0;display:flex;align-items:center;gap:18px;margin-top:22px;padding:10px 0 4px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d))}.codex-plus-prompt-decisions .codex-plus-prompt-link{font-size:12px;text-decoration:none;color:var(--color-token-text-tertiary,inherit)}
+      .codex-plus-prompt-decisions{flex:none;display:flex;align-items:center;gap:18px;padding:8px 18px;border-top:1px solid var(--color-token-border-light,#8883)}.codex-plus-prompt-decisions .codex-plus-prompt-link{font-size:12px;text-decoration:none;color:var(--color-token-text-tertiary,inherit)}
       .codex-plus-prompt-decisions [aria-pressed=true]{color:var(--color-token-text-link,#8ab4f8)}
       .codex-plus-prompt-more{position:relative;font-size:12px}.codex-plus-prompt-more summary{cursor:pointer;list-style:none;border:1px solid var(--color-token-border-heavy,#8885);border-radius:8px;padding:6px 10px}
       .codex-plus-prompt-more-menu{position:fixed;z-index:1;transform:translate(-90px,-140px);display:flex;flex-direction:column;gap:3px;padding:5px;border:1px solid var(--color-token-border-heavy,#8885);border-radius:9px;background:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d))}
@@ -1355,7 +1381,7 @@
       #codex-plus-prompt-enhance-panel button:focus,#codex-plus-prompt-library button:focus,.codex-plus-prompt-mode-menu button:focus{outline:none;box-shadow:none}
       #codex-plus-prompt-enhance-panel[data-keyboard=true] button:focus-visible,#codex-plus-prompt-library[data-keyboard=true] button:focus-visible,.codex-plus-prompt-mode-menu[data-keyboard=true] button:focus-visible{outline:2px solid var(--color-token-text-link,#8ab4f8);outline-offset:2px}
       .codex-plus-prompt-close-button{font-size:24px;line-height:1}
-      @media(max-width:480px){.codex-plus-prompt-head,.codex-plus-prompt-foot{padding:10px 12px}.codex-plus-prompt-body{padding:12px}.codex-plus-prompt-meta{font-size:12px}.codex-plus-prompt-action{padding:0 9px}}
+      @media(max-width:480px){.codex-plus-prompt-head,.codex-plus-prompt-foot{padding:10px 12px}.codex-plus-prompt-decisions{padding:6px 12px}.codex-plus-prompt-body{padding:12px}.codex-plus-prompt-meta{font-size:12px}.codex-plus-prompt-action{padding:0 9px}}
       .codex-plus-prompt-close{line-height:1}
       @media(prefers-reduced-motion:reduce){.codex-plus-prompt-status.is-loading{animation:none}}
     `;
