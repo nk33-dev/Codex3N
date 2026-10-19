@@ -108,7 +108,7 @@ cargo test --workspace
 
 ## 5. 同步记录与文档
 
-同步提交说明或 PR 记录四项，长期事实更新对应业务文档：
+同步提交说明或 PR 记录四项（不在 `docs/reports` 另建个人同步报告），长期事实更新对应业务文档：
 
 - 原个人提交、已验证基线、目标上游提交/版本与宿主版本。
 - 入口映射、重叠变化的处理位置、暂缓项及原因。
@@ -123,7 +123,7 @@ cargo test --workspace
 
 - 从 Git 和 `Cargo.toml` 读取实际分支与版本，不在文档固定“当前版本”。版本为“上游版本 + `-3n.N`”，标签为对应的 `v<版本>`，仅发布 `personal` 对应标签。
 - 改完 `Cargo.toml` 版本先跑一次 `cargo check --workspace`（或任意 cargo 构建）让 `Cargo.lock` 跟上工作区成员的新版本号，再把锁文件和版本一起提交；否则发布脚本里的构建会就地改锁文件，标签指向的提交会留下过期锁版本。发布工作流不带 `--locked`，因此只影响版本一致性，不会让安装包构建失败。
-- 提交并推送 `personal`，等待该 SHA 的 `Codex3N CI artifacts` 所有 job 成功。准备 UTF-8 说明文件，使用真实换行；统一执行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`。
+- 提交并推送 `personal`，等待该 SHA 的 `Codex3N CI artifacts` 所有 job 成功。准备 UTF-8 说明文件，使用真实换行，放在仓库外的临时目录，发布后以 GitHub Release 为准，不提交到仓库；统一执行 `pwsh scripts/release.ps1 -NotesFile <说明文件>`。
 - 脚本校验分支、工作区、标签，查询个人仓库中该 SHA 最新一次 push CI，并运行本地门禁；检查后再次确认工作区干净，再原子推送分支与标签并创建 Release。CI 缺失、运行中、失败或查询异常都会在打标签前停止。`.github/workflows/release-assets.yml` 仍保留独立测试门禁和标签版本校验。
 - 同一 SHA 已通过完整 CI 时，可以添加 `-SkipChecks` 复用结果，省去重复本地检查。该参数仍须通过远端 CI 校验；有任何新提交就重新验证。
 - 所有 GitHub 操作显式指定 `--repo nk33-dev/Codex3N`。`pushurl = DISABLED` 只限制 Git 推送，不能防止 `gh` 误操作上游。同步时保持个人更新源。

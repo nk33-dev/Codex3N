@@ -65,39 +65,9 @@ window.promptFixture={install:installCodexPlusPromptEnhance,state:codexPlusPromp
 installCodexPlusPromptEnhance();})();`;
 const cssFile = (await readdir(path.join(manager, "dist/assets"))).find((name) => name.endsWith(".css"));
 const css = await readFile(path.join(manager, "dist/assets", cssFile), "utf8") + "\n" + (bundled.outputFiles.find(file => file.path.endsWith(".css"))?.text || "");
-let promptkitBundle;
-if (process.env.DSH_PROMPTKIT_ROOT) {
-  const kit = path.resolve(process.env.DSH_PROMPTKIT_ROOT), client = path.join(kit, "packages/promptkit/src/client");
-  const kitEntry = path.join(output, "promptkit-entry.tsx");
-  await writeFile(kitEntry, `import React from ${JSON.stringify(path.join(kit, "node_modules/react/index.js"))};
-import {createRoot} from ${JSON.stringify(path.join(kit, "node_modules/react-dom/client.js"))};
-import {App} from ${JSON.stringify(path.join(client, "App.tsx"))};
-import {css} from ${JSON.stringify(path.join(client, "style.ts"))};
-import {zh} from ${JSON.stringify(path.join(client, "locales.ts"))};
-import {defaultSettings,DEFAULT_PRESETS} from ${JSON.stringify(path.join(kit, "packages/promptkit/src/shared/defaults.ts"))};
-const style=document.createElement('style');style.textContent=css;document.head.append(style);
-window.pk={calls:[],input:{draft:'做一个图书管理系统',draftRev:1,attachmentIds:[],occurrences:[],phase:'plain',queue:[]}};
-const config={settings:{...defaultSettings(),favoritesEnabled:true},presets:DEFAULT_PRESETS,revision:0};
-const api={onConfigurationChange:()=>()=>{},call:async(action,payload)=>{
-  pk.calls.push({action,payload});
-  if(action==='config.read')return config;
-  if(action==='project.read')return null;
-  if(action==='project.check')return true;
-  if(action==='generate')return{questions:[],...await fixtureRequest('generate',payload),context:{enabled:false,sections:[]},metadata:{}};
-  if(action==='favorites.list'){const data=await fixtureRequest('library/list',payload);return{items:data.favorites.map(item=>({...item,excerpt:item.body})),revision:0,total:data.total,project:null,tags:data.tags};}
-  if(action==='favorites.add')return(await fixtureRequest('library/add',payload)).favorite;
-  if(action==='favorites.get')return fixture.favorites.find(item=>item.id===payload.id);
-  return true;
-}};
-createRoot(document.getElementById('app')).render(<App api={api} t={key=>zh[key]} sessionId="fixture" input={pk.input}
-inputActions={{captureInsertion:()=>({draftRev:1}),insertText:()=>true,persistDraft:()=>{}}}/>);`);
-  promptkitBundle = (await build({ entryPoints: [kitEntry], bundle: true, write: false, format: "iife", jsx: "automatic",
-    platform: "browser", nodePaths: [path.join(kit, "node_modules"), path.join(kit, "packages/promptkit/node_modules")] })).outputFiles[0].text;
-}
 const server = createServer((request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   request.url = url.pathname;
-  if (request.url === "/promptkit.js") { response.setHeader("content-type", "application/javascript"); response.end(promptkitBundle); return; }
   if (request.url === "/manager.js") { response.setHeader("content-type", "application/javascript"); response.end(bundled.outputFiles.find(file => file.path.endsWith(".js")).text); return; }
   if (request.url === "/injected.js") { response.setHeader("content-type", "application/javascript"); response.end(injected); return; }
   if (request.url === "/style.css") { response.setHeader("content-type", "text/css"); response.end(css); return; }
@@ -105,19 +75,16 @@ const server = createServer((request, response) => {
   const light = url.searchParams.get("theme") === "light";
   const surface = light ? "#fff" : "#292929", text = light ? "#222" : "#eee";
   const secondary = light ? "#626262" : "#aaa", border = light ? "#ccc" : "#555";
-  response.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">${request.url === "/promptkit" ? "" : '<link rel="stylesheet" href="/style.css">'}<style>
-    :root{--color-token-main-surface-primary:${surface};--color-token-dropdown-background:${surface};--color-token-text-primary:${text};--color-token-text-tertiary:${secondary};--color-token-bg-primary:${surface};--color-token-border-heavy:${border};
-    --dsw-alias-bg-base:${surface};--dsw-alias-label-primary:${text};--dsw-alias-label-secondary:${secondary};--dsw-alias-border-l2:${border};--dsw-alias-state-business-primary:${light ? "#275db0" : "#8fb6ff"};--dsw-alias-interactive-bg-hover:${light ? "#eee" : "#383838"};--dsw-alias-button-info-fill:${text};--dsw-alias-label-primary-bluish:${surface}}
+  response.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/style.css"><style>
+    :root{--color-token-main-surface-primary:${surface};--color-token-dropdown-background:${surface};--color-token-text-primary:${text};--color-token-text-tertiary:${secondary};--color-token-bg-primary:${surface};--color-token-border-heavy:${border}}
     body{margin:0;padding:16px;box-sizing:border-box;width:100%;min-width:0;background:${light ? "#f4f4f4" : "#202124"};color:${text};font:13px/1.6 system-ui}button{cursor:pointer}.composer-footer{margin-top:420px}textarea{width:90%;height:80px}
-    .fixture-composer{position:absolute;bottom:24px;left:max(16px,calc(50% - 430px));width:min(860px,calc(100% - 32px));box-sizing:border-box;padding:12px;border:1px solid ${border};border-radius:12px;background:${surface}}
-    .fixture-composer textarea{width:100%;box-sizing:border-box;background:transparent;color:inherit;border:0;resize:none;font:inherit}
-    .fixture-composer footer{display:flex;align-items:center;gap:8px;color:${secondary}}</style>
-    <script>${fixtureState}</script>${request.url === "/promptkit" ? '<div class="fixture-composer"><textarea aria-label="草稿" readonly>做一个图书管理系统</textarea><footer><span>完全访问</span><div id="app"></div></footer></div><script src="/promptkit.js"></script>' : request.url === "/manager" ? '<div id="app"></div><script src="/manager.js"></script>' : '<div class="composer-footer" style="display:grid;grid-template-columns:auto 1fr"><textarea style="grid-column:1/-1">修复登录错误</textarea><div class="flex" style="display:flex"><button data-composer-navigation-target="permissions">权限</button></div></div><script src="/injected.js"></script>'}`);
+    </style>
+    <script>${fixtureState}</script>${request.url === "/manager" ? '<div id="app"></div><script src="/manager.js"></script>' : '<div class="composer-footer" style="display:grid;grid-template-columns:auto 1fr"><textarea style="grid-column:1/-1">修复登录错误</textarea><div class="flex" style="display:flex"><button data-composer-navigation-target="permissions">权限</button></div></div><script src="/injected.js"></script>'}`);
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const port = server.address().port;
 if (process.argv.includes("--serve-only")) {
-  console.log(`UI fixtures: http://127.0.0.1:${port}/ and /promptkit (?theme=light)`);
+  console.log(`UI fixtures: http://127.0.0.1:${port}/ and /manager (?theme=light)`);
 } else {
 const child = spawn(browser, ["--headless=new", "--disable-gpu", "--no-first-run", "--remote-debugging-port=0", `--user-data-dir=${path.join(output, "browser")}`, "about:blank"], { windowsHide: true, stdio: "ignore" });
 let socket, serial = 0; const pending = new Map();
@@ -233,30 +200,6 @@ try {
   await call("Emulation.setDeviceMetricsOverride", { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
   await shot("manager-1000.png");
 
-  // Harness 插件：同一套交互。
-  if (promptkitBundle) {
-    await call("Page.navigate", { url: `http://127.0.0.1:${port}/promptkit` });
-    await eventually(() => evaluate("!!document.querySelector('.pk-tools .pk-tool')"), "Harness 插件");
-    await evaluate(`document.documentElement.style.cssText='--dsw-alias-bg-base:#292929;--dsw-alias-label-primary:#eee;--dsw-alias-label-secondary:#aaa;--dsw-alias-border-l2:#444;--dsw-alias-state-business-primary:#8fb6ff;--dsw-alias-interactive-bg-hover:#383838;--dsw-alias-button-info-fill:#eee;--dsw-alias-label-primary-bluish:#222'`);
-    await evaluate("document.querySelector('button[aria-label=增强提示词]').click()");
-    await eventually(() => evaluate("!!document.querySelector('.pk-mode-menu')"), "Harness 模式菜单");
-    await evaluate("[...document.querySelectorAll('.pk-mode-menu button')].find(b=>b.textContent.includes('需求对齐')).click()");
-    await eventually(() => evaluate("!!document.querySelector('.pk-question')"), "Harness 问答");
-    await shot("harness-questions-dark-1000.png");
-    await call("Emulation.setDeviceMetricsOverride", { width: 400, height: 800, deviceScaleFactor: 1, mobile: false });
-    await shot("harness-questions-dark-400.png");
-    await evaluate("document.querySelector('.pk-option').click()");
-    await eventually(() => evaluate("document.querySelector('.pk-question')?.textContent==='第一版需要哪些功能？'"), "Harness 自动下一题");
-    await evaluate("document.querySelector('.pk-option').click()");
-    await evaluate("document.querySelector('button[aria-label=继续检查回答]').click()");
-    await eventually(() => evaluate("!!document.querySelector('.pk-result')&&pk.calls.filter(x=>x.action==='generate').length===2"), "Harness 生成结果");
-    await evaluate("document.querySelector('button[aria-label=关闭]').click()");
-    await evaluate("document.querySelector('button[aria-label=增强提示词]').click()");
-    await eventually(() => evaluate("!!document.querySelector('.pk-mode-menu')"), "Harness 模式菜单");
-    await evaluate("[...document.querySelectorAll('.pk-mode-menu button')].find(b=>b.textContent.includes('需求对齐')).click()");
-    await eventually(() => evaluate("!!document.querySelector('.pk-result')"), "Harness 恢复");
-    assert.equal(await evaluate("pk.calls.filter(x=>x.action==='generate').length"), 2, "reopen keeps the workflow");
-  }
   console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "live-search", "draft-append", "delete-undo", "mode-menu", "replace-undo", "single-mode", "auto-advance", "last-question-disabled", "ready-final", "manager-create", "400px-layout"] }));
 } finally {
   if (socket?.readyState === WebSocket.OPEN) { try { await call("Browser.close"); } catch {} socket.close(); }
