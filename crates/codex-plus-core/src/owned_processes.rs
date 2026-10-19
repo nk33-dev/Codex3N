@@ -830,7 +830,8 @@ mod windows_live_tests {
             ],
             Vec::new(),
         );
-        for _ in 0..50 {
+        // CI 的 Windows 机器上，复制出的 node 冷启动可能超过 5 秒，等待上限放宽到 30 秒。
+        for _ in 0..300 {
             if temp.path().join("app.json").exists() && temp.path().join("code.json").exists() {
                 break;
             }
