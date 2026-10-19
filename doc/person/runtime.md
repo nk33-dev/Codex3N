@@ -142,7 +142,7 @@ Windows 安装探测从 MSIX 清单选取桌面应用路径及对应 AUMID，支
 
 MCP 保存、删除和导入后通过 `syncLiveContextEntries` 将启用状态同步到 live 配置，供应商总开关与现有保存互斥保持不变。管理页高度与滚动采用上游 `management-screen` 布局，会话维护仍在 `SessionMaintenance` 单次挂载。验证见管理器前端回归、`manager-window-lifecycle.test.ts` 及多开清单 Rust 单测。
 
-Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。签名与独立 helper 启动回归使用本机 clang 编译的普通 Mach-O，验证重新签名后的执行与源 app 完整性。
+Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允许重试；Chocolatey 三次都不可用时改用 SourceForge 上固定版本（3.13）的官方压缩包，校验 SHA-256 后写入 PATH，升级版本时同步更新哈希。Release 支持选平台补跑，共用标签归属与测试门禁。macOS CI 和发布产包前执行 `cargo test -p codex-plus-core --lib update::macos::tests`，原生签名与真实 DMG 用例只操作临时目录。签名与独立 helper 启动回归使用本机 clang 编译的普通 Mach-O，验证重新签名后的执行与源 app 完整性。
 
 macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-plus` 与 `codex-plus-legacy-shim` 通用二进制，名称从实际 DMG 派生，并通过解压完整性检查。发布附件补跑从 `personal` 的工作流执行，源码仍检出目标标签，保留标签提交。
 
