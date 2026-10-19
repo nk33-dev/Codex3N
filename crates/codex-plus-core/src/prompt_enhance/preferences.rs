@@ -42,8 +42,8 @@ mod tests {
     #[test]
     fn only_selected_preferences_are_sent() {
         let rules = super::guidance("detailed", "p4");
-        assert!(rules.contains("题数完全取决"));
-        assert!(rules.contains("已有") || rules.contains("有基础"));
+        assert!(rules.contains("题数取决于实际缺口"));
+        assert!(rules.contains("P4 初级专员/工程师") && rules.contains("在明确指导下"));
         assert!(!rules.contains("P10"));
         assert!(super::guidance("concise", "nontechnical").contains("不要求用户先懂术语"));
     }
@@ -54,7 +54,11 @@ mod tests {
             for audience in ["nontechnical", "p4", "p5", "p6", "p7", "p8", "p9", "p10"] {
                 let rules = super::guidance(detail, audience);
                 assert!(rules.contains("实际读者、任务类型、范围和格式以用户要求为准"));
-                assert!(!rules.contains("目标、技术栈、核心业务、约束"));
+                if detail == "detailed" {
+                    assert!(rules.contains("其他任务按实际需要组织"));
+                } else {
+                    assert!(!rules.contains("目标、技术栈、核心业务、约束"));
+                }
                 let depth = super::PREFERENCES["details"]
                     .as_array()
                     .unwrap()
@@ -74,7 +78,7 @@ mod tests {
     }
 
     #[test]
-    fn depth_calibration_is_only_sent_with_its_selected_rule() {
+    fn only_selected_depth_is_sent_without_task_examples() {
         let entries = super::PREFERENCES["details"].as_array().unwrap();
         for selected in entries {
             let detail = selected["value"].as_str().unwrap();
@@ -85,10 +89,9 @@ mod tests {
                     entry["value"] == detail
                 );
             }
-            assert_eq!(
-                guidance.contains("给小团队做任务看板，本地先跑"),
-                detail == "detailed"
-            );
+            assert!(!guidance.contains("给小团队做任务看板，本地先跑"));
+            assert!(!guidance.contains("图书管理系统"));
+            assert!(!guidance.contains("0.5"));
         }
     }
 }

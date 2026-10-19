@@ -312,8 +312,9 @@
       }
       const messages = start || options.rounds ? [] : [
         ...state.messages,
+        // 与模型的提问格式一致，避免模型照着裸题目对象回复。
         ...(options.supplementOnly && state.questions[state.activeQuestion]
-          ? [{ role: "assistant", text: JSON.stringify(state.questions[state.activeQuestion]), round: rounds.length }]
+          ? [{ role: "assistant", text: JSON.stringify({ kind: "questions", questions: [state.questions[state.activeQuestion]] }), round: rounds.length }]
           : []),
         ...(["result", "summary"].includes(state.phase)
           ? [{ role: "assistant", text: state.text, round: rounds.length }]
@@ -383,12 +384,15 @@
     state.metadata = result.metadata || null;
     state.started = true;
     if (result.kind === "questions" && Array.isArray(result.questions) && result.questions.length) {
+      // 未作答时重述或补题，当前队列不在 history 里，需一并保留，否则其余题会丢失。
+      const kept = state.questions.length ? [...(payload.history || []), { questions: state.questions, answers: [] }] : payload.history || [];
       let queue;
-      try { queue = codexPlusPromptMergeQuestions(payload.history || [], result.questions); }
+      try { queue = codexPlusPromptMergeQuestions(kept, result.questions); }
       catch (error) { state.phase = "error"; state.error = error.message; renderCodexPlusPromptEnhance(); return; }
+      // 重述、补题请求已由新题落实，留着会让之后的提交又被当成“看不懂”。
       Object.assign(state, {
         phase: "questions", history: payload.history || [], ...queue,
-        other: null, text: "", generated: "",
+        messages: [], other: null, text: "", generated: "",
       });
     } else {
       const text = typeof result.text === "string" ? result.text.trim() : "";

@@ -387,6 +387,19 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   assert.equal(direct.state.phase, "result");
   assert.equal(direct.requests[1].payload.history[0].answers.length, 1, "direct generation uses only confirmed answers");
 
+  const clarify = fixture({ respond: payload => payload.forceFinal ? { status: "ok", kind: "final", text: "结果" }
+    : payload.messages.length ? { status: "ok", kind: "questions", questions: [{ ...question("one"), question: "换个说法" }] }
+    : { status: "ok", kind: "questions", questions: [question("one"), question("two")] } });
+  await clarify.start({}, "grill");
+  await clarify.request({ supplementOnly: true, addition: "这道题没看懂" });
+  assert.equal(clarify.state.questions.map(q => q.id).join(), "one,two", "未作答时重述不丢其余题目");
+  assert.equal(clarify.state.questions[0].question, "换个说法");
+  clarify.state.answers.one = "管理图书";
+  clarify.state.answers.two = "包含借阅";
+  await clarify.request({ forceFinal: true });
+  assert.equal(clarify.requests[2].payload.messages.length, 0, "重述请求已落实，提交答案时不再重发");
+  assert.equal(clarify.state.phase, "result");
+
   const changed = fixture();
   const changing = changed.start({}, "grill");
   await flush();

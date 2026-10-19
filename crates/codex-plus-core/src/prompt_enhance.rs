@@ -275,10 +275,12 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
                 .map(|message| json!({"role":message.role,"content":message.text})),
         );
         // 手动编辑过的结果以 currentText 为准，不能被较早的模型稿覆盖。
+        // 问答中途直接生成时，最后一条可能是早先的“看不懂”或补充问题，需追加最终稿指令。
         if conversation
             .last()
             .is_some_and(|message| message["role"] == "assistant")
             || request.messages.is_empty()
+            || (force_final && request.current_text.is_empty())
         {
             conversation.push(json!({"role":"user","content":if force_final {
                 "根据 currentText 和已确认要求生成完整的最终提示词。"
@@ -663,7 +665,7 @@ mod tests {
         assert_eq!(result["status"], "ok");
         let requests = server.received_requests().await.unwrap();
         let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-        assert_eq!(body["max_tokens"], 2048);
+        assert_eq!(body["max_tokens"], 8192);
         assert!(
             body["messages"][0]["content"]
                 .as_str()
@@ -709,6 +711,45 @@ mod tests {
         .await;
         assert_eq!(result["status"], "ok");
         assert_eq!(result["text"], "目标：修复登录页问题");
+    }
+
+    #[tokio::test]
+    async fn detailed_generation_uses_shared_rules_and_only_the_current_draft() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"message":{"content":"生成结果"}}]
+            })))
+            .mount(&server)
+            .await;
+        let mut config = settings(server.uri(), "chat_completions");
+        config.prompt_enhance.detail = "detailed".into();
+        config.prompt_enhance.audience = "p4".into();
+        let drafts = ["帮我做一个图书管理系统", "为仓库设计领料工具"];
+        for draft in drafts {
+            assert_eq!(generate(request(draft), &config).await["status"], "ok");
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), drafts.len());
+        let expected_system = format!(
+            "{}\n{}",
+            default_system_prompt(),
+            preferences::guidance("detailed", "p4")
+        );
+        for (sent, draft) in requests.iter().zip(drafts) {
+            let body: Value = serde_json::from_slice(&sent.body).unwrap();
+            assert_eq!(
+                body["messages"],
+                json!([
+                    {"role":"system","content":expected_system},
+                    {"role":"user","content":draft}
+                ])
+            );
+            assert!(!expected_system.contains(draft));
+            assert!(!expected_system.contains("Spring Boot"));
+            assert!(!expected_system.contains("0.5"));
+            assert_eq!(body["max_tokens"], 16384);
+        }
     }
 
     #[tokio::test]
@@ -832,7 +873,20 @@ mod tests {
                     assert_eq!(result["kind"], "final");
                     assert_eq!(result["text"], text);
                     let system = result["metadata"]["systemPrompt"].as_str().unwrap();
-                    assert!(!system.contains("目标、技术栈、核心业务、约束"));
+                    let mut expected = format!(
+                        "{}\n{}",
+                        if mode == "grill" {
+                            default_grill_system_prompt()
+                        } else {
+                            default_system_prompt()
+                        },
+                        preferences::guidance(detail, "p4")
+                    );
+                    if mode == "grill" {
+                        expected.push('\n');
+                        expected.push_str(grill::FORMAT);
+                    }
+                    assert_eq!(system, expected);
                     assert!(system.contains("标题来自具体任务"));
                 }
                 for received in server.received_requests().await.unwrap() {
@@ -1024,6 +1078,42 @@ mod tests {
         let user: Value =
             serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
         assert_eq!(user["forceFinal"], false);
+    }
+
+    #[tokio::test]
+    async fn direct_final_after_rephrase_ends_with_final_instruction() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"message":{"content":"{\"kind\":\"final\",\"text\":\"最终稿\"}"}}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut req = request("做个报修小程序");
+        req.mode = "grill".into();
+        req.force_final = true;
+        req.history = vec![sample_round("a")];
+        req.messages = vec![
+            PromptMessage {
+                role: "assistant".into(),
+                text: "{\"id\":\"goal\"}".into(),
+            },
+            PromptMessage {
+                role: "user".into(),
+                text: "这道题没看懂".into(),
+            },
+        ];
+        let result = generate(req, &settings(server.uri(), "chat_completions")).await;
+        assert_eq!(result["kind"], "final");
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages[messages.len() - 2]["content"], "这道题没看懂");
+        assert_eq!(
+            messages.last().unwrap()["content"],
+            "根据 currentText 和已确认要求生成完整的最终提示词。"
+        );
     }
 
     #[tokio::test]
