@@ -26,6 +26,7 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
 - Merges and sorts native and provider models while preserving manual context windows and auto-compaction settings.
 - Adds session pagination, invalid-session checks and hiding, backed-up deletion and project association recovery.
 - Adapts background refresh, floating-panel interaction, host compatibility and mobile relay behavior.
+- Prompt tools beside the composer: **Enhance prompt** completes a draft into a ready-to-send prompt, leaving 【】 blanks for facts only you know; **Clarify needs** asks about gaps with a recommended choice; saved prompts are included. Polish / Standard / Detailed depths and audience profiles (no technical experience, P4–P10) are available. Off by default; enable them in enhancement settings. The same rules ship as the [PromptKit](https://github.com/nk33-dev/dsh-promptkit) plugin for DeepSeek Harness.
 
 Upstream provider, plugin, WeChat, skin, user-script, independent dictation and cache-cleaning features remain available. See the [personal documentation](doc/person/README.md) for behavior and code entry points. In official-login + API mode, model requests always use the configured API; test it in the manager before use.
 
