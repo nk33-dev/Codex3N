@@ -794,6 +794,61 @@ mod tests {
         assert!(!prompt.is_empty());
     }
 
+    #[tokio::test]
+    async fn task_specific_final_formats_survive_both_modes_and_all_depths() {
+        for (prompt, text) in [
+            (
+                "全方面帮我看看项目，看看有没有需要优化的地方",
+                "请先检查当前项目，按证据说明问题、影响与优化建议。",
+            ),
+            (
+                "写封给同事的邮件，100 字以内",
+                "请写一封不超过 100 字的同事邮件，语气自然。",
+            ),
+            (
+                "翻译所给英文，只输出译文",
+                "将所给英文译为中文，保留原意，只输出译文。",
+            ),
+        ] {
+            for mode in ["rewrite", "grill"] {
+                let server = MockServer::start().await;
+                let content = if mode == "grill" {
+                    json!({"kind":"final","text":text}).to_string()
+                } else {
+                    text.to_string()
+                };
+                Mock::given(method("POST"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "choices":[{"message":{"content":content}}]
+                    })))
+                    .mount(&server)
+                    .await;
+                let config = settings(server.uri(), "chat_completions");
+                for detail in ["concise", "standard", "detailed"] {
+                    let mut req = request(prompt);
+                    req.mode = mode.into();
+                    req.detail = Some(detail.into());
+                    let result = generate(req, &config).await;
+                    assert_eq!(result["kind"], "final");
+                    assert_eq!(result["text"], text);
+                    let system = result["metadata"]["systemPrompt"].as_str().unwrap();
+                    assert!(!system.contains("目标、技术栈、核心业务、约束"));
+                    assert!(system.contains("标题来自具体任务"));
+                }
+                for received in server.received_requests().await.unwrap() {
+                    let body: Value = serde_json::from_slice(&received.body).unwrap();
+                    let user = body["messages"][1]["content"].as_str().unwrap();
+                    if mode == "grill" {
+                        let payload: Value = serde_json::from_str(user).unwrap();
+                        assert_eq!(payload["draft"], prompt);
+                    } else {
+                        assert_eq!(user, prompt);
+                    }
+                }
+            }
+        }
+    }
+
     fn sample_round(answer: &str) -> Round {
         Round {
             questions: vec![Question {
