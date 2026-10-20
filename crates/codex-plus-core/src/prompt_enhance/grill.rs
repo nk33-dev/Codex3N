@@ -83,7 +83,87 @@ pub(super) fn validate(history: &[Round]) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub(super) fn parse(text: &str, force_final: bool, limit: usize) -> Value {
+/// 截到字符上限，去掉首尾空白。
+fn clip(value: Option<&Value>, limit: usize) -> String {
+    value
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(limit)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// 模型偶尔多给选项、推荐越界或个别字段类型不对；逐题规整，只丢弃无法使用的题，
+/// 不因为一道题让整批问题失败。
+fn normalize_questions(value: &Value, limit: usize) -> Vec<Question> {
+    let mut questions: Vec<Question> = Vec::new();
+    for item in value.as_array().into_iter().flatten() {
+        if questions.len() >= limit {
+            break;
+        }
+        let question = clip(item.get("question"), 1200);
+        let mut options: Vec<QuestionOption> = Vec::new();
+        let mut kept = Vec::new();
+        for (index, option) in item
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let label = clip(option.get("label").or(Some(option)), 160);
+            if label.is_empty() || options.iter().any(|o| o.label == label) || options.len() >= 6 {
+                continue;
+            }
+            kept.push(index);
+            options.push(QuestionOption {
+                label,
+                description: clip(option.get("description"), 600),
+            });
+        }
+        if question.is_empty() || options.len() < 2 {
+            continue;
+        }
+        let mut id = clip(item.get("id"), 80);
+        if id.is_empty() {
+            id = format!("q{}", questions.len() + 1);
+        }
+        let base = id.clone();
+        let mut suffix = 2;
+        while questions.iter().any(|q| q.id == id) {
+            id = format!("{}_{suffix}", base.chars().take(76).collect::<String>());
+            suffix += 1;
+        }
+        let title = match clip(item.get("title"), 80) {
+            title if title.is_empty() => question.chars().take(80).collect(),
+            title => title,
+        };
+        // 推荐项按原索引找到保留后的位置，被合并或截掉就视为没有推荐。
+        let recommended = item
+            .get("recommended")
+            .and_then(Value::as_u64)
+            .and_then(|index| kept.iter().position(|&k| k as u64 == index));
+        questions.push(Question {
+            id,
+            title,
+            question,
+            basis: clip(item.get("basis"), 600),
+            multi_select: item
+                .get("multiSelect")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            options,
+            recommended,
+        });
+    }
+    questions
+}
+
+/// 去掉代码围栏；模型在 JSON 前后加了说明文字时，取第一个 { 到最后一个 } 之间的内容。
+fn json_object(text: &str) -> Option<Value> {
     let clean = text.trim();
     let clean = clean
         .strip_prefix("```json")
@@ -91,36 +171,47 @@ pub(super) fn parse(text: &str, force_final: bool, limit: usize) -> Value {
         .and_then(|value| value.trim_end().strip_suffix("```"))
         .unwrap_or(clean)
         .trim();
-    let data = serde_json::from_str::<Value>(clean).ok();
-    match data
-        .as_ref()
-        .and_then(|value| value.get("kind"))
-        .and_then(Value::as_str)
-    {
+    serde_json::from_str::<Value>(clean)
+        .ok()
+        .or_else(|| {
+            let start = clean.find('{')?;
+            let end = clean.rfind('}')?;
+            serde_json::from_str::<Value>(clean.get(start..=end)?).ok()
+        })
+        .filter(Value::is_object)
+}
+
+pub(super) fn parse(text: &str, force_final: bool, limit: usize) -> Value {
+    let data = json_object(text);
+    let kind = data.as_ref().and_then(|value| {
+        value.get("kind").and_then(Value::as_str).or_else(|| {
+            value
+                .get("questions")
+                .is_some_and(Value::is_array)
+                .then_some("questions")
+        })
+    });
+    match kind {
         Some("questions") => {
-            if let Some(questions) = data
-                .as_ref()
-                .and_then(|value| value.get("questions"))
-                .and_then(|value| serde_json::from_value::<Vec<Question>>(value.clone()).ok())
-                && valid_questions(&questions, limit)
-            {
+            let questions = normalize_questions(&data.as_ref().unwrap()["questions"], limit);
+            if !questions.is_empty() {
                 if force_final {
                     return json!({"status":"failed","message":"模型仍在追问，请重试直接生成"});
                 }
                 return json!({"status":"ok","kind":"questions","questions":questions});
             }
         }
-        Some("summary" | "final") => {
+        Some(kind @ ("summary" | "final")) => {
             if let Some(text) = data
                 .as_ref()
                 .and_then(|value| value.get("text"))
                 .and_then(Value::as_str)
                 && bounded(text, 40_000)
             {
-                if force_final && data.as_ref().unwrap()["kind"] != "final" {
+                if force_final && kind != "final" {
                     return json!({"status":"failed","message":"模型没有生成提示词，请重试"});
                 }
-                return json!({"status":"ok","kind":data.as_ref().unwrap()["kind"],"text":text.trim()});
+                return json!({"status":"ok","kind":kind,"text":text.trim()});
             }
         }
         _ => {}

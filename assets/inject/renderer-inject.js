@@ -17633,6 +17633,7 @@
     pencil: ["M3 13l1-3 7-7 2 2-7 7-3 1Z"],
     trash: ["M3 4h10", "M5 4V2h6v2", "M4 4l1 10h6l1-10"],
     swap: ["M3 6h9", "M9 3l3 3-3 3", "M13 10H4", "M7 13l-3-3 3-3"],
+    check: ["M3.5 8.5 6.5 11.5 12.5 4.5"],
     grip: ["M6 3h.01", "M10 3h.01", "M6 8h.01", "M10 8h.01", "M6 13h.01", "M10 13h.01"],
   };
 
@@ -17880,6 +17881,15 @@
     renderCodexPlusPromptEnhance();
   }
 
+  // 单选显示数字键；多选显示复选框，和单选一眼区分开，数字键照样可用。
+  function codexPlusPromptOptionMarker(question, index, selected) {
+    if (!question.multiSelect) return codexPlusPromptNode("span", "codex-plus-prompt-option-number", String(index + 1));
+    const box = codexPlusPromptNode("span", "codex-plus-prompt-check");
+    box.title = `按 ${index + 1} 勾选`;
+    if (selected) box.append(codexPlusPromptIcon("check"));
+    return box;
+  }
+
   function createCodexPlusPromptEnhanceQuestions() {
     const state = codexPlusPromptEnhance;
     const wrapper = codexPlusPromptNode("div", "codex-plus-prompt-questions");
@@ -17890,7 +17900,7 @@
     heading.append(codexPlusPromptIconButton("rotate", "换个问题", "rephrase", { disabled: state.locked }));
     wrapper.append(heading);
     if (question.basis) wrapper.append(codexPlusPromptNode("p", "codex-plus-prompt-caption codex-plus-prompt-basis", question.basis));
-    if (question.multiSelect) wrapper.append(codexPlusPromptNode("p", "codex-plus-prompt-caption", "可多选"));
+    if (question.multiSelect) wrapper.append(codexPlusPromptNode("p", "codex-plus-prompt-caption codex-plus-prompt-multi", "可多选，选好后点 › 继续"));
     const group = codexPlusPromptNode("div", "codex-plus-prompt-options");
     group.setAttribute("role", question.multiSelect ? "group" : "radiogroup");
     group.setAttribute("aria-label", question.question);
@@ -17902,7 +17912,7 @@
       button.setAttribute("role", question.multiSelect ? "checkbox" : "radio");
       button.setAttribute("aria-checked", String(selected));
       button.disabled = state.locked;
-      button.append(codexPlusPromptNode("span", "codex-plus-prompt-option-number", String(index + 1)));
+      button.append(codexPlusPromptOptionMarker(question, index, selected));
       const text = codexPlusPromptNode("span", "codex-plus-prompt-option-text");
       text.append(codexPlusPromptNode("strong", "", option.label));
       if (index === question.recommended) text.append(codexPlusPromptNode("span", "codex-plus-prompt-badge", "推荐"));
@@ -17914,7 +17924,7 @@
     const custom = codexPlusPromptAnswerValues(current).find(value => !question.options.some(option => option.label === value)) || "";
     if (state.other !== null) {
       const row = codexPlusPromptNode("div", "codex-plus-prompt-option codex-plus-prompt-option-editing");
-      row.append(codexPlusPromptNode("span", "codex-plus-prompt-option-number", String(question.options.length + 1)));
+      row.append(codexPlusPromptOptionMarker(question, question.options.length, false));
       const input = document.createElement("input");
       input.className = "codex-plus-prompt-input";
       input.maxLength = 3000;
@@ -17946,7 +17956,7 @@
       button.setAttribute("role", question.multiSelect ? "checkbox" : "radio");
       button.setAttribute("aria-checked", String(!!custom));
       button.disabled = state.locked;
-      button.append(codexPlusPromptNode("span", "codex-plus-prompt-option-number", String(question.options.length + 1)));
+      button.append(codexPlusPromptOptionMarker(question, question.options.length, !!custom));
       button.append(codexPlusPromptNode("span", "codex-plus-prompt-option-text", custom || "其他…"));
       button.addEventListener("click", () => { state.other = custom; renderCodexPlusPromptEnhance(); });
       group.append(button);
@@ -18014,7 +18024,13 @@
     positionCodexPlusPromptCard(card);
     const key = `${state.revision}:${state.phase}:${state.activeQuestion}:${state.locked}:${state.other !== null}:${state.error}`;
     if (card.dataset.renderKey === key) return;
+    // 整块重建会让滚动区回到顶部；同一题内的重绘（多选、自填、添加选项）保留原滚动位置。
+    const view = `${state.phase}:${state.activeQuestion}:${state.questions.length}`;
+    const sameView = card.dataset.renderView === view;
+    const scrollTop = sameView ? card.querySelector(".codex-plus-prompt-body")?.scrollTop || 0 : 0;
+    const focusedOption = sameView ? [...card.querySelectorAll(".codex-plus-prompt-option")].indexOf(document.activeElement) : -1;
     card.dataset.renderKey = key;
+    card.dataset.renderView = view;
     const children = [];
     const header = codexPlusPromptNode("header", "codex-plus-prompt-head");
     const title = codexPlusPromptNode("h2", "", state.mode === "grill" ? "需求对齐" : "增强提示词");
@@ -18197,6 +18213,9 @@
     }
     children.push(footer);
     card.replaceChildren(...children);
+    if (scrollTop) body.scrollTop = scrollTop;
+    // 点过的选项被重建后焦点落回同一位置，键盘和读屏不会跳到卡片开头。
+    if (focusedOption >= 0) card.querySelectorAll(".codex-plus-prompt-option")[focusedOption]?.focus?.({ preventScroll: true });
     const focused = document.activeElement;
     if (!focused || focused === document.body || focused === state.target?.editor || !focused.isConnected)
       card.focus?.({ preventScroll: true });
@@ -18419,6 +18438,10 @@
       .codex-plus-prompt-option.is-selected{border-color:var(--color-token-border-heavy,#8885);background:var(--color-token-interactive-bg-secondary-hover,#fff1)}
       .codex-plus-prompt-option:disabled{opacity:.5;cursor:default}
       .codex-plus-prompt-option-number{display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;border:0;background:var(--color-token-interactive-bg-secondary-hover,#8883);border-radius:6px;font-size:12px;color:var(--color-token-text-tertiary,inherit)}
+      .codex-plus-prompt-check{display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;width:18px;height:18px;margin:5px;border:1.5px solid var(--color-token-text-tertiary,#888);border-radius:4px}
+      .codex-plus-prompt-option[aria-checked=true] .codex-plus-prompt-check{border-color:var(--color-token-text-primary,currentColor);background:var(--color-token-text-primary,currentColor)}
+      .codex-plus-prompt-option[aria-checked=true] .codex-plus-prompt-check svg{width:14px;height:14px;color:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));stroke-width:2}
+      .codex-plus-prompt-multi{font-weight:500;color:var(--color-token-text-secondary,inherit)}
       .codex-plus-prompt-option-text{min-width:0;overflow-wrap:anywhere;display:block}
       .codex-plus-prompt-option-text strong{font-weight:500}
       .codex-plus-prompt-option-text small{display:block;margin-top:3px;font-size:13px;color:var(--color-token-text-tertiary,inherit)}

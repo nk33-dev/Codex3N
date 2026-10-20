@@ -1196,7 +1196,10 @@ mod tests {
             extra.id = "extra".into();
             questions.push(extra);
             let raw = json!({"kind":"questions","questions":questions}).to_string();
-            assert_eq!(grill::parse(&raw, false, limit)["status"], "failed");
+            // 超出上限的题截掉，不让整批失败。
+            let parsed = grill::parse(&raw, false, limit);
+            assert_eq!(parsed["status"], "ok");
+            assert_eq!(parsed["questions"].as_array().unwrap().len(), limit);
             assert!(
                 grill::validate(&[Round {
                     questions,
@@ -1208,6 +1211,54 @@ mod tests {
         assert_eq!(
             grill::parse(r#"{"kind":"final","text":"完整提示词"}"#, false, 3)["kind"],
             "final"
+        );
+    }
+
+    #[test]
+    fn grill_parse_normalizes_slightly_off_questions() {
+        let options = |n: usize| {
+            (0..n)
+                .map(|i| json!({"label":format!("选项{i}"),"description":"说明"}))
+                .collect::<Vec<_>>()
+        };
+        let raw = json!({"kind":"questions","questions":[
+            {"id":"modules","title":"模块","question":"包含哪些模块？","multiSelect":true,"options":options(8),"recommended":7},
+            {"id":"empty","title":"","question":"只有一个选项","options":options(1)},
+            {"id":"modules","question":"重复编号也保留","options":[{"label":"甲"},{"label":"甲"},"乙"],"recommended":2},
+        ]});
+        let parsed = grill::parse(
+            &format!(
+                "下面是问题：
+{raw}
+请回答。"
+            ),
+            false,
+            7,
+        );
+        assert_eq!(parsed["status"], "ok");
+        let questions = parsed["questions"].as_array().unwrap();
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[0]["options"].as_array().unwrap().len(), 6);
+        assert!(questions[0]["recommended"].is_null());
+        assert_eq!(questions[0]["multiSelect"], true);
+        assert_eq!(questions[1]["id"], "modules_2");
+        assert_eq!(questions[1]["title"], "重复编号也保留");
+        assert_eq!(questions[1]["options"].as_array().unwrap().len(), 2);
+        // 原索引 2 的「乙」去重后在位置 1。
+        assert_eq!(questions[1]["recommended"], 1);
+        let parsed: Vec<Question> = serde_json::from_value(parsed["questions"].clone()).unwrap();
+        assert!(
+            grill::validate(&[Round {
+                questions: parsed,
+                answers: vec![]
+            }])
+            .is_ok()
+        );
+        let none =
+            json!({"kind":"questions","questions":[{"id":"a","question":"","options":options(3)}]});
+        assert_eq!(
+            grill::parse(&none.to_string(), false, 7)["status"],
+            "failed"
         );
     }
 

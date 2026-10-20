@@ -33,7 +33,7 @@ window.fixtureRequest=async(action,payload={})=>{
   if(action==='generate'){
     if(payload.mode==='grill'&&!payload.forceFinal){
       if((payload.history||[]).length)return{status:'ok',kind:'final',text:'实现图书管理系统，后端使用 Java，包含图书、借阅和搜索。'};
-      return{status:'ok',kind:'questions',questions:[{id:'stack',title:'技术方向',question:'后端打算用什么语言？',options:[{label:'Java',description:'适合 Spring Boot 项目'},{label:'Python',description:'适合 Django 或 FastAPI 项目'}],recommended:0},{id:'features',title:'功能范围',question:'第一版需要哪些功能？',multiSelect:true,options:[{label:'图书和借阅',description:'先做基本流程'},{label:'加上用户管理',description:'区分管理员和读者'}],recommended:0}]};
+      return{status:'ok',kind:'questions',questions:[{id:'stack',title:'技术方向',question:'后端打算用什么语言？',options:[{label:'Java',description:'适合 Spring Boot 项目'},{label:'Python',description:'适合 Django 或 FastAPI 项目'}],recommended:0},{id:'features',title:'功能范围',question:'第一版需要哪些功能？',multiSelect:true,options:[{label:'图书和借阅',description:'先做基本流程'},{label:'加上用户管理',description:'区分管理员和读者'},{label:'预约与到馆通知',description:'书被借出时可以排队，归还后通知'},{label:'逾期与罚金',description:'按天数计算逾期，记录缴费'},{label:'统计报表',description:'按月统计借阅量和热门图书'},{label:'批量导入导出',description:'用 Excel 批量录入图书和读者'}],recommended:0}]};
     }
     return{status:'ok',kind:'final',text:'请修复登录错误，并补充回归验证。',metadata:{mode:payload.mode||'rewrite',scenario:payload.scenario||'general',model:'fixture',systemPrompt:'规则'}};
   }
@@ -179,6 +179,19 @@ try {
   await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option').click()");
   await eventually(() => evaluate("promptFixture.state.activeQuestion===1"), "自动下一题");
   assert.equal(await evaluate("document.querySelector('[data-prompt-enhance-action=next]').disabled"), true);
+  // 多选：滚到底部点选项后保持滚动位置，并有复选框形状提示。
+  await call("Emulation.setDeviceMetricsOverride", { width: 400, height: 560, deviceScaleFactor: 1, mobile: false });
+  await evaluate("window.dispatchEvent(new Event('resize'))");
+  await eventually(() => evaluate("(b=>b.scrollHeight>b.clientHeight)(document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-body'))"), "选项需要滚动");
+  assert.equal(await evaluate("!!document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-check')"), true, "multi-select shows checkboxes");
+  await evaluate("(b=>{b.scrollTop=b.scrollHeight})(document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-body'))");
+  const scrolled = await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-body').scrollTop");
+  assert.ok(scrolled > 0);
+  await evaluate("[...document.querySelectorAll('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option[role=checkbox]')].at(-2).click()");
+  await eventually(() => evaluate("document.querySelectorAll('#codex-plus-prompt-enhance-panel [role=checkbox][aria-checked=true]').length===1"), "多选记录");
+  assert.equal(await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-body').scrollTop"), scrolled, "picking keeps the scroll position");
+  await shot("multi-select-400.png");
+  await call("Emulation.setDeviceMetricsOverride", { width: 400, height: 800, deviceScaleFactor: 1, mobile: false });
   await evaluate("document.querySelector('#codex-plus-prompt-enhance-panel .codex-plus-prompt-option').click()");
   assert.equal(await evaluate("document.querySelector('[data-prompt-enhance-action=next]').disabled"), false);
   await evaluate("document.querySelector('[data-prompt-enhance-action=next]').click()");
@@ -200,7 +213,7 @@ try {
   await call("Emulation.setDeviceMetricsOverride", { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
   await shot("manager-1000.png");
 
-  console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "live-search", "draft-append", "delete-undo", "mode-menu", "replace-undo", "single-mode", "auto-advance", "last-question-disabled", "ready-final", "manager-create", "400px-layout"] }));
+  console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "live-search", "draft-append", "delete-undo", "mode-menu", "replace-undo", "single-mode", "auto-advance", "multi-select-scroll", "last-question-disabled", "ready-final", "manager-create", "400px-layout"] }));
 } finally {
   if (socket?.readyState === WebSocket.OPEN) { try { await call("Browser.close"); } catch {} socket.close(); }
   child.kill(); server.close();
