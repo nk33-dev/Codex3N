@@ -809,11 +809,12 @@
     const question = state.questions[state.activeQuestion];
     if (!question) return wrapper;
     const heading = codexPlusPromptNode("div", "codex-plus-prompt-question-heading");
-    heading.append(codexPlusPromptNode("h3", "codex-plus-prompt-question", question.question));
+    const title = codexPlusPromptNode("h3", "codex-plus-prompt-question", question.question);
+    if (question.multiSelect) title.append(codexPlusPromptNode("span", "codex-plus-prompt-multi", "多选"));
+    heading.append(title);
     heading.append(codexPlusPromptIconButton("rotate", "换个问题", "rephrase", { disabled: state.locked }));
     wrapper.append(heading);
     if (question.basis) wrapper.append(codexPlusPromptNode("p", "codex-plus-prompt-caption codex-plus-prompt-basis", question.basis));
-    if (question.multiSelect) wrapper.append(codexPlusPromptNode("p", "codex-plus-prompt-caption codex-plus-prompt-multi", "可多选，选好后点 › 继续"));
     const group = codexPlusPromptNode("div", "codex-plus-prompt-options");
     group.setAttribute("role", question.multiSelect ? "group" : "radiogroup");
     group.setAttribute("aria-label", question.question);
@@ -1354,7 +1355,7 @@
       .codex-plus-prompt-check{display:inline-flex;align-items:center;justify-content:center;flex:none;box-sizing:border-box;width:18px;height:18px;margin:5px;border:1.5px solid var(--color-token-text-tertiary,#888);border-radius:4px}
       .codex-plus-prompt-option[aria-checked=true] .codex-plus-prompt-check{border-color:var(--color-token-text-primary,currentColor);background:var(--color-token-text-primary,currentColor)}
       .codex-plus-prompt-option[aria-checked=true] .codex-plus-prompt-check svg{width:14px;height:14px;color:var(--color-token-dropdown-background,var(--color-token-main-surface-primary,#2d2d2d));stroke-width:2}
-      .codex-plus-prompt-multi{font-weight:500;color:var(--color-token-text-secondary,inherit)}
+      .codex-plus-prompt-multi{display:inline-block;margin-left:8px;padding:0 7px;border:1px solid currentColor;border-radius:999px;font-size:12px;font-weight:500;line-height:18px;vertical-align:2px;color:var(--color-token-text-link,#8ab4f8)}
       .codex-plus-prompt-option-text{min-width:0;overflow-wrap:anywhere;display:block}
       .codex-plus-prompt-option-text strong{font-weight:500}
       .codex-plus-prompt-option-text small{display:block;margin-top:3px;font-size:13px;color:var(--color-token-text-tertiary,inherit)}
