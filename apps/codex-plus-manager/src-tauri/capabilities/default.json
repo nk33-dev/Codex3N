@@ -1,10 +1,11 @@
 {
   "identifier": "default",
   "description": "主窗口仅允许设置页调用文件打开与保存对话框。",
-  "windows": ["main"],
+  "windows": ["main", "cu-pip"],
   "permissions": [
     "core:default",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "core:window:allow-start-dragging"
   ]
 }

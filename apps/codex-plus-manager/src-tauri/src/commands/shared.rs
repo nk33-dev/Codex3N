@@ -20,7 +20,7 @@ where
     pub payload: T,
 }
 
-pub(super) fn ok<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
+pub(crate) fn ok<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     CommandResult {
         status: "ok".to_string(),
         message: message.to_string(),
@@ -28,7 +28,7 @@ pub(super) fn ok<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     }
 }
 
-pub(super) fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
+pub(crate) fn failed<T: Serialize>(message: &str, payload: T) -> CommandResult<T> {
     CommandResult {
         status: "failed".to_string(),
         message: message.to_string(),

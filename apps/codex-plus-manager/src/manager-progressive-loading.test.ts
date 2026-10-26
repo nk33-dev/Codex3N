@@ -52,7 +52,8 @@ function harness(file: string, component: string) {
     "@/i18n": { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, i) => String(args[i])) },
     "./i18n": { t: (text: string) => text },
   };
-  const context = vm.createContext({ React, exports: {}, require: (name: string) => modules[name] ?? new Proxy({}, { get: (_, key) => String(key) }) });
+  const storage = new Map<string, string>();
+  const context = vm.createContext({ React, localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) }, exports: {}, require: (name: string) => modules[name] ?? new Proxy({}, { get: (_, key) => String(key) }) });
   vm.runInContext(`${compiled}\nglobalThis.component = ${component};`, context);
   return {
     calls, notices,

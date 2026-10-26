@@ -23,6 +23,7 @@
       '[data-message-author-role]',
       '[data-testid="conversation-turn"]',
       '[data-content-search-turn-key]',
+      '[data-tab-id^="sidechat:"]',
       '[class*="user-message"]',
       '[class*="UserMessage"]',
       selectors.conversationViewScrollContainer,
@@ -135,7 +136,9 @@
 
   function scheduleScan(mutations) {
     if (codexPlusScanDisposed) return;
+    const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
     const work = scanWorkForMutations(mutations);
+    if (sessionActionsNeedScan) work.sidebar = true;
     if (!Object.keys(work).length && !Object.keys(codexPlusPendingScanWork).length) return;
     Object.assign(codexPlusPendingScanWork, work);
     if (document.hidden || codexPlusScanComposing) {

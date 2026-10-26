@@ -1,8 +1,8 @@
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ArrowRight, BookOpen, ChevronDown, Copy, Edit3, ExternalLink, History, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
-import { t } from "./i18n";
-import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
+import { ArrowRight, BookOpen, ChevronDown, Edit3, ExternalLink, Link, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
+import { t, tf } from "./i18n";
+import { matchesManagementQuery } from "./management-model";
 import { ManagementDrawer } from "./ManagementPages";
 import "./ManagementPages.css";
 import { parseSkillRepository } from "./skill-repository";
@@ -14,6 +14,7 @@ type Skill = { id: string; name: string; description: string; repoKey: string; r
 type Repo = { owner: string; name: string; branch: string; subdir: string; enabled: boolean };
 type SkillPayload = Result & { skills: Skill[]; repos: Repo[]; repositorySkills: Skill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string };
 type RepoInspection = Result & { repo: Repo; skills: Skill[]; skillCount: number };
+const SKILL_GROUP_STORAGE_KEY = "codex-plus-plus.skill-groups.v1";
 const ok = (r: Result) => r.status === "ok";
 function Button({ children, onClick, disabled, primary }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean }) { return <button type="button" className={"mg-button " + (primary ? "mg-primary" : "")} onClick={onClick} disabled={disabled}>{children}</button>; }
 function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) { return <div className="mg-search"><Search size={14} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></div>; }
@@ -164,9 +165,30 @@ function SkillDetailDrawer({ skill, count, onClose, onOpenUrl, onOpenRepo }: { s
   return <ManagementDrawer dismissOnBackdrop={false} title={skill.name || skill.id} onClose={onClose}><dl className="mg-detail"><dt>{t("来源")}</dt><dd>{url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : sourceLabel(skill)}</dd><dt>{t("Skill ID")}</dt><dd>{skill.id}</dd><dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}</dd><dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>{url && <><dt>GitHub</dt><dd><button className="mg-link-button" type="button" onClick={() => onOpenUrl(url)}><ExternalLink size={13}/>{url}</button></dd></>}</dl></ManagementDrawer>;
 }
 export function SkillsPage({ notify }: { notify: Notify }) {
-  const [data, setData] = useState<SkillPayload | null>(null); const [tab, setTab] = useState<"discover" | "installed">("discover"); const [query, setQuery] = useState(""); const [busy, setBusy] = useState(false); const [repoOpen, setRepoOpen] = useState(false); const [detail, setDetail] = useState<Skill | null>(null);
+  const [data, setData] = useState<SkillPayload | null>(null);
+  const [tab, setTab] = useState<"discover" | "installed">("discover");
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [detail, setDetail] = useState<Skill | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [customGroupNames, setCustomGroupNames] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SKILL_GROUP_STORAGE_KEY) || "{}");
+      return Array.isArray(raw.names) ? raw.names.filter((name: unknown): name is string => typeof name === "string" && name.trim().length > 0) : [];
+    } catch { return []; }
+  });
+  const [customGroupAssignments, setCustomGroupAssignments] = useState<Record<string, string>>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SKILL_GROUP_STORAGE_KEY) || "{}");
+      return raw.assignments && typeof raw.assignments === "object" ? raw.assignments : {};
+    } catch { return {}; }
+  });
+  useEffect(() => {
+    localStorage.setItem(SKILL_GROUP_STORAGE_KEY, JSON.stringify({ names: customGroupNames, assignments: customGroupAssignments }));
+  }, [customGroupNames, customGroupAssignments]);
   const mounted = useRef(true), loadRevision = useRef(0), loadPending = useRef(false), operationPending = useRef(false);
   const load = async (command = "refresh_skill_catalog") => {
     if (loadPending.current || operationPending.current) return;
@@ -211,6 +233,36 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     }
   };
   const saveRepo = (repo: Repo, previousKey?: string) => run("upsert_skill_repo", { repo, previousKey }, true);
+  const runBatch = async (skills: Skill[], enabled: boolean) => {
+    if (operationPending.current) return;
+    const targets = skills.filter((skill) => skill.installed && !skill.bundled && skill.enabled !== enabled);
+    if (!targets.length) {
+      await notify("Skills", enabled ? t("该组没有可启用的 Skill") : t("该组没有可停用的 Skill"), "ok");
+      return;
+    }
+    operationPending.current = true;
+    const revision = ++loadRevision.current;
+    setBusy(true);
+    setLoading(false);
+    try {
+      let latest: SkillPayload | null = null;
+      let completed = 0;
+      for (const skill of targets) {
+        latest = await invoke<SkillPayload>("set_skill_enabled", { id: skill.id, enabled });
+        if (!mounted.current || revision !== loadRevision.current) return;
+        if (!ok(latest)) break;
+        completed++;
+      }
+      if (latest) setData(latest);
+      const failed = latest ? !ok(latest) : false;
+      await notify("Skills", failed && latest ? latest.message : tf("已批量{0} {1} 个 Skill", [enabled ? t("启用") : t("停用"), completed]), failed ? "failed" : "ok");
+    } catch (error) {
+      if (mounted.current && revision === loadRevision.current) await notify("Skills", String(error), "failed");
+    } finally {
+      operationPending.current = false;
+      if (mounted.current && revision === loadRevision.current) setBusy(false);
+    }
+  };
   const deleteRepo = async (repo: Repo) => { await run("delete_skill_repo", { key: repoKey(repo) }); };
   const inspectRepo = async (repo: Repo) => {
     const revision = loadRevision.current;
@@ -223,8 +275,76 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   };
   const openRepo = (key: string) => { setRepoSelection(key); setDetail(null); setRepoOpen(true); };
   const deferredQuery = useDeferredValue(query);
-  const items = useMemo(() => (data?.skills || []).filter((s) => (tab === "installed" ? s.installed : !s.installed || s.bundled)).filter((s) => matchesManagementQuery([s.id, s.name, s.description, s.repoKey, sourceLabel(s)], deferredQuery)), [data, tab, deferredQuery]);
-  const openUrl = async (url: string) => { try { await invoke("open_external_url", { url }); } catch (e) { await notify("Skills", String(e), "failed"); } };
+  const items = useMemo(() => (data?.skills || [])
+    .filter((s) => (tab === "installed" ? s.installed : !s.installed || s.bundled))
+    .filter((s) => matchesManagementQuery([s.id, s.name, s.description, s.repoKey, sourceLabel(s)], deferredQuery)), [data, tab, deferredQuery]);
+  const groups = useMemo(() => {
+    const grouped = new Map<string, Skill[]>();
+    for (const skill of items) {
+      const source = customGroupAssignments[skill.id] || sourceLabel(skill);
+      const list = grouped.get(source) || [];
+      list.push(skill);
+      grouped.set(source, list);
+    }
+    return [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [items, customGroupAssignments]);
+  const openUrl = async (url: string) => {
+    try { await invoke("open_external_url", { url }); }
+    catch (e) { await notify("Skills", String(e), "failed"); }
+  };
+  const createCustomGroup = () => {
+    const normalized = window.prompt(t("新建 Skill 分组"), "")?.trim();
+    if (!normalized || customGroupNames.includes(normalized)) return;
+    setCustomGroupNames((old) => [...old, normalized]);
+  };
+  const renameCustomGroup = (oldName: string) => {
+    const normalized = window.prompt(t("重命名 Skill 分组"), oldName)?.trim();
+    if (!normalized || normalized === oldName || customGroupNames.includes(normalized)) return;
+    setCustomGroupNames((old) => old.map((item) => item === oldName ? normalized : item));
+    setCustomGroupAssignments((old) => Object.fromEntries(Object.entries(old).map(([id, group]) => [id, group === oldName ? normalized : group])));
+  };
+  const deleteCustomGroup = (name: string) => {
+    if (!window.confirm(tf("删除分组“{0}”？其中的 Skill 将回到来源分组。", [name]))) return;
+    setCustomGroupNames((old) => old.filter((item) => item !== name));
+    setCustomGroupAssignments((old) => Object.fromEntries(Object.entries(old).filter(([, group]) => group !== name)));
+  };
+  const assignSkillGroup = (skillId: string, group: string) => {
+    setCustomGroupAssignments((old) => {
+      const next = { ...old };
+      if (group) next[skillId] = group;
+      else delete next[skillId];
+      return next;
+    });
+  };
+  const renderSkillRow = (s: Skill) => <div className="mg-skill-row" key={s.repoKey + ":" + s.id}>
+    <button type="button" className="mg-skill-name" onClick={() => setDetail(s)}>
+      <strong title={s.name || s.id}>{s.name || s.id}</strong>
+      <small title={s.description}>{s.description || t("暂无描述")}</small>
+    </button>
+    <div className="mg-skill-source" title={s.repoKey || sourceLabel(s)}>
+      {repoUrl(s) ? <button className="mg-link-button" onClick={() => openRepo(s.repoKey)}>{sourceLabel(s)}</button> : sourceLabel(s)}
+      <select className="mg-skill-group-select" aria-label={t("分配 Skill 分组")} value={customGroupAssignments[s.id] || ""} onChange={(event) => assignSkillGroup(s.id, event.currentTarget.value)}>
+        <option value="">{t("按来源")}</option>
+        {customGroupNames.map((group) => <option key={group} value={group}>{group}</option>)}
+      </select>
+    </div>
+    <div className="mg-skill-status">
+      <div className="mg-status-toggle">
+        {s.bundled ? <span className="mg-readonly">{t("只读")}</span> :
+          <button className={"mg-switch " + (s.enabled ? "is-on" : "")} type="button" role="switch"
+            aria-checked={s.enabled} aria-label={`${s.name || s.id} ${t("启用技能")}`}
+            disabled={!s.installed || busy}
+            onClick={() => void run("set_skill_enabled", { id: s.id, enabled: !s.enabled })}><span /></button>}
+      </div>
+      <span className="mg-badge">{s.installed ? (s.enabled ? t("已启用") : t("已停用")) : t("未安装")}</span>
+    </div>
+    <div className="mg-row-actions">
+      {s.installed ? <>
+        {s.updateAvailable && <Button onClick={() => void run("update_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("更新")}</Button>}
+        {!s.bundled && <Button onClick={() => void run("uninstall_skill", { id: s.id })} disabled={busy}>{t("卸载")}</Button>}
+      </> : !s.bundled && <Button primary onClick={() => void run("install_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("安装")}</Button>}
+    </div>
+  </div>;
   return <div className="mg-page mg-skills-page">
     <Header icon={<BookOpen size={20}/>} title="Skills" actions={<>
       <Button onClick={() => void load()} disabled={busy || loading}><RefreshCw size={14}/>{t("刷新目录")}</Button>
@@ -237,118 +357,33 @@ export function SkillsPage({ notify }: { notify: Notify }) {
         <button type="button" data-active={tab === "installed"} onClick={() => setTab("installed")}>{t("已安装")} · {(data?.skills || []).filter((s) => s.installed).length}</button>
       </div>
       <SearchBox value={query} onChange={setQuery} placeholder={t("搜索 Skills 或仓库")} />
+      <Button onClick={createCustomGroup}>{t("新建分组")}</Button>
+      {groups.length > 1 ? <>
+        <Button onClick={() => setCollapsedGroups(new Set(groups.map(([source]) => source)))}>{t("全部折叠")}</Button>
+        <Button onClick={() => setCollapsedGroups(new Set())}>{t("全部展开")}</Button>
+      </> : null}
     </div>
     <div className="mg-content">
-      <SkillListViewport className="mg-skill-list" items={items} rowHeight={68} resetKey={`${tab}:${deferredQuery}`} busy={loading}
-        header={<div className="mg-skill-head"><span>{t("技能")}</span><span>{t("来源")}</span><span>{t("状态")}</span><span /></div>}
-        empty={<div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div>}
-        renderRow={(s) => <div className="mg-skill-row" key={s.repoKey + ":" + s.id}>
-          <button type="button" className="mg-skill-name" onClick={() => setDetail(s)}>
-            <strong title={s.name || s.id}>{s.name || s.id}</strong>
-            <small title={s.description}>{s.description || t("暂无描述")}</small>
-          </button>
-          <div className="mg-skill-source" title={s.repoKey || sourceLabel(s)}>{repoUrl(s) ? <button className="mg-link-button" onClick={() => openRepo(s.repoKey)}>{sourceLabel(s)}</button> : sourceLabel(s)}</div>
-          <div className="mg-skill-status">
-            <div className="mg-status-toggle">
-              {s.bundled ? <span className="mg-readonly">{t("只读")}</span> :
-                <button className={"mg-switch " + (s.enabled ? "is-on" : "")} type="button" role="switch"
-                  aria-checked={s.enabled} aria-label={`${s.name || s.id} ${t("启用技能")}`}
-                  disabled={!s.installed || busy}
-                  onClick={() => void run("set_skill_enabled", { id: s.id, enabled: !s.enabled })}><span /></button>}
+      {!groups.length ? <div className="mg-skill-list"><div className="mg-empty"><h2>{loading ? t("正在扫描…") : t("没有匹配的 Skill")}</h2></div></div> : groups.map(([source, groupItems]) => {
+        const collapsed = collapsedGroups.has(source) && !query.trim();
+        const canBatch = groupItems.some((skill) => skill.installed && !skill.bundled);
+        const custom = customGroupNames.includes(source);
+        return <section className="mg-skill-group" key={source}>
+          <div className="mg-skill-group-head">
+            <button type="button" className="mg-group-head" onClick={() => setCollapsedGroups((old) => { const next = new Set(old); next.has(source) ? next.delete(source) : next.add(source); return next; })}>
+              <ChevronDown size={15} className={collapsed ? "mg-chevron-collapsed" : ""}/><strong>{source}</strong><small>{groupItems.length} {t("个 Skill")}</small>
+            </button>
+            <div className="mg-row-actions">
+              {custom ? <><Button disabled={busy} onClick={() => renameCustomGroup(source)}>{t("重命名")}</Button><Button disabled={busy} onClick={() => deleteCustomGroup(source)}>{t("删除分组")}</Button></> : null}
+              {canBatch ? <><Button disabled={busy} onClick={() => void runBatch(groupItems, true)}>{t("全部启用")}</Button><Button disabled={busy} onClick={() => void runBatch(groupItems, false)}>{t("全部停用")}</Button></> : null}
             </div>
-            <span className="mg-badge">{s.installed ? (s.enabled ? t("已启用") : t("已停用")) : t("未安装")}</span>
           </div>
-          <div className="mg-row-actions">
-            {s.installed ? <>
-              {s.updateAvailable && <Button onClick={() => void run("update_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("更新")}</Button>}
-              {!s.bundled && <Button onClick={() => void run("uninstall_skill", { id: s.id })} disabled={busy}>{t("卸载")}</Button>}
-            </> : !s.bundled && <Button primary onClick={() => void run("install_skill", { repoKey: s.repoKey, id: s.id })} disabled={busy}>{t("安装")}</Button>}
-          </div>
-        </div>} />
+          {!collapsed ? <SkillListViewport className="mg-skill-list" items={groupItems} rowHeight={68} resetKey={`${tab}:${source}:${deferredQuery}`} busy={loading} header={<div className="mg-skill-head"><span>{t("技能")}</span><span>{t("来源")}</span><span>{t("状态")}</span><span /></div>} empty={<div className="mg-empty"><h2>{t("没有匹配的 Skill")}</h2></div>} renderRow={renderSkillRow} /> : null}
+        </section>;
+      })}
       {data?.repoErrors?.length ? <div className="mg-notice mg-warning">{data.repoErrors.map((e) => <p key={e}>{e}</p>)}</div> : null}
     </div>
     {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} onClose={() => setRepoOpen(false)} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(cmd, args) => void run(cmd, args)} />}
     {detail && <SkillDetailDrawer skill={detail} count={data?.repoCounts?.[detail.repoKey]} onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(detail.repoKey)} />}
-  </div>;
-}
-export function SessionPage({ sessions, loading = false, onRefresh, onDelete, onDeleteMany, onDeleteProject, notify, maintenance }: {
-  maintenance?: ReactNode; loading?: boolean;
-  onDeleteProject?: (projectPath: string, label: string) => Promise<void>;
-  sessions: { sessions: ManagedSession[]; totalCount: number; hasMore: boolean; offset: number; limit: number } | null;
-  onRefresh: (offset?: number, query?: string) => Promise<void>;
-  onDelete: (s: ManagedSession) => Promise<void>;
-  onDeleteMany: (s: ManagedSession[]) => Promise<void>; notify: Notify;
-}) {
-  const [query, setQuery] = useState(""), [submittedQuery, setSubmittedQuery] = useState("");
-  const [mode, setMode] = useState<"project" | "time">("project");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selection, setSelection] = useState(false), [selected, setSelected] = useState<Set<string>>(new Set());
-  const [detail, setDetail] = useState<ManagedSession | null>(null);
-  const latestRefresh = useRef(onRefresh);
-  latestRefresh.current = onRefresh;
-  useEffect(() => {
-    if (query === submittedQuery) return;
-    const timer = setTimeout(() => {
-      setSubmittedQuery(query); setSelected(new Set()); setDetail(null);
-      void latestRefresh.current(0, query);
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [query, submittedQuery]);
-  useEffect(() => { setSelected(new Set()); }, [sessions]);
-  const disabled = loading || query !== submittedQuery;
-  const visible = sessions?.sessions || [];
-  const groups = sessionGroups(visible, mode);
-  const selectedRows = visible.filter((s) => selected.has(s.id));
-  const toggle = (id: string) => setSelected((old) => { const next = new Set(old); next.has(id) ? next.delete(id) : next.add(id); return next; });
-  return <div className="mg-page mg-session-page">
-    <Header icon={<History size={20}/>} title={t("会话")} actions={<>
-      <Button disabled={disabled} onClick={() => void onRefresh(0, query)}><RefreshCw size={14}/>{t("刷新列表")}</Button>
-      <Button disabled={disabled} onClick={() => setSelection(!selection)}>{t("选择多个…")}</Button>
-    </>} />
-    {maintenance}
-    <div className="mg-session-controls">
-      <SearchBox value={query} onChange={setQuery} placeholder={t("搜索标题、目录或会话 ID")} />
-      <div className="mg-segmented">
-        <button type="button" data-active={mode === "project"} onClick={() => setMode("project")}>{t("按项目")}</button>
-        <button type="button" data-active={mode === "time"} onClick={() => setMode("time")}>{t("按时间")}</button>
-      </div>
-      {selection && <>
-        <Button disabled={disabled} onClick={() => setSelected(new Set(visible.map((s) => s.id)))}>{t("全选当前列表")}</Button>
-        <Button primary disabled={disabled || !selectedRows.length} onClick={() => void onDeleteMany(selectedRows)}><Trash2 size={14}/>{t("删除已选")}</Button>
-      </>}
-    </div>
-    <div className="mg-content" aria-busy={disabled}>
-      <div className="mg-session-list">
-        {!visible.length ? <div className="mg-empty"><h2>{disabled ? t("加载中…") : t("还没有匹配的会话")}</h2>
-          <Button disabled={disabled} onClick={() => void onRefresh(0, query)}>{t("刷新")}</Button></div> : groups.map((g) => {
-          const open = query.trim() || expanded.has(g.key) || groups.length === 1;
-          return <section key={g.key}>
-            <div className="mg-group-row">
-              <button type="button" className="mg-group-head" onClick={() => setExpanded((old) => { const next = new Set(old); next.has(g.key) ? next.delete(g.key) : next.add(g.key); return next; })}>
-                <ChevronDown size={15} className={open ? "" : "mg-chevron-collapsed"}/><strong>{g.label}</strong><span>{g.path}</span><small>{g.sessions.length} {t("个会话")}</small>
-              </button>
-              {mode === "project" && onDeleteProject && g.sessions[0]?.cwd ? <button type="button" disabled={disabled} className="mg-icon-button mg-group-delete" onClick={() => void onDeleteProject(g.sessions[0].cwd, g.label)} aria-label={t("删除该项目的全部会话")} title={t("删除该项目的全部会话")}><Trash2 size={15}/></button> : null}
-            </div>
-            {open && g.sessions.map((s) => <article className="mg-session-row" key={s.id}>
-              <div className="mg-session-check">{selection && <input type="checkbox" disabled={disabled} checked={selected.has(s.id)} onChange={() => toggle(s.id)}/>}</div>
-              <button type="button" className="mg-session-main" onClick={() => setDetail(s)}><strong>{s.title || t("未命名会话")}</strong><small>{s.cwd || t("未记录项目路径")}</small><code>{s.id}</code></button>
-              <div className="mg-session-meta"><span>{s.modelProvider || "Codex"}</span><time>{s.updatedAtMs ? new Date(s.updatedAtMs).toLocaleString() : t("未知时间")}</time></div>
-              <div className="mg-row-actions"><button type="button" disabled={disabled} className="mg-icon-button" onClick={() => void onDelete(s)} aria-label={t("删除会话")}><Trash2 size={15}/></button></div>
-            </article>)}
-          </section>;
-        })}
-      </div>
-    </div>
-    <div className="mg-pagination">
-      <Button onClick={() => void onRefresh(Math.max(0, (sessions?.offset || 0) - (sessions?.limit || 50)), query)} disabled={disabled || !sessions?.offset}><ArrowLeft size={14}/>{t("上一页")}</Button>
-      <span>{sessions ? String(Math.floor(sessions.offset / sessions.limit) + 1) + " · " + sessions.totalCount : "—"}</span>
-      <Button onClick={() => void onRefresh((sessions?.offset || 0) + (sessions?.limit || 50), query)} disabled={disabled || !sessions?.hasMore}><ArrowRight size={14}/>{t("下一页")}</Button>
-    </div>
-    {detail && <ManagementDrawer title={detail.title || t("未命名会话")} onClose={() => setDetail(null)} footer={<>
-      <Button onClick={() => void navigator.clipboard.writeText(detail.id).catch((error) => notify(t("调用失败"), String(error), "failed"))}><Copy size={14}/>{t("复制会话 ID")}</Button>
-      <Button primary disabled={disabled} onClick={() => void onDelete(detail)}><Trash2 size={14}/>{t("删除会话")}</Button>
-    </>}>
-      <dl className="mg-detail"><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd>{detail.modelProvider || "Codex"}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl>
-    </ManagementDrawer>}
   </div>;
 }

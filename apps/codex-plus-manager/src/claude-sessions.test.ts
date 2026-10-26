@@ -99,7 +99,7 @@ function harness(component = "ClaudeSessionsScreen", props: object = {}, approve
 
 test("Claude 会话独立导航，不加载 Codex 维护接口", async () => {
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-  assert.match(app, /id: "claudeSessions"[^}]+tool: "claude"/);
+  assert.match(app, /id: "claudeSessions"[^\n]+tool: "claude"/);
   const loaders = readFileSync(new URL("./manager-loading.ts", import.meta.url), "utf8");
   assert.match(loaders, /claudeSessions: \[\]/);
   const screen = harness();

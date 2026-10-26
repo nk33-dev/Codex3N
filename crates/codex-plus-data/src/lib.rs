@@ -32,5 +32,5 @@ pub use provider_sync::{
 };
 pub use storage::{
     LocalSession, LocalSessionPage, LocalSessionPager, SQLiteStorageAdapter,
-    delete_local_from_paths,
+    delete_local_from_paths, local_session_titles,
 };

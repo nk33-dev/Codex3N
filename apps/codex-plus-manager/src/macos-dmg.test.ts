@@ -19,6 +19,11 @@ const bash = process.platform === "win32"
       ?? (gitExecutable && [join(dirname(dirname(gitExecutable)), "bin", "bash.exe"), join(dirname(dirname(gitExecutable)), "usr", "bin", "bash.exe")].find(existsSync))
       ?? join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe")
   : "/bin/bash";
+const bashExists = existsSync(bash);
+const maybeTest = bashExists
+  ? test
+  : (name: string, fn: () => Promise<void> | void) =>
+      test(name, { skip: "Git Bash is required on Windows" }, fn);
 
 // 执行真实打包流程，只替换磁盘命令，不挂载实际镜像。
 const fixture = `
@@ -140,7 +145,7 @@ async function runScenario(scenario: string) {
 }
 
 for (const scenario of ["success", "retry-convert", "late-convert", "delayed-output", "delayed", "already-gone", "force-only"]) {
-  test(`DMG packaging succeeds after ${scenario}`, async () => {
+  maybeTest(`DMG packaging succeeds after ${scenario}`, async () => {
     const result = await runScenario(scenario);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /out\/final\.dmg/);
@@ -164,7 +169,7 @@ for (const scenario of ["success", "retry-convert", "late-convert", "delayed-out
 }
 
 for (const scenario of ["no-device", "no-volume"]) {
-  test(`DMG packaging cleans up failed attach parsing: ${scenario}`, async () => {
+  maybeTest(`DMG packaging cleans up failed attach parsing: ${scenario}`, async () => {
     const result = await runScenario(scenario);
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /failed to find mounted DMG device and volume/);
@@ -179,7 +184,7 @@ for (const scenario of ["no-device", "no-volume"]) {
 }
 
 for (const scenario of ["fail-convert", "missing-output", "empty-output"]) {
-  test(`DMG packaging rejects ${scenario} instead of reporting create success`, async () => {
+  maybeTest(`DMG packaging rejects ${scenario} instead of reporting create success`, async () => {
     const result = await runScenario(scenario);
     assert.equal(result.status, 1, result.stderr);
     if (scenario === "fail-convert") {

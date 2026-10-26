@@ -155,19 +155,21 @@ test("长任务只保留计数和时长，重开采样不会累积监听", () =>
 function scanRuntime() {
   const time = clock();
   const window = Object.assign(events(), { location: { href: "app://-/A" } });
-  const document = Object.assign(events(), { hidden: false });
+  const document = Object.assign(events(), { hidden: false, querySelectorAll: () => [] });
   const runs: Array<{ phase: string; work: any }> = [];
   const state = { rafId: 0, targetsDirty: false };
   const start = renderer.indexOf("  const codexPlusAllScanWork =");
   const end = renderer.indexOf("  /**\n   * 侧边栏入口的启动补扫", start);
   assert.ok(start > 0 && end > start);
-  const api = compile(source("runScheduledScan") + renderer.slice(start, end) + source("scan"), {
+  const api = compile(source("runScheduledScan", "pruneRemovedSessionActions", "pruneSessionMoreMenus", "disposeSessionMoreMenu", "closeSessionMoreMenu") + renderer.slice(start, end) + source("scan"), {
     window, document, ...time, clearInterval: time.clearTimeout, conversationViewState: state,
     selectors: { sidebarThread: "[data-app-action-sidebar-thread-id]", conversationViewScrollContainer: ".thread-scroll-container", conversationViewFooter: "[data-thread-scroll-footer]", appHeader: "header" },
     shouldScheduleScan: (records: any[]) => records.some((record) => !record.ignore),
     isExtensionUiNode: (node: any) => !!node?.extension,
     nodeOrAncestorLooksLikeCodexUserBubble: () => false,
     installDictationSupportPatch() {}, runScanStep: (fn: any) => fn(),
+    codexPlusSettings: () => ({ sessionDelete: true }),
+    moreMenuClass: "more-menu", actionGroupClass: "action-group", moreButtonClass: "more-button", buttonClass: "delete-button",
     scanLightweight: (work: any) => runs.push({ phase: "light", work }),
     scanDeferred: (work: any) => runs.push({ phase: "deferred", work }),
   }, "{ scheduleScan, scan, onCodexPlusScanNavigation, onCodexPlusScanVisibility, dispose: window.__codexPlusScanCleanup }");

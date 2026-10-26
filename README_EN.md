@@ -26,7 +26,7 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
 - Native and provider models are merged and sorted, keeping manual context windows and auto-compaction settings.
 
 **Sessions**
-- Session pagination, invalid-session checks and hiding, backup before deletion, and project association recovery.
+- Full-library session search and pagination, invalid-session checks and hiding, backup before deletion, and project association recovery.
 
 **Prompt tools** (off by default; enable in the manager under Codex enhancements → Prompt enhancement)
 - **Enhance prompt**: turns a draft into a prompt that is ready to send. Decisions that can be made are written out; facts only you know become blanks such as 【list page URL】.
@@ -37,8 +37,11 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
 **Interface and runtime**
 - Removes advertising and recommendations.
 - Background refresh in the manager, floating-panel interaction, host compatibility and mobile relay fixes.
+- Automatic backend recovery and manual reconnection while keeping the current page and conversation.
 
 Upstream features remain available, including providers, plugins, WeChat, skins, user scripts, dictation, cache cleaning, the usage status line and automatic takeover of the official app. In official-login + API mode, model requests always use the configured API; test the connection in the manager first.
+
+The fork also includes upstream's resident protocol proxy, request retries and logs, Claude Code providers, side-chat saving, and turn rewind. Computer Use requires the supported macOS runtime. See the [runtime documentation](doc/person/runtime.md) for platform limits and data protection.
 
 See the [personal documentation](doc/person/README.md) for behavior and code entry points.
 

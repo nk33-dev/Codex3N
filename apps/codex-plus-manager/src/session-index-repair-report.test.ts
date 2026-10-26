@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 
 test("session index repair report keeps abort and truncation notices outside issue details", async () => {
   const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
@@ -8,9 +9,13 @@ test("session index repair report keeps abort and truncation notices outside iss
   assert.match(source, /abortedReason\?: string \| null;/);
   assert.match(source, /warnings\?: string\[\];/);
 
-  const reportStart = source.indexOf("{sessionIndexRepairReport ? (");
-  const reportEnd = source.indexOf("<div className=\"hint-line session-delete-hint\">", reportStart);
-  const report = source.slice(reportStart, reportEnd);
+  const file = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const maintenance = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SessionMaintenance");
+  assert.ok(maintenance);
+  const body = maintenance.getText(file);
+  const reportStart = body.indexOf("{sessionIndexRepairReport ? (");
+  const reportEnd = body.length;
+  const report = body.slice(reportStart, reportEnd);
 
   const abortNotice = report.indexOf('role="alert"');
   const warningNotice = report.indexOf("{sessionIndexRepairReport.warnings?.map");

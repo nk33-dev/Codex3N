@@ -10,6 +10,8 @@
 
 `apps/codex-plus-manager/src-tauri/tauri.conf.json` 明确限制脚本、连接、图片、字体、对象和嵌入来源；开发模式只为本地 Vite 增加连接源。`assetProtocol.scope` 初始为空，`lib.rs::allow_theme_assets` 在建窗口前只授权实际状态目录下的 `dream-skin`，支持系统配置目录和显式隔离目录；规范路径越界时拒绝授权。设置、主密钥文件和旧状态目录不开放。图片预览通过 `convertFileSrc` 使用它。`capabilities/default.json` 将文件对话框限于打开与保存；外链只由 `commands/external_url.rs` 在 Rust 侧校验 HTTPS 与站点白名单后交给系统浏览器。微信二维码 SVG 由本地 QR 编码器生成，前端只作为图片加载，不作为 HTML 注入。
 
+Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限；文件对话框仍限于打开和保存。Computer Use 接入由用户手动写入目标客户端配置；JS 模式具有文件和网络访问能力。审批默认自动放行，选择弹卡确认但客户端不声明 elicitation 时沿用上游的自动放行回退，不能把该选项描述为所有客户端上的强制授权门禁。
+
 主题卡片的远程封面仅允许 `https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/` 与 `https://api.dreamskin.cc/v1/themes/` 两个图片来源路径；生产与开发 CSP 保持一致。失败显示不可用占位，不使用其他主题图片代替。脚本与连接来源不随图片白名单扩大。
 
 ## 注入页的设置下发
@@ -33,6 +35,10 @@ RUSTSEC-2026-0367/0368/0369。`sherpa-onnx-sys 1.13.8` 尚固定依赖 zip 2，
 继续沿用各自的路径、链接与体积校验。
 
 ## CI 与发布
+
+前端构建依赖使用 Vite 6.4.5，覆盖开发服务器跨源执行、文件边界和 Windows 编辑器命令处理公告；锁文件与 `npm audit --audit-level=high` 一起验证。
+
+TLS 根证书与校验依赖在锁文件中使用 `rustls-webpki 0.103.16`、`webpki-roots 1.0.11`，覆盖 RUSTSEC-2026-0381/0382。请求解压使用 `zstd 0.14.3`、`zstd-safe 8.2.0` 与 `zstd-sys 2.1.2`，覆盖流复用、内存和分配器公告；有界正文读取与压缩请求测试继续验证原行为。
 
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。
 

@@ -69,6 +69,10 @@ export type RelayProfile = {
   sub2apiMultiplier: string;
   modelRoutes?: RelayModelRoute[];
   aggregate?: RelayAggregateConfig | null;
+
+  autoReviewModel?: string;
+  trustUpstreamCatalogLite?: boolean;
+  strictResponsesReasoning?: boolean;
 };
 
 export type AggregateRelayMember = { relayId: string; weight: number };
@@ -183,5 +187,18 @@ export type BackendSettings = WhaleBalanceSettings & {
   /** 侧栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
   activeTool?: string;
   ccsDbPath: string;
+
+  threadModelFollowSwitchEnabled?: boolean;
+  codexAppSideChatSave: boolean;
+  codexAppDisableWorkView: boolean;
+  protocolProxyAutoRetry: boolean;
+  protocolProxyAutoRetryMaxAttempts: number;
+  protocolProxyAutoRetryIntervalSeconds: number;
+  protocolProxyAutoRetryStatusCodes: number[];
+  protocolProxyAutoRetryMode: "streaming" | "streaming-legacy" | "buffered";
+  protocolProxyAutoRetryCommitDelayMs: number;
+  protocolProxyMapUnlistedModels: boolean;
+  helperMaxRequestBodyMib: number;
+  codexAppTurnRewind: boolean;
 };
 

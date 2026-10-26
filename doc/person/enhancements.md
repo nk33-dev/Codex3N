@@ -86,6 +86,10 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 上游已撤下 Codex++ 会话分享、文件导入与分享链接入口，原生会话能力继续由宿主提供。旧 `codexAppSessionShare` 配置保留读取兼容，不再注册分享按钮。`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭；入口为 `94-typing-effects.js`，跟随输入法组合状态和系统减少动态效果设置。
 
+`codexAppSideChatSave` 与 `codexAppTurnRewind` 默认关闭。旁支保存由 `85-side-chat-save.js`、`side_chat.rs` 处理，只支持明确本地主机，先固定主历史边界与哈希，再写新会话文件并交给原生恢复登记；不覆盖源会话。轮次回退由 `85-turn-rewind-controller.js`、`86-turn-rewind-menu.js` 对接原生回退并保留恢复记录。二者接入现有 RPC 包装和扫描调度，保留主机隔离、性能计时与输入法门控。
+
+语音全局热键经 `global_dictation.rs` 和管理器同名模块保存、注册，默认关闭；热键只切换已有听写入口，模型下载仍须用户点击配置页。Windows 和 macOS 的注册能力由平台实现决定。
+
 `codexAppWhaleWidgetEnabled` 默认关闭，挂件入口是 `96-whale-compat.js` 与 `97-whale-widget.js`，完整引擎由 `assets.rs` 内联。余额查询复用已保存的供应商凭据，币种、路径、字段与倍率由 `whale-settings.ts` 校验；本地用量、余额账本和账户校正分别保存在 `whale_usage.rs`、`whale_history.rs` 与 `whale_full.rs` 的运行路径。相关读写回归使用临时数据，不操作活动数据库。
 
 挂件状态由 Codex 适配层统一调度：生成中最多每 5 秒读取摘要，空闲每 30 秒；原生轮次事件立即更新提示并使摘要失效，余额维持每 60 秒刷新，手动刷新立即执行。隐藏时暂停状态轮询，恢复时补查一次；隐藏前正在生成的轮次完成后，恢复可见仍只提示一次。切换主机、会话和挂件生命周期均推进代次，旧请求即使晚到，也不能覆盖切走再切回的同一会话。

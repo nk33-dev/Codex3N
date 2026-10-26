@@ -106,7 +106,9 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   assert.equal(attribute(petGroup, "detail"), 't("在 Codex 中查看用量，设置自己的角色和互动方式。")');
   const petLook = fieldControl(petGroup.parent, "form.codexAppPetRealMouseLook");
   assert.ok(descendants(enhance).some((node) => ts.isConditionalExpression(node)
-    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must remain Windows-only");
+    && node.condition.getText(app) === "supportsPetRealMouseLook" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must be available on Windows and macOS");
+  assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
+    && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(petLook)), "native pet mouse tracking must not stay Windows-only");
   const whaleWidget = fieldControl(petGroup.parent, "form.codexAppWhaleWidgetEnabled");
   assert.ok(!descendants(enhance).some((node) => ts.isConditionalExpression(node)
     && node.condition.getText(app) === "isWindowsPlatform" && descendants(node.whenTrue).includes(whaleWidget)), "the Codex usage widget must be available on every platform");
@@ -131,12 +133,18 @@ test("complete voice and Stepwise panels share the enhancement form and save act
     assert.equal(attribute(panel, "onFormChange"), "onFormChange");
   }
   const calls = descendants(enhance).filter(ts.isCallExpression);
-  assert.ok(calls.some((node) => node.expression.getText(app) === "actions.saveSettings"), "enhancements must retain their save action");
+  assert.ok(
+    calls.some((node) => node.expression.getText(app) === "actions.saveSettings"),
+    "enhancement tabs must share the manual save action",
+  );
+  assert.ok(!calls.some((node) => node.expression.getText(app) === "useEnhanceAutoSave"));
 
-  const settings = component("SettingsScreen");
-  assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "PromptEnhanceSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
-  assert.ok(!descendants(settings).some((node) => ts.isPropertyAccessExpression(node)
-    && (/^form\.(?:dictation|promptEnhance)(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
+  for (const name of ["GlobalSettingsScreen", "AgentSettingsScreen"]) {
+    const settings = component(name);
+    assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
+    assert.ok(!descendants(settings).some((node) => ts.isPropertyAccessExpression(node)
+      && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
+  }
 });
 
 test("local speech download requires a configuration button click and mount only reads status", () => {
@@ -228,14 +236,18 @@ test("all enhancement panes stay mounted while tab selection only changes visibi
   assert.equal(attribute(screen, "onTabChange"), "setEnhancementTab");
 });
 
-test("enhancement saving is an explicit permanent top action", () => {
+test("enhancement settings expose one manual save action and a permanent status", () => {
   const enhance = component("EnhanceScreen");
-  const saves = elements(enhance).filter((element) => attribute(element, "onClick")?.includes("actions.saveSettings("));
-  assert.equal(saves.length, 1);
-  assert.equal(attribute(saves[0], "disabled"), "!dirty");
-  assert.equal(isConditional(saves[0], enhance), false);
+  const buttons = elements(enhance).filter((element) => attribute(element, "onClick")?.includes("actions.saveSettings("));
+  assert.equal(buttons.length, 1);
+  assert.equal(attribute(buttons[0], "disabled"), "!dirty || actions.settingsSaving");
+  const status = elements(enhance).filter((element) => attribute(element, "role") === "status");
+  assert.equal(status.length, 1);
+  assert.equal(isConditional(status[0], enhance), false);
   const firstPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel");
-  assert.ok(firstPane && saves[0].pos < firstPane.pos);
+  assert.ok(firstPane && status[0].pos < firstPane.pos);
+  const callbacks = descendants(enhance).filter(ts.isCallExpression).filter((node) => node.expression.getText(app) === "useEffect");
+  for (const callback of callbacks) assert.doesNotMatch(callback.getText(app), /saveSettings/);
 });
 
 test("standalone quota unlock lives in its own group inside the general tab and stays editable when enhancements are off", () => {

@@ -32,6 +32,16 @@ uuid.workspace = true
 zip.workspace = true
 zstd.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# 窗口取流（ScreenCaptureKit）——仅 macOS 有这套框架
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-core-graphics = "0.3"
+objc2-foundation = "0.3"
+objc2-screen-capture-kit = "0.3"
+security-framework = "3"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
   "Win32_Foundation",
@@ -52,10 +62,6 @@ windows = { version = "0.58", features = [
   "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
-
-# macOS 的 Keychain 访问：settings.json 里的 API Key 主密钥存在通用密码项里。
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3"
 
 [dev-dependencies]
 tempfile.workspace = true

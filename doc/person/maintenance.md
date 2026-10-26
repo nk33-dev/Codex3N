@@ -139,3 +139,13 @@ cargo test --workspace
 同步分支的编译、前端检查与回归完成后才合回 `personal`，平台实测范围随最终发布验证记录。
 
 2026-10-18 Windows 同步验证：`cargo test --workspace -j 2 --no-fail-fast -- --test-threads=2` 共 2,739 通过、24 忽略；`cargo local-check`、格式检查通过。Node 22.23.3 下 `npm run test:local` 共 952 通过、1 跳过，TypeScript、Vite 构建、npm 高危审计及 cargo audit 通过。配置专项覆盖备份、一次性导入、SQLite WAL、旧快照冲突、未知字段、程序文件替换及删除配置后默认值。干净克隆已完成 `npm ci` 与 `npm run vite:build`。浏览器预览使用真实弹窗代码与模拟模型数据，不能代替客户端模型调用实测。macOS、Linux 原生启动与安装升级未在本机验证。
+
+### 官方 v1.12.1 同步
+
+个人起点为 `2add075b`，现有工作区先保存为 `a5c96e36`；已验证上游基线为 `85f9117f`，目标 `upstream/main` 与 v1.12.1 均为 `ca1b212d`。在 `codex/sync-1.12.1` 保留上游合并父节点，`main` 仅快进。宿主为 Windows 官方 App 26.1013.3656.0。
+
+入口映射维护在 [runtime.md](runtime.md#配置和安装维护)：常驻 helper 接入现有恢复服务，设置迁入共用类型与默认值，会话页统一使用 `ProjectSessionPage`，旁支保存、回退及菜单修复接入个人扫描调度。保留手动保存、供应商默认关闭、加密与修订号、公开字段白名单、个人更新源和分离文件备份保护。Grok、微信跟随上游 App 入口，旧独立文件移除。
+
+Windows 本地格式、`cargo local-check`、relay Clippy、`cargo local-build` 通过；workspace 测试 3,149 通过、25 忽略，随后模型目录专项 21 项通过，包含补充的两个上游用例。Node 22.23.3 下前端 1,081 通过、1 跳过，类型检查、Vite 构建、两套注入一致性及缓存回归 10 项通过。npm 审计无漏洞；Rust 审计消除 6 项阻断漏洞，仍有 9 项允许的维护/健全性告警。所有原始检查日志保存在系统临时目录 `codex3n-sync-20261026`。
+
+Edge 隔离回归覆盖后端重连、键盘焦点、提示词问答、收藏筛选与正文按需读取，包含 400 px 窄窗口。管理器 debug 产物复制到临时目录，以独立配置和空 `CODEX_HOME` 最小化启动，未附加或启动官方 App，检查后结束测试进程。数据保护仅操作临时副本，覆盖侧栏改名后的搜索缓存、旧分离文件保留及 Windows 主密钥路径迁移冲突。macOS/Linux 的真实安装升级、宿主调用和 Computer Use 授权未在本机验证；跨平台编译与产包以最终提交的 CI 为准，Release 创建前必须全部成功。

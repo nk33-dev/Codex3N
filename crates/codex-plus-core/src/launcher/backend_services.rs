@@ -3,6 +3,9 @@ use super::*;
 impl DefaultLaunchHooks {
     // 固有方法保留 Send future，供宿主恢复通道和 ?Send 的 LaunchHooks 共用。
     pub(super) async fn start_helper_runtime(&self, helper_port: u16) -> anyhow::Result<()> {
+        if crate::resident_helper::resident_helper_port() == Some(helper_port) {
+            return Ok(());
+        }
         let bind_host = helper_bind_host();
         let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
             .await
@@ -49,7 +52,7 @@ impl DefaultLaunchHooks {
         let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
             let mut observed_browser_id: Option<String> = None;
             let mut bridge_health_failures = 0u8;
@@ -86,7 +89,7 @@ impl DefaultLaunchHooks {
                     }
                 }
             }
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 pet_cursor_task.abort();
                 let _ = pet_cursor_task.await;

@@ -242,7 +242,11 @@ async fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) 
             headers: profile.custom_headers.clone(),
         };
         let endpoint = models_endpoint(base_url);
-        match crate::http_client::client_for_url(&profile.user_agent, &endpoint) {
+        match crate::http_client::client_for_profile_url(
+            &profile.user_agent,
+            &profile.id,
+            &endpoint,
+        ) {
             Ok(client) => {
                 let (discovered, mut status) = cached_models_from_source(&client, &source).await;
                 models = merge_discovered_models(models, discovered);
@@ -401,26 +405,44 @@ fn relay_profile_model_ui_metadata_map(profile: &RelayProfile, models: &[String]
                     .collect()
             })
             .unwrap_or_default();
-    // profile 顶层的 context_window 是每模型的兜底，优先级与生成目录一致：
-    // 手工窗口 > 顶层窗口 > 内置元数据。
+    // 顶层窗口只补模型模板缺少的声明，手工逐模型窗口始终优先。
     let fallback_window = crate::model_suffix::parse_window_token(profile.context_window.trim());
     for model in models {
-        let window = crate::model_suffix::lookup_model_map(&windows, model)
-            .and_then(|token| crate::model_suffix::parse_window_token(token))
-            .or(fallback_window);
-        let Some(window) = window else {
+        let manual = crate::model_suffix::lookup_model_map(&windows, model)
+            .and_then(|token| crate::model_suffix::parse_window_token(token));
+        if let Some(window) = manual {
+            // 逐模型手工窗口优先级最高，覆盖内置模板。
+            let entry = metadata.entry(model.clone()).or_insert_with(|| json!({}));
+            for field in [
+                "contextWindow",
+                "maxContextWindow",
+                "context_window",
+                "max_context_window",
+            ] {
+                entry[field] = json!(window);
+            }
+            continue;
+        }
+        // 没有手工窗口时，供应商级「上下文大小」只作兜底：模型模板里已经声明了
+        // 自己的窗口就别拿全局值盖掉它。否则多模型列表 + 全局窗口会把每个模型都
+        // 压成同一个数，模型自身的真实窗口反而丢失（issue #2590）。
+        let Some(fallback) = fallback_window else {
             continue;
         };
-        let entry = metadata
-            .entry(model.clone())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if let Some(object) = entry.as_object_mut() {
-            // Codex 不同版本的模型描述对象同时出现过 camelCase 与 snake_case。
-            // 两套字段都写入，保证手工窗口始终覆盖同名 `/models` 条目。
-            object.insert("contextWindow".to_string(), json!(window));
-            object.insert("maxContextWindow".to_string(), json!(window));
-            object.insert("context_window".to_string(), json!(window));
-            object.insert("max_context_window".to_string(), json!(window));
+        let entry = metadata.entry(model.clone()).or_insert_with(|| json!({}));
+        for field in [
+            "contextWindow",
+            "maxContextWindow",
+            "context_window",
+            "max_context_window",
+        ] {
+            let missing = entry
+                .get(field)
+                .and_then(Value::as_u64)
+                .is_none_or(|existing| existing == 0);
+            if missing {
+                entry[field] = json!(fallback);
+            }
         }
     }
     Value::Object(metadata)
@@ -448,6 +470,29 @@ mod window_override_tests {
             assert_eq!(metadata["gpt-5.5"][field], 1_000_000);
             assert_eq!(metadata["vendor-model"][field], 128_000);
         }
+
+        // issue #2590：全局窗口只兜底，不能盖掉模型模板自带的窗口。
+        // 同一份列表里 gpt-5.5 有内置模板、vendor-model 没有，前者应保持模板值。
+        let builtin_only = relay_profile_model_ui_metadata_map(&RelayProfile::default(), &models);
+        let builtin_window = builtin_only["gpt-5.5"]["contextWindow"]
+            .as_u64()
+            .expect("gpt-5.5 应有内置窗口");
+        assert_ne!(
+            builtin_window, 128_000,
+            "前置条件：内置窗口不应恰好等于全局值"
+        );
+        assert_eq!(metadata["gpt-5.5"]["contextWindow"], 1_000_000);
+        let global_only = RelayProfile {
+            context_window: "128K".into(),
+            ..Default::default()
+        };
+        let with_global = relay_profile_model_ui_metadata_map(&global_only, &models);
+        assert_eq!(
+            with_global["gpt-5.5"]["contextWindow"], builtin_window,
+            "全局窗口不应压过内置模板"
+        );
+        assert_eq!(with_global["vendor-model"]["contextWindow"], 128_000);
+
         let metadata = relay_profile_model_ui_metadata_map(&RelayProfile::default(), &models);
         assert!(metadata["gpt-5.5"]["contextWindow"].as_u64().is_some());
         assert!(metadata.get("vendor-model").is_none());
@@ -1052,7 +1097,8 @@ pub async fn fetch_relay_profile_model_ids(
         anyhow::bail!("Base URL 不能为空");
     }
     let endpoint = models_endpoint(&source.base_url);
-    let client = crate::http_client::client_for_url(&profile.user_agent, &endpoint)?;
+    let client =
+        crate::http_client::client_for_profile_url(&profile.user_agent, &profile.id, &endpoint)?;
     let (models, status) = fetch_models_from_source(&client, &source).await;
     if models.is_empty() {
         let message = status
@@ -1074,7 +1120,8 @@ async fn fetch_official_login_model_ids(
     let credential = crate::official_login::resolve_official_credential(profile, false).await?;
     let base = crate::official_login::official_base_url();
     let endpoint = format!("{}/models", base.trim().trim_end_matches('/'));
-    let client = crate::http_client::client_for_url(&profile.user_agent, &endpoint)?;
+    let client =
+        crate::http_client::client_for_profile_url(&profile.user_agent, &profile.id, &endpoint)?;
     let mut request = client
         .get(&endpoint)
         .query(&[("client_version", OFFICIAL_MODELS_CLIENT_VERSION)])
@@ -1169,18 +1216,8 @@ fn models_endpoint(base_url: &str) -> String {
     if cleaned.is_empty() {
         return String::new();
     }
-    if cleaned.ends_with("/models") {
-        return cleaned;
-    }
-    // Only append the default `/v1` version prefix when the base URL does not
-    // already carry a version segment. Providers such as Volcano Engine ARK use
-    // a versioned base (e.g. `.../api/coding/v3`), so blindly appending
-    // `/v1/models` produced `.../api/coding/v3/v1/models` and 404'd. This mirrors
-    // the version handling already used by the protocol proxy. See issue #1349.
-    if crate::protocol_proxy::has_version_suffix(&cleaned) {
-        return format!("{cleaned}/models");
-    }
-    format!("{cleaned}/v1/models")
+    // 与实际代理共用规则，保留 /v1beta/openai 等已有路径；清理后的 URL 不含凭据。
+    crate::protocol_proxy::models_url(&cleaned)
 }
 
 fn parse_model_payload(payload: &Value) -> Vec<String> {
@@ -1469,8 +1506,42 @@ mod model_fetch_tests {
         );
     }
 
+    #[tokio::test]
+    async fn relay_profile_model_catalog_keeps_configured_default_after_model_list_sorting() {
+        let profile = RelayProfile {
+            model: "qwen3-coder".into(),
+            model_list: "deepseek-coder\nqwen3-coder\nclaude-compatible".into(),
+            config_contents: "model = \"qwen3-coder\"\n".into(),
+            ..RelayProfile::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile).await;
+        assert_eq!(catalog["default_model"], "qwen3-coder");
+    }
+
     #[test]
-    fn ui_metadata_window_follows_manual_then_profile_then_builtin() {
+    fn model_list_endpoint_preserves_custom_prefixes_and_removes_credentials() {
+        for (base, expected) in [
+            (
+                "https://example.test/v1beta/openai/",
+                "https://example.test/v1beta/openai/models",
+            ),
+            ("https://example.test", "https://example.test/v1/models"),
+            (
+                "https://example.test/api/coding/v3",
+                "https://example.test/api/coding/v3/models",
+            ),
+            (
+                "https://user:secret@example.test/v1/models?token=secret",
+                "https://example.test/v1/models",
+            ),
+        ] {
+            assert_eq!(models_endpoint(base), expected);
+        }
+    }
+
+    #[test]
+    fn ui_metadata_window_follows_manual_then_builtin_with_profile_fallback() {
         let models = vec![
             "deepseek-flash".to_string(),
             "vendor-only-model".to_string(),
@@ -1486,9 +1557,10 @@ mod model_fetch_tests {
 
         let fallback_only =
             relay_profile_model_ui_metadata_map(&relay_profile("{}", "1m"), &models);
+        let builtin = model_ui_metadata_map(&models);
         assert_eq!(
             model_window(&fallback_only, "deepseek-flash"),
-            Some(1_000_000)
+            model_window(&builtin, "deepseek-flash")
         );
 
         // 两者都没有时不编造窗口：内置元数据没有窗口的模型保持原样。

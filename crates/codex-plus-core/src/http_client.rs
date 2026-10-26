@@ -1,3 +1,4 @@
+use anyhow::Context;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -19,6 +20,9 @@ enum ClientKey {
     UserAgent {
         loopback: bool,
         user_agent: String,
+        proxy: Option<String>,
+        connect: Option<std::time::Duration>,
+        total: Option<std::time::Duration>,
     },
     Vlm {
         loopback: bool,
@@ -36,12 +40,38 @@ fn default_client_pool() -> &'static ClientPool {
 
 /// 池化通用 client：命中直接复用，未命中才构建。
 fn pooled_client(loopback: bool, user_agent: &str) -> anyhow::Result<reqwest::Client> {
+    configured_client(loopback, user_agent, None, None, None)
+}
+
+fn configured_client(
+    loopback: bool,
+    user_agent: &str,
+    proxy: Option<String>,
+    connect: Option<std::time::Duration>,
+    total: Option<std::time::Duration>,
+) -> anyhow::Result<reqwest::Client> {
     let key = ClientKey::UserAgent {
         loopback,
         user_agent: normalized_user_agent(user_agent),
+        proxy: proxy.clone(),
+        connect,
+        total,
     };
+    let proxy = proxy
+        .map(reqwest::Proxy::all)
+        .transpose()?
+        .map(|proxy| proxy.no_proxy(reqwest::NoProxy::from_env()));
     pooled_with(key, |user_agent| {
-        let builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder();
+        if let Some(timeout) = connect {
+            builder = builder.connect_timeout(timeout);
+        }
+        if let Some(timeout) = total {
+            builder = builder.timeout(timeout);
+        }
+        if !loopback && let Some(proxy) = proxy {
+            builder = builder.proxy(proxy);
+        }
         match user_agent {
             Some(user_agent) => builder.user_agent(user_agent),
             None => builder,
@@ -108,7 +138,7 @@ fn pooled_with(
     } else {
         builder
     };
-    let client = builder.build()?;
+    let client = apply_configured_ca_certificate(builder)?.build()?;
     if let Ok(mut entries) = pool.lock() {
         if entries.len() >= CLIENT_POOL_CAPACITY {
             entries.clear();
@@ -116,6 +146,102 @@ fn pooled_with(
         entries.insert(pool_key, client.clone());
     }
     Ok(client)
+}
+
+fn apply_configured_ca_certificate(
+    mut builder: reqwest::ClientBuilder,
+) -> anyhow::Result<reqwest::ClientBuilder> {
+    let Some(value) = std::env::var_os("CODEX_CA_CERTIFICATE") else {
+        return Ok(builder);
+    };
+    let value = value.to_string_lossy().trim().to_string();
+    if value.is_empty() {
+        return Ok(builder);
+    }
+    let pem = if value.contains("BEGIN CERTIFICATE") {
+        value.into_bytes()
+    } else {
+        std::fs::read(&value).context("读取 CODEX_CA_CERTIFICATE 证书文件失败")?
+    };
+    builder = builder.add_root_certificate(
+        reqwest::Certificate::from_pem(&pem).context("CODEX_CA_CERTIFICATE 不是有效的 PEM 证书")?,
+    );
+    Ok(builder)
+}
+
+fn resolved_proxy(profile_id: Option<&str>, url: Option<&str>) -> Option<String> {
+    profile_id
+        .and_then(crate::relay_proxy::configured_proxy_for_profile)
+        .or_else(|| match url {
+            Some(url) => crate::proxy::detect_system_proxy_for_url(url),
+            None => crate::proxy::detect_system_proxy(),
+        })
+        .or_else(|| std::env::var("HTTPS_PROXY").ok())
+        .or_else(|| std::env::var("https_proxy").ok())
+        .or_else(|| std::env::var("ALL_PROXY").ok())
+        .or_else(|| std::env::var("all_proxy").ok())
+}
+
+pub fn proxied_client_with_timeouts(
+    user_agent: &str,
+    connect: std::time::Duration,
+    total: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    configured_client(
+        false,
+        user_agent,
+        resolved_proxy(None, None),
+        Some(connect),
+        Some(total),
+    )
+}
+
+pub fn proxied_client_for_url_with_timeouts(
+    user_agent: &str,
+    url: &str,
+    connect: std::time::Duration,
+    total: std::time::Duration,
+) -> anyhow::Result<reqwest::Client> {
+    let loopback = url_targets_loopback(url);
+    configured_client(
+        loopback,
+        user_agent,
+        (!loopback)
+            .then(|| resolved_proxy(None, Some(url)))
+            .flatten(),
+        Some(connect),
+        Some(total),
+    )
+}
+
+pub fn proxied_client_for_profile(
+    user_agent: &str,
+    profile_id: &str,
+) -> anyhow::Result<reqwest::Client> {
+    configured_client(
+        false,
+        user_agent,
+        resolved_proxy(Some(profile_id), None),
+        None,
+        None,
+    )
+}
+
+pub fn client_for_profile_url(
+    user_agent: &str,
+    profile_id: &str,
+    url: &str,
+) -> anyhow::Result<reqwest::Client> {
+    let loopback = url_targets_loopback(url);
+    configured_client(
+        loopback,
+        user_agent,
+        (!loopback)
+            .then(|| resolved_proxy(Some(profile_id), Some(url)))
+            .flatten(),
+        None,
+        None,
+    )
 }
 
 /// 清空 client 池，让下一次请求重新构建 client。
@@ -209,6 +335,39 @@ pub(crate) fn vlm_http_client_for_url(
 #[cfg(test)]
 mod tests {
     use super::{direct_client, reset_client_pool, url_targets_loopback};
+
+    #[tokio::test]
+    async fn configured_proxy_does_not_capture_loopback_requests() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndirect",
+                )
+                .await
+                .unwrap();
+        });
+        let client = super::configured_client(
+            true,
+            "profile-loopback-test",
+            Some("http://127.0.0.1:1".into()),
+            None,
+            None,
+        )
+        .unwrap();
+        let response = client
+            .get(format!("http://{address}/v1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "direct");
+        server.await.unwrap();
+    }
 
     /// client 池的实际效果就是连接复用。用真实 TCP 服务端数连接次数来看：
     /// 池子命中时多个请求共用一个 keep-alive 连接，池子被清掉后才重新建连。

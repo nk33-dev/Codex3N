@@ -135,4 +135,17 @@ export const defaultSettings: BackendSettings = {
   relayTestModel: "gpt-5.4-mini",
   tools: {},
   activeTool: "codex",
+
+  threadModelFollowSwitchEnabled: false,
+  codexAppSideChatSave: false,
+  codexAppDisableWorkView: false,
+  protocolProxyAutoRetry: true,
+  protocolProxyAutoRetryMaxAttempts: 5,
+  protocolProxyAutoRetryIntervalSeconds: 2,
+  protocolProxyAutoRetryStatusCodes: [],
+  protocolProxyAutoRetryMode: "streaming",
+  protocolProxyAutoRetryCommitDelayMs: 1000,
+  protocolProxyMapUnlistedModels: false,
+  helperMaxRequestBodyMib: 128,
+  codexAppTurnRewind: false,
 };

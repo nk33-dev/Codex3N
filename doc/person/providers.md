@@ -46,6 +46,12 @@
 
 上游渠道保护已移除：旧 `rateLimitCooldownEnabled`、`channelQueueEnabled`、`channelRequestsPerMinute`、`cooldownErrorStatuses` 不再参与排队、冷却或重试。协议代理保留个人版环回直连与请求体复用；官方 OAuth 测试端点也按实际 URL 判定直连，公网端点仍使用系统代理。
 
+协议代理的请求避震由 `protocolProxyAutoRetry*` 控制，覆盖可重试的流内容量错误，以及用户选定的 HTTP 错误码；默认 HTTP 列表为空，已交付给客户端的输出不自动重放。`streaming`、`streaming-legacy` 与 `buffered` 沿用上游模式，`request_log.rs` 和 `84-proxy-request-status.js` 共用请求日志及状态入口。目录外模型映射默认关闭；供应商的 `autoReviewModel` 对 `codex-auto-review` 优先，官方纯 OAuth 和聚合不应用目录外映射。
+
+供应商代理保存为状态目录的 `relay-proxies.json`，可用 `CODEX_PLUS_PROXY_<ID>` 和进程级 `CODEX_PLUS_PROXY` 覆盖。`http_client.rs::client_for_profile_url` 同时核对目标 URL、供应商代理及系统 PAC，所有环回目标显式直连；连接池按运行时、UA、代理与超时隔离，CA 配置沿用 `CODEX_CA_CERTIFICATE`。提示前缀稳定器由 `relay-features.json` 按供应商显式启用。上述两个旁路文件与日志不随自选设置文件路径迁移。
+
+Claude Code 供应商使用独立 `ClaudeProviderPage.tsx`、`tools/claude.rs` 与 Tauri 命令，写入 Claude 实际配置前保留备份；不会借用 Codex 的供应商切换或会话删除入口。
+
 切换、导入或升级迁移时同时检查扁平字段和 `tools.codex`，防止旧镜像覆盖新配置；不能仅凭界面显示“系统默认”就认定实际配置已应用。
 
 验证：`crates/codex-plus-core/tests/local_config_provider.rs`、前端 `local-config-provider.test.ts`，以及供应商切换相关测试。

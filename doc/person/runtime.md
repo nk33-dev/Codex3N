@@ -10,12 +10,12 @@
 
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描和环境检查进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
-- 工具栏在本地设置初始化后读取，与概览请求并行；语言切换重载仍走 `initializeManager`，回归见 `manager-loading.test.ts`。上游启动 effect 的工具栏修复已由此入口覆盖。
+- 工具栏在本地设置初始化后读取，与概览请求并行。语言经用户偏好保存成功后通知 React 原地更新，保留页面草稿；回归见 `manager-loading.test.ts`、`issue-20261018.test.ts`。上游启动 effect 的工具栏修复已由此入口覆盖。
 - `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
 - 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
-- 统一应用启动时经 `start_weixin_connect_from_saved_settings` 恢复已启用的微信连接，`resume_existing_codex_background` 只恢复已有 Codex 的后台服务。用户再次打开时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
+- 统一应用启动时经 `start_weixin_connect_from_saved_settings` 恢复已启用的微信连接。`resume_existing_codex_background` 恢复已有 Codex，登录时启动、打开管理器时启动分别由保存的启动选项决定；默认不自动启动。用户再次打开时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
 - `weixin-qr-polling.ts` 是扫码轮询的唯一调度入口，复用 `createVisibleRefresh`，但不绑定窗口可见性。等待和已扫码每次响应完成后隔 1 秒补查；确认、过期、业务失败或请求异常均停止，异常只提示一次，不自动重试。新二维码或取消会销毁旧任务，未返回结果与错误都不再提交。
 - 扫码确认后先补读设置和连接状态，再提交二维码终态，避免 effect 清理使补读失效。每次异步返回均检查当前任务；补读期间编辑过的设置草稿不被覆盖。验证见 `weixin-qr-polling.test.ts` 的慢请求、销毁、重新登录和终态测试。
 - 浏览器验证使用真实 React 页面配合 Tauri 官方 IPC mock，覆盖供应商切换、复制、删除、拖拽排序，以及扫码确认、重新扫码和过期提示；mock 数据不代表真实微信登录或原生文件写入已实测。后端命令由 Rust 集成测试验证。日常界面验证优先使用浏览器，不通过 Windows 桌面自动化占用用户输入。
@@ -41,7 +41,7 @@
 
 `App.tsx` 只保留 `App()`、业务状态与操作回调，以及仍与其强耦合的页面；可独立成页的部分按需外移，避免单文件继续膨胀：
 
-- 页面组件沿用上游现有边界：`ManagementPages.tsx` 提供 MCP 管理，`ManagementExtra.tsx` 提供 Skills 与会话分组列表；会话维护操作在 `App.tsx::SessionMaintenance`，由会话页统一挂载。`screens/GrokScreen.tsx` 保留既有独立组件。
+- 页面组件沿用上游现有边界：`ManagementPages.tsx` 提供 MCP 管理，`ManagementExtra.tsx` 提供 Skills，`ProjectSessionPage.tsx` 是 Codex 会话页的唯一入口，挂载 `App.tsx::SessionMaintenance`。Grok 与微信页面跟随上游回到 `App.tsx`，旧独立文件已删除；Claude 会话页仍为 `screens/ClaudeSessionsScreen.tsx`。
 - Skills 后端命令由 `commands.rs` 实现，统一注册到 `lib.rs` 的 `generate_handler!`。页面首次进入调用 `list_installed_skills` 只读本地目录，手动刷新调用 `refresh_skill_catalog` 拉取远端清单；安装、更新、启停、卸载、备份恢复与删除、仓库保存与删除共用这一入口。注册回归见 `skills_commands_are_registered_with_tauri`，检查全部 10 个命令均只注册一次。
 - Skills 进入及重新进入页面复用 `skill-catalog.json` 与本地安装状态，不自动联网；手动刷新在前端及后端合并进行中的请求，最多并发两个仓库，单库失败沿用其缓存并报告错误，刷新期间已删除或停用的仓库不回填。ZIP 下载在读取响应头及每块数据时检查 64 MiB 上限，无长度头也不能无限缓冲。
 - Skills 安装、启停和仓库保存共用同步操作锁，开始写入即隔离较早的目录刷新和检查结果；卸载页面后不提交写操作结果或提示。目录刷新的迟到错误同样失效。
@@ -51,6 +51,17 @@
 - 拆分时必须同步更新**按源码文本/AST 切片**的测试路径（如 `dream-skin.test.ts`、`renderer-inject.test.ts`、`commands.rs` 内的切片测试）以及 `tools/i18n-verify.mjs` 的 `SRC_FILES` 清单，断言语义保持不变。
 
 ## 配置和安装维护
+
+`resident_helper.rs` 在管理器进程托管常驻协议代理及 Claude 听写服务，结束 Codex 会话不关闭它。启动与恢复经 `launcher/backend_services.rs::start_helper_runtime` 复用相同端口；会话收尾仅删除自己端口的听写凭据。请求体上限从 `helperMaxRequestBodyMib` 读取，默认 128 MiB，范围 32–512 MiB，环境变量优先；恢复通道仍独立限制 8 KiB 请求和 1 KiB 正文。
+
+| 上游入口 | 当前入口 | 行为与回归 |
+| --- | --- | --- |
+| `launcher.rs::start_helper`、`start_bridge_watchdog` | `launcher/backend_services.rs` | 常驻 helper 复用、macOS/Windows 桌宠与单份 watchdog；常驻 helper 集成测试、恢复服务测试 |
+| `App.tsx` 内类型和默认值 | `provider-types.ts`、`lib/default-settings.ts` | 代理重试、旁支保存、轮次回退、Work 视图和模型跟随共用配置；类型检查、设置测试 |
+| `SessionRepairPanel`、旧 `SessionPage` | `App.tsx::SessionMaintenance`、`ProjectSessionPage.tsx` | 全库搜索、整项目选择、归档、删除保护与折叠维护区；会话和维护回归 |
+| `scan()` 全量刷新 | `95-conversation-view.js`、`98-scan-schedule.js` | 旁支保存、回退及菜单清理接入原调度，保留输入法和隐藏门控；注入与性能回归 |
+
+`ComputerUsePage.tsx`、`computer_use_commands.rs` 提供上游 MCP 接入，独立于受管 Codex 会话；`cu_pip.rs` 与 `CuPipWindow.tsx` 负责单个悬浮预览窗口。设置更新事件只合并对应 Computer Use 字段和修订号，不覆盖其他表单草稿；翻译扫描包含接入页和预览组件。当前运行时定位依赖 macOS `.app` 内的原生 CU 与 Node，Windows/Linux 不会因编译成功获得同等能力。宿主授权、桌面控制与原生取流仍需在支持的平台实测。
 
 - 启动链路在 `launcher.rs` 通过 `LaunchTimeline` 更新 `status.rs` 的 `phase/progress`，旧状态文件仍可读取。启动器的 `LauncherHooks::run_provider_sync` 同步失败时记录诊断并继续启动；自动消息索引修复在注入完成后进入后台执行。
 - `src-tauri/src/main.rs` 提供唯一 GUI 二进制 `codex-plus-plus`；`apps/codex-plus-launcher` 作为库提供 `start`、`stop`、`shutdown` 和 `resume_if_running`。连续启动复用 session，重启依次停止 Codex、清理嵌入运行时并确认原生浏览器恢复，退出应用等待自有服务清理。保存的有效应用路径优先；MSIX 激活先核对包注册，再使用解析出的 AUMID 构造命令。
@@ -220,6 +231,8 @@ Windows 官方 App 26.1013.3656.0 的三轮 60 秒采样分别捕获 `thread/lis
 默认状态目录由 `paths.rs::default_app_state_dir` 统一提供：Windows `%APPDATA%/Codex3N`、macOS `~/Library/Application Support/Codex3N`、Linux `$XDG_CONFIG_HOME/Codex3N`（缺省 `~/.config/Codex3N`）。`CODEX_PLUS_STATE_DIR` 仍可为多开和测试显式指定独立目录。
 
 GUI 和 MCP 启动前执行 `paths/migration.rs::initialize_user_state`。首次启动且没有导入标记或新设置时，从 `~/.codex-session-delete` 一次导入，旧 `settings.json` 先写同目录 `.bak`；在临时目录完成复制后 rename 发布。SQLite 使用在线备份包含 WAL 已提交事务，锁、状态回执和 SQLite 边车不复制。密钥文件、插件、主题资源、收藏、Skills 和缓存等共用状态目录一起迁移，用户另选的外部路径保持配置。旧目录保留用于恢复；`.state-imported` 标记存在后不再读取旧设置，因此删除新设置不会复活旧值。只有日志等文件提前创建的新目录会先归档，再导入旧设置。
+
+自选设置路径由状态目录内的 `settings.path` 保存绝对路径，实例覆盖目录不读写主实例指针。`set_settings_path`、`reset_settings_path` 保留原设置副本，Windows 同步复制旁边的 DPAPI `secret.key`，目标目录已有不同主密钥时拒绝覆盖。配置迁移后，日志、UI 偏好、账本和其他服务数据仍留在状态目录。导出配置包含明文凭据，界面提示其敏感性；导入只填入当前修订号的草稿，确认保存后才写入。
 
 `SettingsStore::migrate` 按 `schemaVersion` 逐版本迁移，当前为 1；原始 JSON 与密文先备份，保留未知字段，只更新迁移字段。缺键在反序列化时使用代码默认值。未来版本和损坏配置拒绝保存；修订号防止旧表单覆盖其他进程的更新。写入共用跨进程锁和唯一临时文件，flush、sync 后原子替换。
 

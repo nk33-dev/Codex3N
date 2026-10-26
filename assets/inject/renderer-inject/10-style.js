@@ -39,6 +39,19 @@
         width: 16px;
         height: 16px;
       }
+      [data-codex-plus-ext="side-chat-save"] > .codex-plus-side-chat-save-spinner {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        box-sizing: border-box;
+        border: 1.5px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        margin-inline-start: 4px;
+        vertical-align: -1px;
+        animation: codex-plus-side-chat-save-spin .8s linear infinite;
+      }
+      @keyframes codex-plus-side-chat-save-spin { to { transform: rotate(360deg); } }
       .${actionButtonClass}:hover,
       .${actionButtonClass}:focus-visible {
         background: var(--codex-session-action-hover-background, transparent);
@@ -1883,7 +1896,7 @@
     // 引用 prelude 常量会直接 ReferenceError。与 00-prelude.js 里
     // capacityAutoRetryDefaultMaxAttempts / capacityAutoRetryDefaultIntervalSeconds 的一致性
     // 由 capacity-auto-retry.test.ts 的防漂移用例守住。
-    return { pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, includeNativeModels: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
+    return { sideChatSave: false, turnRewind: false, pluginMarketplaceUnlock: true, modelWhitelistUnlock: true, includeNativeModels: true, sessionDelete: true, markdownExport: true, sessionShare: true, pasteFix: false, typingEffect: "off", threadIdBadge: false, conversationView: false, whaleWidget: false, conversationViewMaxWidth: conversationViewDefaultWidth, nativeMenuPlacement: true, nativeFastUnlock: false, petRealMouseLook: false, activityOverlayRight: false, stepwise: false, answerOutline: false, usageStatusLine: true, capacityAutoRetry: false, capacityAutoRetryMaxAttempts: 15, capacityAutoRetryIntervalSeconds: 0, dreamSkinEnabled: false, dreamSkinPaused: false, dreamSkinThemeConfig: window.__CODEX_PLUS_DREAM_SKIN_THEME__ || {}, dreamSkinImagePath: "" };
   }
 
   const codexPlusBackendSettingMap = {
@@ -1891,6 +1904,7 @@
     modelWhitelistUnlock: "codexAppModelWhitelistUnlock",
     includeNativeModels: "codexAppIncludeNativeModels",
     sessionDelete: "codexAppSessionDelete",
+    sideChatSave: "codexAppSideChatSave",
     markdownExport: "codexAppMarkdownExport",
     sessionShare: "codexAppSessionShare",
     threadIdBadge: "codexAppThreadIdBadge",
@@ -1904,6 +1918,7 @@
     answerOutline: "codexAppAnswerOutlineEnabled",
     usageStatusLine: "codexAppUsageStatusLine",
     capacityAutoRetry: "codexAppCapacityAutoRetry",
+    turnRewind: "codexAppTurnRewind",
     pasteFix: "codexAppPasteFix",
     typingEffect: "codexAppTypingEffect",
     dreamSkinEnabled: "codexAppDreamSkinEnabled",
@@ -1933,6 +1948,7 @@
         sessionDelete: false,
         markdownExport: false,
         sessionShare: false,
+        sideChatSave: false,
         pasteFix: false,
         typingEffect: "off",
         threadIdBadge: false,
@@ -1947,6 +1963,7 @@
         answerOutline: false,
         usageStatusLine: false,
         capacityAutoRetry: false,
+        turnRewind: false,
         capacityAutoRetryMaxAttempts: 15,
         capacityAutoRetryIntervalSeconds: 0,
         dreamSkinEnabled: false,
@@ -2737,6 +2754,7 @@
         }
         // 容量错误自动重试：开关落库后立即启停轮询，不必等下一次心跳。
         if (key === "capacityAutoRetry") syncCodexPlusCapacityAutoRetry();
+        if (key === "turnRewind") syncCodexPlusTurnRewind();
       }).catch(() => {
         void loadBackendSettings();
       });
