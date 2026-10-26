@@ -280,7 +280,7 @@ fn github_release_workflow_builds_one_universal_macos_dmg() {
 
     // 通用包：单个 job 在两个 target 上各编一遍，由 build-universal.sh
     // 用 lipo 合并。两个架构的 std 都要装。
-    assert!(workflow.contains("macos-14"));
+    assert!(workflow.contains("macos-15"));
     assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
     assert!(workflow.contains("build-universal.sh \"$VERSION\""));
 

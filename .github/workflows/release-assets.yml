@@ -278,7 +278,7 @@ jobs:
     if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform != 'windows')
     needs: [verify-release, verify-tests]
     name: macOS DMG (universal)
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7
