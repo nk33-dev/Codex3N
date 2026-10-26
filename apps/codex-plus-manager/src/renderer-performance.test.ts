@@ -290,29 +290,35 @@ test("编辑文字不扫描，输入框和菜单挂载仍刷新", () => {
   assert.equal(check({ target: { closest: () => null }, addedNodes: [menu], removedNodes: [] }), false);
 });
 
-test("相同心跳状态不重复写入DOM或刷新Fast控件，新挂载节点仍更新", () => {
+test("相同心跳状态不重复写入DOM，新挂载节点仍更新", () => {
   let writes = 0, refreshes = 0;
   function node(): any {
     const values: Record<string, any> = {};
+    const attributes: Record<string, string> = {};
     return new Proxy({ dataset: new Proxy({}, { set(target, key, value) { writes++; Reflect.set(target, key, value); return true; } }) }, {
-      get(target, key) { return key === "dataset" ? target.dataset : values[String(key)]; },
+      get(target, key) {
+        if (key === "getAttribute") return (name: string) => attributes[name];
+        if (key === "setAttribute") return (name: string, value: string) => { writes++; attributes[name] = value; };
+        return key === "dataset" ? target.dataset : values[String(key)];
+      },
       set(_target, key, value) { writes++; values[String(key)] = value; return true; },
     });
   }
-  let label = node(); const indicator = node(), sidebar = node(), version = node();
+  let label = node(); const indicator = node(), sidebar = node(), version = node(), description = node();
   const render = compile(source("renderBackendStatus"), {
     window: {}, CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD: 3, codexPlusBridgeFailureCount: 0,
+    codexPlusRecoveryPromise: null,
     codexPlusBackendStatus: { status: "ok", version: "1.7.7" }, codexPlusVersion: "", codexPlusSidebarNavId: "nav",
-    document: { querySelector: (selector: string) => selector.includes("sidebar") ? sidebar : label,
+    document: { querySelector: (selector: string) => selector.includes("description") ? description : selector.includes("sidebar") ? sidebar : label,
       querySelectorAll: (selector: string) => selector.includes("version") ? [version] : [indicator] },
     refreshCodexServiceTierControls: () => { refreshes++; },
   }, "renderBackendStatus");
   render(); const firstWrites = writes;
   render(); render();
   assert.equal(writes, firstWrites);
-  assert.equal(refreshes, 1);
+  assert.equal(refreshes, 0);
   label = node(); render();
-  assert.equal(label.textContent, "后端已连接");
+  assert.equal(label.textContent, "已连接");
   assert.ok(writes > firstWrites);
 });
 

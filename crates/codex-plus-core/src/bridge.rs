@@ -114,6 +114,7 @@ pub fn build_bridge_script(binding_name: &str) -> String {
   const previousCallbacks = window.__codexSessionDeleteCallbacks;
   if (previousCallbacks && typeof previousCallbacks.forEach === "function") {{
     previousCallbacks.forEach((callback) => {{
+      clearTimeout(callback.timeoutId);
       try {{ callback.resolve({{ status: "failed", message: "桥接已重新连接" }}); }} catch {{}}
     }});
   }}
@@ -127,18 +128,27 @@ pub fn build_bridge_script(binding_name: &str) -> String {
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;
     window.__codexSessionDeleteCallbacks.delete(id);
+    clearTimeout(callback.timeoutId);
     callback.resolve(result);
   }};
-  window.__codexSessionDeleteReject = (id, message) => {{
+  window.__codexSessionDeleteReject = (id, message, transportFailed = false) => {{
     const callback = window.__codexSessionDeleteCallbacks.get(id);
     if (!callback) return;
     window.__codexSessionDeleteCallbacks.delete(id);
-    callback.resolve({{ status: "failed", message }});
+    clearTimeout(callback.timeoutId);
+    callback.resolve({{ status: "failed", message, ...(transportFailed ? {{ transportFailed: true }} : {{}}) }});
   }};
   window.__codexSessionDeleteBridge = (path, payload) => new Promise((resolve) => {{
     const id = String(++window.__codexSessionDeleteSeq);
-    window.__codexSessionDeleteCallbacks.set(id, {{ resolve }});
-    window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+    const timeoutId = ["/backend/status", "/settings/get"].includes(path)
+      ? setTimeout(() => window.__codexSessionDeleteReject(id, "后端读取超时", true), 5000)
+      : undefined;
+    window.__codexSessionDeleteCallbacks.set(id, {{ resolve, timeoutId }});
+    try {{
+      window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+    }} catch (error) {{
+      window.__codexSessionDeleteReject(id, "桥接不可用", true);
+    }}
   }});
 }})();
 "#
@@ -157,16 +167,17 @@ pub fn bridge_health_check_script() -> &'static str {
   // 此时桥接对象仍在，不判定失效，避免看门狗按失败阈值每分钟重注入整份脚本
   // （issue #2330）。
   // 必须放在 bridge/health 存在性检查之后：页面重载后真丢桥时仍要能修复。
-  if (typeof document !== "undefined" && document.visibilityState === "hidden") return true;
+  const firstFailureAt = Number(health.firstFailureAt) || 0;
+  if (!firstFailureAt && typeof document !== "undefined" && document.visibilityState === "hidden") return true;
   const now = Date.now();
   const lastSuccessAt = Number(health.lastSuccessAt) || 0;
   const lastInjectionAt = Number(health.lastInjectionAt) || 0;
   const lastAttemptAt = Number(health.lastAttemptAt) || 0;
   if (lastInjectionAt > 0 && now - lastInjectionAt <= 5000) return true;
   if (lastSuccessAt > 0 && now - lastSuccessAt <= 15000) return true;
-  // 页面忙碌时状态请求会超时，但心跳仍在调用桥接。最近一次尝试也算活着，
-  // 避免看门狗把整份脚本反复注入并触发整页刷新。
-  return lastAttemptAt > 0 && now - lastAttemptAt <= 15000;
+  // 忙碌页面最多宽限 30 秒；后续请求不能不断延长失联期限。
+  return firstFailureAt > 0 && now - firstFailureAt <= 30000 &&
+    lastAttemptAt > 0 && now - lastAttemptAt <= 15000;
 })()
 "#
 }
@@ -1163,13 +1174,54 @@ pub async fn install_bridge(
     handler: BridgeHandler,
     new_document_scripts: &[String],
 ) -> anyhow::Result<()> {
+    install_bridge_transport(
+        websocket_url,
+        binding_name,
+        handler,
+        new_document_scripts,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+/// 独立恢复 binding 由宿主运行时持有，不跟随业务 session 销毁。
+pub async fn install_recovery_bridge(
+    websocket_url: &str,
+    handler: BridgeHandler,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+    install_bridge_transport(
+        websocket_url,
+        "codexPlusRecoveryV1",
+        handler,
+        &[],
+        Some(crate::recovery::bridge_script()),
+    )
+    .await
+}
+
+async fn install_bridge_transport(
+    websocket_url: &str,
+    binding_name: &str,
+    handler: BridgeHandler,
+    new_document_scripts: &[String],
+    recovery_script: Option<&str>,
+) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     let socket = connect_cdp_websocket(websocket_url).await?;
     let mut session = CdpSession::new(socket).with_handler(handler);
-    let generation = next_bridge_generation(websocket_url);
+    session.binding_name = Some(binding_name.to_string());
+    if recovery_script.is_some() {
+        session.response_prefix = "__codexPlusRecovery";
+    }
+    let generation = next_bridge_generation(&if recovery_script.is_some() {
+        format!("{websocket_url}#recovery")
+    } else {
+        websocket_url.to_string()
+    });
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
-    let native_fast_requested =
-        crate::settings::SettingsStore::default()
+    let native_fast_requested = recovery_script.is_none()
+        && crate::settings::SettingsStore::default()
             .load()
             .is_ok_and(|settings| {
                 settings.enhancements_enabled && settings.codex_app_native_fast_unlock
@@ -1189,7 +1241,9 @@ pub async fn install_bridge(
             .send_command(3, "Runtime.addBinding", json!({ "name": binding_name }))
             .await?;
 
-        let bridge_script = build_bridge_script(binding_name);
+        let bridge_script = recovery_script
+            .map(str::to_string)
+            .unwrap_or_else(|| build_bridge_script(binding_name));
         let response = session
             .send_command(
                 4,
@@ -1245,25 +1299,27 @@ pub async fn install_bridge(
             .remove_registered_scripts(&registered_script_ids)
             .await;
         session.close().await;
-        return Ok(());
+        return Ok(tokio::spawn(async {}));
     }
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "bridge.generation_published",
         json!({ "generation": generation.id }),
     );
 
-    if let Err(error) = native_fast::install(websocket_url, generation.clone()).await {
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "bridge.native_fast_interceptor_failed",
-            json!({ "message": error.to_string() }),
-        );
+    if recovery_script.is_none() {
+        if let Err(error) = native_fast::install(websocket_url, generation.clone()).await {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "bridge.native_fast_interceptor_failed",
+                json!({ "message": error.to_string() }),
+            );
+        }
+        spawn_app_server_client_capture(websocket_url, generation.clone());
+        spawn_external_api_quota_gate(websocket_url, generation.clone());
     }
-    spawn_app_server_client_capture(websocket_url, generation.clone());
-    spawn_external_api_quota_gate(websocket_url, generation.clone());
 
     let mut pending_calls = FuturesUnordered::new();
     session.enqueue_binding_calls(&mut pending_calls);
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         loop {
             if !bridge_generation_is_current(&generation) {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1310,7 +1366,7 @@ pub async fn install_bridge(
         release_bridge_generation(&generation);
     });
 
-    Ok(())
+    Ok(task)
 }
 
 fn collect_script_identifier(response: &Value, identifiers: &mut Vec<String>) {
@@ -1404,6 +1460,8 @@ struct CdpSession<S> {
     current_pause_hit: Option<[u8; 32]>,
     handler: Option<BridgeHandler>,
     generation: Option<BridgeGeneration>,
+    binding_name: Option<String>,
+    response_prefix: &'static str,
 }
 
 impl<S> CdpSession<S>
@@ -1427,6 +1485,8 @@ where
             current_pause_hit: None,
             handler: None,
             generation: None,
+            binding_name: None,
+            response_prefix: "__codexSessionDelete",
         }
     }
 
@@ -1594,7 +1654,14 @@ where
             _ => {}
         }
 
-        if value.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
+        if value.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled")
+            && self.binding_name.as_ref().is_none_or(|name| {
+                value
+                    .pointer("/params/name")
+                    .and_then(Value::as_str)
+                    .is_none_or(|actual| actual == name)
+            })
+        {
             self.binding_calls.push_back(value.clone());
         }
         if value.get("method").and_then(Value::as_str) == Some("Fetch.requestPaused") {
@@ -1765,7 +1832,12 @@ where
         result: &Value,
         trace_success: bool,
     ) -> anyhow::Result<()> {
-        let expression = resolve_bridge_expression(request_id, result)?;
+        let expression = format!(
+            "window.{}Resolve({}, {})",
+            self.response_prefix,
+            serde_json::to_string(request_id)?,
+            serde_json::to_string(result)?
+        );
         let message_id = next_message_id();
         if trace_success {
             let _ = crate::diagnostic_log::append_diagnostic_log(
@@ -1814,7 +1886,12 @@ where
         request_id: &str,
         message: &str,
     ) -> anyhow::Result<()> {
-        let expression = reject_bridge_expression(request_id, message)?;
+        let expression = format!(
+            "window.{}Reject({}, {})",
+            self.response_prefix,
+            serde_json::to_string(request_id)?,
+            serde_json::to_string(message)?
+        );
         let message_id = next_message_id();
         let _ = crate::diagnostic_log::append_diagnostic_log(
             "bridge.reject_start",
@@ -2788,6 +2865,46 @@ mod websocket_size_tests {
 mod low_power_tests {
     use super::*;
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol::Role};
+
+    #[tokio::test]
+    async fn recovery_binding_events_and_resolvers_are_isolated_from_business_calls() {
+        let (client, server) = tokio::io::duplex(16384);
+        let mut session =
+            CdpSession::new(WebSocketStream::from_raw_socket(client, Role::Client, None).await);
+        session.binding_name = Some("codexPlusRecoveryV1".into());
+        session.response_prefix = "__codexPlusRecovery";
+        let mut server = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        for name in [BRIDGE_BINDING_NAME, "codexPlusRecoveryV1"] {
+            server.send(Message::Text(json!({
+                "method":"Runtime.bindingCalled",
+                "params":{"name":name,"payload":json!({"id":"same","path":"/status","payload":{}}).to_string()}
+            }).to_string().into())).await.unwrap();
+            session.read_socket_message().await.unwrap();
+        }
+        assert_eq!(session.binding_calls.len(), 1);
+        assert_eq!(
+            session.binding_calls[0]["params"]["name"],
+            "codexPlusRecoveryV1"
+        );
+        session
+            .resolve_bridge_request("same", &json!({"status":"ok"}), false)
+            .await
+            .unwrap();
+        let response = server.next().await.unwrap().unwrap();
+        let response: Value = serde_json::from_str(response.to_text().unwrap()).unwrap();
+        assert!(
+            response["params"]["expression"]
+                .as_str()
+                .unwrap()
+                .starts_with("window.__codexPlusRecoveryResolve(")
+        );
+        assert!(
+            !response["params"]["expression"]
+                .as_str()
+                .unwrap()
+                .contains("__codexSessionDelete")
+        );
+    }
 
     #[tokio::test]
     async fn settings_apply_media_once_per_change_and_clear_the_override() {

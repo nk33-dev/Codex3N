@@ -1014,10 +1014,7 @@ async fn fetch_repo_skills_from_zip(
             github_status_hint(status.as_u16())
         );
     }
-    let bytes = response.bytes().await.context("读取仓库压缩包内容失败")?;
-    if bytes.len() > REPO_ZIP_DOWNLOAD_LIMIT_BYTES {
-        anyhow::bail!("仓库压缩包太大：{} 字节", bytes.len());
-    }
+    let bytes = read_repo_zip(response, REPO_ZIP_DOWNLOAD_LIMIT_BYTES).await?;
 
     parse_skills_from_zip(repo, &bytes, cached)
 }
@@ -1519,11 +1516,24 @@ pub async fn download_repo_zip(repo: &SkillRepo) -> anyhow::Result<Vec<u8>> {
             github_status_hint(status.as_u16())
         );
     }
-    let bytes = response.bytes().await.context("读取仓库压缩包内容失败")?;
-    if bytes.len() > REPO_ZIP_DOWNLOAD_LIMIT_BYTES {
-        anyhow::bail!("仓库压缩包太大：{} 字节", bytes.len());
+    read_repo_zip(response, REPO_ZIP_DOWNLOAD_LIMIT_BYTES).await
+}
+
+async fn read_repo_zip(mut response: reqwest::Response, limit: usize) -> anyhow::Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        anyhow::bail!("仓库压缩包超过 {limit} 字节限制");
     }
-    Ok(bytes.to_vec())
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.context("读取仓库压缩包内容失败")? {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            anyhow::bail!("仓库压缩包超过 {limit} 字节限制");
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 /// 软链优先，失败回退复制。Windows 上建目录软链要开发者模式或管理员权限，
@@ -1636,6 +1646,44 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::io::Write;
+
+    #[tokio::test]
+    async fn zip_download_enforces_declared_and_streamed_limits() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (header, body, succeeds) in [
+            ("Content-Length: 5\r\n", "12345", true),
+            ("Content-Length: 6\r\n", "123456", false),
+            (
+                "Transfer-Encoding: chunked\r\n",
+                "3\r\n123\r\n3\r\n456\r\n0\r\n\r\n",
+                false,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                let _ = socket
+                    .write_all(
+                        format!("HTTP/1.1 200 OK\r\n{header}Connection: close\r\n\r\n{body}")
+                            .as_bytes(),
+                    )
+                    .await;
+            });
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(read_repo_zip(response, 5).await.is_ok(), succeeds);
+            server.await.unwrap();
+        }
+    }
 
     fn manager(temp: &tempfile::TempDir) -> SkillsManager {
         SkillsManager::new(

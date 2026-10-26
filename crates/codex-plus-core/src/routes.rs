@@ -943,42 +943,53 @@ fn settings_payload_value(
         &settings.active_relay_profile(),
     );
     settings.dictation = crate::dictation::effective_settings(&settings);
-    let mut value = serde_json::to_value(settings)?;
-    fn remove_named_keys(value: &mut Value) {
-        match value {
-            Value::Object(object) => {
-                object.remove("apiKeys");
-                for child in object.values_mut() {
-                    remove_named_keys(child);
-                }
-            }
-            Value::Array(array) => {
-                for child in array {
-                    remove_named_keys(child);
-                }
-            }
-            _ => {}
-        }
-    }
-    remove_named_keys(&mut value);
+    let profiles: Vec<_> = settings
+        .relay_profiles
+        .iter()
+        .map(|profile| {
+            let provider = profile
+                .config_contents
+                .parse::<toml::Value>()
+                .ok()
+                .and_then(|doc| {
+                    doc.get("model_provider")
+                        .and_then(toml::Value::as_str)
+                        .map(str::to_owned)
+                });
+            // 渲染端只需要供应商标识，不接收完整 TOML、认证快照或自定义请求头。
+            let config = provider
+                .map(|provider| format!("model_provider = {}\n", json!(provider)))
+                .unwrap_or_default();
+            json!({"id":profile.id,"name":profile.name,"relayMode":profile.relay_mode,
+            "officialMixApiKey":profile.official_mix_api_key,"protocol":profile.protocol,
+            "modelList":profile.model_list,"configContents":config})
+        })
+        .collect();
+    let mut value = serde_json::to_value(&settings)?;
+    let object = value.as_object_mut().expect("设置序列化为对象");
+    object.retain(|key, _| RENDERER_SETTING_FIELDS.contains(&key.as_str()));
+    object.insert("relayProfiles".into(), json!(profiles));
+    object.insert(
+        "dictation".into(),
+        json!({
+            "enabled":settings.dictation.enabled,"provider":settings.dictation.provider,
+            "apiKeyConfigured":!settings.dictation.api_key.trim().is_empty()
+        }),
+    );
+    object.insert(
+        "promptEnhance".into(),
+        json!({
+            "enabled":settings.prompt_enhance.enabled,
+            "rewriteEnabled":settings.prompt_enhance.rewrite_enabled,
+            "grillEnabled":settings.prompt_enhance.grill_enabled,
+            "favoritesEnabled":settings.prompt_enhance.favorites_enabled,
+            "defaultMode":settings.prompt_enhance.default_mode,
+            "detail":settings.prompt_enhance.detail,"audience":settings.prompt_enhance.audience,
+            "context":settings.prompt_enhance.context,
+            "apiKeyConfigured":!settings.prompt_enhance.api_key.trim().is_empty()
+        }),
+    );
     if let Some(object) = value.as_object_mut() {
-        if let Some(dictation) = object.get_mut("dictation").and_then(Value::as_object_mut) {
-            let configured = dictation
-                .remove("apiKey")
-                .and_then(|value| value.as_str().map(|value| !value.trim().is_empty()))
-                .unwrap_or(false);
-            dictation.insert("apiKeyConfigured".to_string(), json!(configured));
-        }
-        if let Some(prompt_enhance) = object
-            .get_mut("promptEnhance")
-            .and_then(Value::as_object_mut)
-        {
-            let configured = prompt_enhance
-                .remove("apiKey")
-                .and_then(|value| value.as_str().map(|value| !value.trim().is_empty()))
-                .unwrap_or(false);
-            prompt_enhance.insert("apiKeyConfigured".to_string(), json!(configured));
-        }
         object.insert(
             "managedSessionConnection".to_string(),
             managed_session_connection,
@@ -996,42 +1007,49 @@ fn settings_payload_value(
             Value::String(codex_app_version),
         );
     }
-    strip_secret_fields(&mut value);
     Ok(value)
 }
 
-/// 桥接下发给注入页面时剥掉全部密钥字段。
-///
-/// 判定复用落盘加密的同一套规则（`crate::settings::is_secret_field_name`），
-/// 「什么算密钥」全仓只有一个定义，将来新增的 `*ApiKey` 字段自动被剥掉——
-/// 逐个 `remove` 会随着字段增加而漏。`apiKeys` 数组（元素是 `{id,name,apiKey}`）
-/// 整项删除；注入页要展示 Key 列表时走 `/relay-api-keys`，那里只回 id/name。
-///
-/// 只剥字符串值，与落盘加密的 `visit_secret_fields` 同语义：`officialMixApiKey`
-/// 是布尔开关，名字命中规则但不是密钥，注入页靠它判断官方混用模式，不能剥。
-///
-/// 管理器自己的编辑器不经这里：它读 Tauri IPC 的 `get_settings`，那份仍返回明文。
-fn strip_secret_fields(value: &mut Value) {
-    match value {
-        Value::Object(object) => {
-            object.retain(|key, child| {
-                if key == "apiKeys" {
-                    return false;
-                }
-                !(child.is_string() && crate::settings::is_secret_field_name(key))
-            });
-            for child in object.values_mut() {
-                strip_secret_fields(child);
-            }
-        }
-        Value::Array(items) => {
-            for child in items {
-                strip_secret_fields(child);
-            }
-        }
-        _ => {}
-    }
-}
+// 新设置默认不下发；增加字段时同时确认渲染端用途及是否含有凭据。
+const RENDERER_SETTING_FIELDS: &[&str] = &[
+    "enhancementsEnabled",
+    "providerSyncEnabled",
+    "relayProfilesEnabled",
+    "activeRelayId",
+    "codexAppStandaloneQuotaUnlock",
+    "codexAppPluginMarketplaceUnlock",
+    "codexAppModelWhitelistUnlock",
+    "codexAppIncludeNativeModels",
+    "codexAppSessionDelete",
+    "codexAppMarkdownExport",
+    "codexAppSessionShare",
+    "codexAppUsageStatusLine",
+    "codexAppPasteFix",
+    "codexAppTypingEffect",
+    "codexAppThreadIdBadge",
+    "codexAppLowPower",
+    "codexAppConversationView",
+    "codexAppNativeMenuPlacement",
+    "codexAppNativeFastUnlock",
+    "codexAppPetRealMouseLook",
+    "codexAppActivityOverlayRight",
+    "codexAppCapacityAutoRetry",
+    "codexAppWhaleWidgetEnabled",
+    "codexAppWhaleBalanceProtocol",
+    "codexAppWhaleBalancePath",
+    "codexAppWhaleBalanceField",
+    "codexAppWhaleBalanceCurrency",
+    "codexAppWhaleBalanceScale",
+    "codexAppStepwiseEnabled",
+    "codexAppStepwiseGenerationMode",
+    "codexAppStepwiseDirectSend",
+    "codexAppStepwiseMaxItems",
+    "codexAppAnswerOutlineEnabled",
+    "codexAppDreamSkinEnabled",
+    "codexAppDreamSkinPaused",
+    "codexAppDreamSkinThemeConfig",
+    "codexAppDreamSkinImagePath",
+];
 
 fn managed_session_connection(settings: &BackendSettings) -> Value {
     // 固定所有自定义会话聚合的本地传输，模型聚合与故障转移共用这一入口。
@@ -1146,6 +1164,35 @@ mod dictation_privacy_tests {
         let result = settings_payload_value(settings, String::new()).unwrap();
         assert!(result["relayProfiles"][0].get("apiKeys").is_none());
         assert!(!result.to_string().contains("fake-backup-secret"));
+    }
+
+    #[test]
+    fn renderer_settings_allow_only_public_fields_and_provider_identity() {
+        let mut settings = BackendSettings::default();
+        settings.weixin_connect_token = "synthetic-weixin-secret".into();
+        settings.relay_context_config_contents = "synthetic-context-secret".into();
+        settings.relay_profiles[0].auth_contents = r#"{"tokens":{"access_token":"synthetic-access-secret","refresh_token":"synthetic-refresh-secret"}}"#.into();
+        settings.relay_profiles[0].config_contents = "model_provider = 'local_vendor'\n[model_providers.local_vendor]\nexperimental_bearer_token = 'synthetic-config-secret'".into();
+        settings.relay_profiles[0].custom_headers = vec![crate::settings::RelayHeaderKeyValue {
+            key: "Authorization".into(),
+            value: "Bearer synthetic-header-secret".into(),
+        }];
+        settings.prompt_enhance.api_key = "synthetic-prompt-secret".into();
+        let mut tool = crate::tools::ToolConfig::default();
+        tool.relay_profiles[0].auth_contents = "synthetic-tool-secret".into();
+        settings.tools.insert(crate::tools::ToolId::Grok, tool);
+        let value = settings_payload_value(settings, String::new()).unwrap();
+        let text = value.to_string();
+        assert!(!text.contains("synthetic-"), "{text}");
+        assert!(value.get("tools").is_none());
+        assert!(value.get("weixinConnectToken").is_none());
+        let profile = &value["relayProfiles"][0];
+        assert!(profile.get("authContents").is_none());
+        assert_eq!(
+            profile["configContents"],
+            "model_provider = \"local_vendor\"\n"
+        );
+        assert_eq!(value["promptEnhance"]["apiKeyConfigured"], true);
     }
     #[test]
     fn dictation_settings_bridge_applies_enhancement_switch_without_mutating_settings() {

@@ -26,9 +26,7 @@
       "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/ https://api.dreamskin.cc/v1/themes/; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420 http://127.0.0.1:1420; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'",
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$HOME/.codex-session-delete/dream-skin/**"
-        ]
+        "scope": []
       }
     }
   },

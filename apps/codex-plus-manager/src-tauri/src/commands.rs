@@ -326,6 +326,8 @@ fn default_local_sessions_page_size() -> usize {
 #[serde(rename_all = "camelCase")]
 pub struct ListLocalSessionsRequest {
     #[serde(default)]
+    pub query: String,
+    #[serde(default)]
     pub offset: usize,
     #[serde(default = "default_local_sessions_page_size")]
     pub limit: usize,
@@ -3392,17 +3394,22 @@ pub fn load_settings() -> CommandResult<SettingsPayload> {
                     );
                 }
             };
-            ok(
-                "设置已加载。",
-                SettingsPayload {
-                    revision: settings.settings_revision.clone(),
-                    settings,
-                    settings_path: codex_plus_core::paths::default_settings_path()
-                        .to_string_lossy()
-                        .to_string(),
-                    user_scripts: user_script_inventory(),
-                },
-            )
+            let payload = SettingsPayload {
+                revision: settings.settings_revision.clone(),
+                settings,
+                settings_path: codex_plus_core::paths::default_settings_path()
+                    .to_string_lossy()
+                    .to_string(),
+                user_scripts: user_script_inventory(),
+            };
+            if payload.settings.secret_decryption_failures.is_empty() {
+                ok("设置已加载。", payload)
+            } else {
+                degraded(
+                    "部分密钥无法解密，原密文已保留；请修复系统凭据或重新填写密钥。",
+                    payload,
+                )
+            }
         }
         Err(error) => failed(
             &format!("读取本机默认供应商失败：{error}"),
@@ -3532,6 +3539,7 @@ fn list_local_sessions_blocking(
     request: Option<ListLocalSessionsRequest>,
 ) -> CommandResult<LocalSessionsPayload> {
     let request = request.unwrap_or(ListLocalSessionsRequest {
+        query: String::new(),
         offset: 0,
         limit: DEFAULT_LOCAL_SESSIONS_PAGE_SIZE,
     });
@@ -3543,7 +3551,7 @@ fn list_local_sessions_blocking(
         std::sync::OnceLock::new();
     let pager = PAGER.get_or_init(Default::default);
     let page = match pager.lock() {
-        Ok(mut pager) => pager.list_page(&db_paths, offset, limit),
+        Ok(mut pager) => pager.search_page(&db_paths, offset, limit, &request.query),
         Err(_) => codex_plus_data::LocalSessionPage {
             errors: vec!["会话查询缓存不可用，请重启管理窗口。".to_string()],
             ..Default::default()
@@ -5010,14 +5018,57 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
 /// 单个仓库失败（限流、网络、仓库删了）不影响其它仓库，错误单独收集回前端。
 #[tauri::command]
 pub async fn refresh_skill_catalog() -> CommandResult<SkillsPayload> {
+    use futures_util::FutureExt;
+    type Refresh = futures_util::future::Shared<
+        futures_util::future::BoxFuture<'static, CommandResult<SkillsPayload>>,
+    >;
+    static PENDING: std::sync::Mutex<Option<(u64, Refresh)>> = std::sync::Mutex::new(None);
+    static REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let (revision, task) = {
+        let mut pending = PENDING.lock().unwrap_or_else(|error| error.into_inner());
+        pending
+            .get_or_insert_with(|| {
+                (
+                    REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    refresh_skill_catalog_inner().boxed().shared(),
+                )
+            })
+            .clone()
+    };
+    let result = task.await;
+    let mut pending = PENDING.lock().unwrap_or_else(|error| error.into_inner());
+    if pending
+        .as_ref()
+        .is_some_and(|(current, _)| *current == revision)
+    {
+        *pending = None;
+    }
+    result
+}
+
+async fn refresh_skill_catalog_inner() -> CommandResult<SkillsPayload> {
+    use futures_util::{StreamExt, stream};
     let manager = default_skills_manager();
     let repos = manager.list_repos();
     let mut remote = Vec::new();
     let mut repo_errors = Vec::new();
 
-    for repo in repos.iter().filter(|repo| repo.enabled) {
+    let enabled_repos: Vec<_> = repos.into_iter().filter(|repo| repo.enabled).collect();
+    let mut requests = stream::iter(enabled_repos.into_iter().map(|repo| async move {
         let cached = cached_repo_skills(&repo.key());
-        match codex_plus_core::skills::resolve_repo_skills(repo.clone(), &cached).await {
+        let result = codex_plus_core::skills::resolve_repo_skills(repo.clone(), &cached).await;
+        (repo, cached, result)
+    }))
+    .buffered(2);
+    while let Some((repo, cached, result)) = requests.next().await {
+        if !manager
+            .list_repos()
+            .iter()
+            .any(|current| current.key() == repo.key() && current.enabled)
+        {
+            continue;
+        }
+        match result {
             Ok((resolved, skills)) => {
                 if resolved.key() != repo.key() {
                     let _ = manager.save_repo(resolved.clone(), Some(&repo.key()));
@@ -7385,6 +7436,10 @@ fn read_optional_text_file(path: &std::path::Path) -> anyhow::Result<String> {
 
 fn settings_payload(message: &str, failure_context: &str) -> CommandResult<SettingsPayload> {
     match settings_payload_value() {
+        Ok(payload) if !payload.settings.secret_decryption_failures.is_empty() => ok(
+            &format!("{message} 部分密钥无法解密，原密文已保留；请修复系统凭据或重新填写密钥。"),
+            payload,
+        ),
         Ok(payload) => ok(message, payload),
         Err((error, payload)) => failed(&format!("{failure_context}：{error}"), payload),
     }
@@ -9406,6 +9461,7 @@ base_url = "https://example.invalid/v1"
             .unwrap();
 
         let first_page = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
+            query: String::new(),
             offset: 0,
             limit: 2,
         }));
@@ -9416,6 +9472,7 @@ base_url = "https://example.invalid/v1"
         assert_eq!(first_page.payload.total_count, 3);
 
         let second_page = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
+            query: String::new(),
             offset: 2,
             limit: 2,
         }));
@@ -9442,10 +9499,12 @@ base_url = "https://example.invalid/v1"
         }
         let first =
             tauri::async_runtime::block_on(list_local_sessions(Some(ListLocalSessionsRequest {
+                query: String::new(),
                 offset: 0,
                 limit: 0,
             })));
         let beyond = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
+            query: String::new(),
             offset: usize::MAX,
             limit: usize::MAX,
         }));

@@ -962,6 +962,16 @@ export function App() {
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
   const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
+  const localSessionsRevision = useRef(0);
+  const localSessionsQuery = useRef("");
+  const [localSessionsLoading, setLocalSessionsLoading] = useState(false);
+  useEffect(() => {
+    if (route !== "sessions") {
+      ++localSessionsRevision.current;
+      localSessionsQuery.current = "";
+      setLocalSessionsLoading(false);
+    }
+  }, [route]);
   const [liveContextEntries, setLiveContextEntries] = useState<CodexContextEntries | null>(null);
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
@@ -1142,7 +1152,8 @@ export function App() {
         ...current,
         appPath: current.appPath || result.settings.codexAppPath || "",
       }));
-      if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
+      if (result.settings.secretDecryptionFailures?.length) showNotice(t("设置已加载"), t("部分密钥无法解密，原密文已保留；请修复系统凭据或重新填写密钥。"), "degraded");
+      else if (!silent) showResultNotice(t("设置已加载"), result, { silentSuccess: true });
       return normalized;
     }
     return null;
@@ -1341,20 +1352,27 @@ export function App() {
     }
   };
 
-  const refreshLocalSessions = async (silent = false, offset = 0): Promise<LocalSessionsResult | null> => {
-    const result = await run(() =>
-      call<LocalSessionsResult>("list_local_sessions", {
-        request: { offset, limit: 50 },
-      }),
-    );
-    if (result) {
-      if (!result.sessions.length && result.offset > 0) {
-        return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
-      }
+  const refreshLocalSessions = async (silent = false, offset = 0, query = localSessionsQuery.current): Promise<LocalSessionsResult | null> => {
+    const revision = ++localSessionsRevision.current;
+    localSessionsQuery.current = query;
+    setLocalSessionsLoading(true);
+    try {
+      let result: LocalSessionsResult;
+      do {
+        result = await call<LocalSessionsResult>("list_local_sessions", { request: { offset, limit: 50, query } });
+        if (revision !== localSessionsRevision.current) return null;
+        if (result.sessions.length || result.offset === 0 || !isSuccessStatus(result.status)) break;
+        offset = Math.max(0, result.offset - result.limit);
+      } while (true);
       setLocalSessions(result);
       if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("会话管理"), result, { silentSuccess: true });
+      return result;
+    } catch (error) {
+      if (revision === localSessionsRevision.current) showNotice(t("调用失败"), stringifyError(error), "failed");
+      return null;
+    } finally {
+      if (revision === localSessionsRevision.current) setLocalSessionsLoading(false);
     }
-    return result;
   };
 
 
@@ -2366,7 +2384,8 @@ export function App() {
           settingsFormRef.current = saved;
           setSettingsForm(saved);
         }
-        if (!silent) showNotice(t("设置保存"), result.message, result.status);
+        if (result.settings.secretDecryptionFailures?.length) showNotice(t("设置保存"), t("部分密钥无法解密，原密文已保留；请修复系统凭据或重新填写密钥。"), "degraded");
+        else if (!silent) showNotice(t("设置保存"), result.message, result.status);
         return saved;
       }
       if (result) showNotice(t("设置保存"), result.message, result.status);
@@ -3549,7 +3568,8 @@ export function App() {
                 actions={actions}
               />}
               sessions={localSessions}
-              onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
+              loading={localSessionsLoading}
+              onRefresh={async (offset, query) => { await actions.refreshLocalSessions(false, offset ?? 0, query); }}
               onDelete={actions.deleteLocalSession}
               onDeleteMany={actions.deleteLocalSessions}
               onDeleteProject={actions.deleteProjectLocalSessions}
@@ -3919,7 +3939,7 @@ export type Actions = {
   setUserScriptsEnabled: (enabled: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean) => Promise<void>;
   deleteUserScript: (key: string) => Promise<void>;
-  refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
+  refreshLocalSessions: (silent?: boolean, offset?: number, query?: string) => Promise<LocalSessionsResult | null>;
   deleteLocalSession: (session: LocalSession) => Promise<void>;
   deleteLocalSessions: (sessions: LocalSession[]) => Promise<void>;
   deleteInvalidLocalSessions: () => Promise<void>;

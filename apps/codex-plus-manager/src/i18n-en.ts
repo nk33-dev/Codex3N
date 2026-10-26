@@ -1,6 +1,7 @@
 // 英文词条与前端翻译调用保持一致。
 
 export const EN_PLAIN: Record<string, string> = {
+  "部分密钥无法解密，原密文已保留；请修复系统凭据或重新填写密钥。": "Some keys could not be decrypted. The original encrypted values were preserved. Restore system credentials or enter new keys.",
   "增强深度": "Enhancement depth",
   "受众画像": "Audience profile",
   "Agent 协作": "Agent collaboration",

@@ -105,6 +105,41 @@ fn stable_order_handles_null_negative_times_and_source_ties() {
 }
 
 #[test]
+fn search_covers_all_rows_before_paging_and_deduplicates_latest_first() {
+    let temp = tempdir().unwrap();
+    let paths = [temp.path().join("current.db"), temp.path().join("old.db")];
+    let current = threads(&paths[0]);
+    let old = threads(&paths[1]);
+    for i in 0..120 {
+        insert(
+            &current,
+            &format!("t{i}"),
+            if i % 2 == 0 { "目标 TITLE" } else { "other" },
+            Some(i),
+        );
+    }
+    insert(&old, "t119", "目标 TITLE", Some(1));
+    let mut pager = LocalSessionPager::default();
+    let first = pager.search_page(&paths, 0, 50, "目标 title");
+    assert_eq!(first.total_count, 60);
+    assert_eq!(first.sessions.len(), 50);
+    assert!(first.has_more);
+    let last = pager.search_page(&paths, 50, 50, "目标 title");
+    assert_eq!(last.sessions.len(), 10);
+    assert!(!last.has_more);
+    assert!(
+        !first
+            .sessions
+            .iter()
+            .chain(&last.sessions)
+            .any(|s| s.id == "t119")
+    );
+    assert_eq!(pager.list_page(&paths, 0, 50).total_count, 120);
+    assert_eq!(pager.search_page(&paths, 0, 50, "%_").total_count, 0);
+    assert_eq!(pager.search_page(&paths, 0, 50, "t1").total_count, 31);
+}
+
+#[test]
 fn wal_commits_refresh_counts_order_and_details_without_main_file_changes() {
     let temp = tempdir().unwrap();
     let paths = [temp.path().join("state.db")];

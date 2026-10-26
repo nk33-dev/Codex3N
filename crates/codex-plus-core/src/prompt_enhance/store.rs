@@ -248,6 +248,32 @@ fn favorites(conn: &Connection) -> anyhow::Result<Vec<Favorite>> {
     rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
 }
 
+fn favorites_for_list(
+    conn: &Connection,
+    query: &str,
+    summary: bool,
+) -> anyhow::Result<Vec<Favorite>> {
+    let mut statement = conn.prepare("SELECT data FROM favorites")?;
+    let mut rows = statement.query([])?;
+    let mut items = Vec::new();
+    while let Some(row) = rows.next()? {
+        let raw: String = row.get(0)?;
+        let mut item: Favorite = serde_json::from_str(&raw)?;
+        if !query.is_empty()
+            && !format!("{}\n{}\n{}", item.title, item.body, item.tags.join(" "))
+                .to_lowercase()
+                .contains(query)
+        {
+            continue;
+        }
+        if summary {
+            item.body = item.body.chars().take(180).collect();
+        }
+        items.push(item);
+    }
+    Ok(items)
+}
+
 fn id(payload: &Value) -> anyhow::Result<&str> {
     let id = payload
         .get("id")
@@ -329,7 +355,8 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
                 .and_then(Value::as_u64)
                 .unwrap_or(5000)
                 .clamp(1, 5000) as usize;
-            let mut items = favorites(&conn)?;
+            let summary_only = payload.get("summaryOnly").and_then(Value::as_bool) == Some(true);
+            let mut items = favorites_for_list(&conn, &query, summary_only)?;
             items.retain(|item| {
                 let visible = match scope {
                     "all" => true,
@@ -342,10 +369,6 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
                     }
                 };
                 visible
-                    && (query.is_empty()
-                        || format!("{}\n{}\n{}", item.title, item.body, item.tags.join(" "))
-                            .to_lowercase()
-                            .contains(&query))
             });
             let mut tags = items
                 .iter()
@@ -376,8 +399,31 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
                 _ => items = manual(&items),
             }
             let total = items.len();
-            items.truncate(limit);
-            Ok(json!({"status":"ok","favorites":items,"tags":tags,"total":total}))
+            let offset = payload
+                .get("offset")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .min(usize::MAX as u64) as usize;
+            let items: Vec<Value> = items.into_iter().skip(offset).take(limit).map(|item| {
+                if summary_only {
+                    let excerpt: String = item.body.chars().take(180).collect();
+                    json!({"id":item.id,"title":item.title,"tags":item.tags,"project":item.project,
+                        "order":item.order,"pinned":item.pinned,"excerpt":excerpt})
+                } else { json!(item) }
+            }).collect();
+            Ok(
+                json!({"status":"ok","favorites":items,"tags":tags,"total":total,"offset":offset,
+                "hasMore":offset.saturating_add(items.len()) < total}),
+            )
+        }
+        "library/get" => {
+            let raw: String = conn.query_row(
+                "SELECT data FROM favorites WHERE id=?1",
+                [id(&payload)?],
+                |row| row.get(0),
+            )?;
+            let item: Favorite = serde_json::from_str(&raw)?;
+            Ok(json!({"status":"ok","favorite":item}))
         }
         "library/save" => {
             let mut item: Favorite = serde_json::from_value(payload)?;
@@ -647,6 +693,55 @@ fn execute_inner(path: &Path, action: &str, payload: Value) -> anyhow::Result<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summaries_page_without_bodies_and_detail_reads_one_favorite() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.db");
+        for i in 0..65 {
+            let item = execute(
+                &path,
+                "library/save",
+                json!({"title":format!("item{i}"),"body":"长正文".repeat(2000)}),
+            );
+            assert_eq!(item["status"], "ok");
+        }
+        let first = execute(
+            &path,
+            "library/list",
+            json!({"all":true,"offset":0,"limit":50,"summaryOnly":true}),
+        );
+        assert_eq!(first["total"], 65);
+        assert_eq!(first["hasMore"], true);
+        assert_eq!(first["favorites"].as_array().unwrap().len(), 50);
+        assert!(first["favorites"][0].get("body").is_none());
+        assert!(
+            first["favorites"][0]["excerpt"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= 180
+        );
+        let last = execute(
+            &path,
+            "library/list",
+            json!({"all":true,"offset":50,"limit":50,"summaryOnly":true}),
+        );
+        assert_eq!(last["hasMore"], false);
+        assert_eq!(last["favorites"].as_array().unwrap().len(), 15);
+        let id = first["favorites"][0]["id"].as_str().unwrap();
+        let detail = execute(&path, "library/get", json!({"id":id}));
+        assert_eq!(
+            detail["favorite"]["body"].as_str().unwrap().chars().count(),
+            6000
+        );
+        assert!(
+            execute(&path, "library/list", json!({"limit":1}))["favorites"][0]
+                .get("body")
+                .is_some()
+        );
+    }
 
     fn save(path: &Path, title: &str, project: Value) -> Value {
         execute(

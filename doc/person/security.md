@@ -8,13 +8,17 @@
 
 ## 管理器 WebView
 
-`apps/codex-plus-manager/src-tauri/tauri.conf.json` 明确限制脚本、连接、图片、字体、对象和嵌入来源；开发模式只为本地 Vite 增加连接源。`assetProtocol.scope` 只允许 `$HOME/.codex-session-delete/dream-skin/**`，图片预览通过 `convertFileSrc` 使用它；扩大该路径前需要重新审查。`capabilities/default.json` 将文件对话框限于打开与保存；外链只由 `commands/external_url.rs` 在 Rust 侧校验 HTTPS 与站点白名单后交给系统浏览器。微信二维码 SVG 由本地 QR 编码器生成，前端只作为图片加载，不作为 HTML 注入。
+`apps/codex-plus-manager/src-tauri/tauri.conf.json` 明确限制脚本、连接、图片、字体、对象和嵌入来源；开发模式只为本地 Vite 增加连接源。`assetProtocol.scope` 初始为空，`lib.rs::allow_theme_assets` 在建窗口前只授权实际状态目录下的 `dream-skin`，支持系统配置目录和显式隔离目录；规范路径越界时拒绝授权。设置、主密钥文件和旧状态目录不开放。图片预览通过 `convertFileSrc` 使用它。`capabilities/default.json` 将文件对话框限于打开与保存；外链只由 `commands/external_url.rs` 在 Rust 侧校验 HTTPS 与站点白名单后交给系统浏览器。微信二维码 SVG 由本地 QR 编码器生成，前端只作为图片加载，不作为 HTML 注入。
 
 主题卡片的远程封面仅允许 `https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/` 与 `https://api.dreamskin.cc/v1/themes/` 两个图片来源路径；生产与开发 CSP 保持一致。失败显示不可用占位，不使用其他主题图片代替。脚本与连接来源不随图片白名单扩大。
 
 ## 注入页的设置下发
 
-注入进 Codex 渲染进程的脚本通过本地 helper 的桥接读设置，这条路**不下发任何密钥**：`crates/codex-plus-core/src/routes.rs` 的 `strip_secret_fields` 递归剥掉所有以 `ApiKey` 结尾或等于 `apiKey` 的字段（与落盘加密共用 `settings::is_secret_field_name`，新增 `*ApiKey` 字段自动生效），并删除 `apiKeys` 数组；`relayProfiles[].apiKey`、`relayApiKey`、`vlmApiKey`、`codexAppStepwiseApiKey` 都不出现在响应里。注入页需要 Key 列表时走 `/relay-api-keys`，该路由只回 `id`/`name`。`codexAppStepwiseApiKeyEnv` 是环境变量名，按明文保留。
+后端恢复使用独立的随机端口，仅绑定 `127.0.0.1`，不受 helper 远程访问逃生开关影响。只开放 `POST /status` 与 `POST /reconnect`，每次请求核对回环对端、精确 Host、随机 Bearer 令牌和当前受管实例 ID；有 Origin 时仅接受 `app://-`。跨域预检不执行恢复，实际请求仍须令牌。令牌和端点只存宿主内存并下发原受管页面，不写设置或日志，不开放其他业务路由。请求最多 8 KiB、正文最多 1 KiB，读取超时 2 秒，连接并发上限 8。恢复核对原 CDP browser ID，不能靠提交端口选择其他实例。
+
+原生页优先使用宿主独立 CDP 连接安装的 `codexPlusRecoveryV1` binding，避免依赖被原生网络策略阻止的 HTTP 请求。只在验证过身份的主页面安装，只接受相同令牌和实例的两条恢复路由，待处理请求最多 8 个。恢复与业务 binding 按名称过滤事件，回执全局名称与代次互相隔离；不修改 CSP。
+
+注入进 Codex 渲染进程的脚本通过桥接读设置。`routes.rs::settings_payload_value` 对 `/settings/get` 和 `/settings/set` 共用明确的用途白名单：只下发渲染开关、展示配置和连接状态。供应商仅保留身份、协议、模型列表及由 TOML 提取的单行 `model_provider`，不传完整 `configContents`、`authContents`、请求头、Key 列表或工具分片；微信令牌及连接凭据也不下发。听写和提示词工具分别构造公开子对象，密钥只给 `apiKeyConfigured`。新设置默认不开放，增加白名单时须同步核对消费者和敏感性。注入页需要 Key 名称时走 `/relay-api-keys`，该路由只回 `id`/`name`。
 
 **边界差异**：管理器自己的设置编辑器要能显示密钥正文，读的是 Tauri IPC 的 `get_settings`，那份仍返回明文；加密只发生在落盘边界（见[runtime.md](runtime.md)）。因此「管理器能读到明文」是设计内行为，不代表桥接也可以下发。
 

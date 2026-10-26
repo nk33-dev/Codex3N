@@ -17,13 +17,18 @@ const fixtureState = `window.fixture={favorites:[],requests:[]};
 window.fixtureRequest=async(action,payload={})=>{
   const state=window.fixture;state.requests.push({action,payload});
   if(action==='library/list'){
+    if(state.libraryDelayMs)await new Promise(resolve=>setTimeout(resolve,state.libraryDelayMs));
     let items=state.favorites.slice();
+    if(payload.scope==='untagged')items=items.filter(x=>!x.tags.length);
     if(payload.tag)items=items.filter(x=>x.tags.includes(payload.tag));
     const query=String(payload.query||'').toLowerCase();
     if(query)items=items.filter(x=>[x.title,x.body,...x.tags].join(' ').toLowerCase().includes(query));
     const tags=[...new Set(items.flatMap(x=>x.tags))].sort();
-    return{status:'ok',favorites:items,tags,total:items.length};
+    const total=items.length;items=items.slice(0,payload.limit||5000);
+    if(payload.summaryOnly)items=items.map(({body,...item})=>({...item,excerpt:body.slice(0,180)}));
+    return{status:'ok',favorites:items,tags,total};
   }
+  if(action==='library/get')return{status:'ok',favorite:state.favorites.find(x=>x.id===payload.id)};
   if(action==='library/add'){const body=payload.body;const item={id:'fav-'+state.favorites.length,title:body.split('\\n')[0].slice(0,80),body,tags:[],project:payload.project||null,pinned:false,order:-state.favorites.length-1};state.favorites.unshift(item);return{status:'ok',favorite:item};}
   if(action==='library/save'){const item={...payload,id:payload.id||'fav-'+state.favorites.length};state.favorites=state.favorites.filter(x=>x.id!==item.id).concat([item]);return{status:'ok',favorite:item};}
   if(action==='library/delete'){const index=state.favorites.findIndex(x=>x.id===payload.id);const favorite=state.favorites[index];state.favorites=state.favorites.filter(x=>x.id!==payload.id);return{status:'ok',favorite,index};}
@@ -63,8 +68,8 @@ ${await fragment("93-prompt-library.js")}
 document.querySelector('textarea').__reactFiber$fixture={memoizedProps:{kind:'local',hostId:'local',cwd:'D:/fixture'}};
 window.promptFixture={install:installCodexPlusPromptEnhance,state:codexPlusPromptEnhance,library:codexPlusPromptLibrary,settings:codexPlusBackendSettings};
 installCodexPlusPromptEnhance();})();`;
-const cssFile = (await readdir(path.join(manager, "dist/assets"))).find((name) => name.endsWith(".css"));
-const css = await readFile(path.join(manager, "dist/assets", cssFile), "utf8") + "\n" + (bundled.outputFiles.find(file => file.path.endsWith(".css"))?.text || "");
+const cssFiles = (await readdir(path.join(manager, "dist/assets"))).filter((name) => name.endsWith(".css"));
+const css = (await Promise.all(cssFiles.map(name => readFile(path.join(manager, "dist/assets", name), "utf8")))).join("\n") + "\n" + (bundled.outputFiles.find(file => file.path.endsWith(".css"))?.text || "");
 const server = createServer((request, response) => {
   const url = new URL(request.url, "http://127.0.0.1");
   request.url = url.pathname;
@@ -122,6 +127,33 @@ try {
   await evaluate("document.querySelector('[data-prompt-library-trigger]').click()");
   await eventually(() => evaluate("!!document.querySelector('#codex-plus-prompt-library input[type=search]')"), "收藏列表");
   await eventually(() => evaluate("document.querySelector('#codex-plus-prompt-library').textContent.includes('还没有常用提示词')"), "空收藏提示");
+  await call("Emulation.setDeviceMetricsOverride", { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
+  await evaluate(`(()=>{
+    const state=promptFixture.library,panel=state.panel;
+    const header=panel.querySelector('header'),empty=panel.querySelector('.codex-plus-prompt-empty'),footer=panel.querySelector('footer');
+    const height=panel.getBoundingClientRect().height;
+    fixture.libraryDelayMs=200;
+    window.libraryFrames=[];
+    window.librarySampling=true;
+    const sample=()=>{
+      if(!window.librarySampling)return;
+      libraryFrames.push({height:panel.getBoundingClientRect().height,empty:!!panel.querySelector('.codex-plus-prompt-empty'),loadingText:panel.textContent.includes('正在读取')});
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+    window.libraryBaseline={header,empty,footer,height};
+    [...panel.querySelectorAll('.codex-plus-prompt-chip')].find(x=>x.textContent==='通用').click();
+  })()`);
+  await eventually(() => evaluate("promptFixture.library.loading===false&&promptFixture.library.scope==='untagged'"), "通用筛选");
+  await evaluate("[...document.querySelectorAll('#codex-plus-prompt-library .codex-plus-prompt-chip')].find(x=>x.textContent==='全部').click()");
+  await eventually(() => evaluate("promptFixture.library.loading===false&&promptFixture.library.scope==='all'"), "全部筛选");
+  const switchingFrames = await evaluate("librarySampling=false;fixture.libraryDelayMs=0;libraryFrames");
+  assert.ok(switchingFrames.length >= 2);
+  assert.ok(switchingFrames.every(frame => frame.empty && !frame.loadingText && Math.abs(frame.height - switchingFrames[0].height) < 1), JSON.stringify(switchingFrames));
+  assert.equal(await evaluate("promptFixture.library.panel.querySelector('header')===libraryBaseline.header&&promptFixture.library.panel.querySelector('footer')===libraryBaseline.footer"), true);
+  const libraryRect = await evaluate("(()=>{const r=promptFixture.library.panel.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width,height:r.height,scale:1}})()");
+  await writeFile(path.join(output, "library-empty-1000.png"), Buffer.from((await call("Page.captureScreenshot", { format: "png", clip: libraryRect })).data, "base64"));
+  await call("Emulation.setDeviceMetricsOverride", { width: 400, height: 800, deviceScaleFactor: 1, mobile: false });
   await click("存当前输入");
   await eventually(() => evaluate("document.querySelector('#codex-plus-prompt-library .codex-plus-prompt-edit textarea')?.value.includes('修复登录错误')"), "保存后打开编辑");
   await click("保存", "document.querySelector('#codex-plus-prompt-library')");
@@ -142,6 +174,22 @@ try {
   await eventually(() => evaluate("fixture.favorites.length===1"), "撤销删除");
   await evaluate("document.querySelector('#codex-plus-prompt-library [aria-label=关闭]').click()");
   await eventually(() => evaluate("!document.querySelector('#codex-plus-prompt-library')"), "关闭收藏");
+
+  await evaluate(`fixture.previousFavorites=fixture.favorites;fixture.favorites=Array.from({length:70},(_,i)=>({id:'lazy-'+i,title:'登录 '+i,body:'完整正文 '+i+' 内容'.repeat(300),tags:[],project:null,pinned:false,order:i}));document.querySelector('[data-prompt-library-trigger]').click()`);
+  await eventually(() => evaluate("document.querySelectorAll('#codex-plus-prompt-library .codex-plus-prompt-row').length===50"), "摘要首批");
+  assert.equal(await evaluate("fixture.requests.filter(x=>x.action==='library/list').at(-1).payload.summaryOnly"), true);
+  await evaluate(`(()=>{
+    const panel=promptFixture.library.panel,body=panel.querySelector('.codex-plus-prompt-body'),search=panel.querySelector('input');
+    body.scrollTop=80;search.focus();
+    window.libraryScroll={body,search,top:body.scrollTop};
+    [...panel.querySelectorAll('button')].find(x=>x.textContent.startsWith('显示更多')).click();
+  })()`);
+  await eventually(() => evaluate("document.querySelectorAll('#codex-plus-prompt-library .codex-plus-prompt-row').length===70"), "摘要显示更多");
+  assert.equal(await evaluate("libraryScroll.body===promptFixture.library.panel.querySelector('.codex-plus-prompt-body')&&libraryScroll.body.scrollTop===libraryScroll.top&&document.activeElement===libraryScroll.search"), true);
+  await evaluate("document.querySelector('#codex-plus-prompt-library [aria-label=编辑]').click()");
+  await eventually(() => evaluate("document.querySelector('#codex-plus-prompt-library textarea')?.value.startsWith('完整正文 0')"), "正文按需编辑");
+  assert.equal(await evaluate("fixture.requests.at(-1).action"), "library/get");
+  await evaluate("document.querySelector('#codex-plus-prompt-library [aria-label=关闭]').click();fixture.favorites=fixture.previousFavorites");
 
   // 增强菜单与结果写回。
   await evaluate("document.querySelector('[data-prompt-enhance-trigger]').click()");
@@ -212,8 +260,15 @@ try {
   assert.equal(await evaluate("document.documentElement.scrollWidth<=innerWidth"), true, JSON.stringify(await evaluate("[...document.querySelectorAll(\"*\")].filter(x=>x.getBoundingClientRect().right>innerWidth).slice(0,8).map(x=>({tag:x.tagName,cls:x.className,right:x.getBoundingClientRect().right}))")));
   await call("Emulation.setDeviceMetricsOverride", { width: 1000, height: 760, deviceScaleFactor: 1, mobile: false });
   await shot("manager-1000.png");
+  await evaluate("document.querySelector('.prompt-manager-item').click()");
+  await eventually(() => evaluate("document.querySelector('.prompt-manager-preview pre')?.textContent==='请检查边界条件'"), "管理器正文");
+  await evaluate("document.querySelector('button[aria-label=编辑]').click()");
+  await eventually(() => evaluate("!!document.querySelector('form textarea')"), "管理器编辑");
+  await setValue("form textarea", "请检查边界条件，并验证并发请求");
+  await click("保存");
+  await eventually(() => evaluate("document.querySelector('.prompt-manager-preview pre')?.textContent==='请检查边界条件，并验证并发请求'"), "管理器保存后预览");
 
-  console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "live-search", "draft-append", "delete-undo", "mode-menu", "replace-undo", "single-mode", "auto-advance", "multi-select-scroll", "last-question-disabled", "ready-final", "manager-create", "400px-layout"] }));
+  console.log(JSON.stringify({ status: "ok", output, checks: ["native-row", "quick-library", "filter-switch-stable-frames", "live-search", "draft-append", "delete-undo", "summary-show-more", "library-focus-scroll", "detail-on-demand", "mode-menu", "replace-undo", "single-mode", "auto-advance", "multi-select-scroll", "last-question-disabled", "ready-final", "manager-create", "manager-edit-preview", "400px-layout"] }));
 } finally {
   if (socket?.readyState === WebSocket.OPEN) { try { await call("Browser.close"); } catch {} socket.close(); }
   child.kill(); server.close();

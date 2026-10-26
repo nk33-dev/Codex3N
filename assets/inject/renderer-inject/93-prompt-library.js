@@ -3,7 +3,7 @@
     revision: 0, target: null, project: null, panel: null, searchTimer: null,
     items: [], tags: [], total: 0, edit: null, query: "", scope: "all", tag: "", limit: 50,
     returnToEnhance: null, cacheKey: "", loading: false, message: "", error: "", editId: "",
-    dragging: null, over: null,
+    dragging: null, over: null, detailRevision: 0,
   };
   const codexPlusPromptLibraries = new Map();
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-prompt-library"]');
@@ -35,6 +35,7 @@
       edit: state.edit, query: state.query, scope: state.scope, tag: state.tag, limit: state.limit,
     });
     ++state.revision;
+    ++state.detailRevision;
     clearTimeout(state.searchTimer);
     state.panel?.promptObserver?.disconnect();
     state.panel?.remove();
@@ -93,13 +94,23 @@
 
   async function refreshCodexPlusPromptLibrary() {
     const state = codexPlusPromptLibrary, revision = ++state.revision;
+    ++state.detailRevision;
+    clearTimeout(state.searchTimer);
     state.loading = true;
-    renderCodexPlusPromptLibrary();
+    if (state.panel) {
+      state.panel.setAttribute("aria-busy", "true");
+      state.panel.querySelectorAll(".codex-plus-prompt-chip").forEach((chip) => {
+        const value = chip.dataset.promptLibraryFilter;
+        chip.setAttribute("aria-pressed", String(state.scope === value || state.tag === value));
+      });
+    } else {
+      renderCodexPlusPromptLibrary();
+    }
     try {
       const result = await codexPlusPromptToolsRequest("library/list", {
         project: state.project, query: state.query,
         scope: state.scope,
-        tag: state.tag, sort: "manual", limit: state.limit,
+        tag: state.tag, sort: "manual", limit: state.limit, summaryOnly: true,
       });
       if (revision !== state.revision || !state.panel) return;
       state.items = result.favorites || [];
@@ -110,7 +121,11 @@
       if (state.editId) {
         const item = state.items.find((value) => value.id === state.editId);
         state.editId = "";
-        if (item) state.edit = { ...item, tags: [...item.tags] };
+        if (item) {
+          const favorite = await readCodexPlusPromptFavorite(item);
+          if (revision !== state.revision || !state.panel) return;
+          state.edit = { ...favorite, tags: [...favorite.tags] };
+        }
       }
       renderCodexPlusPromptLibrary();
     } catch (error) {
@@ -121,11 +136,33 @@
     }
   }
 
+  async function readCodexPlusPromptFavorite(item) {
+    if (typeof item.body === "string") return item;
+    const result = await codexPlusPromptToolsRequest("library/get", { id: item.id });
+    if (!result.favorite) throw new Error("读取收藏失败，请重试");
+    return result.favorite;
+  }
+
+  async function editCodexPlusPromptFavorite(item) {
+    const state = codexPlusPromptLibrary, revision = state.revision, detailRevision = ++state.detailRevision;
+    if (state.loading) return;
+    try {
+      const favorite = await readCodexPlusPromptFavorite(item);
+      if (revision !== state.revision || detailRevision !== state.detailRevision || !state.panel) return;
+      state.edit = { ...favorite, tags: [...favorite.tags] };
+      renderCodexPlusPromptLibrary();
+    } catch (error) {
+      if (revision === state.revision && detailRevision === state.detailRevision && state.panel) showToast(error?.message || "读取收藏失败，请重试", null);
+    }
+  }
+
   async function useCodexPlusPromptFavorite(item, mode) {
     const state = codexPlusPromptLibrary, target = state.target, revision = state.revision;
-    if (state.using) return;
+    if (state.using || state.loading) return;
     state.using = true;
     try {
+      item = await readCodexPlusPromptFavorite(item);
+      if (revision !== state.revision || !state.panel) return;
       if (mode === "copy") {
         if (!navigator.clipboard?.writeText) { showToast("请选中正文手动复制", null); return; }
         await navigator.clipboard.writeText(item.body);
@@ -148,10 +185,13 @@
       if (revision !== state.revision) return;
       closeCodexPlusPromptLibrary();
       codexPlusPromptEnhanceNotifyWrite(target, mode, target.original);
+    } catch (error) {
+      if (revision === state.revision && state.panel) showToast(error?.message || "读取收藏失败，请重试", null);
     } finally { state.using = false; }
   }
 
   async function removeCodexPlusPromptFavorite(item) {
+    if (codexPlusPromptLibrary.loading) return;
     try {
       const removed = await codexPlusPromptToolsRequest("library/delete", { id: item.id });
       await refreshCodexPlusPromptLibrary();
@@ -185,8 +225,7 @@
         run: () => {
           const item = state.items.find((value) => value.id === result.favorite?.id);
           if (!item) return;
-          state.edit = { ...item, tags: [...item.tags] };
-          renderCodexPlusPromptLibrary();
+          void editCodexPlusPromptFavorite(item);
         },
       } });
     } catch (error) {
@@ -213,7 +252,7 @@
 
   async function moveCodexPlusPromptFavorite(id, targetId) {
     const state = codexPlusPromptLibrary;
-    if (!id || id === targetId) return;
+    if (!id || id === targetId || state.loading) return;
     const next = [...state.items];
     const from = next.findIndex((item) => item.id === id);
     const to = next.findIndex((item) => item.id === targetId);
@@ -251,60 +290,83 @@
       state.panel = panel;
       document.body.append(panel);
     }
+    panel.setAttribute("aria-busy", String(state.loading));
     positionCodexPlusPromptCard(panel);
     const search = panel.querySelector('input[type="search"]');
     const searchFocused = search === document.activeElement;
     const caret = searchFocused ? search.selectionStart : null;
-    panel.replaceChildren();
-    const header = codexPlusPromptLibraryNode("header", "codex-plus-prompt-head");
-    header.append(codexPlusPromptLibraryNode("h2", "", "常用提示词"));
-    const close = codexPlusPromptIconButton("trash", "关闭", "library-close");
-    close.replaceChildren(codexPlusPromptLibraryNode("span", "codex-plus-prompt-close", "×"));
-    close.className = "codex-plus-prompt-icon codex-plus-prompt-close-button";
-    delete close.dataset.promptEnhanceAction;
-    close.addEventListener("click", () => closeCodexPlusPromptLibrary());
-    header.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"), close);
-    panel.append(header);
-    if (state.edit) {
-      renderCodexPlusPromptFavoriteEditor(panel);
-      return;
+    const previousBody = panel.querySelector(".codex-plus-prompt-body");
+    const reusable = !state.edit && search && previousBody && !previousBody.matches(".codex-plus-prompt-edit");
+    const scrollTop = reusable ? previousBody.scrollTop : 0;
+    const active = document.activeElement;
+    const focusedRow = active?.closest?.(".codex-plus-prompt-row")?.dataset.promptFavoriteId;
+    const focusedLabel = active?.getAttribute?.("aria-label") || "";
+    if (!reusable) {
+      panel.replaceChildren();
+      const header = codexPlusPromptLibraryNode("header", "codex-plus-prompt-head");
+      header.append(codexPlusPromptLibraryNode("h2", "", "常用提示词"));
+      const close = codexPlusPromptIconButton("trash", "关闭", "library-close");
+      close.replaceChildren(codexPlusPromptLibraryNode("span", "codex-plus-prompt-close", "×"));
+      close.className = "codex-plus-prompt-icon codex-plus-prompt-close-button";
+      delete close.dataset.promptEnhanceAction;
+      close.addEventListener("click", () => closeCodexPlusPromptLibrary());
+      header.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"), close);
+      panel.append(header);
+      if (state.edit) {
+        renderCodexPlusPromptFavoriteEditor(panel);
+        return;
+      }
     }
-    const body = codexPlusPromptLibraryNode("div", "codex-plus-prompt-body");
-    const searchInput = document.createElement("input");
-    searchInput.className = "codex-plus-prompt-input";
-    searchInput.type = "search";
-    searchInput.placeholder = "搜索";
-    searchInput.setAttribute("aria-label", "搜索");
-    searchInput.value = state.query;
-    searchInput.addEventListener("compositionstart", () => clearTimeout(state.searchTimer));
-    searchInput.addEventListener("compositionend", () => searchInput.dispatchEvent(new Event("input", { bubbles: true })));
-    searchInput.addEventListener("input", (event) => {
-      if (event.isComposing) return;
-      clearTimeout(state.searchTimer);
-      state.query = searchInput.value;
-      state.searchTimer = setTimeout(() => { void refreshCodexPlusPromptLibrary(); }, 180);
-    });
-    searchInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); void refreshCodexPlusPromptLibrary(); }
-    });
-    body.append(searchInput);
-    const chips = codexPlusPromptLibraryNode("div", "codex-plus-prompt-chips");
+    const body = reusable ? previousBody : codexPlusPromptLibraryNode("div", "codex-plus-prompt-body");
+    const searchInput = reusable ? search : document.createElement("input");
+    if (!reusable) {
+      searchInput.className = "codex-plus-prompt-input";
+      searchInput.type = "search";
+      searchInput.placeholder = "搜索";
+      searchInput.setAttribute("aria-label", "搜索");
+      searchInput.value = state.query;
+      searchInput.addEventListener("compositionstart", () => clearTimeout(state.searchTimer));
+      searchInput.addEventListener("compositionend", () => searchInput.dispatchEvent(new Event("input", { bubbles: true })));
+      searchInput.addEventListener("input", (event) => {
+        if (event.isComposing) return;
+        clearTimeout(state.searchTimer);
+        state.query = searchInput.value;
+        state.searchTimer = setTimeout(() => { void refreshCodexPlusPromptLibrary(); }, 180);
+      });
+      searchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); void refreshCodexPlusPromptLibrary(); }
+      });
+      body.append(searchInput);
+    }
+    const chips = reusable ? body.querySelector(".codex-plus-prompt-chips") : codexPlusPromptLibraryNode("div", "codex-plus-prompt-chips");
     chips.setAttribute("role", "group");
     chips.setAttribute("aria-label", "筛选");
     const filters = ["all", "untagged", ...state.tags];
+    const existingChips = new Map([...chips.children].map((chip) => [chip.dataset.promptLibraryFilter, chip]));
+    for (const chip of [...chips.children]) {
+      if (!filters.includes(chip.dataset.promptLibraryFilter)) chip.remove();
+    }
     for (const value of filters) {
       const label = value === "all" ? "全部" : value === "untagged" ? "通用" : value;
-      const chip = codexPlusPromptLibraryButton(label, "codex-plus-prompt-chip");
+      const chip = existingChips.get(value) || codexPlusPromptLibraryButton(label, "codex-plus-prompt-chip");
+      chip.dataset.promptLibraryFilter = value;
       chip.setAttribute("aria-pressed", String(state.scope === value || state.tag === value));
-      chip.addEventListener("click", () => {
-        if (value === "all" || value === "untagged") { state.scope = value; state.tag = ""; }
-        else { state.scope = "all"; state.tag = value; }
+      if (!existingChips.has(value)) chip.addEventListener("click", () => {
+        const scope = value === "untagged" ? "untagged" : "all";
+        const tag = value === "all" || value === "untagged" ? "" : value;
+        if (state.scope === scope && state.tag === tag) return;
+        state.scope = scope;
+        state.tag = tag;
         state.limit = 50;
         void refreshCodexPlusPromptLibrary();
       });
-      chips.append(chip);
+      const at = filters.indexOf(value);
+      if (chips.children[at] !== chip) chips.insertBefore(chip, chips.children[at] || null);
     }
-    body.append(chips);
+    if (!reusable) body.append(chips);
+    for (const child of [...body.children]) {
+      if (child !== searchInput && child !== chips) child.remove();
+    }
     if (state.loading && !state.items.length) body.append(codexPlusPromptLibraryNode("p", "codex-plus-prompt-caption", "正在读取…"));
     if (!state.loading && !state.items.length) {
       const empty = codexPlusPromptLibraryNode("div", "codex-plus-prompt-empty");
@@ -317,6 +379,7 @@
       list.setAttribute("aria-label", "常用提示词");
       state.items.forEach((item, index) => {
         const row = codexPlusPromptLibraryNode("li", "codex-plus-prompt-row");
+        row.dataset.promptFavoriteId = item.id;
         row.dataset.dragging = String(state.dragging === item.id);
         row.dataset.over = String(state.over === item.id && state.dragging !== item.id);
         const grip = codexPlusPromptLibraryNode("button", "codex-plus-prompt-grip");
@@ -358,7 +421,7 @@
         const titleRow = codexPlusPromptLibraryNode("span", "codex-plus-prompt-row-title");
         titleRow.append(codexPlusPromptLibraryNode("strong", "", item.title));
         for (const tag of item.tags) titleRow.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-pill", tag));
-        main.append(titleRow, codexPlusPromptLibraryNode("small", "", item.body.replace(/\s+/g, " ").slice(0, 160)));
+        main.append(titleRow, codexPlusPromptLibraryNode("small", "", (item.excerpt ?? item.body ?? "").replace(/\s+/g, " ").slice(0, 160)));
         main.addEventListener("click", () => void useCodexPlusPromptFavorite(item, "append"));
         const actions = codexPlusPromptLibraryNode("span", "codex-plus-prompt-row-actions");
         const replace = codexPlusPromptLibraryNode("button", "codex-plus-prompt-icon");
@@ -372,7 +435,7 @@
         const edit = codexPlusPromptLibraryNode("button", "codex-plus-prompt-icon");
         edit.type = "button"; edit.title = "编辑"; edit.setAttribute("aria-label", "编辑");
         edit.append(codexPlusPromptIcon("pencil"));
-        edit.addEventListener("click", () => { state.edit = { ...item, tags: [...item.tags] }; renderCodexPlusPromptLibrary(); });
+        edit.addEventListener("click", () => void editCodexPlusPromptFavorite(item));
         const remove = codexPlusPromptLibraryNode("button", "codex-plus-prompt-icon");
         remove.type = "button"; remove.title = "删除"; remove.setAttribute("aria-label", "删除");
         remove.append(codexPlusPromptIcon("trash"));
@@ -388,27 +451,38 @@
         body.append(more);
       }
     }
-    panel.append(body);
+    if (!reusable) panel.append(body);
+    panel.querySelector(".codex-plus-prompt-error-bar")?.remove();
     if (state.error) {
       const error = codexPlusPromptLibraryNode("div", "codex-plus-prompt-error-bar", state.error);
       error.setAttribute("role", "alert");
-      panel.append(error);
+      panel.insertBefore(error, panel.querySelector("footer"));
     }
-    const footer = codexPlusPromptLibraryNode("footer", "codex-plus-prompt-foot");
-    const save = codexPlusPromptLibraryButton("存当前输入", "codex-plus-prompt-action");
+    const footer = reusable ? panel.querySelector("footer") : codexPlusPromptLibraryNode("footer", "codex-plus-prompt-foot");
+    const save = reusable ? footer.querySelector("button") : codexPlusPromptLibraryButton("存当前输入", "codex-plus-prompt-action");
     save.disabled = !codexPlusPromptEnhanceDraftOf(state.target?.footer);
     save.title = save.disabled ? "先在输入框里写点内容" : "";
-    save.addEventListener("click", () => void saveCodexPlusPromptDraft());
-    footer.append(save, codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"));
-    if (state.items.length > 1) footer.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-caption", "拖动 ⠿ 调整顺序"));
-    panel.append(footer);
+    if (!reusable) {
+      save.addEventListener("click", () => void saveCodexPlusPromptDraft());
+      footer.append(save, codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"));
+      panel.append(footer);
+    }
+    const dragHint = footer.querySelector(".codex-plus-prompt-caption");
+    if (state.items.length > 1 && !dragHint) footer.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-caption", "拖动 ⠿ 调整顺序"));
+    else if (state.items.length <= 1) dragHint?.remove();
+    if (reusable) body.scrollTop = scrollTop;
+    if (focusedRow) {
+      const row = [...body.querySelectorAll(".codex-plus-prompt-row")].find((node) => node.dataset.promptFavoriteId === focusedRow);
+      const focus = focusedLabel ? [...(row?.querySelectorAll("button") || [])].find((node) => node.getAttribute("aria-label") === focusedLabel) : row?.querySelector(".codex-plus-prompt-row-main");
+      focus?.focus({ preventScroll: true });
+    }
     const focused = document.activeElement;
     if (!searchFocused && (!focused || focused === document.body || focused === state.target?.editor || !focused.isConnected))
       panel.focus({ preventScroll: true });
     requestAnimationFrame(() => {
       if (!searchInput.isConnected) return;
       if (searchFocused) {
-        searchInput.focus();
+        searchInput.focus({ preventScroll: true });
         if (caret != null) { try { searchInput.setSelectionRange(caret, caret); } catch {} }
       }
     });

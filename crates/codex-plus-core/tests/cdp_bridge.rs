@@ -2500,7 +2500,7 @@ fn injection_script_ignores_stale_backend_settings_responses() {
 
     assert!(script.contains("let codexPlusBackendSettingsSeq = 0"));
     assert!(script.contains("const seq = codexPlusBackendSettingsSeq"));
-    assert!(script.contains("if (seq !== codexPlusBackendSettingsSeq)"));
+    assert!(script.contains("if (seq !== codexPlusBackendSettingsSeq || generation !== window.__codexPlusBackendGeneration)"));
     assert!(script.contains("const seq = ++codexPlusBackendSettingsSeq"));
     assert!(script.contains("if (seq === codexPlusBackendSettingsSeq)"));
 }
@@ -2981,7 +2981,7 @@ fn injection_script_heartbeat_syncs_backend_settings() {
     // 心跳在健康时顺带刷新后端设置，让 manager 侧的改动能传播到已运行窗口（issue #2221）。
     assert!(script.contains("function syncBackendSettingsFromHeartbeat"));
     assert!(script.contains("syncBackendSettingsInFlight"));
-    assert!(script.contains("void syncBackendSettingsFromHeartbeat();"));
+    assert!(script.contains("bridgeReady && await syncBackendSettingsFromHeartbeat()"));
     assert!(script.contains("previousConversationView"));
     assert!(script.contains("refreshConversationView();"));
 }
@@ -5112,8 +5112,10 @@ if (run({{ lastInjectionAt: 0, lastSuccessAt: now }}) !== true) process.exit(2);
 if (run({{ lastInjectionAt: now, lastSuccessAt: 0 }}) !== true) process.exit(3);
 if (run({{ lastInjectionAt: now - 6000, lastSuccessAt: 0 }}) !== false) process.exit(4);
 if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000 }}) !== false) process.exit(5);
-if (run({{ lastInjectionAt: 0, lastSuccessAt: 0, lastAttemptAt: now }}) !== true) process.exit(7);
+if (run({{ lastInjectionAt: 0, lastSuccessAt: 0, lastAttemptAt: now }}) !== false) process.exit(7);
 if (run({{ lastInjectionAt: 1, lastSuccessAt: now - 16000, lastAttemptAt: now - 16000 }}) !== false) process.exit(8);
+if (run({{ firstFailureAt: now - 20000, lastAttemptAt: now }}) !== true) process.exit(9);
+if (run({{ firstFailureAt: now - 31000, lastAttemptAt: now }}) !== false) process.exit(10);
 if (run({{ lastInjectionAt: now, lastSuccessAt: now }}, false) !== false) process.exit(6);
 "#,
         script = script

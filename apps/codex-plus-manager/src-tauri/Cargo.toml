@@ -20,6 +20,7 @@ path = "src/legacy_shim.rs"
 
 [dependencies]
 fs2.workspace = true
+futures-util.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
 codex-plus-core = { path = "../../../crates/codex-plus-core" }
@@ -37,5 +38,6 @@ url.workspace = true
 tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 rusqlite.workspace = true
 tempfile.workspace = true

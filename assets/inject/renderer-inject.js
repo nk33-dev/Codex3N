@@ -3684,6 +3684,14 @@
         gap: 8px;
       }
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
+      .codex-plus-settings .codex-plus-backend-status { min-width: 0; flex: 0 0 auto; }
+      .codex-plus-backend-reconnect { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 8px; border: 1px solid var(--codex-plus-border); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+      .codex-plus-backend-reconnect svg { flex: 0 0 16px; width: 16px; height: 16px; }
+      .codex-plus-backend-reconnect:disabled { cursor: wait; opacity: .55; }
+      .codex-plus-backend-reconnect:focus-visible { outline: 2px solid var(--codex-plus-focus); outline-offset: 2px; }
+      .codex-plus-backend-reconnect:hover:not(:disabled) { background: var(--codex-plus-bg-hover); }
+      .codex-plus-backend-label[data-status="recovering"] { color: var(--codex-plus-warning); }
+      .codex-plus-backend-indicator[data-status="recovering"], #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="recovering"] { background: var(--codex-plus-warning); }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
       .codex-plus-settings .codex-plus-width-input,
@@ -6453,6 +6461,7 @@
 
   async function loadBackendSettingsState(timeoutMs = 0) {
     const seq = codexPlusBackendSettingsSeq;
+    const generation = window.__codexPlusBackendGeneration;
     try {
       const settings = await (timeoutMs > 0
         ? readCodexAppServerPreparation("/settings/get", {}, timeoutMs)
@@ -6460,7 +6469,7 @@
       if (!settings || typeof settings !== "object" || (!("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
         throw new Error("invalid backend settings response");
       }
-      if (seq !== codexPlusBackendSettingsSeq) {
+      if (seq !== codexPlusBackendSettingsSeq || generation !== window.__codexPlusBackendGeneration) {
         return false;
       }
       const includedNativeModels = codexPlusBackendSettings.codexAppIncludeNativeModels !== false;
@@ -6552,7 +6561,8 @@
     window.__codexPlusConfigReadDeadline = runtime;
   }
   async function loadBackendSettings() {
-    const loaded = await loadBackendSettingsState();
+    const loaded = await loadBackendSettingsState(2000);
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return false;
     if (loaded && codexRemoteSessionProviderOverrideEnabled()) {
       void loadCodexModelCatalog();
     }
@@ -6568,13 +6578,15 @@
   }
 
   function loadBackendSettingsForStartup(attempt = 0) {
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     loadBackendSettings().then((loaded) => {
+      if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
       if (loaded) {
         scan();
         return;
       }
       if (attempt < 60) {
-        setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 250);
+        window.__codexPlusBackendStartupTimer = setTimeout(() => loadBackendSettingsForStartup(attempt + 1), 250);
       }
     });
   }
@@ -6586,7 +6598,8 @@
     try {
       const previousConversationView = !!codexPlusSettings().conversationView;
       const previousSettings = JSON.stringify(codexPlusBackendSettings);
-      const loaded = await loadBackendSettingsState();
+      const loaded = await loadBackendSettingsState(2000);
+      if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return false;
       if (loaded && previousSettings !== JSON.stringify(codexPlusBackendSettings)) {
         if (typeof syncCodexPlusLowPower === "function") syncCodexPlusLowPower();
         syncOfficialUsagePolicy();
@@ -6599,6 +6612,7 @@
           refreshConversationView();
         }
       }
+      return loaded;
     } finally {
       syncBackendSettingsInFlight = false;
     }
@@ -6663,17 +6677,28 @@
   // 从本机 VSCode 的 codicon.ttf 抽出轮廓后归一到 16x16 视口。
   // 市场清单目前没有图标字段，所有市场条目都用它；本地脚本同理。
   const codexPlusDefaultExtensionIconPath = "M15.0 4.95 Q15.0 4.37 14.63 3.99 L12.01 1.37 Q11.63 1.0 11.05 1.0 Q10.46 1.0 10.08 1.37 L8.0 3.46 L8.0 3.3 Q8.0 2.71 7.6 2.31 Q7.2 1.91 6.61 1.91 L2.39 1.91 Q1.8 1.91 1.4 2.31 Q1.0 2.71 1.0 3.3 L1.0 13.61 Q1.0 14.2 1.4 14.6 Q1.8 15.0 2.39 15.0 L12.7 15.0 Q13.24 15.0 13.66 14.6 Q14.09 14.2 14.09 13.61 L14.09 9.39 Q14.09 8.8 13.66 8.4 Q13.24 8.0 12.7 8.0 L12.54 8.0 L14.63 5.92 Q15.0 5.54 15.0 4.95 Z M2.39 2.87 L6.61 2.87 Q6.77 2.87 6.93 3.0 Q7.09 3.14 7.09 3.3 L7.09 8.0 L1.91 8.0 L1.91 3.3 Q1.91 3.14 2.04 3.0 Q2.18 2.87 2.39 2.87 Z M1.91 13.61 L1.91 8.91 L7.09 8.91 L7.09 14.09 L2.39 14.09 Q2.18 14.09 2.04 13.96 Q1.91 13.82 1.91 13.61 Z M13.13 9.39 L13.13 13.61 Q13.13 13.82 13.0 13.96 Q12.86 14.09 12.7 14.09 L8.0 14.09 L8.0 8.91 L12.7 8.91 Q12.86 8.91 13.0 9.07 Q13.13 9.23 13.13 9.39 Z M8.0 8.0 L8.0 6.45 L9.55 8.0 Z M13.93 5.27 L11.37 7.84 Q11.21 8.0 11.02 8.0 Q10.83 8.0 10.73 7.84 L8.11 5.27 Q8.0 5.11 8.0 4.93 Q8.0 4.74 8.11 4.63 L10.73 2.02 Q10.83 1.91 11.02 1.91 Q11.21 1.91 11.37 2.02 L13.93 4.63 Q14.09 4.74 14.09 4.93 Q14.09 5.11 13.93 5.27 Z";
-  let codexPlusBackendStatus = window.__codexPlusBackendStatus || { status: "checking", message: "正在检查后端…" };
+  window.__codexPlusBackendCleanup?.();
+  let codexPlusBackendStatus = { status: "checking", message: "正在检查后端" };
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
-  // 桥接通道（binding）与后端可用性分开统计：HTTP 回落成功会让后端状态保持绿色，
-  // 但桥接持续失败时必须把降级呈现出来，否则启动器侧的重注入修复循环对用户完全不可见（issue #2169）。
+  // HTTP 回落只能证明 helper 可达；业务可用还需要桥接与设置读取都成功。
   let codexPlusBridgeFailureCount = 0;
   const CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD = 3;
   const codexPlusBackendGeneration = (Number(window.__codexPlusBackendGeneration) || 0) + 1;
   window.__codexPlusBackendGeneration = codexPlusBackendGeneration;
+  let codexPlusRecoveryPromise = null;
+  let codexPlusRecoveryRetryAt = 0;
+  let codexPlusRecoveryFailures = 0;
+  const codexPlusRecoveryControllers = new Set();
+  window.__codexPlusBackendCleanup = () => {
+    codexPlusBackendCheckSeq += 1;
+    clearInterval(window.__codexPlusBackendHeartbeat);
+    clearTimeout(window.__codexPlusBackendStartupTimer);
+    codexPlusRecoveryControllers.forEach((controller) => controller.abort());
+    codexPlusRecoveryControllers.clear();
+  };
 
   function recordCodexPlusBridgeHealth(field) {
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
@@ -6683,6 +6708,9 @@
 
   function recordCodexPlusBridgeSuccess() {
     recordCodexPlusBridgeHealth("lastSuccessAt");
+    if (codexPlusBackendGeneration === window.__codexPlusBackendGeneration && window.__codexPlusBridgeHealth) {
+      window.__codexPlusBridgeHealth.firstFailureAt = 0;
+    }
     codexPlusBridgeFailureCount = 0;
   }
 
@@ -6692,6 +6720,8 @@
 
   function recordCodexPlusBridgeFailure() {
     codexPlusBridgeFailureCount += 1;
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
+    if (!window.__codexPlusBridgeHealth?.firstFailureAt) recordCodexPlusBridgeHealth("firstFailureAt");
   }
 
   function renderBackendStatus() {
@@ -6705,52 +6735,144 @@
         if (node.textContent !== text) node.textContent = text;
       });
     }
-    const labelFallback = status === "ok" ? "后端已连接" : status === "degraded" ? "桥接降级，自动修复中" : status === "checking" ? "正在检查后端…" : "未连接";
+    const labelFallback = status === "ok" ? "已连接" : status === "checking" ? "正在检查后端" : status === "recovering" ? "正在重连" : "连接失败";
     const label = document.querySelector("[data-codex-backend-status]");
     if (label) {
       if (label.dataset.status !== status) label.dataset.status = status;
-      const text = status === "degraded" ? labelFallback : (codexPlusBackendStatus.message || labelFallback);
+      const text = labelFallback;
       if (label.textContent !== text) label.textContent = text;
+    }
+    const description = document.querySelector("[data-codex-backend-description]");
+    const message = status === "ok" ? "" : (codexPlusBackendStatus.message || "");
+    if (description && description.textContent !== message) description.textContent = message;
+    document.querySelectorAll("[data-codex-backend-reconnect]").forEach((button) => {
+      const busy = !!codexPlusRecoveryPromise || status === "recovering";
+      if (button.disabled !== busy) button.disabled = busy;
+      if (button.getAttribute("aria-busy") !== String(busy)) button.setAttribute("aria-busy", String(busy));
+    });
+    const focusTarget = window.__codexPlusReconnectFocus;
+    if (!codexPlusRecoveryPromise && ["ok", "failed", "degraded"].includes(status) && focusTarget) {
+      if (focusTarget.isConnected && document.activeElement === document.body) focusTarget.focus({ preventScroll: true });
+      window.__codexPlusReconnectFocus = null;
     }
     document.querySelectorAll("[data-codex-backend-indicator]").forEach((indicator) => {
       if (indicator.dataset.status !== status) indicator.dataset.status = status;
-      const title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      const title = labelFallback;
       if (indicator.title !== title) indicator.title = title;
     });
     const sidebarStatus = document.querySelector(`#${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status`);
     if (sidebarStatus) {
       if (sidebarStatus.dataset.status !== status) sidebarStatus.dataset.status = status;
-      const title = status === "ok" ? "后端已连接" : status === "degraded" ? "后端可达，桥接降级，正在自动修复" : status === "checking" ? "正在检查后端" : "未连接";
+      const title = labelFallback;
       if (sidebarStatus.title !== title) sidebarStatus.title = title;
     }
-    if (renderBackendStatus.__lastStatus !== status) {
-      renderBackendStatus.__lastStatus = status;
-      refreshCodexServiceTierControls();
+  }
+
+  async function withBackendTimeout(request) {
+    let timer;
+    try {
+      return await Promise.race([
+        request,
+        new Promise((resolve) => { timer = setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  function withBackendTimeout(request) {
-    return Promise.race([
-      request,
-      new Promise((resolve) => setTimeout(() => resolve({ status: "failed", message: "后端检查超时", timeout: true }), 2000)),
-    ]);
+  async function requestBackendRecovery(manual = false) {
+    if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return false;
+    if (codexPlusRecoveryPromise) return codexPlusRecoveryPromise;
+    if (!manual && Date.now() < codexPlusRecoveryRetryAt) return false;
+    const health = window.__codexPlusBridgeHealth;
+    if (!manual && typeof window.__codexSessionDeleteBridge === "function"
+        && health?.firstFailureAt > 0 && Date.now() - health.firstFailureAt < 30000
+        && Date.now() - (health.lastAttemptAt || 0) <= 15000) {
+      codexPlusRecoveryRetryAt = health.firstFailureAt + 30000;
+      return false;
+    }
+    if (manual && document.activeElement?.matches?.("[data-codex-backend-reconnect]")) {
+      window.__codexPlusReconnectFocus = document.activeElement;
+    }
+    const config = window.__CODEX_PLUS_RECOVERY__;
+    const generation = codexPlusBackendGeneration;
+    const task = Promise.resolve().then(async () => {
+      codexPlusBackendStatus = window.__codexPlusBackendStatus = { status: "recovering", message: "" };
+      renderBackendStatus();
+      let result;
+      if (!config?.baseUrl || !config.token || !config.instance) {
+        result = { status: "failed", message: "请打开 Codex3N 后重试" };
+      } else {
+        const controller = new AbortController();
+        codexPlusRecoveryControllers.add(controller);
+        const timer = setTimeout(() => controller.abort(), 45000);
+        try {
+          if (typeof window.__codexPlusRecoveryBridge === "function") {
+            result = await window.__codexPlusRecoveryBridge("/reconnect", { token: config.token, instance: config.instance, manual });
+          } else {
+          const response = await fetch(`${config.baseUrl}/reconnect`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.token}` },
+            body: JSON.stringify({ instance: config.instance, manual }),
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          result = response.ok ? await response.json() : { status: "failed", message: "恢复通道不可用，请打开 Codex3N 后重试" };
+          }
+        } catch (error) {
+          result = { status: "failed", message: error?.name === "AbortError" ? "重连超时，请重试" : "请打开 Codex3N 后重试" };
+        } finally {
+          clearTimeout(timer);
+          codexPlusRecoveryControllers.delete(controller);
+        }
+      }
+      if (generation !== window.__codexPlusBackendGeneration) return false;
+      codexPlusRecoveryFailures += 1;
+      codexPlusRecoveryRetryAt = Date.now() + (Number(result.retryAfterMs) || Math.min(300000, 10000 * 2 ** Math.min(codexPlusRecoveryFailures - 1, 5)));
+      if (["ok", "recovering", "cooldown"].includes(result.status)) {
+        codexPlusBackendStatus = window.__codexPlusBackendStatus = {
+          status: result.status === "cooldown" ? "failed" : "recovering",
+          message: result.status === "cooldown" ? "连接失败，稍后自动重试" : "正在确认连接",
+        };
+      } else {
+        codexPlusBackendStatus = window.__codexPlusBackendStatus = { status: "failed", message: result.message || "恢复失败，请重试" };
+      }
+      return result.status === "ok";
+    });
+    codexPlusRecoveryPromise = task;
+    renderBackendStatus();
+    try {
+      const recovered = await task;
+      if (recovered && generation === window.__codexPlusBackendGeneration) await checkBackendStatus(false);
+      return recovered;
+    } finally {
+      if (generation === window.__codexPlusBackendGeneration) {
+        codexPlusRecoveryPromise = null;
+        renderBackendStatus();
+      }
+    }
   }
 
-  async function checkBackendStatus() {
+  async function checkBackendStatus(autoRecover = true) {
     if (codexPlusBackendCheckInFlight) return;
     codexPlusBackendCheckInFlight = true;
     const seq = ++codexPlusBackendCheckSeq;
     try {
       const nextStatus = await postJson("/backend/status", {});
       if (seq !== codexPlusBackendCheckSeq || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
-      if (nextStatus?.status === "ok") {
+      const bridgeReady = nextStatus?.status === "ok" && nextStatus.transport !== "http-helper";
+      const settingsReady = bridgeReady && await syncBackendSettingsFromHeartbeat();
+      if (seq !== codexPlusBackendCheckSeq || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
+      if (bridgeReady && settingsReady) {
         codexPlusBackendFailureCount = 0;
+        codexPlusRecoveryFailures = 0;
+        codexPlusRecoveryRetryAt = 0;
         codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
+        void reportBackendRecoveryHealth();
         if (typeof nextStatus.hideOfficialUsageAlert === "boolean") {
           window.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = nextStatus.hideOfficialUsageAlert;
           syncOfficialUsagePolicy();
         }
-        void syncBackendSettingsFromHeartbeat();
       } else {
         codexPlusBackendFailureCount += 1;
         sendCodexPlusDiagnostic("backend_check_failed", {
@@ -6760,10 +6882,24 @@
           consecutiveFailures: codexPlusBackendFailureCount,
         });
         if (codexPlusBackendFailureCount >= CODEX_PLUS_BACKEND_FAILURE_THRESHOLD) {
-          codexPlusBackendStatus = window.__codexPlusBackendStatus = nextStatus;
+          if (!codexPlusRecoveryPromise) {
+            codexPlusBackendStatus = window.__codexPlusBackendStatus = {
+              status: "failed",
+              message: codexPlusBackendStatus.status === "failed" ? codexPlusBackendStatus.message :
+                !bridgeReady ? (nextStatus?.timeout ? "后端检查超时" : "后端连接已断开") : "无法读取设置，请重试",
+            };
+          }
+          if (autoRecover) void requestBackendRecovery();
         }
       }
       renderBackendStatus();
+    } catch (error) {
+      if (seq !== codexPlusBackendCheckSeq || codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
+      sendCodexPlusDiagnostic("backend_check_exception", { errorName: error?.name || "", errorMessage: String(error?.message || error) });
+      codexPlusBackendFailureCount += 1;
+      codexPlusBackendStatus = window.__codexPlusBackendStatus = { status: "failed", message: "后端检查失败，请重试" };
+      renderBackendStatus();
+      if (autoRecover && codexPlusBackendFailureCount >= CODEX_PLUS_BACKEND_FAILURE_THRESHOLD) void requestBackendRecovery();
     } finally {
       codexPlusBackendCheckInFlight = false;
     }
@@ -6778,6 +6914,31 @@
     }
   }
 
+  async function reportBackendRecoveryHealth() {
+    const config = window.__CODEX_PLUS_RECOVERY__;
+    if (!config?.baseUrl || !config.token || !config.instance) return;
+    if (typeof window.__codexPlusRecoveryBridge === "function") {
+      void window.__codexPlusRecoveryBridge("/status", { token: config.token, instance: config.instance, connected: true });
+      return;
+    }
+    const controller = new AbortController();
+    codexPlusRecoveryControllers.add(controller);
+    const timer = setTimeout(() => controller.abort(), 2000);
+    try {
+      await fetch(`${config.baseUrl}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.token}` },
+        body: JSON.stringify({ instance: config.instance, connected: true }),
+        signal: controller.signal,
+        cache: "no-store",
+      });
+    } catch {
+    } finally {
+      clearTimeout(timer);
+      codexPlusRecoveryControllers.delete(controller);
+    }
+  }
+
   function scheduleBackendHeartbeat() {
     if (codexPlusBackendGeneration !== window.__codexPlusBackendGeneration) return;
     if (window.__codexPlusBackendHeartbeat &&
@@ -6787,6 +6948,8 @@
     window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
     checkBackendStatus();
   }
+
+  window.__codexPlusReconnectBackend = () => requestBackendRecovery(true);
 
   function userScriptStatusLabel(status) {
     return { loaded: "已加载", failed: "失败", disabled: "已禁用", not_loaded: "未加载", loading: "加载中" }[status] || status || "未知";
@@ -7798,9 +7961,12 @@
               <h2 class="codex-plus-settings-section-title">常规</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description">每 5 秒检查一次 launcher 后端状态。</div></div>
+                  <div><div class="codex-plus-row-title">后端连接</div><div class="codex-plus-row-description" data-codex-backend-description role="status" aria-live="polite"></div></div>
                   <div class="codex-plus-backend-status">
-                    <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking">正在检查后端…</div>
+                    <div class="codex-plus-backend-label" data-codex-backend-status="true" data-status="checking" role="status" aria-live="polite">正在检查后端…</div>
+                    <button type="button" class="codex-plus-backend-reconnect" data-codex-backend-reconnect title="重新连接" aria-label="重新连接后端">
+                      ${codexPlusDiscoveryIcons.refresh}<span>重新连接</span>
+                    </button>
                   </div>
                 </div>
                 <div class="codex-plus-row">
@@ -8112,6 +8278,11 @@
         codexPlusExtensionsSelected = { kind, key: rest.join(":") };
         refreshCodexPlusExtensionsView();
         overlay.querySelector(".codex-plus-extensions-back")?.focus({ preventScroll: true });
+        return;
+      }
+      const reconnect = target?.closest("[data-codex-backend-reconnect]");
+      if (reconnect) {
+        if (!reconnect.disabled) void window.__codexPlusReconnectBackend?.();
         return;
       }
       const toggle = target?.closest("[data-codex-plus-setting]");
@@ -10125,7 +10296,8 @@
         return fallback;
       }
       const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
-      recordCodexPlusBridgeSuccess();
+      if (bridgeResult?.transportFailed) recordCodexPlusBridgeFailure();
+      else recordCodexPlusBridgeSuccess();
       return bridgeResult;
     } catch (error) {
       recordCodexPlusBridgeFailure();
@@ -18638,7 +18810,7 @@
     revision: 0, target: null, project: null, panel: null, searchTimer: null,
     items: [], tags: [], total: 0, edit: null, query: "", scope: "all", tag: "", limit: 50,
     returnToEnhance: null, cacheKey: "", loading: false, message: "", error: "", editId: "",
-    dragging: null, over: null,
+    dragging: null, over: null, detailRevision: 0,
   };
   const codexPlusPromptLibraries = new Map();
   registerCodexPlusExtensionSelector('[data-codex-plus-ext="builtin-prompt-library"]');
@@ -18670,6 +18842,7 @@
       edit: state.edit, query: state.query, scope: state.scope, tag: state.tag, limit: state.limit,
     });
     ++state.revision;
+    ++state.detailRevision;
     clearTimeout(state.searchTimer);
     state.panel?.promptObserver?.disconnect();
     state.panel?.remove();
@@ -18728,13 +18901,23 @@
 
   async function refreshCodexPlusPromptLibrary() {
     const state = codexPlusPromptLibrary, revision = ++state.revision;
+    ++state.detailRevision;
+    clearTimeout(state.searchTimer);
     state.loading = true;
-    renderCodexPlusPromptLibrary();
+    if (state.panel) {
+      state.panel.setAttribute("aria-busy", "true");
+      state.panel.querySelectorAll(".codex-plus-prompt-chip").forEach((chip) => {
+        const value = chip.dataset.promptLibraryFilter;
+        chip.setAttribute("aria-pressed", String(state.scope === value || state.tag === value));
+      });
+    } else {
+      renderCodexPlusPromptLibrary();
+    }
     try {
       const result = await codexPlusPromptToolsRequest("library/list", {
         project: state.project, query: state.query,
         scope: state.scope,
-        tag: state.tag, sort: "manual", limit: state.limit,
+        tag: state.tag, sort: "manual", limit: state.limit, summaryOnly: true,
       });
       if (revision !== state.revision || !state.panel) return;
       state.items = result.favorites || [];
@@ -18745,7 +18928,11 @@
       if (state.editId) {
         const item = state.items.find((value) => value.id === state.editId);
         state.editId = "";
-        if (item) state.edit = { ...item, tags: [...item.tags] };
+        if (item) {
+          const favorite = await readCodexPlusPromptFavorite(item);
+          if (revision !== state.revision || !state.panel) return;
+          state.edit = { ...favorite, tags: [...favorite.tags] };
+        }
       }
       renderCodexPlusPromptLibrary();
     } catch (error) {
@@ -18756,11 +18943,33 @@
     }
   }
 
+  async function readCodexPlusPromptFavorite(item) {
+    if (typeof item.body === "string") return item;
+    const result = await codexPlusPromptToolsRequest("library/get", { id: item.id });
+    if (!result.favorite) throw new Error("读取收藏失败，请重试");
+    return result.favorite;
+  }
+
+  async function editCodexPlusPromptFavorite(item) {
+    const state = codexPlusPromptLibrary, revision = state.revision, detailRevision = ++state.detailRevision;
+    if (state.loading) return;
+    try {
+      const favorite = await readCodexPlusPromptFavorite(item);
+      if (revision !== state.revision || detailRevision !== state.detailRevision || !state.panel) return;
+      state.edit = { ...favorite, tags: [...favorite.tags] };
+      renderCodexPlusPromptLibrary();
+    } catch (error) {
+      if (revision === state.revision && detailRevision === state.detailRevision && state.panel) showToast(error?.message || "读取收藏失败，请重试", null);
+    }
+  }
+
   async function useCodexPlusPromptFavorite(item, mode) {
     const state = codexPlusPromptLibrary, target = state.target, revision = state.revision;
-    if (state.using) return;
+    if (state.using || state.loading) return;
     state.using = true;
     try {
+      item = await readCodexPlusPromptFavorite(item);
+      if (revision !== state.revision || !state.panel) return;
       if (mode === "copy") {
         if (!navigator.clipboard?.writeText) { showToast("请选中正文手动复制", null); return; }
         await navigator.clipboard.writeText(item.body);
@@ -18783,10 +18992,13 @@
       if (revision !== state.revision) return;
       closeCodexPlusPromptLibrary();
       codexPlusPromptEnhanceNotifyWrite(target, mode, target.original);
+    } catch (error) {
+      if (revision === state.revision && state.panel) showToast(error?.message || "读取收藏失败，请重试", null);
     } finally { state.using = false; }
   }
 
   async function removeCodexPlusPromptFavorite(item) {
+    if (codexPlusPromptLibrary.loading) return;
     try {
       const removed = await codexPlusPromptToolsRequest("library/delete", { id: item.id });
       await refreshCodexPlusPromptLibrary();
@@ -18820,8 +19032,7 @@
         run: () => {
           const item = state.items.find((value) => value.id === result.favorite?.id);
           if (!item) return;
-          state.edit = { ...item, tags: [...item.tags] };
-          renderCodexPlusPromptLibrary();
+          void editCodexPlusPromptFavorite(item);
         },
       } });
     } catch (error) {
@@ -18848,7 +19059,7 @@
 
   async function moveCodexPlusPromptFavorite(id, targetId) {
     const state = codexPlusPromptLibrary;
-    if (!id || id === targetId) return;
+    if (!id || id === targetId || state.loading) return;
     const next = [...state.items];
     const from = next.findIndex((item) => item.id === id);
     const to = next.findIndex((item) => item.id === targetId);
@@ -18886,60 +19097,83 @@
       state.panel = panel;
       document.body.append(panel);
     }
+    panel.setAttribute("aria-busy", String(state.loading));
     positionCodexPlusPromptCard(panel);
     const search = panel.querySelector('input[type="search"]');
     const searchFocused = search === document.activeElement;
     const caret = searchFocused ? search.selectionStart : null;
-    panel.replaceChildren();
-    const header = codexPlusPromptLibraryNode("header", "codex-plus-prompt-head");
-    header.append(codexPlusPromptLibraryNode("h2", "", "常用提示词"));
-    const close = codexPlusPromptIconButton("trash", "关闭", "library-close");
-    close.replaceChildren(codexPlusPromptLibraryNode("span", "codex-plus-prompt-close", "×"));
-    close.className = "codex-plus-prompt-icon codex-plus-prompt-close-button";
-    delete close.dataset.promptEnhanceAction;
-    close.addEventListener("click", () => closeCodexPlusPromptLibrary());
-    header.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"), close);
-    panel.append(header);
-    if (state.edit) {
-      renderCodexPlusPromptFavoriteEditor(panel);
-      return;
+    const previousBody = panel.querySelector(".codex-plus-prompt-body");
+    const reusable = !state.edit && search && previousBody && !previousBody.matches(".codex-plus-prompt-edit");
+    const scrollTop = reusable ? previousBody.scrollTop : 0;
+    const active = document.activeElement;
+    const focusedRow = active?.closest?.(".codex-plus-prompt-row")?.dataset.promptFavoriteId;
+    const focusedLabel = active?.getAttribute?.("aria-label") || "";
+    if (!reusable) {
+      panel.replaceChildren();
+      const header = codexPlusPromptLibraryNode("header", "codex-plus-prompt-head");
+      header.append(codexPlusPromptLibraryNode("h2", "", "常用提示词"));
+      const close = codexPlusPromptIconButton("trash", "关闭", "library-close");
+      close.replaceChildren(codexPlusPromptLibraryNode("span", "codex-plus-prompt-close", "×"));
+      close.className = "codex-plus-prompt-icon codex-plus-prompt-close-button";
+      delete close.dataset.promptEnhanceAction;
+      close.addEventListener("click", () => closeCodexPlusPromptLibrary());
+      header.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"), close);
+      panel.append(header);
+      if (state.edit) {
+        renderCodexPlusPromptFavoriteEditor(panel);
+        return;
+      }
     }
-    const body = codexPlusPromptLibraryNode("div", "codex-plus-prompt-body");
-    const searchInput = document.createElement("input");
-    searchInput.className = "codex-plus-prompt-input";
-    searchInput.type = "search";
-    searchInput.placeholder = "搜索";
-    searchInput.setAttribute("aria-label", "搜索");
-    searchInput.value = state.query;
-    searchInput.addEventListener("compositionstart", () => clearTimeout(state.searchTimer));
-    searchInput.addEventListener("compositionend", () => searchInput.dispatchEvent(new Event("input", { bubbles: true })));
-    searchInput.addEventListener("input", (event) => {
-      if (event.isComposing) return;
-      clearTimeout(state.searchTimer);
-      state.query = searchInput.value;
-      state.searchTimer = setTimeout(() => { void refreshCodexPlusPromptLibrary(); }, 180);
-    });
-    searchInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); void refreshCodexPlusPromptLibrary(); }
-    });
-    body.append(searchInput);
-    const chips = codexPlusPromptLibraryNode("div", "codex-plus-prompt-chips");
+    const body = reusable ? previousBody : codexPlusPromptLibraryNode("div", "codex-plus-prompt-body");
+    const searchInput = reusable ? search : document.createElement("input");
+    if (!reusable) {
+      searchInput.className = "codex-plus-prompt-input";
+      searchInput.type = "search";
+      searchInput.placeholder = "搜索";
+      searchInput.setAttribute("aria-label", "搜索");
+      searchInput.value = state.query;
+      searchInput.addEventListener("compositionstart", () => clearTimeout(state.searchTimer));
+      searchInput.addEventListener("compositionend", () => searchInput.dispatchEvent(new Event("input", { bubbles: true })));
+      searchInput.addEventListener("input", (event) => {
+        if (event.isComposing) return;
+        clearTimeout(state.searchTimer);
+        state.query = searchInput.value;
+        state.searchTimer = setTimeout(() => { void refreshCodexPlusPromptLibrary(); }, 180);
+      });
+      searchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); void refreshCodexPlusPromptLibrary(); }
+      });
+      body.append(searchInput);
+    }
+    const chips = reusable ? body.querySelector(".codex-plus-prompt-chips") : codexPlusPromptLibraryNode("div", "codex-plus-prompt-chips");
     chips.setAttribute("role", "group");
     chips.setAttribute("aria-label", "筛选");
     const filters = ["all", "untagged", ...state.tags];
+    const existingChips = new Map([...chips.children].map((chip) => [chip.dataset.promptLibraryFilter, chip]));
+    for (const chip of [...chips.children]) {
+      if (!filters.includes(chip.dataset.promptLibraryFilter)) chip.remove();
+    }
     for (const value of filters) {
       const label = value === "all" ? "全部" : value === "untagged" ? "通用" : value;
-      const chip = codexPlusPromptLibraryButton(label, "codex-plus-prompt-chip");
+      const chip = existingChips.get(value) || codexPlusPromptLibraryButton(label, "codex-plus-prompt-chip");
+      chip.dataset.promptLibraryFilter = value;
       chip.setAttribute("aria-pressed", String(state.scope === value || state.tag === value));
-      chip.addEventListener("click", () => {
-        if (value === "all" || value === "untagged") { state.scope = value; state.tag = ""; }
-        else { state.scope = "all"; state.tag = value; }
+      if (!existingChips.has(value)) chip.addEventListener("click", () => {
+        const scope = value === "untagged" ? "untagged" : "all";
+        const tag = value === "all" || value === "untagged" ? "" : value;
+        if (state.scope === scope && state.tag === tag) return;
+        state.scope = scope;
+        state.tag = tag;
         state.limit = 50;
         void refreshCodexPlusPromptLibrary();
       });
-      chips.append(chip);
+      const at = filters.indexOf(value);
+      if (chips.children[at] !== chip) chips.insertBefore(chip, chips.children[at] || null);
     }
-    body.append(chips);
+    if (!reusable) body.append(chips);
+    for (const child of [...body.children]) {
+      if (child !== searchInput && child !== chips) child.remove();
+    }
     if (state.loading && !state.items.length) body.append(codexPlusPromptLibraryNode("p", "codex-plus-prompt-caption", "正在读取…"));
     if (!state.loading && !state.items.length) {
       const empty = codexPlusPromptLibraryNode("div", "codex-plus-prompt-empty");
@@ -18952,6 +19186,7 @@
       list.setAttribute("aria-label", "常用提示词");
       state.items.forEach((item, index) => {
         const row = codexPlusPromptLibraryNode("li", "codex-plus-prompt-row");
+        row.dataset.promptFavoriteId = item.id;
         row.dataset.dragging = String(state.dragging === item.id);
         row.dataset.over = String(state.over === item.id && state.dragging !== item.id);
         const grip = codexPlusPromptLibraryNode("button", "codex-plus-prompt-grip");
@@ -18993,7 +19228,7 @@
         const titleRow = codexPlusPromptLibraryNode("span", "codex-plus-prompt-row-title");
         titleRow.append(codexPlusPromptLibraryNode("strong", "", item.title));
         for (const tag of item.tags) titleRow.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-pill", tag));
-        main.append(titleRow, codexPlusPromptLibraryNode("small", "", item.body.replace(/\s+/g, " ").slice(0, 160)));
+        main.append(titleRow, codexPlusPromptLibraryNode("small", "", (item.excerpt ?? item.body ?? "").replace(/\s+/g, " ").slice(0, 160)));
         main.addEventListener("click", () => void useCodexPlusPromptFavorite(item, "append"));
         const actions = codexPlusPromptLibraryNode("span", "codex-plus-prompt-row-actions");
         const replace = codexPlusPromptLibraryNode("button", "codex-plus-prompt-icon");
@@ -19007,7 +19242,7 @@
         const edit = codexPlusPromptLibraryNode("button", "codex-plus-prompt-icon");
         edit.type = "button"; edit.title = "编辑"; edit.setAttribute("aria-label", "编辑");
         edit.append(codexPlusPromptIcon("pencil"));
-        edit.addEventListener("click", () => { state.edit = { ...item, tags: [...item.tags] }; renderCodexPlusPromptLibrary(); });
+        edit.addEventListener("click", () => void editCodexPlusPromptFavorite(item));
         const remove = codexPlusPromptLibraryNode("button", "codex-plus-prompt-icon");
         remove.type = "button"; remove.title = "删除"; remove.setAttribute("aria-label", "删除");
         remove.append(codexPlusPromptIcon("trash"));
@@ -19023,27 +19258,38 @@
         body.append(more);
       }
     }
-    panel.append(body);
+    if (!reusable) panel.append(body);
+    panel.querySelector(".codex-plus-prompt-error-bar")?.remove();
     if (state.error) {
       const error = codexPlusPromptLibraryNode("div", "codex-plus-prompt-error-bar", state.error);
       error.setAttribute("role", "alert");
-      panel.append(error);
+      panel.insertBefore(error, panel.querySelector("footer"));
     }
-    const footer = codexPlusPromptLibraryNode("footer", "codex-plus-prompt-foot");
-    const save = codexPlusPromptLibraryButton("存当前输入", "codex-plus-prompt-action");
+    const footer = reusable ? panel.querySelector("footer") : codexPlusPromptLibraryNode("footer", "codex-plus-prompt-foot");
+    const save = reusable ? footer.querySelector("button") : codexPlusPromptLibraryButton("存当前输入", "codex-plus-prompt-action");
     save.disabled = !codexPlusPromptEnhanceDraftOf(state.target?.footer);
     save.title = save.disabled ? "先在输入框里写点内容" : "";
-    save.addEventListener("click", () => void saveCodexPlusPromptDraft());
-    footer.append(save, codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"));
-    if (state.items.length > 1) footer.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-caption", "拖动 ⠿ 调整顺序"));
-    panel.append(footer);
+    if (!reusable) {
+      save.addEventListener("click", () => void saveCodexPlusPromptDraft());
+      footer.append(save, codexPlusPromptLibraryNode("span", "codex-plus-prompt-grow"));
+      panel.append(footer);
+    }
+    const dragHint = footer.querySelector(".codex-plus-prompt-caption");
+    if (state.items.length > 1 && !dragHint) footer.append(codexPlusPromptLibraryNode("span", "codex-plus-prompt-caption", "拖动 ⠿ 调整顺序"));
+    else if (state.items.length <= 1) dragHint?.remove();
+    if (reusable) body.scrollTop = scrollTop;
+    if (focusedRow) {
+      const row = [...body.querySelectorAll(".codex-plus-prompt-row")].find((node) => node.dataset.promptFavoriteId === focusedRow);
+      const focus = focusedLabel ? [...(row?.querySelectorAll("button") || [])].find((node) => node.getAttribute("aria-label") === focusedLabel) : row?.querySelector(".codex-plus-prompt-row-main");
+      focus?.focus({ preventScroll: true });
+    }
     const focused = document.activeElement;
     if (!searchFocused && (!focused || focused === document.body || focused === state.target?.editor || !focused.isConnected))
       panel.focus({ preventScroll: true });
     requestAnimationFrame(() => {
       if (!searchInput.isConnected) return;
       if (searchFocused) {
-        searchInput.focus();
+        searchInput.focus({ preventScroll: true });
         if (caret != null) { try { searchInput.setSelectionRange(caret, caret); } catch {} }
       }
     });

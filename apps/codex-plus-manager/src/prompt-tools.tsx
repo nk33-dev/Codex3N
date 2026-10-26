@@ -15,8 +15,9 @@ type Favorite = {
   id: string; title: string; body: string; tags: string[]; project: Project | null;
   pinned: boolean; order: number;
 };
+type FavoriteSummary = Omit<Favorite, "body"> & { excerpt: string };
 type Result = {
-  status: string; message?: string; favorites?: Favorite[]; tags?: string[]; total?: number;
+  status: string; message?: string; favorites?: FavoriteSummary[]; tags?: string[]; total?: number;
   inserted?: number; skipped?: number; favorite?: Favorite; index?: number;
 };
 async function request(action: string, payload: unknown = {}): Promise<Result> {
@@ -27,25 +28,35 @@ async function request(action: string, payload: unknown = {}): Promise<Result> {
 const emptyFavorite = (): Favorite => ({ id: "", title: "", body: "", tags: [], project: null, pinned: false, order: 0 });
 
 export function PromptToolsPanel() {
-  const [items, setItems] = useState<Favorite[]>([]), [query, setQuery] = useState(""),
+  const [items, setItems] = useState<FavoriteSummary[]>([]), [query, setQuery] = useState(""),
     [scope, setScope] = useState("all"), [tag, setTag] = useState(""),
     [tags, setTags] = useState<string[]>([]), [selected, setSelected] = useState<Favorite | null>(null),
     [edit, setEdit] = useState<Favorite | null>(null), [tagsText, setTagsText] = useState(""),
     [error, setError] = useState(""), [message, setMessage] = useState(""),
     [busy, setBusy] = useState(false), [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<string | null>(null),
     [importData, setImportData] = useState<{ data: unknown; added: number; skipped: number } | null>(null);
-  const revision = useRef(0), fileInput = useRef<HTMLInputElement>(null);
+  const revision = useRef(0), detailRevision = useRef(0), fileInput = useRef<HTMLInputElement>(null);
   const visibleItems = items;
   async function load() {
     const token = ++revision.current;
-    const result = await request("library/list", { all: true, query, scope, tag });
+    ++detailRevision.current;
+    const result = await request("library/list", { all: true, query, scope, tag, summaryOnly: true });
     if (token === revision.current) {
       setItems(result.favorites || []);
       setTags(result.tags || []);
-      setSelected(value => result.favorites?.find(item => item.id === value?.id) || null);
+      setSelected(value => result.favorites?.some(item => item.id === value?.id) ? value : null);
     }
   }
-  useEffect(() => { void load().catch(() => setError(t("读取或保存失败，请重试"))); return () => { ++revision.current; }; }, [scope, tag]);
+  useEffect(() => { void load().catch(() => setError(t("读取或保存失败，请重试"))); return () => { ++revision.current; ++detailRevision.current; }; }, [scope, tag]);
+  async function select(item: FavoriteSummary) {
+    const token = ++detailRevision.current;
+    try {
+      const result = await request("library/get", { id: item.id });
+      if (token === detailRevision.current) setSelected(result.favorite || null);
+    } catch (reason) {
+      if (token === detailRevision.current) setError(reason instanceof Error ? reason.message : t("读取或保存失败，请重试"));
+    }
+  }
   async function run(task: () => Promise<void>) {
     if (busy) return;
     setBusy(true); setError(""); setMessage("");
@@ -131,7 +142,9 @@ export function PromptToolsPanel() {
       </div>}
       {edit ? <form className="prompt-tools-editor" onSubmit={event => {
         event.preventDefault(); void run(async () => {
-          await request("library/save", { ...edit, project: null, tags: tagsText.split(/[,，]/).map(value => value.trim()).filter(Boolean) });
+          const result = await request("library/save", { ...edit, project: null, tags: tagsText.split(/[,，]/).map(value => value.trim()).filter(Boolean) });
+          const saved = result.favorite;
+          if (saved) setSelected(value => value?.id === saved.id ? saved : value);
           setEdit(null); await load(); setMessage(t("已保存"));
         });
       }}>
@@ -153,9 +166,9 @@ export function PromptToolsPanel() {
             <button type="button" className="prompt-manager-grip" draggable title={t("拖动排序")} aria-label={`${t("拖动排序")}: ${item.title}`}
               onDragStart={event => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setDragging(item.id); }}
               onDragEnd={() => { setDragging(null); setOver(null); }}><GripVertical size={14} /></button>
-            <button type="button" className="prompt-manager-item" aria-pressed={selected?.id === item.id} onClick={() => setSelected(item)}>
+            <button type="button" className="prompt-manager-item" aria-pressed={selected?.id === item.id} onClick={() => void select(item)}>
               <strong>{item.title}</strong>
-              <span>{item.tags.length ? `${item.tags.join(" · ")} — ` : ""}{item.body.replace(/\s+/g, " ")}</span>
+              <span>{item.tags.length ? `${item.tags.join(" · ")} — ` : ""}{item.excerpt.replace(/\s+/g, " ")}</span>
             </button>
           </div>)}
         </div>

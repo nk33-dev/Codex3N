@@ -75,6 +75,10 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            allow_theme_assets(
+                &app.asset_protocol_scope(),
+                &codex_plus_core::paths::default_app_state_dir(),
+            )?;
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {
@@ -328,6 +332,50 @@ pub fn run() {
                 }),
             );
         }
+    }
+}
+
+fn allow_theme_assets(
+    scope: &tauri::scope::fs::Scope,
+    state_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let theme_dir = state_dir.join("dream-skin");
+    std::fs::create_dir_all(&theme_dir)?;
+    let theme_dir = theme_dir.canonicalize()?;
+    anyhow::ensure!(
+        theme_dir.starts_with(state_dir.canonicalize()?),
+        "主题目录超出状态目录"
+    );
+    scope.allow_directory(theme_dir, true)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod asset_scope_tests {
+    use super::*;
+
+    #[test]
+    fn current_state_theme_images_are_allowed_but_credentials_are_not() {
+        let app = tauri::test::mock_app();
+        let scope = tauri::scope::fs::Scope::new(
+            &app,
+            &tauri::utils::config::FsScope::AllowedPaths(Vec::new()),
+        )
+        .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["Codex3N", "isolated state"] {
+            let state = temp.path().join(name);
+            let image = state.join("dream-skin/themes/custom/image.png");
+            std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+            std::fs::write(&image, b"synthetic-image").unwrap();
+            std::fs::write(state.join("settings.json"), b"{}").unwrap();
+            std::fs::write(state.join("secret.key"), b"synthetic-key").unwrap();
+            allow_theme_assets(&scope, &state).unwrap();
+            assert!(scope.is_allowed(&image));
+            assert!(!scope.is_allowed(state.join("settings.json")));
+            assert!(!scope.is_allowed(state.join("secret.key")));
+        }
+        assert!(!scope.is_allowed(temp.path().join("legacy/dream-skin/image.png")));
     }
 }
 

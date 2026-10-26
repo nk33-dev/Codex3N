@@ -19,6 +19,8 @@ use tokio::sync::Mutex;
 use crate::settings::{BackendSettings, SettingsStore, normalize_codex_extra_args};
 use crate::status::{LaunchStatus, StatusStore};
 
+mod backend_services;
+
 static PET_OVERLAY_SYNC_FAILED: AtomicBool = AtomicBool::new(false);
 static PET_CURSOR_DRIVER_FAILED: AtomicBool = AtomicBool::new(false);
 const BRIDGE_HEALTH_FAILURE_THRESHOLD: u8 = 2;
@@ -40,7 +42,7 @@ struct BridgeReinjectBackoff {
     healthy_since: Option<std::time::Instant>,
 }
 
-fn reinject_backoff_delay(consecutive_attempts: u32) -> std::time::Duration {
+pub fn reinject_backoff_delay(consecutive_attempts: u32) -> std::time::Duration {
     let factor = 1u64
         .checked_shl(consecutive_attempts.min(u64::BITS - 1))
         .unwrap_or(u64::MAX);
@@ -1018,6 +1020,34 @@ impl DefaultLaunchHooks {
     pub async fn set_bridge_reinjector(&self, reinjector: BridgeReinjector) {
         *self.bridge_reinjector.lock().await = Some(reinjector);
     }
+
+    /// 恢复已结束的自有服务；现有 listener 和 watchdog 继续复用。
+    pub async fn ensure_backend_services(
+        &self,
+        debug_port: u16,
+        helper_port: u16,
+    ) -> anyhow::Result<()> {
+        let helper_running = self
+            .helper
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|runtime| !runtime.task.is_finished());
+        if !helper_running {
+            self.start_helper_runtime(helper_port).await?;
+        }
+        let watchdog_running = self
+            .bridge_watchdog
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|runtime| !runtime.task.is_finished());
+        if !watchdog_running {
+            self.start_bridge_watchdog_runtime(debug_port, helper_port)
+                .await?;
+        }
+        Ok(())
+    }
 }
 
 const HELPER_LOOPBACK_HOST: &str = "127.0.0.1";
@@ -1220,42 +1250,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn start_helper(&self, helper_port: u16) -> anyhow::Result<()> {
-        let bind_host = helper_bind_host();
-        let listener = tokio::net::TcpListener::bind((bind_host.as_str(), helper_port))
-            .await
-            .with_context(|| {
-                format!("failed to bind helper runtime on {bind_host}:{helper_port}")
-            })?;
-        let _ = crate::diagnostic_log::append_diagnostic_log(
-            "helper.listening",
-            serde_json::json!({
-                "helper_port": helper_port,
-                "bind_host": bind_host,
-                "address": format!("http://{bind_host}:{helper_port}")
-            }),
-        );
-        // 端口绑定成功后立刻落凭据：Claude 汉化注入的 hook 靠它调用听写路由。
-        write_dictation_helper_receipt(helper_port);
-        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    accepted = listener.accept() => {
-                        if let Ok((stream, addr)) = accepted {
-                            tokio::spawn(async move {
-                                let _ = handle_helper_connection(stream, Some(addr)).await;
-                            });
-                        }
-                    }
-                }
-            }
-        });
-        *self.helper.lock().await = Some(HelperRuntime {
-            shutdown: shutdown_tx,
-            task,
-        });
-        Ok(())
+        self.start_helper_runtime(helper_port).await
     }
 
     async fn launch_codex(
@@ -1565,62 +1560,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         let _ = debug_port;
     }
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
-        let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
-        let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            #[cfg(windows)]
-            let pet_cursor_task = tokio::spawn(run_pet_real_mouse_cursor_driver(debug_port));
-            let mut observed_browser_id: Option<String> = None;
-            let mut bridge_health_failures = 0u8;
-            let mut bridge_reinject_backoff = BridgeReinjectBackoff::default();
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            loop {
-                tokio::select! {
-                    _ = &mut shutdown_rx => break,
-                    _ = interval.tick() => {
-                        let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
-                            Ok(identity) => identity.browser_id().ok(),
-                            Err(_) => None,
-                        };
-                        let identity_changed = current_browser_id
-                            .as_deref()
-                            .is_some_and(|current| {
-                                browser_identity_changed(observed_browser_id.as_deref(), current)
-                            });
-                        if let Some(current) = current_browser_id {
-                            observed_browser_id = Some(current);
-                        }
-                        let (pet_result, _) = tokio::join!(
-                            sync_pet_real_mouse_overlay(debug_port, helper_port),
-                            check_and_reinject_bridge_inner(
-                                debug_port,
-                                helper_port,
-                                identity_changed,
-                                bridge_reinjector.clone(),
-                                &mut bridge_health_failures,
-                                &mut bridge_reinject_backoff,
-                            ),
-                        );
-                        record_pet_overlay_sync_result(debug_port, helper_port, pet_result);
-                    }
-                }
-            }
-            #[cfg(windows)]
-            {
-                pet_cursor_task.abort();
-                let _ = pet_cursor_task.await;
-            }
-        });
-        if let Some(runtime) = self
-            .bridge_watchdog
-            .lock()
+        self.start_bridge_watchdog_runtime(debug_port, helper_port)
             .await
-            .replace(BridgeWatchdogRuntime { shutdown, task })
-        {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
-        Ok(())
     }
 
     async fn write_status(&self, _status: &str) {}
@@ -3430,13 +3371,13 @@ const MAX_HTTP_HEADER_BYTES: usize = 64 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_HTTP_ENCODED_BODY_BYTES: usize = 64 * 1024 * 1024;
 
-struct HttpRequest {
-    headers: Vec<u8>,
-    body: Vec<u8>,
+pub(crate) struct HttpRequest {
+    pub(crate) headers: Vec<u8>,
+    pub(crate) body: Vec<u8>,
 }
 
 #[derive(Debug)]
-struct HttpRequestReadError {
+pub(crate) struct HttpRequestReadError {
     status: &'static str,
     message: String,
 }
@@ -3573,8 +3514,8 @@ impl ChunkedScanState {
     }
 }
 
-async fn read_http_request(
-    stream: &mut tokio::net::TcpStream,
+pub(crate) async fn read_http_request(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
 ) -> Result<HttpRequest, HttpRequestReadError> {
     let mut buffer = Vec::new();
     let mut chunk = vec![0_u8; 4096];

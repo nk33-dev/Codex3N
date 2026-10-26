@@ -96,6 +96,7 @@ export type ToolShard = {
 };
 
 export type BackendSettings = WhaleBalanceSettings & {
+  secretDecryptionFailures?: string[];
   revision?: string;
   codexAppNativeFastUnlock: boolean;
   relayPreserveNonproviderSettings: boolean;

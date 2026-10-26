@@ -167,28 +167,57 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [data, setData] = useState<SkillPayload | null>(null); const [tab, setTab] = useState<"discover" | "installed">("discover"); const [query, setQuery] = useState(""); const [busy, setBusy] = useState(false); const [repoOpen, setRepoOpen] = useState(false); const [detail, setDetail] = useState<Skill | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const load = async (command = "refresh_skill_catalog") => { setLoading(true); try { const r = await invoke<SkillPayload>(command); startTransition(() => setData(r)); if (!ok(r)) await notify("Skills", r.message, "failed"); } catch (e) { await notify("Skills", String(e), "failed"); } finally { setLoading(false); } };
-  useEffect(() => { let active = true; void (async () => {
-    await load("list_installed_skills");
-    if (active) await load();
-  })(); return () => { active = false; }; }, []);
-  const run = async (command: string, args: Record<string, unknown>) => { setBusy(true); try { const r = await invoke<SkillPayload>(command, args); setData(r); await notify("Skills", r.message, ok(r) ? "ok" : "failed"); return ok(r); } catch (e) { await notify("Skills", String(e), "failed"); return false; } finally { setBusy(false); } };
-  const saveRepo = async (repo: Repo, previousKey?: string) => {
-    setBusy(true);
+  const mounted = useRef(true), loadRevision = useRef(0), loadPending = useRef(false), operationPending = useRef(false);
+  const load = async (command = "refresh_skill_catalog") => {
+    if (loadPending.current || operationPending.current) return;
+    loadPending.current = true;
+    const revision = ++loadRevision.current;
+    setLoading(true);
     try {
-      const result = await invoke<SkillPayload>("upsert_skill_repo", { repo, previousKey });
-      setData(result);
-      if (!ok(result)) await notify("Skills", result.message, "failed");
-      return ok(result);
-    } catch (error) { await notify("Skills", String(error), "failed"); return false; }
-    finally { setBusy(false); }
+      const r = await invoke<SkillPayload>(command);
+      if (!mounted.current || revision !== loadRevision.current) return;
+      startTransition(() => setData(r));
+      if (!ok(r)) await notify("Skills", r.message, "failed");
+    } catch (e) {
+      if (mounted.current && revision === loadRevision.current) await notify("Skills", String(e), "failed");
+    } finally {
+      loadPending.current = false;
+      if (mounted.current && revision === loadRevision.current) setLoading(false);
+    }
   };
+  useEffect(() => {
+    mounted.current = true;
+    void load("list_installed_skills");
+    return () => { mounted.current = false; ++loadRevision.current; };
+  }, []);
+  const run = async (command: string, args: Record<string, unknown>, silentSuccess = false) => {
+    if (operationPending.current) return false;
+    operationPending.current = true;
+    const revision = ++loadRevision.current;
+    setBusy(true);
+    setLoading(false);
+    try {
+      const result = await invoke<SkillPayload>(command, args);
+      if (!mounted.current || revision !== loadRevision.current) return false;
+      setData(result);
+      if (!silentSuccess || !ok(result)) await notify("Skills", result.message, ok(result) ? "ok" : "failed");
+      return ok(result);
+    } catch (error) {
+      if (mounted.current && revision === loadRevision.current) await notify("Skills", String(error), "failed");
+      return false;
+    } finally {
+      operationPending.current = false;
+      if (mounted.current && revision === loadRevision.current) setBusy(false);
+    }
+  };
+  const saveRepo = (repo: Repo, previousKey?: string) => run("upsert_skill_repo", { repo, previousKey }, true);
   const deleteRepo = async (repo: Repo) => { await run("delete_skill_repo", { key: repoKey(repo) }); };
   const inspectRepo = async (repo: Repo) => {
+    const revision = loadRevision.current;
     const result = await invoke<RepoInspection>("inspect_skill_repo", { repo });
-    if (ok(result)) {
+    if (ok(result) && mounted.current && revision === loadRevision.current && !operationPending.current) {
       const payload = await invoke<SkillPayload>("list_installed_skills");
-      startTransition(() => setData(payload));
+      if (mounted.current && revision === loadRevision.current && !operationPending.current) startTransition(() => setData(payload));
     }
     return result;
   };
@@ -242,4 +271,84 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     {detail && <SkillDetailDrawer skill={detail} count={data?.repoCounts?.[detail.repoKey]} onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(detail.repoKey)} />}
   </div>;
 }
-export function SessionPage({ sessions, onRefresh, onDelete, onDeleteMany, onDeleteProject, notify, maintenance }: { maintenance?: ReactNode; onDeleteProject?: (projectPath: string, label: string) => Promise<void>; sessions: { sessions: ManagedSession[]; totalCount: number; hasMore: boolean; offset: number; limit: number } | null; onRefresh: (offset?: number) => Promise<void>; onDelete: (s: ManagedSession) => Promise<void>; onDeleteMany: (s: ManagedSession[]) => Promise<void>; notify: Notify }) { const [query, setQuery] = useState(""); const [mode, setMode] = useState<"project" | "time">("project"); const [expanded, setExpanded] = useState<Set<string>>(new Set()); const [selection, setSelection] = useState(false); const [selected, setSelected] = useState<Set<string>>(new Set()); const [detail, setDetail] = useState<ManagedSession | null>(null); const all = sessions?.sessions || []; const visible = all.filter((s) => matchesManagementQuery([s.title, s.cwd, s.id, s.modelProvider], query)); const groups = sessionGroups(visible, mode); const selectedRows = all.filter((s) => selected.has(s.id)); const toggle = (id: string) => setSelected((old) => { const next = new Set(old); next.has(id) ? next.delete(id) : next.add(id); return next; }); return <div className="mg-page mg-session-page"><Header icon={<History size={20}/>} title={t("会话")} actions={<><Button onClick={() => void onRefresh()}><RefreshCw size={14}/>{t("刷新列表")}</Button><Button onClick={() => setSelection(!selection)}>{t("选择多个…")}</Button></>} />{maintenance}<div className="mg-session-controls"><SearchBox value={query} onChange={setQuery} placeholder={t("搜索标题、目录或会话 ID")} /><div className="mg-segmented"><button type="button" data-active={mode === "project"} onClick={() => setMode("project")}>{t("按项目")}</button><button type="button" data-active={mode === "time"} onClick={() => setMode("time")}>{t("按时间")}</button></div>{selection && <><Button onClick={() => setSelected(new Set(visible.map((s) => s.id)))}>{t("全选当前列表")}</Button><Button primary disabled={!selectedRows.length} onClick={() => void onDeleteMany(selectedRows)}><Trash2 size={14}/>{t("删除已选")}</Button></>}</div><div className="mg-content"><div className="mg-session-list">{!visible.length ? <div className="mg-empty"><h2>{t("还没有匹配的会话")}</h2><Button onClick={() => void onRefresh()}>{t("刷新")}</Button></div> : groups.map((g) => { const open = query.trim() || expanded.has(g.key) || groups.length === 1; return <section key={g.key}><div className="mg-group-row"><button type="button" className="mg-group-head" onClick={() => setExpanded((old) => { const next = new Set(old); next.has(g.key) ? next.delete(g.key) : next.add(g.key); return next; })}><ChevronDown size={15} className={open ? "" : "mg-chevron-collapsed"}/><strong>{g.label}</strong><span>{g.path}</span><small>{g.sessions.length} {t("个会话")}</small></button>{mode === "project" && onDeleteProject && g.sessions[0]?.cwd ? <button type="button" className="mg-icon-button mg-group-delete" onClick={() => void onDeleteProject(g.sessions[0].cwd, g.label)} aria-label={t("删除该项目的全部会话")} title={t("删除该项目的全部会话")}><Trash2 size={15}/></button> : null}</div>{open && g.sessions.map((s) => <article className="mg-session-row" key={s.id}><div className="mg-session-check">{selection && <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggle(s.id)}/>}</div><button type="button" className="mg-session-main" onClick={() => setDetail(s)}><strong>{s.title || t("未命名会话")}</strong><small>{s.cwd || t("未记录项目路径")}</small><code>{s.id}</code></button><div className="mg-session-meta"><span>{s.modelProvider || "Codex"}</span><time>{s.updatedAtMs ? new Date(s.updatedAtMs).toLocaleString() : t("未知时间")}</time></div><div className="mg-row-actions"><button type="button" className="mg-icon-button" onClick={() => void onDelete(s)} aria-label={t("删除会话")}><Trash2 size={15}/></button></div></article>)}</section>; })}</div></div><div className="mg-pagination"><Button onClick={() => void onRefresh(Math.max(0, (sessions?.offset || 0) - (sessions?.limit || 50)))} disabled={!sessions || !sessions.offset}><ArrowLeft size={14}/>{t("上一页")}</Button><span>{sessions ? String(Math.floor(sessions.offset / sessions.limit) + 1) + " · " + sessions.totalCount : "—"}</span><Button onClick={() => void onRefresh((sessions?.offset || 0) + (sessions?.limit || 50))} disabled={!sessions?.hasMore}><ArrowRight size={14}/>{t("下一页")}</Button></div>{detail && <ManagementDrawer title={detail.title || t("未命名会话")} onClose={() => setDetail(null)} footer={<><Button onClick={() => navigator.clipboard.writeText(detail.id)}><Copy size={14}/>{t("复制会话 ID")}</Button><Button primary onClick={() => void onDelete(detail)}><Trash2 size={14}/>{t("删除会话")}</Button></>}><dl className="mg-detail"><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd>{detail.modelProvider || "Codex"}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl></ManagementDrawer>}</div>; }
+export function SessionPage({ sessions, loading = false, onRefresh, onDelete, onDeleteMany, onDeleteProject, notify, maintenance }: {
+  maintenance?: ReactNode; loading?: boolean;
+  onDeleteProject?: (projectPath: string, label: string) => Promise<void>;
+  sessions: { sessions: ManagedSession[]; totalCount: number; hasMore: boolean; offset: number; limit: number } | null;
+  onRefresh: (offset?: number, query?: string) => Promise<void>;
+  onDelete: (s: ManagedSession) => Promise<void>;
+  onDeleteMany: (s: ManagedSession[]) => Promise<void>; notify: Notify;
+}) {
+  const [query, setQuery] = useState(""), [submittedQuery, setSubmittedQuery] = useState("");
+  const [mode, setMode] = useState<"project" | "time">("project");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [selection, setSelection] = useState(false), [selected, setSelected] = useState<Set<string>>(new Set());
+  const [detail, setDetail] = useState<ManagedSession | null>(null);
+  const latestRefresh = useRef(onRefresh);
+  latestRefresh.current = onRefresh;
+  useEffect(() => {
+    if (query === submittedQuery) return;
+    const timer = setTimeout(() => {
+      setSubmittedQuery(query); setSelected(new Set()); setDetail(null);
+      void latestRefresh.current(0, query);
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [query, submittedQuery]);
+  useEffect(() => { setSelected(new Set()); }, [sessions]);
+  const disabled = loading || query !== submittedQuery;
+  const visible = sessions?.sessions || [];
+  const groups = sessionGroups(visible, mode);
+  const selectedRows = visible.filter((s) => selected.has(s.id));
+  const toggle = (id: string) => setSelected((old) => { const next = new Set(old); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  return <div className="mg-page mg-session-page">
+    <Header icon={<History size={20}/>} title={t("会话")} actions={<>
+      <Button disabled={disabled} onClick={() => void onRefresh(0, query)}><RefreshCw size={14}/>{t("刷新列表")}</Button>
+      <Button disabled={disabled} onClick={() => setSelection(!selection)}>{t("选择多个…")}</Button>
+    </>} />
+    {maintenance}
+    <div className="mg-session-controls">
+      <SearchBox value={query} onChange={setQuery} placeholder={t("搜索标题、目录或会话 ID")} />
+      <div className="mg-segmented">
+        <button type="button" data-active={mode === "project"} onClick={() => setMode("project")}>{t("按项目")}</button>
+        <button type="button" data-active={mode === "time"} onClick={() => setMode("time")}>{t("按时间")}</button>
+      </div>
+      {selection && <>
+        <Button disabled={disabled} onClick={() => setSelected(new Set(visible.map((s) => s.id)))}>{t("全选当前列表")}</Button>
+        <Button primary disabled={disabled || !selectedRows.length} onClick={() => void onDeleteMany(selectedRows)}><Trash2 size={14}/>{t("删除已选")}</Button>
+      </>}
+    </div>
+    <div className="mg-content" aria-busy={disabled}>
+      <div className="mg-session-list">
+        {!visible.length ? <div className="mg-empty"><h2>{disabled ? t("加载中…") : t("还没有匹配的会话")}</h2>
+          <Button disabled={disabled} onClick={() => void onRefresh(0, query)}>{t("刷新")}</Button></div> : groups.map((g) => {
+          const open = query.trim() || expanded.has(g.key) || groups.length === 1;
+          return <section key={g.key}>
+            <div className="mg-group-row">
+              <button type="button" className="mg-group-head" onClick={() => setExpanded((old) => { const next = new Set(old); next.has(g.key) ? next.delete(g.key) : next.add(g.key); return next; })}>
+                <ChevronDown size={15} className={open ? "" : "mg-chevron-collapsed"}/><strong>{g.label}</strong><span>{g.path}</span><small>{g.sessions.length} {t("个会话")}</small>
+              </button>
+              {mode === "project" && onDeleteProject && g.sessions[0]?.cwd ? <button type="button" disabled={disabled} className="mg-icon-button mg-group-delete" onClick={() => void onDeleteProject(g.sessions[0].cwd, g.label)} aria-label={t("删除该项目的全部会话")} title={t("删除该项目的全部会话")}><Trash2 size={15}/></button> : null}
+            </div>
+            {open && g.sessions.map((s) => <article className="mg-session-row" key={s.id}>
+              <div className="mg-session-check">{selection && <input type="checkbox" disabled={disabled} checked={selected.has(s.id)} onChange={() => toggle(s.id)}/>}</div>
+              <button type="button" className="mg-session-main" onClick={() => setDetail(s)}><strong>{s.title || t("未命名会话")}</strong><small>{s.cwd || t("未记录项目路径")}</small><code>{s.id}</code></button>
+              <div className="mg-session-meta"><span>{s.modelProvider || "Codex"}</span><time>{s.updatedAtMs ? new Date(s.updatedAtMs).toLocaleString() : t("未知时间")}</time></div>
+              <div className="mg-row-actions"><button type="button" disabled={disabled} className="mg-icon-button" onClick={() => void onDelete(s)} aria-label={t("删除会话")}><Trash2 size={15}/></button></div>
+            </article>)}
+          </section>;
+        })}
+      </div>
+    </div>
+    <div className="mg-pagination">
+      <Button onClick={() => void onRefresh(Math.max(0, (sessions?.offset || 0) - (sessions?.limit || 50)), query)} disabled={disabled || !sessions?.offset}><ArrowLeft size={14}/>{t("上一页")}</Button>
+      <span>{sessions ? String(Math.floor(sessions.offset / sessions.limit) + 1) + " · " + sessions.totalCount : "—"}</span>
+      <Button onClick={() => void onRefresh((sessions?.offset || 0) + (sessions?.limit || 50), query)} disabled={disabled || !sessions?.hasMore}><ArrowRight size={14}/>{t("下一页")}</Button>
+    </div>
+    {detail && <ManagementDrawer title={detail.title || t("未命名会话")} onClose={() => setDetail(null)} footer={<>
+      <Button onClick={() => void navigator.clipboard.writeText(detail.id).catch((error) => notify(t("调用失败"), String(error), "failed"))}><Copy size={14}/>{t("复制会话 ID")}</Button>
+      <Button primary disabled={disabled} onClick={() => void onDelete(detail)}><Trash2 size={14}/>{t("删除会话")}</Button>
+    </>}>
+      <dl className="mg-detail"><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd>{detail.modelProvider || "Codex"}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl>
+    </ManagementDrawer>}
+  </div>;
+}

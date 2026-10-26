@@ -93,6 +93,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     updateTrigger: updateCodexPlusPromptEnhanceTrigger,
     keydown: codexPlusPromptEnhanceKeyHandler,
     modes: codexPlusPromptEnhanceModes, library: codexPlusPromptLibrary, useFavorite: useCodexPlusPromptFavorite,
+    editFavorite: editCodexPlusPromptFavorite,
     round: codexPlusPromptEnhanceRound, location: codexPlusPromptEnhanceLocation, project: codexPlusPromptEnhanceProject,
     mergeQuestions: codexPlusPromptMergeQuestions, pick: pickCodexPlusPromptEnhanceAnswer,
     advance: advanceCodexPlusPromptEnhance, canSubmit: codexPlusPromptCanSubmitAnswers,
@@ -529,6 +530,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
 
   const favorites = fixture({ lines: ["草稿"], respond: () => ({ status: "ok" }) });
   favorites.library.target = { editor: favorites.editor, href: favorites.context.window.location.href, original: "草稿", rich: false, doc: favorites.editor.pmViewDesc.view.state.doc };
+  favorites.library.panel = {};
   const item = { id: "saved", body: "收藏正文" };
   let copied = "";
   favorites.context.navigator.clipboard = { writeText: async text => { copied = text; } };
@@ -582,9 +584,11 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   class Element {
     constructor(tag = "div") { this.tag = tag; this.dataset = {}; this.style = {}; this.children = []; this.events = {}; this.attributes = {}; this.disabled = false; }
     append(...nodes) { for (const node of nodes) { node.remove(); node.parentElement = this; this.children.push(node); } }
+    insertBefore(node, before) { node.remove(); node.parentElement = this; const index = this.children.indexOf(before); this.children.splice(index < 0 ? this.children.length : index, 0, node); }
     remove() { if (this.parentElement) this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1); this.parentElement = null; }
     replaceChildren(...nodes) { for (const node of [...this.children]) node.remove(); this.append(...nodes); }
     setAttribute(key, value) { this.attributes[key] = value; }
+    getAttribute(key) { return this.attributes[key] ?? null; }
     focus() { dom.context.document.activeElement = this; }
     appendChild(node) { this.append(node); }
     addEventListener(name, fn) { (this.events[name] ||= []).push(fn); }
@@ -599,6 +603,7 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
     matches(selector) {
       return selector.split(", ").some(part => {
         if (part.startsWith(".")) return (this.className || "").split(" ").includes(part.slice(1));
+        if (part === 'input[type="search"]') return this.tag === "input" && this.type === "search";
         if (part.startsWith("[data-")) {
           const match = part.match(/^\[data-([\w-]+)(?:="([^"]*)")?\]$/);
           const key = match?.[1].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -688,6 +693,49 @@ function fixture({ editorKind = "prosemirror", lines = ["修一下登录页"], e
   dom.context.renderCodexPlusPromptLibrary();
   assert.equal(dom.context.document.activeElement, dom.library.panel, "收藏打开后焦点留在面板内");
   assert.equal(dom.library.panel.querySelector(".codex-plus-prompt-empty").querySelector("button"), null);
+
+  const libraryPanel = dom.library.panel;
+  const emptyBefore = libraryPanel.querySelector(".codex-plus-prompt-empty");
+  const headerBefore = libraryPanel.querySelector("header");
+  const searchBefore = libraryPanel.querySelector('input[type="search"]');
+  const bodyBefore = libraryPanel.querySelector(".codex-plus-prompt-body");
+  bodyBefore.scrollTop = 42;
+  const filters = libraryPanel.querySelector(".codex-plus-prompt-chips");
+  filters.children[1].emit("click");
+  assert.equal(dom.library.scope, "untagged");
+  assert.equal(libraryPanel.querySelector("header"), headerBefore, "筛选请求期间保留标题节点");
+  assert.equal(libraryPanel.querySelector(".codex-plus-prompt-empty"), emptyBefore, "筛选请求期间保留空状态尺寸");
+  assert.equal(filters.children[1].attributes["aria-pressed"], "true", "点击后立即更新选中态");
+  assert.equal(libraryPanel.attributes["aria-busy"], "true");
+  const untaggedResponse = dom.responseResolvers.at(-1);
+  filters.children[0].emit("click");
+  const allResponse = dom.responseResolvers.at(-1);
+  allResponse({ status: "ok", favorites: [], tags: [], total: 0 });
+  await flush();
+  assert.equal(libraryPanel.attributes["aria-busy"], "false");
+  assert.equal(libraryPanel.querySelector("header"), headerBefore, "筛选完成仍复用标题");
+  assert.equal(libraryPanel.querySelector('input[type="search"]'), searchBefore, "筛选完成仍复用搜索框");
+  assert.equal(libraryPanel.querySelector(".codex-plus-prompt-body"), bodyBefore, "筛选完成保留滚动容器");
+  assert.equal(bodyBefore.scrollTop, 42);
+  assert.equal(libraryPanel.querySelector(".codex-plus-prompt-empty").children[0].textContent, "还没有常用提示词");
+  untaggedResponse({ status: "ok", favorites: [{ id: "late", title: "旧结果", body: "旧正文", tags: [] }], tags: [], total: 1 });
+  await flush();
+  assert.equal(dom.library.items.length, 0, "旧筛选结果不能覆盖当前标签");
+  const requestCount = dom.requests.length;
+  libraryPanel.querySelector(".codex-plus-prompt-chips").children[0].emit("click");
+  assert.equal(dom.requests.length, requestCount, "重复点击当前标签不重复读取");
+
+  const detail = dom.editFavorite({ id: "summary", tags: [], excerpt: "摘要" });
+  assert.equal(dom.requests.at(-1).path, "/prompt-enhance/library/get");
+  dom.resolve({ status: "ok", favorite: { id: "summary", title: "完整标题", body: "完整正文", tags: [] } });
+  await detail;
+  assert.equal(dom.library.edit.body, "完整正文");
+  dom.library.edit = null;
+  const staleDetail = dom.editFavorite({ id: "late-detail", tags: [], excerpt: "摘要" });
+  ++dom.library.revision;
+  dom.resolve({ status: "ok", favorite: { id: "late-detail", title: "迟到", body: "迟到正文", tags: [] } });
+  await staleDetail;
+  assert.equal(dom.library.edit, null);
 
   console.log("prompt enhance read, preview, replace, append, cancel and stale-draft contracts passed");
 })().catch(error => { console.error(error); process.exit(1); });

@@ -749,11 +749,12 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     assert.match(renderer, /const CODEX_PLUS_BRIDGE_FAILURE_THRESHOLD = 3;/);
     assert.match(
       renderer,
-      /function recordCodexPlusBridgeFailure\(\) \{\s*codexPlusBridgeFailureCount \+= 1;\s*\}/,
+      /function recordCodexPlusBridgeFailure\(\) \{\s*codexPlusBridgeFailureCount \+= 1;/,
     );
     // 降级渲染：桥接连续失败 + 后端 ok → degraded
     assert.match(renderer, /bridgeDegraded && rawStatus === "ok" \? "degraded" : rawStatus/);
-    assert.match(renderer, /桥接降级，自动修复中/);
+    assert.match(renderer, /const bridgeReady = nextStatus\?\.status === "ok" && nextStatus.transport !== "http-helper"/);
+    assert.match(renderer, /if \(bridgeReady && settingsReady\)/);
     // 回落分支只记失败，不得触碰成功路径
     const fallbackBlock = renderer.match(
       /const fallback = await fetchBackendStatusFromHelper\(path, payload\);[\s\S]*?return fallback;\s*\}/,

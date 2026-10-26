@@ -1411,6 +1411,14 @@
         gap: 8px;
       }
       .codex-plus-settings .codex-plus-backend-status { overflow-wrap: anywhere; text-align: right; }
+      .codex-plus-settings .codex-plus-backend-status { min-width: 0; flex: 0 0 auto; }
+      .codex-plus-backend-reconnect { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 8px; border: 1px solid var(--codex-plus-border); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+      .codex-plus-backend-reconnect svg { flex: 0 0 16px; width: 16px; height: 16px; }
+      .codex-plus-backend-reconnect:disabled { cursor: wait; opacity: .55; }
+      .codex-plus-backend-reconnect:focus-visible { outline: 2px solid var(--codex-plus-focus); outline-offset: 2px; }
+      .codex-plus-backend-reconnect:hover:not(:disabled) { background: var(--codex-plus-bg-hover); }
+      .codex-plus-backend-label[data-status="recovering"] { color: var(--codex-plus-warning); }
+      .codex-plus-backend-indicator[data-status="recovering"], #${codexPlusSidebarNavId} .codex-plus-sidebar-nav-status[data-status="recovering"] { background: var(--codex-plus-warning); }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button,
       .codex-plus-settings .codex-plus-width-input,

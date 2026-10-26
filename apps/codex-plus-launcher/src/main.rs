@@ -14,6 +14,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
+mod recovery;
+
 type NavigationHandler = Arc<dyn Fn(Value) -> Result<()> + Send + Sync>;
 static NAVIGATION_HANDLER: OnceLock<Mutex<Option<NavigationHandler>>> = OnceLock::new();
 
@@ -41,6 +43,7 @@ type SessionFuture = Pin<Box<dyn Future<Output = ()>>>;
 struct StartupReply {
     reply: SessionReply,
     state: Arc<Mutex<SessionState>>,
+    recovery: Arc<recovery::Controller>,
 }
 
 impl StartupReply {
@@ -60,6 +63,7 @@ struct SessionState {
     options: LaunchOptions,
     requested_at_ms: u64,
     status_started_at_ms: u64,
+    expected_browser_id: Option<String>,
 }
 
 /// 本进程 launcher 会话的只读快照，供自动接管的判据使用。
@@ -146,6 +150,7 @@ impl std::error::Error for ReportedLaunchFailure {}
 
 enum RuntimeCommand {
     Start(LaunchOptions, u64, bool, SessionReply),
+    Recover(recovery::Target, SessionReply),
     Stop(SessionReply),
     Shutdown(SessionReply),
 }
@@ -172,6 +177,8 @@ impl EmbeddedSession {
         attach_only: bool,
         ready: SessionReply,
         runner: SessionRunner,
+        recovery: Arc<recovery::Controller>,
+        expected_browser_id: Option<String>,
     ) -> Result<Self> {
         let state = Arc::new(Mutex::new(SessionState {
             ready: false,
@@ -179,10 +186,12 @@ impl EmbeddedSession {
             options: options.clone(),
             requested_at_ms,
             status_started_at_ms: requested_at_ms,
+            expected_browser_id,
         }));
         let ready = StartupReply {
             reply: ready,
             state: state.clone(),
+            recovery,
         };
         let (stop, cancelled) = tokio::sync::oneshot::channel();
         let (done, finished) = tokio::sync::oneshot::channel();
@@ -237,6 +246,11 @@ struct RuntimeWorker {
 impl RuntimeWorker {
     fn spawn(runner: SessionRunner, activate: ActivationRunner) -> Result<Self> {
         let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let endpoint = codex_plus_core::recovery::RecoveryEndpoint::bind()?;
+        let recovery = Arc::new(recovery::Controller::new(
+            endpoint.config(""),
+            commands.clone(),
+        ));
         let (ready, initialized) = mpsc::channel();
         let thread = std::thread::Builder::new()
             .name("codex-plus-runtime".into())
@@ -251,10 +265,20 @@ impl RuntimeWorker {
                         return;
                     }
                 };
+                let controller = recovery.clone();
+                let recovery_supervisor = runtime.spawn(recovery.clone().supervise());
+                let server = runtime.spawn(endpoint.serve(Arc::new(move |path, payload| {
+                    let controller = controller.clone();
+                    Box::pin(async move { controller.request(&path, payload).await })
+                })));
                 let _ = ready.send(Ok(()));
                 // LaunchHooks 的 future 不要求 Send，始终留在专用线程的 LocalSet。
-                tokio::task::LocalSet::new()
-                    .block_on(&runtime, runtime_commands(receiver, runner, activate));
+                tokio::task::LocalSet::new().block_on(
+                    &runtime,
+                    runtime_commands(receiver, runner, activate, recovery),
+                );
+                server.abort();
+                recovery_supervisor.abort();
             })?;
         if let Err(error) = initialized.recv().context("Codex++ 后台运行时初始化失败")? {
             let _ = thread.join();
@@ -441,6 +465,7 @@ async fn runtime_commands(
     mut commands: tokio::sync::mpsc::UnboundedReceiver<RuntimeCommand>,
     runner: SessionRunner,
     activate: ActivationRunner,
+    recovery: Arc<recovery::Controller>,
 ) {
     let mut session: Option<EmbeddedSession> = None;
     loop {
@@ -468,23 +493,44 @@ async fn runtime_commands(
                             let _ = ready.send(result);
                             continue;
                         }
-                        match EmbeddedSession::spawn(options, requested_at_ms, attach_only, ready.clone(), runner.clone()) {
+                        match EmbeddedSession::spawn(options, requested_at_ms, attach_only, ready.clone(), runner.clone(), recovery.clone(), None) {
+                            Ok(current) => session = Some(current),
+                            Err(error) => { let _ = ready.send(Err(error)); }
+                        }
+                    }
+                    Some(RuntimeCommand::Recover(target, ready)) => {
+                        if session.as_mut().is_some_and(EmbeddedSession::is_finished) {
+                            if let Some(previous) = session.take() { let _ = previous.join().await; }
+                            clear_session_probe();
+                        }
+                        if session.is_some() || recovery.current(&target.instance).is_none() {
+                            let _ = ready.send(Err(anyhow::anyhow!("后台服务状态已变化，请重试")));
+                            continue;
+                        }
+                        if let Err(error) = recovery::validate_target(&target).await {
+                            let _ = ready.send(Err(error));
+                            continue;
+                        }
+                        match EmbeddedSession::spawn(target.options, current_timestamp_ms(), true, ready.clone(), runner.clone(), recovery.clone(), Some(target.browser_id)) {
                             Ok(current) => session = Some(current),
                             Err(error) => { let _ = ready.send(Err(error)); }
                         }
                     }
                     Some(RuntimeCommand::Stop(reply)) => {
+                        recovery.clear();
                         let result = match session.take() { Some(current) => current.stop().await, None => Ok(()) };
                         clear_session_probe();
                         let _ = reply.send(result);
                     }
                     Some(RuntimeCommand::Shutdown(reply)) => {
+                        recovery.clear();
                         let result = match session.take() { Some(current) => current.stop().await, None => Ok(()) };
                         clear_session_probe();
                         let _ = reply.send(result);
                         break;
                     }
                     None => {
+                        recovery.clear();
                         if let Some(current) = session.take() { let _ = current.stop().await; }
                         clear_session_probe();
                         break;
@@ -512,6 +558,7 @@ struct LauncherHooks {
     browser_monitor: Arc<Mutex<Option<codex_plus_core::native_browser::BrowserMonitor>>>,
     index_repair_due: Arc<AtomicBool>,
     session_state: Option<Arc<Mutex<SessionState>>>,
+    recovery: Option<Arc<recovery::Controller>>,
 }
 
 impl Default for LauncherHooks {
@@ -528,6 +575,7 @@ impl Default for LauncherHooks {
             browser_monitor: Arc::new(Mutex::new(None)),
             index_repair_due: Arc::new(AtomicBool::new(false)),
             session_state: None,
+            recovery: None,
         }
     }
 }
@@ -600,6 +648,7 @@ async fn run_embedded_session(
         .unwrap_or_else(|error| error.into_inner())
         .requested_at_ms;
     let hooks = LauncherHooks {
+        recovery: Some(ready.recovery.clone()),
         attach_only: ready
             .state
             .lock()
@@ -608,6 +657,19 @@ async fn run_embedded_session(
         session_state: Some(ready.state.clone()),
         ..LauncherHooks::default()
     };
+    let expected = ready
+        .state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .expected_browser_id
+        .clone();
+    if let Some(expected) = expected {
+        if let Err(error) = recovery::validate_browser(options.debug_port, &expected).await {
+            let _ = ready.send(Err(error));
+            return;
+        }
+        *hooks.runtime.expected_browser.lock().unwrap() = Some(expected);
+    }
     let mut stopped_by_host = false;
     let mut ready = Some(ready);
     let guard = match acquire_single_instance_guard(options.debug_port) {
@@ -1324,6 +1386,13 @@ impl LaunchHooks for LauncherHooks {
         debug_port: u16,
         app_dir: &Path,
     ) -> anyhow::Result<Option<BridgeContext>> {
+        if let Some(state) = &self.session_state {
+            state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .options
+                .app_dir = Some(app_dir.to_path_buf());
+        }
         self.runtime.set_debug_port(debug_port);
         let ctx = BridgeContext::core_with_data_and_app_dir(
             self.runtime.clone(),
@@ -1343,6 +1412,59 @@ impl LaunchHooks for LauncherHooks {
         helper_port: u16,
         ctx: BridgeContext,
     ) -> anyhow::Result<()> {
+        if let Some(controller) = &self.recovery {
+            let browser_id = codex_plus_core::cdp::browser_identity(debug_port)
+                .await?
+                .browser_id()?;
+            if let Some(expected) = self.runtime.expected_browser.lock().unwrap().as_ref() {
+                anyhow::ensure!(expected == &browser_id, "Codex 实例身份已变化");
+            }
+            *self.runtime.expected_browser.lock().unwrap() = Some(browser_id.clone());
+            let mut options = self
+                .session_state
+                .as_ref()
+                .map(|state| {
+                    state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .options
+                        .clone()
+                })
+                .unwrap_or_default();
+            options.debug_port = debug_port;
+            options.helper_port = helper_port;
+            let core = self.core.clone();
+            let repair_ctx = ctx.clone();
+            let runtime = self.runtime.clone();
+            let expected = browser_id.clone();
+            let owner = Arc::downgrade(controller);
+            let repair: BridgeReinjector = Arc::new(move || {
+                let core = core.clone();
+                let ctx = repair_ctx.clone();
+                let runtime = runtime.clone();
+                let expected = expected.clone();
+                let owner = owner.clone();
+                Box::pin(async move {
+                    recovery::validate_browser(debug_port, &expected).await?;
+                    let instance = runtime.recovery_config.lock().unwrap()["instance"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    anyhow::ensure!(
+                        owner
+                            .upgrade()
+                            .and_then(|owner| owner.current(&instance))
+                            .is_some(),
+                        "恢复目标已撤销"
+                    );
+                    core.ensure_backend_services(debug_port, helper_port)
+                        .await?;
+                    inject_with_context(debug_port, helper_port, ctx, runtime).await
+                })
+            });
+            let config = controller.bind(options, browser_id, repair);
+            *self.runtime.recovery_config.lock().unwrap() = config;
+        }
         inject_with_context(debug_port, helper_port, ctx, self.runtime.clone()).await
     }
 
@@ -1367,12 +1489,29 @@ impl LaunchHooks for LauncherHooks {
     async fn start_bridge_watchdog(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         let ctx = self.watchdog_bridge_context()?;
         let runtime = self.runtime.clone();
+        let controller = self.recovery.clone();
         let reinjector: BridgeReinjector = Arc::new(move || {
             let ctx = ctx.clone();
             let runtime = runtime.clone();
-            Box::pin(
-                async move { inject_with_context(debug_port, helper_port, ctx, runtime).await },
-            )
+            let controller = controller.clone();
+            Box::pin(async move {
+                if let Some(controller) = controller {
+                    let instance = runtime.recovery_config.lock().unwrap()["instance"].clone();
+                    let result = controller
+                        .request("/reconnect", json!({"instance":instance,"manual":false}))
+                        .await?;
+                    anyhow::ensure!(
+                        matches!(
+                            result["status"].as_str(),
+                            Some("ok" | "recovering" | "cooldown")
+                        ),
+                        "后台连接恢复失败"
+                    );
+                    Ok(())
+                } else {
+                    inject_with_context(debug_port, helper_port, ctx, runtime).await
+                }
+            })
         });
         self.core.set_bridge_reinjector(reinjector).await;
         self.core
@@ -1670,6 +1809,8 @@ struct LauncherRuntimeService {
     debug_port: Mutex<u16>,
     websocket_url: Mutex<Option<String>>,
     user_scripts: UserScriptManager,
+    recovery_config: Mutex<Value>,
+    expected_browser: Mutex<Option<String>>,
 }
 
 impl LauncherRuntimeService {
@@ -1678,6 +1819,8 @@ impl LauncherRuntimeService {
             debug_port: Mutex::new(debug_port),
             websocket_url: Mutex::new(None),
             user_scripts,
+            recovery_config: Mutex::new(Value::Null),
+            expected_browser: Mutex::new(None),
         }
     }
 
@@ -1858,6 +2001,10 @@ async fn try_inject_with_context(
     ctx: BridgeContext,
     runtime: Arc<LauncherRuntimeService>,
 ) -> anyhow::Result<()> {
+    let expected = runtime.expected_browser.lock().unwrap().clone();
+    if let Some(expected) = expected {
+        recovery::validate_browser(debug_port, &expected).await?;
+    }
     let targets = codex_plus_core::cdp::list_targets(debug_port).await?;
     let target = codex_plus_core::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
@@ -1868,7 +2015,16 @@ async fn try_inject_with_context(
     let settings = codex_plus_core::settings::SettingsStore::default()
         .load()
         .unwrap_or_default();
-    let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
+    let config = runtime.recovery_config.lock().unwrap().clone();
+    let script = format!(
+        "if (window.top === window && /^app:\\/\\/-\\//i.test(window.location.href)) window.__CODEX_PLUS_RECOVERY__ = {};\n{}",
+        serde_json::to_string(&config)?,
+        codex_plus_core::assets::injection_script_with_settings(helper_port, &settings)
+    );
+    let expected = runtime.expected_browser.lock().unwrap().clone();
+    if let Some(expected) = expected {
+        recovery::validate_browser(debug_port, &expected).await?;
+    }
     let new_document_scripts = vec![
         script,
         codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string(),
@@ -2877,6 +3033,7 @@ mod tests {
             browser_monitor: Arc::new(Mutex::new(None)),
             index_repair_due: Arc::new(AtomicBool::new(false)),
             session_state: None,
+            recovery: None,
         };
 
         hooks.bridge_context(9229, &test_dir).await.unwrap();

@@ -380,7 +380,10 @@ describe("dream skin theme helpers", () => {
     const assetProtocol = config.app?.security?.assetProtocol;
 
     assert.equal(assetProtocol?.enable, true);
-    assert.deepEqual(assetProtocol?.scope, ["$HOME/.codex-session-delete/dream-skin/**"]);
+    assert.deepEqual(assetProtocol?.scope, []);
+    const runtime = await readFile(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    assert.match(runtime, /allow_theme_assets\(\s*&app\.asset_protocol_scope\(\),\s*&codex_plus_core::paths::default_app_state_dir\(\)/);
+    assert.match(runtime, /scope\.allow_directory\(theme_dir, true\)/);
     for (const policy of [config.app.security.csp, config.app.security.devCsp]) {
       const images = policy.split(";").find((directive: string) => directive.trim().startsWith("img-src "));
       assert.ok(images.includes("https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/"));

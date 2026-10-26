@@ -717,6 +717,12 @@ impl PromptEnhanceSettings {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
+    #[serde(
+        rename = "secretDecryptionFailures",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub secret_decryption_failures: Vec<String>,
     /// 读取快照的版本，只用于条件保存，不写入 settings.json。
     #[serde(rename = "revision", default, skip_serializing_if = "String::is_empty")]
     pub settings_revision: String,
@@ -988,6 +994,7 @@ pub struct BackendSettings {
 impl Default for BackendSettings {
     fn default() -> Self {
         Self {
+            secret_decryption_failures: Vec::new(),
             settings_revision: String::new(),
             dictation: DictationSettings::default(),
             prompt_enhance: PromptEnhanceSettings::default(),
@@ -1853,9 +1860,10 @@ impl SettingsStore {
             )
         })?;
         config_schema_version(&parsed)?;
-        if let Some(map) = parsed.as_object_mut() {
-            decrypt_settings_secrets(map);
-        }
+        let failures = parsed
+            .as_object_mut()
+            .map(decrypt_settings_secrets)
+            .unwrap_or_default();
         let mut settings: BackendSettings = serde_json::from_value(parsed).with_context(|| {
             format!(
                 "settings {} 格式无效，拒绝覆盖用户配置",
@@ -1863,6 +1871,7 @@ impl SettingsStore {
             )
         })?;
         settings.settings_revision = settings_revision(Some(contents.as_bytes()));
+        settings.secret_decryption_failures = failures;
         if settings_normalize_depth() > 0 {
             return Ok(settings);
         }
@@ -2008,7 +2017,11 @@ impl SettingsStore {
                         .and_then(Value::as_str)
                         .is_some_and(|key| !key.trim().is_empty());
                 let has_keys = !profile.api_keys.is_empty() || !profile.api_key.trim().is_empty();
-                if had_keys && !has_keys {
+                let unreadable_legacy_key = previous
+                    .get("apiKey")
+                    .and_then(Value::as_str)
+                    .is_some_and(secret_store::is_encrypted);
+                if had_keys && !has_keys && !unreadable_legacy_key {
                     anyhow::bail!(
                         "拒绝写入 settings：供应商 {} 原本配置了 API Key，本次保存为空；为避免清空密钥，已保持原文件不变",
                         profile.id
@@ -2021,7 +2034,9 @@ impl SettingsStore {
         next.remove("revision");
         // 完整表单不能擦除新版本或拓展写入的未知字段；profile 以稳定 ID 对齐。
         preserve_unknown_settings_fields(&mut next, &raw)?;
+        preserve_unreadable_secrets(&mut next, &raw);
         next.remove("revision");
+        next.remove("secretDecryptionFailures");
         encrypt_settings_secrets(&mut next);
         next.insert("schemaVersion".into(), Value::from(SETTINGS_SCHEMA_VERSION));
         serialize_settings_bounded(&Value::Object(next))
@@ -2137,6 +2152,8 @@ impl SettingsStore {
             );
         }
         raw.remove("revision");
+        raw.remove("secretDecryptionFailures");
+        preserve_unreadable_secrets(&mut raw, &original_raw);
         encrypt_settings_secrets(&mut raw);
         raw.insert("schemaVersion".into(), Value::from(SETTINGS_SCHEMA_VERSION));
         let bytes = serialize_settings_bounded(&Value::Object(raw))?;
@@ -2222,8 +2239,7 @@ fn validate_settings_snapshot(bytes: &[u8]) -> anyhow::Result<()> {
 /// 字段自动生效。`codexAppStepwiseApiKeyEnv` 这类「环境变量名」字段以 `Env`
 /// 结尾，不会被命中——它的值是变量名不是密钥。
 ///
-/// 这是全仓唯一的「什么算密钥」定义，落盘加密（`visit_secret_fields`）与桥接
-/// 下发剥离（`routes::strip_secret_fields`）共用，两边不会走偏。
+/// 落盘加密的密钥字段规则；桥接响应另用显式白名单。
 pub(crate) fn is_secret_field_name(key: &str) -> bool {
     key == "apiKey" || key.ends_with("ApiKey")
 }
@@ -2295,7 +2311,8 @@ fn encrypt_settings_secrets_with(
 ///
 /// 解不开的值**不能当成有效 key 用**，置为空串；同时绝不改写磁盘上的文件
 /// （代码回退不等于数据回退），用户修好凭据库后仍然能读回原来的密文。
-fn decrypt_settings_secrets(map: &mut Map<String, Value>) {
+fn decrypt_settings_secrets(map: &mut Map<String, Value>) -> Vec<String> {
+    let mut failures = Vec::new();
     visit_secret_fields(map, "", &mut |text, path| {
         if !secret_store::is_encrypted(text) {
             return;
@@ -2304,10 +2321,12 @@ fn decrypt_settings_secrets(map: &mut Map<String, Value>) {
             Ok(plaintext) => *text = plaintext,
             Err(error) => {
                 log_secret_decrypt_failed(path, &error);
+                failures.push(path.to_string());
                 text.clear();
             }
         }
     });
+    failures
 }
 
 /// 读-改-写路径的解密：解不开时保留密文，让回写把密文原样写回磁盘。
@@ -2326,6 +2345,40 @@ fn decrypt_settings_secrets_preserving(map: &mut Map<String, Value>) {
             Err(error) => log_secret_decrypt_failed(path, &error),
         }
     });
+}
+
+fn preserve_unreadable_secrets(next: &mut Map<String, Value>, previous: &Map<String, Value>) {
+    for (key, old) in previous {
+        if is_secret_field_name(key)
+            && old.as_str().is_some_and(secret_store::is_encrypted)
+            && next
+                .get(key)
+                .is_none_or(|value| value.as_str().is_some_and(str::is_empty))
+        {
+            next.insert(key.clone(), old.clone());
+            continue;
+        }
+        match (next.get_mut(key), old) {
+            (Some(Value::Object(new)), Value::Object(old)) => preserve_unreadable_secrets(new, old),
+            (Some(Value::Array(new)), Value::Array(old)) => {
+                for row in new.iter_mut().filter_map(Value::as_object_mut) {
+                    let Some(id) = row.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let matches: Vec<_> = old
+                        .iter()
+                        .filter(|item| item.get("id").and_then(Value::as_str) == Some(id))
+                        .collect();
+                    if matches.len() == 1
+                        && let Some(old) = matches[0].as_object()
+                    {
+                        preserve_unreadable_secrets(row, old);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// 「主密钥不可用」每个进程只提示一次：每次保存都写会把诊断日志刷爆。
@@ -3005,7 +3058,10 @@ fn parse_toml_document(contents: &str) -> anyhow::Result<DocumentMut> {
 
 fn settings_to_object(settings: &BackendSettings) -> Map<String, Value> {
     match serde_json::to_value(settings).unwrap_or_else(|_| Value::Object(Map::new())) {
-        Value::Object(map) => map,
+        Value::Object(mut map) => {
+            map.remove("secretDecryptionFailures");
+            map
+        }
         _ => Map::new(),
     }
 }
@@ -5724,6 +5780,98 @@ experimental_bearer_token = "sk-existing""#
         );
         assert!(!log.contains(&broken_payload), "日志不能带密文内容：{log}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn full_save_preserves_unreadable_secrets_and_allows_replacement() {
+        let _guard = crate::secret_store::install_test_master_key();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let broken = "enc:v1:broken-synthetic";
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "codexAppStepwiseApiKey":broken,
+                "dictation":{"apiKey":broken},
+                "promptEnhance":{"apiKey":broken}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let store = SettingsStore::new(path.clone());
+        let mut loaded = store.load().unwrap();
+        assert!(loaded.codex_app_stepwise_api_key.is_empty());
+        assert_eq!(loaded.secret_decryption_failures.len(), 3);
+        loaded.codex_app_low_power = true;
+        store.save(&loaded).unwrap();
+        let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["codexAppStepwiseApiKey"], broken);
+        assert_eq!(raw["dictation"]["apiKey"], broken);
+        assert_eq!(raw["promptEnhance"]["apiKey"], broken);
+        assert!(raw.get("secretDecryptionFailures").is_none());
+        store
+            .update(json!({"dictation":{"apiKey":""},"promptEnhance":{"apiKey":""}}))
+            .unwrap();
+        let raw: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(raw["dictation"]["apiKey"], broken);
+        assert_eq!(raw["promptEnhance"]["apiKey"], broken);
+        let mut loaded = store.load().unwrap();
+        loaded.codex_app_stepwise_api_key = "replacement-synthetic".into();
+        store.save(&loaded).unwrap();
+        assert_eq!(
+            store.load().unwrap().codex_app_stepwise_api_key,
+            "replacement-synthetic"
+        );
+        let mut loaded = store.load().unwrap();
+        loaded.codex_app_stepwise_api_key.clear();
+        store.save(&loaded).unwrap();
+        assert!(store.load().unwrap().codex_app_stepwise_api_key.is_empty());
+    }
+
+    #[test]
+    fn unreadable_secret_preservation_matches_array_ids_not_positions() {
+        let mut next = json!({"relayProfiles":[{"id":"b","apiKeys":[{"id":"key","apiKey":""}]},{"id":"a","apiKey":""}]});
+        let old = json!({"relayProfiles":[{"id":"a","apiKey":"enc:v1:one"},{"id":"b","apiKeys":[{"id":"key","apiKey":"enc:v1:two"}]}]});
+        preserve_unreadable_secrets(next.as_object_mut().unwrap(), old.as_object().unwrap());
+        assert_eq!(
+            next["relayProfiles"][0]["apiKeys"][0]["apiKey"],
+            "enc:v1:two"
+        );
+        assert_eq!(next["relayProfiles"][1]["apiKey"], "enc:v1:one");
+    }
+
+    #[test]
+    fn credential_recovery_reads_preserved_secrets_after_full_save() {
+        let _guard = crate::secret_store::install_test_master_key();
+        let _diagnostics = settings_diagnostics_test_guard();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let encrypted = crate::secret_store::encrypt_secret("synthetic-recoverable").unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "dictation":{"apiKey":encrypted},
+                "codexAppStepwiseApiKey":encrypted,
+                "tools":{"grok":{"relayProfiles":[{"id":"g","name":"G","vlmApiKey":encrypted}]}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::secret_store::set_master_key_for_tests(None);
+        let store = SettingsStore::new(path);
+        let mut loaded = store.load().unwrap();
+        assert!(loaded.codex_app_stepwise_api_key.is_empty());
+        loaded.codex_app_low_power = true;
+        store.save(&loaded).unwrap();
+        crate::secret_store::set_master_key_for_tests(Some(crate::secret_store::TEST_MASTER_KEY));
+        let restored = store.load().unwrap();
+        assert_eq!(restored.codex_app_stepwise_api_key, "synthetic-recoverable");
+        assert_eq!(restored.dictation.api_key, "synthetic-recoverable");
+        assert_eq!(
+            restored.tools[&ToolId::Grok].relay_profiles[0].vlm_api_key,
+            "synthetic-recoverable"
+        );
+        assert!(restored.secret_decryption_failures.is_empty());
     }
 
     #[test]

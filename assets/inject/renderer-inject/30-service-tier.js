@@ -866,6 +866,7 @@
 
   async function loadBackendSettingsState(timeoutMs = 0) {
     const seq = codexPlusBackendSettingsSeq;
+    const generation = window.__codexPlusBackendGeneration;
     try {
       const settings = await (timeoutMs > 0
         ? readCodexAppServerPreparation("/settings/get", {}, timeoutMs)
@@ -873,7 +874,7 @@
       if (!settings || typeof settings !== "object" || (!("enhancementsEnabled" in settings) && !("providerSyncEnabled" in settings))) {
         throw new Error("invalid backend settings response");
       }
-      if (seq !== codexPlusBackendSettingsSeq) {
+      if (seq !== codexPlusBackendSettingsSeq || generation !== window.__codexPlusBackendGeneration) {
         return false;
       }
       const includedNativeModels = codexPlusBackendSettings.codexAppIncludeNativeModels !== false;

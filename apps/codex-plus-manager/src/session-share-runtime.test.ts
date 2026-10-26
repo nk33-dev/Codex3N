@@ -181,6 +181,7 @@ test("backend refresh synchronizes share immediately and skips failed heartbeat 
   const source = fragment("40-backend-settings.js");
   let loaded = true, installs = 0;
   const context = vm.createContext({ codexPlusBackendSettings: {}, codexPlusSettings: () => ({ conversationView: false }),
+    codexPlusBackendGeneration: 1, window: { __codexPlusBackendGeneration: 1 },
     loadBackendSettingsState: async () => loaded, syncOfficialUsagePolicy: () => {},
     syncCodexPlusTypingEffects: () => {}, renderCodexPlusMenu: () => {}, refreshConversationView: () => {},
     installSessionShareButton: () => { installs += 1; }, runScanStep: (fn: () => void) => fn(),

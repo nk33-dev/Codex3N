@@ -35,12 +35,14 @@ struct CachedDatabase {
     refreshed_at: Option<Instant>,
     stamp: Option<DatabaseStamp>,
     query: String,
+    search: String,
     index: Vec<IndexEntry>,
 }
 
 struct IndexEntry {
     id: String,
     updated_at_ms: Option<i64>,
+    matches: bool,
 }
 
 #[derive(PartialEq, Eq)]
@@ -107,6 +109,17 @@ impl LocalSessionPager {
         offset: usize,
         limit: usize,
     ) -> LocalSessionPage {
+        self.search_page(paths, offset, limit, "")
+    }
+
+    pub fn search_page(
+        &mut self,
+        paths: &[PathBuf],
+        offset: usize,
+        limit: usize,
+        search: &str,
+    ) -> LocalSessionPage {
+        let search = search.trim().to_lowercase();
         let mut page = LocalSessionPage::default();
         let mut changed = false;
         if !self.databases.iter().map(|(path, _)| path).eq(paths) {
@@ -164,6 +177,7 @@ impl LocalSessionPager {
                 }
                 let stamp = DatabaseStamp::read(path)?;
                 let reusable = stamp.is_some()
+                    && cached.search == search
                     && &stamp == before
                     && stamp == cached.stamp
                     && cached
@@ -172,18 +186,39 @@ impl LocalSessionPager {
                 if !reusable {
                     changed = true;
                     let query = session_query(&transaction)?;
+                    let fields = if search.is_empty() {
+                        "id, updated_at_ms"
+                    } else {
+                        "id, updated_at_ms, title, cwd, model_provider"
+                    };
                     let mut statement =
-                        transaction.prepare(&format!("SELECT id, updated_at_ms FROM ({query})"))?;
+                        transaction.prepare(&format!("SELECT {fields} FROM ({query})"))?;
                     let index = statement
                         .query_map([], |row| {
+                            let id: String = row.get(0)?;
+                            let matches = if search.is_empty() {
+                                true
+                            } else {
+                                let text = format!(
+                                    "{} {} {} {}",
+                                    id,
+                                    row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                                    row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                                    row.get::<_, Option<String>>(4)?.unwrap_or_default()
+                                )
+                                .to_lowercase();
+                                search.split_whitespace().all(|term| text.contains(term))
+                            };
                             Ok(IndexEntry {
-                                id: row.get(0)?,
+                                id,
                                 updated_at_ms: row.get(1)?,
+                                matches,
                             })
                         })?
                         .collect::<rusqlite::Result<Vec<_>>>()?;
                     cached.index = index;
                     cached.query = query;
+                    cached.search = search.clone();
                     cached.refreshed_at = Some(Instant::now());
                     cached.stamp = stamp;
                 }
@@ -229,6 +264,7 @@ impl LocalSessionPager {
             let mut seen = HashSet::new();
             self.order
                 .retain(|item| seen.insert(entry(item).id.as_str()));
+            self.order.retain(|item| entry(item).matches);
         }
 
         page.total_count = self.order.len();

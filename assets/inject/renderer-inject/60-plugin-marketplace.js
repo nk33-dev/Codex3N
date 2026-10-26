@@ -1427,7 +1427,8 @@
         return fallback;
       }
       const bridgeResult = await window.__codexSessionDeleteBridge(path, payload);
-      recordCodexPlusBridgeSuccess();
+      if (bridgeResult?.transportFailed) recordCodexPlusBridgeFailure();
+      else recordCodexPlusBridgeSuccess();
       return bridgeResult;
     } catch (error) {
       recordCodexPlusBridgeFailure();

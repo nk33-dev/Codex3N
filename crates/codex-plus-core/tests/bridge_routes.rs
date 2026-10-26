@@ -359,17 +359,12 @@ async fn settings_get_does_not_expose_stepwise_api_key_to_renderer() {
     let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
 
     assert!(result.get("codexAppStepwiseApiKey").is_none());
-    assert_eq!(
-        result["codexAppStepwiseApiKeyEnv"],
-        json!("CODEX_STEPWISE_API_KEY")
-    );
+    assert!(result.get("codexAppStepwiseApiKeyEnv").is_none());
 }
 
 #[tokio::test]
 async fn settings_get_strips_every_secret_field() {
-    // 桥接只该下发注入页用得上的字段。密钥判定与落盘加密共用同一套规则，
-    // 新增的 *ApiKey 字段自动被剥掉——逐个 remove 会漏（曾漏 relayApiKey /
-    // vlmApiKey / relayProfiles[].apiKey）。
+    // 桥接按用途白名单下发，配置和凭据字段留在后端。
     let settings = BackendSettings {
         relay_api_key: "sk-top-relay".to_string(),
         relay_profiles: vec![codex_plus_core::settings::RelayProfile {

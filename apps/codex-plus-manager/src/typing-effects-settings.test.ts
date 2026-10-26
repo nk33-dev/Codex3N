@@ -52,6 +52,7 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
   let syncs = 0;
   let renders = 0;
   const context = vm.createContext({
+    codexPlusBackendGeneration: 1, window: { __codexPlusBackendGeneration: 1 },
     codexPlusBackendSettings: {},
     codexPlusSettings: () => ({ conversationView: false }),
     loadBackendSettingsState: async () => {

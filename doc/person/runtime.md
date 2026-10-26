@@ -23,12 +23,28 @@
 
 验证：前端 `manager-loading.test.ts`、`manager-lifecycle.test.ts`、`manager-window-lifecycle.test.ts`、`manager-navigation.test.ts`；后端窗口契约见 `apps/codex-plus-manager/src-tauri/tests/windows_subsystem.rs`。重点检查慢请求、连续事件、隐藏恢复、监听销毁和启动导航竞态。
 
+## 后端连接恢复
+
+`apps/codex-plus-launcher/src/recovery.rs` 的恢复控制器与宿主运行线程同寿命，独立于 session 的 helper 和桥接。`codex-plus-core::recovery` 提供环回 HTTP 传输与独立 binding 的页面入口；页面通过注入时的 `__CODEX_PLUS_RECOVERY__` 取得临时端点、令牌与实例 ID，不经设置文件或业务桥接发现。
+
+原生页面的网络策略会阻止任意环回端口请求，因此优先通过宿主运行时单独维护的恢复 binding 访问同一控制器。该 binding 使用独立回执名称与 CDP 连接，同样核对令牌、实例和固定路由；业务重注入或 session 结束不销毁它，不放宽原生 CSP。环回 HTTP 入口供允许本机请求的宿主使用。
+
+自动恢复、手动重连和桥接 watchdog 共用单飞与 10 秒起步、最多 300 秒的退避；手动请求可绕过退避，恢复进行中返回同一忙碌状态。桥接与设置读取均成功才显示已连接，持续健康 60 秒后清除退避。单纯发出请求只提供从首次失败起最多 30 秒的宽限，不无限延长健康时间。
+
+恢复前核对启动时绑定的 CDP browser ID，注入重试继续复查。session 仍在时只补回缺失服务与桥接；session 线程已结束时通过原运行命令队列附加同一实例，不启动或终止官方 App、不刷新页面或重发消息。显式停止、退出宿主会撤销恢复目标；宿主不可达时页面提示打开 Codex3N，不自动唤起。
+
+`launcher/backend_services.rs` 是 helper 和 watchdog 的共用实现，启动与恢复均调用它。注入页由 `40-backend-settings.js` 管理状态和恢复任务，重注入清理旧心跳、启动重试及恢复请求；设置读取和回执按代次隔离。验证入口为 `backend-recovery.test.ts`、核心恢复 HTTP 测试、启动器恢复测试及 `cdp_bridge` 健康判断测试。
+
+2026-10-26 Windows 官方 App 26.1013.3656.0 的空闲隔离实例验证：删除业务桥接后，手动重连约 2.6 秒恢复；将业务桥接改为持续无回包后，自动恢复约 45 秒。两次均保持原页面 ID、`performance.timeOrigin` 和内存标记，未发送消息。无令牌与错误 Origin 的 HTTP 请求返回 403。400/1146 px 的 Edge 夹具覆盖状态、重连禁用、键盘与焦点恢复，入口为 `scripts/backend-recovery-ui-smoke.mjs`；真实隔离实例探针为 `scripts/backend-recovery-live-probe.mjs <临时目录> <实际调试端口>`，结束后仍须按身份清理测试主进程。测试实例及探针已结束；正在生成的真实任务、macOS、Linux 尚未实机验证。
+
 ## 管理器代码分层
 
 `App.tsx` 只保留 `App()`、业务状态与操作回调，以及仍与其强耦合的页面；可独立成页的部分按需外移，避免单文件继续膨胀：
 
 - 页面组件沿用上游现有边界：`ManagementPages.tsx` 提供 MCP 管理，`ManagementExtra.tsx` 提供 Skills 与会话分组列表；会话维护操作在 `App.tsx::SessionMaintenance`，由会话页统一挂载。`screens/GrokScreen.tsx` 保留既有独立组件。
 - Skills 后端命令由 `commands.rs` 实现，统一注册到 `lib.rs` 的 `generate_handler!`。页面首次进入调用 `list_installed_skills` 只读本地目录，手动刷新调用 `refresh_skill_catalog` 拉取远端清单；安装、更新、启停、卸载、备份恢复与删除、仓库保存与删除共用这一入口。注册回归见 `skills_commands_are_registered_with_tauri`，检查全部 10 个命令均只注册一次。
+- Skills 进入及重新进入页面复用 `skill-catalog.json` 与本地安装状态，不自动联网；手动刷新在前端及后端合并进行中的请求，最多并发两个仓库，单库失败沿用其缓存并报告错误，刷新期间已删除或停用的仓库不回填。ZIP 下载在读取响应头及每块数据时检查 64 MiB 上限，无长度头也不能无限缓冲。
+- Skills 安装、启停和仓库保存共用同步操作锁，开始写入即隔离较早的目录刷新和检查结果；卸载页面后不提交写操作结果或提示。目录刷新的迟到错误同样失效。
 - 跨页面复用的展示原语放 `src/components/ui/manager-primitives.tsx`；默认设置放 `src/lib/default-settings.ts`。
 - 外移模块只能 `import type ... from "../App"`，**不得在运行时从 `App.tsx` 取值**，否则形成循环依赖。需要新类型的可见性时给 `App.tsx` 的类型加 `export`。
 - 后端 Tauri 命令按业务拆到 `apps/codex-plus-manager/src-tauri/src/commands/`（现为 `shared.rs`、`dream_skin.rs`、`provider_import.rs`）：`commands.rs` 用 `mod X; pub use X::*;` 汇总，`lib.rs` 的 `generate_handler!` 仍写 `commands::<命令名>`，不需要改。子模块内用 `use super::{...}` 取父模块项，需被父模块测试引用的私有项放宽为 `pub(super)`。
@@ -57,9 +73,10 @@
 - **只读热路径用 `SettingsStore::load_cached()`**：按路径缓存 `Arc<BackendSettings>`，失效依据是 `mtime + len`；本进程 `save`/`update` 落盘后直接清条目，不依赖时间戳精度（Windows 系统时钟粒度约 15.6ms，同刻度连写会撞指纹）。代理各入口、启动器看门狗与注入脚本构造、`read_codex_model_catalog` 已切过去；**读-改-写路径（`relay_switch`、`provider_import`、`connect`）必须继续用 `load()`**，拿到过期快照会丢字段。
 - **settings.json 里的 API Key 落盘加密**（`crates/codex-plus-core/src/secret_store.rs`）：文件名精确等于 `apiKey` 或以 `ApiKey` 结尾的字符串值（`relayApiKey`、`vlmApiKey`、`codexAppStepwiseApiKey`、`relayProfiles[].apiKey`、`tools.<tool>.relayProfiles[].apiKey`，未来新增的 `*ApiKey` 字段自动生效）以 `enc:v1:<base64url(nonce||ciphertext||tag)>` 的 AES-256-GCM 密文存储；`codexAppStepwiseApiKeyEnv` 这类**环境变量名**字段（以 `Env` 结尾）不是密钥，保持明文。加解密只在 `SettingsStore::load`/`save`/`update` 的落盘边界发生，内存中与调用方看到的仍是明文，老版本的明文配置照常读取、下次保存自动升级，没有额外的迁移命令。
 - 32 字节主密钥交给系统凭据库：Windows 用 DPAPI 用户作用域加密后写设置目录旁的 `secret.key`（`CryptProtectData` + `CRYPTPROTECT_UI_FORBIDDEN`，只读属性尽力而为）；macOS 用 Keychain 通用密码项（service `dev.nk33.Codex3N`，account `settings-master-key`）。进程内只取一次，失败也缓存，避免中途换密钥导致「刚加密的马上解不开」。
-- **下发给注入页的设置会剥掉全部密钥字段**：桥接 `/settings/get`、`/settings/set` 的响应经 `routes.rs` 的 `strip_secret_fields`，判定复用落盘加密的同一套规则（`settings::is_secret_field_name`），并把 `apiKeys` 数组整项删除，注入页要展示 Key 列表走 `/relay-api-keys`（只回 id/name）。管理器自己的编辑器不经桥接，读 Tauri 侧 `get_settings`，那份是明文（见[安全边界](security.md#注入页的设置下发)）。
+- **注入页只接收公开设置白名单**：桥接 `/settings/get`、`/settings/set` 共用 `routes.rs::settings_payload_value`，供应商配置只给渲染需要的身份和模型信息；完整配置、认证快照、微信令牌、请求头和工具分片留在后端。管理器自己的编辑器仍能读取明文，详见[安全边界](security.md#注入页的设置下发)。
 - 凭据库不可用（其他平台、DPAPI 失败、Keychain 拒绝等）时**不阻断保存**：该值按明文写入并记一条 `settings.secret_encryption_unavailable` 诊断日志（每进程只记一次）；`CODEX_PLUS_SETTINGS_NO_ENCRYPT` 为非空且不等于 `0`/`false` 时主动退回明文存储（与 `CODEX_PLUS_UPDATE_*` 逃生开关同风格）。读取时解不开的 `enc:v1:` 值按空串处理（不当成有效 key 用），记 `settings.secret_decrypt_failed`（只带字段路径，不带密文），并且**绝不改写或删除磁盘上的文件**（代码回退不等于数据回退）：修好凭据库或恢复 `secret.key` 后原文仍能读回；`update` 的读-改-写路径刻意保留解不开的密文，避免把用户已存的密钥写没了。
 - **边界**：`authContents` / `configContents` 里内嵌的 key（例如 `{"OPENAI_API_KEY":"..."}`、`experimental_bearer_token`）本次**不在加密范围**，它们同时会被写成 Codex 自己的 `~/.codex/auth.json` / `config.toml`，那部分保持原样。
+- 整体保存会从当前磁盘快照保留无法解密、且表单未填写新值的密钥；供应商及命名 Key 按稳定 ID 匹配，删除条目不复活。填写新值可替换原密文；正常可解密的字段仍允许清空。`secretDecryptionFailures` 只作为管理器读取警告返回，不落盘、不进入渲染桥接；修复凭据库后重启可恢复原密钥。
 - 个人版更新源由 `crates/codex-plus-core/src/update.rs` 指向 Codex3N；同步上游不能把更新源改回官方。
 - 自更新链默认两道保护且**失败关闭**：安装包必须通过 sha256 校验（优先用发布元数据里的 `sha256`/`digest`，缺失时回落到 release 里的 `SHA256SUMS.txt`，两者都拿不到就拒绝安装），目标版本必须高于当前版本（`-3n.N` 的 N 参与比较）。校验失败会删除已下载文件且绝不启动安装包。判定入口 `download_and_verify_update`；验证 `crates/codex-plus-core/tests/updater.rs`。
 - 两个逃生开关默认关闭，放行时写诊断日志：`CODEX_PLUS_UPDATE_ALLOW_UNVERIFIED=1` 允许安装发布方未提供 sha256 的产物；`CODEX_PLUS_UPDATE_ALLOW_DOWNGRADE=1` 允许安装不高于当前版本的包。诊断关键字：`update.downgrade.rejected`、`update.verify.failed`、`update.verify.missing_checksum_rejected`。
@@ -146,7 +163,9 @@ Windows CI 与发布工作流安装 NSIS 后实际运行 `/VERSION` 验证并允
 
 macOS CI 与 Release 同时打包 DMG 和 ZIP；ZIP 归档同一批 `codex-plus-plus` 与 `codex-plus-legacy-shim` 通用二进制，名称从实际 DMG 派生，并通过解压完整性检查。发布附件补跑从 `personal` 的工作流执行，源码仍检出目标标签，保留标签提交。
 
-低功耗模式复用目标页面的 CDP bridge 设置减少动画偏好，关闭时清除媒体覆盖；无限 CSS 动画的暂停状态由渲染端在停用、重载和卸载时还原。Windows MSIX 多开 wrapper 透传额外参数，实测覆盖中文、空格、批处理特殊字符与空参数。
+低功耗模式复用目标页面的 CDP bridge 设置减少动画偏好，关闭时清除媒体覆盖；无限 CSS 动画的暂停状态由渲染端在停用、重载和卸载时还原。Windows MSIX 多开 wrapper 的用户数据目录由实例参数统一生成，额外参数中的 `--user-data-dir=路径` 和 `--user-data-dir 路径` 在 `packaged_launch.rs::build_wrapper_script_for_port` 中移除，确保最终命令只有一份用户数据目录参数；其余额外参数继续透传，身份校验保持单目录要求。回归覆盖重复及冲突目录、两种参数写法和其他参数保留；批处理转义实测覆盖中文、空格、特殊字符与空参数。
+
+Windows 官方 App 26.1013.3656.0 的隔离验收在同一临时用户目录连续启动两次，真实 worker 均返回 `ready`，进程参数仅含一份用户数据目录，额外参数保留，helper `/backend/status` 返回 200。验收实例退出后原有 Codex 进程保持不变。包装启动 29 项及实例身份 3 项测试、格式检查、workspace 编译检查与管理器 debug 构建通过；macOS、Linux 原生行为未在本机验证。
 
 低功耗开启时 Git worker 将非仓库与失败查询缓存 30 秒；成功仍为 2 秒，取消不缓存，目录、主机与原生事件失效保持隔离。工厂探测兼容 shared 和 initial 模块，真实 App 已验证安装入口。
 

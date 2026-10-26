@@ -25,6 +25,7 @@ use crate::settings::BackendSettings;
 use crate::stepwise::{StepwiseProtocol, insert_bearer_header, redact_secret, stepwise_protocols};
 
 const MAX_INPUT_CHARS: usize = 20_000;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// 内置改写规则放在 `assets/prompt-enhance/system-prompt.md`，改规则不用动代码。
@@ -340,7 +341,10 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
             }
         };
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
+        let text = match read_model_response(response, timeout).await {
+            Ok(text) => text,
+            Err(message) => return failed(message),
+        };
         if auto
             && matches!(
                 status,
@@ -393,6 +397,36 @@ async fn generate_inner(request: PromptEnhanceRequest, settings: &BackendSetting
         return result;
     }
     failed(format!("未找到可用的上游协议：{}", skipped.join("; ")))
+}
+
+async fn read_model_response(
+    mut response: reqwest::Response,
+    timeout: Duration,
+) -> Result<String, String> {
+    let too_large = || "模型响应超过 2 MiB，请缩短要求后重试".to_string();
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        if error.is_timeout() {
+            format!(
+                "读取模型响应超过 {} 秒，请稍后重试或调大超时",
+                timeout.as_secs()
+            )
+        } else {
+            "模型响应读取中断，请重试".to_string()
+        }
+    })? {
+        if bytes.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    String::from_utf8(bytes).map_err(|_| "模型响应不是有效 UTF-8，请重试".to_string())
 }
 
 pub fn scenario_rule(scenario: &str) -> Option<&'static str> {
@@ -534,6 +568,97 @@ mod tests {
     use super::*;
     use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn response_body_limits_include_chunked_utf8_bytes_and_exact_boundary() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (declared, length, succeeds) in [
+            (true, MAX_RESPONSE_BYTES, true),
+            (true, MAX_RESPONSE_BYTES + 1, false),
+            (false, MAX_RESPONSE_BYTES + 1, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                let header = if declared {
+                    format!("Content-Length: {length}\r\n")
+                } else {
+                    "Transfer-Encoding: chunked\r\n".into()
+                };
+                if socket
+                    .write_all(
+                        format!("HTTP/1.1 200 OK\r\n{header}Connection: close\r\n\r\n").as_bytes(),
+                    )
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let body = "中".repeat(length / 3) + &"a".repeat(length % 3);
+                if !declared {
+                    let _ = socket.write_all(format!("{length:X}\r\n").as_bytes()).await;
+                }
+                let _ = socket.write_all(body.as_bytes()).await;
+                if !declared {
+                    let _ = socket.write_all(b"\r\n0\r\n\r\n").await;
+                }
+            });
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/"))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                read_model_response(response, Duration::from_secs(5))
+                    .await
+                    .is_ok(),
+                succeeds
+            );
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn response_body_interruptions_and_timeouts_are_not_empty_results() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for delayed in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                socket.read(&mut request).await.unwrap();
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nsynthetic-private").await.unwrap();
+                if delayed {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            });
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/"))
+                .timeout(Duration::from_millis(100))
+                .send()
+                .await
+                .unwrap();
+            let error = read_model_response(response, Duration::from_millis(100))
+                .await
+                .unwrap_err();
+            assert!(
+                error.contains(if delayed { "超过" } else { "中断" }),
+                "{error}"
+            );
+            assert!(!error.contains("synthetic"));
+            server.abort();
+        }
+    }
 
     fn settings(base_url: String, protocol: &str) -> BackendSettings {
         let mut settings = BackendSettings::default();

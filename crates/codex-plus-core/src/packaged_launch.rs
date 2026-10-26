@@ -231,11 +231,16 @@ fn build_wrapper_script_for_port(
         // 失败（ACL 拒绝）时 cmd 只打印错误并继续下一行，不影响启动。
         script.push_str(&format!("cd /d \"{dir}\"\r\n"));
     }
-    let extra_arguments = extra_args
-        .iter()
-        .map(|arg| batch_argument(arg))
-        .collect::<anyhow::Result<Vec<_>>>()?
-        .join(" ");
+    let mut extra_arguments = Vec::new();
+    let mut args = extra_args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--user-data-dir" {
+            args.next();
+        } else if !arg.starts_with("--user-data-dir=") {
+            extra_arguments.push(batch_argument(arg)?);
+        }
+    }
+    let extra_arguments = extra_arguments.join(" ");
     // `start` 的第一个参数是窗口标题，必须是空标题，否则含空格的 exe 路径会被当成标题。
     // `/b` 不新建控制台窗口；`start` 立即返回，cmd 退出后应用继续跑。
     script.push_str(&format!(
@@ -645,6 +650,66 @@ mod tests {
         assert!(script.contains("--disable-direct-composition"));
         assert!(script.contains("\"--label=中文 abc\""));
         assert!(batch_argument("bad\narg").is_err());
+    }
+
+    #[test]
+    fn wrapper_script_keeps_one_authoritative_user_data_dir() {
+        let user_data_dir = Path::new("instance data");
+        let cases: Vec<Vec<String>> = vec![
+            vec![],
+            vec!["--user-data-dir=instance data".into()],
+            vec!["--user-data-dir=other data".into()],
+            vec!["--user-data-dir".into(), "other data".into()],
+            vec![
+                "--user-data-dir=other data".into(),
+                "--user-data-dir".into(),
+                "another data".into(),
+            ],
+            vec!["--user-data-dir".into()],
+        ];
+        for extra_args in cases {
+            let script = build_wrapper_script_for_port(
+                Path::new("state"),
+                Path::new("app.exe"),
+                Path::new("home"),
+                Path::new("sqlite"),
+                user_data_dir,
+                9401,
+                &extra_args,
+            )
+            .unwrap();
+            assert_eq!(script.matches("--user-data-dir").count(), 1, "{script}");
+            assert!(script.contains("--user-data-dir=\"instance data\""));
+            assert!(!script.contains("other data"));
+            assert!(!script.contains("another data"));
+        }
+    }
+
+    #[test]
+    fn wrapper_script_preserves_arguments_around_user_data_dir() {
+        let script = build_wrapper_script_for_port(
+            Path::new("state"),
+            Path::new("app.exe"),
+            Path::new("home"),
+            Path::new("sqlite"),
+            Path::new("instance data"),
+            9401,
+            &[
+                "--disable-direct-composition".into(),
+                "--user-data-dir=other data".into(),
+                "--label=中文 abc".into(),
+                "--user-data-dir".into(),
+                "another data".into(),
+                "--user-data-directory=keep".into(),
+                "".into(),
+                "--after".into(),
+            ],
+        )
+        .unwrap();
+        assert!(script.contains(
+            "--user-data-dir=\"instance data\" --disable-direct-composition \
+             \"--label=中文 abc\" --user-data-directory=keep \"\" --after\r\n"
+        ));
     }
 
     #[cfg(windows)]
