@@ -1,4 +1,4 @@
-import { defaultWhaleBalanceSettings } from "../whale-settings";
+import { defaultAgentPetSettings } from "../agent-pet-settings";
 import { defaultDictationSettings } from "../dictation-settings";
 import { defaultPromptEnhanceSettings } from "../prompt-enhance-settings";
 import { t } from "@/i18n";
@@ -13,7 +13,12 @@ export const emptyContextSelection = (): RelayContextSelection => ({
 });
 
 export const defaultSettings: BackendSettings = {
-  ...defaultWhaleBalanceSettings(),
+  agentPet: defaultAgentPetSettings(),
+  updateAutoCheck: true,
+  updateSkippedVersion: "",
+  codexAppSessionDeleteSkipConfirm: false,
+  codexAppNativePredictions: false,
+  codexAppThirdPartyReasoningCollapse: false,
   dictation: defaultDictationSettings(),
   promptEnhance: defaultPromptEnhanceSettings(),
   codexAppPath: "",

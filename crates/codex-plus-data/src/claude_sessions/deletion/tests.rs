@@ -48,6 +48,29 @@ impl Fixture {
 }
 
 #[test]
+fn backup_cleanup_requires_age_and_count_and_single_delete_preserves_session() {
+    let mut f = Fixture::new();
+    let session = f.store.list("", 0, 50).unwrap().sessions[0].clone();
+    for index in 0..25 {
+        let mut manifest = f.store.write_snapshot(&session, &[]).unwrap();
+        manifest.created_at_ms = if index == 0 {
+            now_ms()
+        } else {
+            now_ms() - 8 * 86400 * 1000 + index
+        };
+        f.store.save_manifest(&manifest).unwrap();
+    }
+    assert_eq!(f.store.cleanup_expired_backups().unwrap(), 5);
+    assert_eq!(f.store.backups().unwrap().backups.len(), 20);
+    assert_eq!(f.store.cleanup_expired_backups().unwrap(), 0);
+    let token = f.store.backups().unwrap().backups[0].token.clone();
+    f.store.delete_backup(&token).unwrap();
+    assert_eq!(f.store.backups().unwrap().backups.len(), 19);
+    assert!(f.path.exists());
+    assert!(f.store.delete_backup("../outside").is_err());
+}
+
+#[test]
 fn delete_and_restore_preserve_shared_state_and_session_files() {
     let mut f = Fixture::new();
     let root = f.store.roots[0].clone();

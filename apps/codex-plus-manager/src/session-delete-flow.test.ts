@@ -11,7 +11,7 @@ const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { tar
 function harness(results: Array<{status: string; message?: string} | null>, confirmed = true) {
   const notices: Array<{ message: string; status: string }> = [];
   let requests = 0, refreshes = 0;
-  const run = new Function("run", "requestDeleteLocalSession", "confirmSessionDelete", "showNotice", "t", "tf", "isSuccessStatus", "truncateSessionDeletePreview", "refreshLocalSessions", "localSessions", js + "; return deleteLocalSessions;")(
+  const run = new Function("run", "requestDeleteLocalSession", "confirmSessionDelete", "showNotice", "t", "tf", "sessionDeleteSucceeded", "truncateSessionDeletePreview", "refreshLocalSessions", "localSessions", js + "; return deleteLocalSessions;")(
     (task: () => unknown) => task(), async () => results[requests++], async () => confirmed,
     (_title: string, message: string, status: string) => notices.push({ message, status }),
     (text: string) => text, (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_match, index) => String(args[index])),

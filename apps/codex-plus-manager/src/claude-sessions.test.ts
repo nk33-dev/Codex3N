@@ -97,6 +97,56 @@ function harness(component = "ClaudeSessionsScreen", props: object = {}, approve
   };
 }
 
+test("Claude 备份清理需要确认，加载列表不触发删除", async () => {
+  for (const approved of [false, true]) {
+    const h = harness("ClaudeSessionsScreen", {}, approved);
+    let root = h.render();
+    h.calls[0].resolve(page()); await tick();
+    root = h.render();
+    find(root, node => node.props.role === "tab" && text(node) === "删除备份").props.onClick();
+    h.render();
+    assert.equal(h.calls[1].command, "list_claude_session_backups");
+    h.calls[1].resolve({ status: "ok", backups: [], warnings: [] }); await tick();
+    root = h.render();
+    const cleanup = find(root, node => typeof node.props.onClick === "function" && text(node).includes("清理过期备份"));
+    cleanup.props.onClick(); cleanup.props.onClick(); await tick();
+    assert.equal(h.confirmations.length, 1);
+    assert.match(h.confirmations[0], /超过 7 天且不在最新 20 份/);
+    assert.equal(h.calls.length, approved ? 3 : 2);
+    if (approved) {
+      assert.equal(h.calls[2].command, "cleanup_claude_session_backups");
+      h.calls[2].resolve({ status: "ok", removed: 2 }); await tick();
+    }
+    h.unmount();
+  }
+});
+
+test("Claude 删除或清理末页备份后回到最后有效页", async () => {
+  for (const cleanup of [false, true]) {
+    const h = harness("ClaudeSessionsScreen", {}, true);
+    h.render(); h.calls[0].resolve(page()); await tick();
+    find(h.render(), node => node.props.role === "tab" && text(node) === "删除备份").props.onClick();
+    h.render();
+    const backups = Array.from({ length: 51 }, (_, i) => ({ token: `backup-${i}`, title: `backup-${i}`, sessionId: `id-${i}`, cwd: "/fixture", createdAtMs: i + 1, complete: true, restored: false, fileCount: 1 }));
+    h.calls.at(-1)!.resolve({ status: "ok", backups, warnings: [] }); await tick();
+    find(h.render(), node => typeof node.props.onClick === "function" && text(node) === "下一页").props.onClick();
+    h.render(); h.calls.at(-1)!.resolve({ status: "ok", backups, warnings: [] }); await tick();
+    let tree = h.render();
+    if (cleanup) find(tree, node => typeof node.props.onClick === "function" && text(node).includes("清理过期备份")).props.onClick();
+    else find(tree, node => node.props.label === "删除备份").props.onClick();
+    await tick();
+    assert.equal(h.calls.at(-1)!.command, cleanup ? "cleanup_claude_session_backups" : "delete_claude_session_backup");
+    h.calls.at(-1)!.resolve({ status: "ok", removed: 31 }); await tick();
+    h.render();
+    const remaining = backups.slice(0, cleanup ? 20 : 50);
+    h.calls.at(-1)!.resolve({ status: "ok", backups: remaining, warnings: [] }); await tick();
+    tree = h.render();
+    assert.ok(elements(tree).some(node => node.props.className === "claude-backup-row"));
+    assert.match(text(tree), new RegExp(`1 · ${remaining.length}`));
+    h.unmount();
+  }
+});
+
 test("Claude 会话独立导航，不加载 Codex 维护接口", async () => {
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
   assert.match(app, /id: "claudeSessions"[^\n]+tool: "claude"/);

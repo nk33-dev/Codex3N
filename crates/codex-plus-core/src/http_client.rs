@@ -244,6 +244,52 @@ pub fn client_for_profile_url(
     )
 }
 
+pub fn client_for_relay_url(
+    user_agent: &str,
+    relay: &crate::settings::RelayProfile,
+    url: &str,
+) -> anyhow::Result<reqwest::Client> {
+    let loopback = url_targets_loopback(url);
+    configured_client(
+        loopback,
+        user_agent,
+        if loopback {
+            None
+        } else {
+            crate::relay_proxy::proxy_for_relay(relay).or_else(|| resolved_proxy(None, Some(url)))
+        },
+        None,
+        None,
+    )
+}
+
+pub fn proxied_client_for_relay(
+    user_agent: &str,
+    relay: &crate::settings::RelayProfile,
+) -> anyhow::Result<reqwest::Client> {
+    client_for_relay_url(user_agent, relay, &relay.base_url)
+}
+
+pub fn proxied_client_for_url_with_redirect(
+    user_agent: &str,
+    url: &str,
+    connect: std::time::Duration,
+    total: std::time::Duration,
+    redirect: reqwest::redirect::Policy,
+) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .user_agent(normalized_user_agent(user_agent))
+        .connect_timeout(connect)
+        .timeout(total)
+        .redirect(redirect);
+    if url_targets_loopback(url) {
+        builder = builder.no_proxy();
+    } else if let Some(proxy) = resolved_proxy(None, Some(url)) {
+        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
+    }
+    Ok(apply_configured_ca_certificate(builder)?.build()?)
+}
+
 /// 清空 client 池，让下一次请求重新构建 client。
 ///
 /// 上游请求失败时调用：系统代理（如 Clash 的混合端口）改了以后，缓存的 client

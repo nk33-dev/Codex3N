@@ -50,6 +50,7 @@ fn main() {
         .get(1)
         .is_some_and(|arg| arg == "--codex-plus-uninstall-cleanup")
     {
+        codex_plus_manager_lib::restore_gateway_for_uninstall();
         let home = codex_plus_core::codex_home::default_codex_home_dir();
         let detail =
             match codex_plus_core::relay_config::clear_managed_proxy_config_for_uninstall(&home) {

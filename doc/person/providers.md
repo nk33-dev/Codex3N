@@ -2,6 +2,9 @@
 
 ## 业务行为
 
+- 本地网关通过 `gateway.json` 独立保存供应商池、模型组、Agent 接入及凭据；直连供应商导入为副本，两边后续互不覆盖。Codex 接入和断开复用原配置切换、修订号与备份链路。完整网关契约见 [本地网关](../../docs/local-gateway.md)。
+- Claude Code / Grok 的供应商配置随上游转到网关；已有直连档案保留在设置文件，可经网关导入。未接入的 Agent 继续使用自身配置。旧 Claude 独立供应商页面已撤下，Claude 会话管理继续独立维护。
+
 - 首次将本机 `config.toml` / `auth.json` 导入为普通可选的“系统默认”供应商，不重复覆盖用户配置。
 - 自定义供应商及配置导入入口在管理器供应商页。
 - 普通供应商与聚合配置分别展示，新建入口可按账号、模型厂商、第三方平台和自定义配置搜索。纯 API 模式同时保存 `auth.json` API 登录态与 provider 的 `experimental_bearer_token`，供新版 Codex 显式鉴权；关闭接管后两处都有 Key 的配置仍按窄路径规则拒绝轻量切换，需使用整份供应商切换。
@@ -50,7 +53,7 @@
 
 供应商代理保存为状态目录的 `relay-proxies.json`，可用 `CODEX_PLUS_PROXY_<ID>` 和进程级 `CODEX_PLUS_PROXY` 覆盖。`http_client.rs::client_for_profile_url` 同时核对目标 URL、供应商代理及系统 PAC，所有环回目标显式直连；连接池按运行时、UA、代理与超时隔离，CA 配置沿用 `CODEX_CA_CERTIFICATE`。提示前缀稳定器由 `relay-features.json` 按供应商显式启用。上述两个旁路文件与日志不随自选设置文件路径迁移。
 
-Claude Code 供应商使用独立 `ClaudeProviderPage.tsx`、`tools/claude.rs` 与 Tauri 命令，写入 Claude 实际配置前保留备份；不会借用 Codex 的供应商切换或会话删除入口。
+Claude Code 网关接入通过 `gateway/apply.rs` 和 `tools/claude.rs` 写入关键配置，退出或断开按接入前快照还原；检测到外部工具已接管时不覆盖新选择。会话删除不借用供应商切换入口。
 
 切换、导入或升级迁移时同时检查扁平字段和 `tools.codex`，防止旧镜像覆盖新配置；不能仅凭界面显示“系统默认”就认定实际配置已应用。
 
@@ -71,3 +74,7 @@ Claude Code 供应商使用独立 `ClaudeProviderPage.tsx`、`tools/claude.rs` �
 cc-switch 数据库路径 `ccsDbPath` 由共用类型与默认设置提供，后端在 `commands/provider_import.rs::load_ccs_providers` 读取，并返回实际路径和回退原因。
 
 本地 Responses 代理遇到明确拒绝 `custom exec` 的响应时，通过 `responses_exec.rs` 转为 function 工具并重试一次，JSON 与 SSE 响应分别还原为 custom 工具事件。`responses_exec_transport.rs` 管理协商缓存，`responses_exec_sse.rs` 处理流式事件；`protocol_proxy.rs` 与 `launcher.rs` 仍是请求及 HTTP 转发入口，沿用个人版的来源检查和 CORS。验证见 `responses_exec_compatibility.rs` 与 helper 转发测试。
+
+网关供应商的 `gateway_proxy` 由 `relay_proxy::proxy_for_relay` 解析，不读取同 ID 的直连代理配置。`http_client::client_for_relay_url` 以实际目标 URL 判断环回，环回显式直连，其余保持供应商代理、PAC 与连接池；模型发现、协议转换和测试请求使用同一规则。
+
+供应商级 `multiAgent`、`stripImageGenerationTool`、`localCompactionPromptAtEnd` 与聚合审批成员 `autoReviewRelayId` 由共用类型保存。xAI 的请求整理与工具还原沿用 `xai_responses.rs`；审批模型、起名模型、网关模型窗口和思考档位不改变个人版显式窗口覆盖规则。

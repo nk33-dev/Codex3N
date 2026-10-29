@@ -10,8 +10,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Mutex, OnceLock};
 
 mod session_paging;
 pub use session_paging::{LocalSessionPage, LocalSessionPager};
@@ -235,35 +234,6 @@ pub struct SQLiteStorageAdapter {
     backup_store: BackupStore,
     allowed_db_paths: Vec<PathBuf>,
     codex_home: Option<PathBuf>,
-    whale_paths: Arc<Mutex<WhalePathCache>>,
-}
-
-// 同一适配器的克隆共享查找结果；键仍包含完整存储范围，防止构建器改变根目录后串用。
-#[derive(Debug, Default)]
-struct WhalePathCache {
-    entries: HashMap<(PathBuf, Vec<PathBuf>, String), WhalePathEntry>,
-    queries: usize,
-    scans: usize,
-}
-
-impl WhalePathCache {
-    fn record(&self, hit: bool) {
-        if std::env::var("CODEX_PLUS_PERF_DIAGNOSTICS").as_deref() == Ok("1") {
-            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-                "whale.path_lookup",
-                json!({
-                    "hit": hit, "databaseQueries": self.queries, "directoryScans": self.scans, "entries": self.entries.len(),
-                }),
-            );
-        }
-    }
-}
-
-#[derive(Debug)]
-struct WhalePathEntry {
-    path: Option<PathBuf>,
-    expires: Instant,
-    databases: Vec<(Option<std::time::SystemTime>, u64)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,7 +310,6 @@ impl SQLiteStorageAdapter {
             db_path,
             backup_store,
             codex_home: None,
-            whale_paths: Arc::default(),
         }
     }
 
@@ -535,6 +504,7 @@ impl SQLiteStorageAdapter {
 
     pub fn undo(&self, token: &str) -> DeleteResult {
         let result = (|| -> anyhow::Result<DeleteResult> {
+            let _lock = self.backup_store.management_lock()?;
             let backups = undo_backups(&self.backup_store, token)?;
             let session_id = backups[0]["session_id"].as_str().unwrap_or("").to_string();
             let warnings = restore_backups(
@@ -782,183 +752,6 @@ impl SQLiteStorageAdapter {
                 })),
             },
         }
-    }
-
-    /// 小鲸鱼只接受会话 UUID；路径来自只读数据库或受限会话目录，不接受前端路径。
-    pub(crate) fn whale_rollout_path(&self, thread_id: &str) -> Option<PathBuf> {
-        crate::whale_usage::normalize_session_id(thread_id)?;
-        let home = self
-            .codex_home
-            .as_deref()
-            .or_else(|| self.db_path.parent())?;
-        let mut failed = false;
-        let mut roots = Vec::new();
-        for name in ["sessions", "archived_sessions"] {
-            match fs::canonicalize(home.join(name)) {
-                Ok(root) => roots.push(root),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(_) => failed = true,
-            }
-        }
-        let allowed = |path: &Path| -> Option<PathBuf> {
-            let path = fs::canonicalize(path).ok()?;
-            (path.is_file()
-                && path.extension().is_some_and(|ext| ext == "jsonl")
-                && roots.iter().any(|root| path.starts_with(root)))
-            .then_some(path)
-        };
-        let key = (
-            home.to_path_buf(),
-            self.allowed_db_paths.clone(),
-            thread_id.to_owned(),
-        );
-        let databases = self
-            .allowed_db_paths
-            .iter()
-            .flat_map(|path| {
-                [
-                    path.clone(),
-                    PathBuf::from(format!("{}-wal", path.display())),
-                ]
-            })
-            .map(|path| {
-                fs::metadata(path)
-                    .ok()
-                    .map(|m| (m.modified().ok(), m.len()))
-                    .unwrap_or_default()
-            })
-            .collect::<Vec<_>>();
-        // 查找期间持锁，防止并发请求对同一缺失会话重复遍历目录；rollout 内容读取在锁外。
-        let mut cache = self.whale_paths.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = cache.entries.get(&key)
-            && !failed
-            && entry.expires > Instant::now()
-            && entry.databases == databases
-        {
-            match &entry.path {
-                Some(path) => {
-                    if let Some(path) = allowed(path) {
-                        cache.record(true);
-                        return Some(path);
-                    }
-                }
-                None => {
-                    cache.record(true);
-                    return None;
-                }
-            }
-        }
-        let mut found = None;
-        for db_path in &self.allowed_db_paths {
-            match fs::metadata(db_path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) => {
-                    failed = true;
-                    continue;
-                }
-                Ok(_) => {}
-            }
-            cache.queries += 1;
-            let Ok(db) = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            else {
-                failed = true;
-                continue;
-            };
-            let _ = db.busy_timeout(Duration::from_millis(50));
-            match db
-                .query_row(
-                    "SELECT rollout_path FROM threads WHERE id = ?1",
-                    [thread_id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .optional()
-            {
-                Ok(Some(Some(path))) => {
-                    found = allowed(Path::new(&path)).or_else(|| {
-                        wsl_path_alternative(&path).and_then(|path| allowed(Path::new(&path)))
-                    });
-                    if found.is_some() {
-                        break;
-                    }
-                }
-                Ok(_) => {}
-                Err(_) => {
-                    failed = true;
-                }
-            }
-        }
-        if found.is_none() {
-            cache.scans += 1;
-            let suffix = format!("-{thread_id}.jsonl");
-            let mut pending: Vec<_> = roots.into_iter().rev().map(|root| (root, 0)).collect();
-            let mut budget = 8192usize;
-            'scan: while let Some((dir, depth)) = pending.pop() {
-                let entries = match fs::read_dir(dir) {
-                    Ok(entries) => entries,
-                    Err(_) => {
-                        failed = true;
-                        continue;
-                    }
-                };
-                for entry in entries {
-                    if budget == 0 {
-                        failed = true;
-                        break 'scan;
-                    }
-                    budget -= 1;
-                    let entry = match entry {
-                        Ok(entry) => entry,
-                        Err(_) => {
-                            failed = true;
-                            continue;
-                        }
-                    };
-                    let kind = match entry.file_type() {
-                        Ok(kind) => kind,
-                        Err(_) => {
-                            failed = true;
-                            continue;
-                        }
-                    };
-                    if kind.is_dir() && depth < 3 {
-                        pending.push((entry.path(), depth + 1));
-                    } else if kind.is_file()
-                        && entry.file_name().to_string_lossy().ends_with(&suffix)
-                    {
-                        found = fs::canonicalize(entry.path()).ok();
-                        break 'scan;
-                    }
-                }
-            }
-        }
-        cache.entries.remove(&key);
-        if found.is_some() || !failed {
-            if cache.entries.len() >= 128 {
-                if let Some(oldest) = cache
-                    .entries
-                    .iter()
-                    .min_by_key(|(_, e)| e.expires)
-                    .map(|(key, _)| key.clone())
-                {
-                    cache.entries.remove(&oldest);
-                }
-            }
-            let ttl = if found.is_some() {
-                Duration::from_secs(300)
-            } else {
-                Duration::from_secs(10)
-            };
-            cache.entries.insert(
-                key,
-                WhalePathEntry {
-                    path: found.clone(),
-                    expires: Instant::now() + ttl,
-                    databases,
-                },
-            );
-        }
-        cache.record(false);
-        found
     }
 
     fn delete_generic_session(
@@ -1571,7 +1364,7 @@ fn read_rollout_usage_tail(rollout: &Path, limit: usize) -> anyhow::Result<Vec<V
         let start = len.saturating_sub(window);
         let mut events = Vec::new();
         read_rollout_usage_window(&file, start, limit, &mut events)?;
-        // 至少两条事件渲染侧才算得出生成速度。还要找到真实轮边界：
+        // 至少两条事件渲染侧才算得出输出吞吐。还要找到真实轮边界：
         // total_token_usage 是会话累计，不能靠输出计数回落判断换轮。
         let latest_turn_known = events
             .last()
@@ -2644,101 +2437,5 @@ mod wsl_path_tests {
         // 只有前缀没有剩余部分
         assert_eq!(wsl_path_alternative("/mnt/c/"), None);
         assert_eq!(wsl_path_alternative("C:/"), None);
-    }
-}
-
-#[cfg(test)]
-mod whale_path_tests {
-    use super::*;
-    const ID: &str = "019a11b9-193d-7c32-a71e-ae11fd3be78f";
-
-    fn fixture() -> (tempfile::TempDir, SQLiteStorageAdapter) {
-        let temp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(temp.path().join("sessions")).unwrap();
-        let adapter = SQLiteStorageAdapter::new(
-            temp.path().join("state.sqlite"),
-            BackupStore::new(temp.path().join("backup")),
-        )
-        .with_codex_home(temp.path());
-        (temp, adapter)
-    }
-
-    #[test]
-    fn missing_paths_share_one_scan_and_expire_for_new_rollouts() {
-        let (temp, adapter) = fixture();
-        std::thread::scope(|scope| {
-            for _ in 0..8 {
-                let adapter = &adapter;
-                scope.spawn(move || assert!(adapter.whale_rollout_path(ID).is_none()));
-            }
-        });
-        assert_eq!(adapter.whale_paths.lock().unwrap().scans, 1);
-        let path = temp
-            .path()
-            .join("sessions")
-            .join(format!("rollout-{ID}.jsonl"));
-        fs::write(&path, "").unwrap();
-        assert!(adapter.whale_rollout_path(ID).is_none());
-        for entry in adapter.whale_paths.lock().unwrap().entries.values_mut() {
-            entry.expires = Instant::now();
-        }
-        assert_eq!(adapter.whale_rollout_path(ID), fs::canonicalize(&path).ok());
-        let scans = adapter.whale_paths.lock().unwrap().scans;
-        assert!(adapter.whale_rollout_path(ID).is_some());
-        assert_eq!(adapter.whale_paths.lock().unwrap().scans, scans);
-        fs::remove_file(path).unwrap();
-        assert!(adapter.whale_rollout_path(ID).is_none());
-    }
-
-    #[test]
-    fn database_changes_invalidate_missing_results_and_io_failures_are_not_cached() {
-        let (temp, adapter) = fixture();
-        assert!(adapter.whale_rollout_path(ID).is_none());
-        let path = temp
-            .path()
-            .join("sessions")
-            .join(format!("rollout-{ID}.jsonl"));
-        fs::write(&path, "").unwrap();
-        let db = Connection::open(&adapter.db_path).unwrap();
-        db.execute("CREATE TABLE threads(id TEXT, rollout_path TEXT)", [])
-            .unwrap();
-        db.execute(
-            "INSERT INTO threads VALUES(?1, ?2)",
-            [ID, path.to_str().unwrap()],
-        )
-        .unwrap();
-        assert!(adapter.whale_rollout_path(ID).is_some());
-        assert_eq!(adapter.whale_paths.lock().unwrap().queries, 1);
-        drop(db);
-        fs::remove_file(path).unwrap();
-        fs::write(&adapter.db_path, "invalid sqlite").unwrap();
-        assert!(adapter.whale_rollout_path(ID).is_none());
-        assert!(adapter.whale_rollout_path(ID).is_none());
-        assert_eq!(adapter.whale_paths.lock().unwrap().queries, 3);
-    }
-
-    #[test]
-    fn cache_is_bounded_and_different_homes_do_not_share_a_negative_entry() {
-        let (_temp, adapter) = fixture();
-        for _ in 0..140 {
-            assert!(
-                adapter
-                    .whale_rollout_path(&uuid::Uuid::new_v4().to_string())
-                    .is_none()
-            );
-        }
-        assert_eq!(adapter.whale_paths.lock().unwrap().entries.len(), 128);
-        let (other, _) = fixture();
-        let path = other
-            .path()
-            .join("sessions")
-            .join(format!("rollout-{ID}.jsonl"));
-        fs::write(&path, "").unwrap();
-        assert!(adapter.whale_rollout_path(ID).is_none());
-        let other_adapter = adapter.clone().with_codex_home(other.path());
-        assert_eq!(
-            other_adapter.whale_rollout_path(ID),
-            fs::canonicalize(path).ok()
-        );
     }
 }

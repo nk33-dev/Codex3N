@@ -15,6 +15,28 @@ use toml_edit::{DocumentMut, Item};
 use crate::secret_store;
 use crate::tools::{ToolConfig, ToolId};
 
+type SettingsChangeListener = Box<dyn Fn() + Send + Sync>;
+
+/// 管理器之外（Codex 设置页经桥接 `/settings/set`）写入设置后的通知钩子。
+/// core 不依赖 Tauri：管理器启动时注册监听，再转成界面事件让主窗口重新读取。
+/// 管理器自己的保存不走这里，免得刷新冲掉它尚未保存的编辑。
+static EXTERNAL_SETTINGS_CHANGE_LISTENER: std::sync::Mutex<Option<SettingsChangeListener>> =
+    std::sync::Mutex::new(None);
+
+pub fn set_external_settings_change_listener(listener: impl Fn() + Send + Sync + 'static) {
+    if let Ok(mut slot) = EXTERNAL_SETTINGS_CHANGE_LISTENER.lock() {
+        *slot = Some(Box::new(listener));
+    }
+}
+
+pub fn notify_external_settings_change() {
+    if let Ok(slot) = EXTERNAL_SETTINGS_CHANGE_LISTENER.lock() {
+        if let Some(listener) = slot.as_ref() {
+            listener();
+        }
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -144,16 +166,37 @@ pub struct RelayProfile {
         skip_serializing_if = "is_false"
     )]
     pub web_search_history_compat: bool,
+    #[serde(
+        rename = "localCompactionPromptAtEnd",
+        default,
+        skip_serializing_if = "is_false"
+    )]
+    pub local_compaction_prompt_at_end: bool,
     /// 只保留用户指定外部目录中的 Lite 声明，不为未知模型猜测能力。
     #[serde(default, skip_serializing_if = "is_false")]
     pub trust_upstream_catalog_lite: bool,
     /// 明确选择严格 Responses 历史契约；默认不改写历史。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strict_responses_reasoning: bool,
+    /// 转发前从请求的 tools 里移除托管生图工具（`image_generation`）及指向它的 tool_choice。
+    /// Codex App 会固定带上这个工具，不支持生图的第三方 Responses 上游会整条请求报 403（#228）。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_image_generation_tool: bool,
     /// Codex「替我审批」固定请求 `codex-auto-review`，第三方上游通常不认识这个模型；
     /// 填写后协议代理把它改写成这里的模型（#1446）。留空则原样转发。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auto_review_model: String,
+    /// Multi-Agent 子代理协议版本（#2683）：`"v1"` / `"v2"` 为显式选择，空串为 Auto
+    /// （沿用现有自动行为：Responses Lite 场景写 v2，其余沿用模板原值或不写）。
+    /// 优先级：每模型 modelMetadata 的 multi_agent_version > 本字段 > Auto。
+    /// 显式 v1 时会同步把 config.toml 的 `[features] multi_agent_v2` 压为 false，
+    /// 防止闸门单向覆盖目录声明。聚合供应商不适用本字段（保持其钉 v1 的既有行为）。
+    #[serde(
+        rename = "multiAgent",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub multi_agent: String,
     /// Anthropic 上游的认证字段：`x-api-key`（默认，Anthropic 原生）或
     /// `authorization`（多数 Claude 系中转网关用 Bearer）。
     #[serde(
@@ -188,6 +231,11 @@ pub struct RelayProfile {
         skip_serializing_if = "String::is_empty"
     )]
     pub anthropic_thinking_mode: String,
+    /// 网关供应商的独立代理（存在 gateway.json，载入时填上，不写进 settings.json）。
+    /// 为 Some 时发请求只用它（空串＝不单独走代理），不按 id 去查直连模式的代理表：
+    /// 网关与直连模式的供应商 id 各自独立，按 id 查会误用同名直连供应商的代理。
+    #[serde(skip)]
+    pub gateway_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -306,6 +354,16 @@ pub struct AggregateRelayProfile {
     /// 应当由用户显式选择。
     #[serde(rename = "syncDefaultMemberLogin", default)]
     pub sync_default_member_login: bool,
+    /// 审批成员（#2703）：Codex「替我审批」固定请求 `codex-auto-review`，默认跟普通请求一样
+    /// 交给默认成员 / 轮转选中的成员；默认成员是官方登录时就会消耗官方额度。
+    /// 指定后，审批请求只发给这个成员，模型取它的「自动审批模型」（没填用它的默认模型）。
+    /// 空串表示未设置，保持原有行为。
+    #[serde(
+        rename = "autoReviewRelayId",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
+    pub auto_review_relay_id: String,
 }
 
 impl Default for RelayProfile {
@@ -346,14 +404,18 @@ impl Default for RelayProfile {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
+            strip_image_generation_tool: false,
             auto_review_model: String::new(),
+            multi_agent: String::new(),
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
+            gateway_proxy: None,
         }
     }
 }
@@ -378,6 +440,25 @@ impl RelayProfile {
 
     pub fn web_search_history_compat_enabled(&self) -> bool {
         self.web_search_history_compat
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    pub fn local_compaction_prompt_at_end_enabled(&self) -> bool {
+        self.local_compaction_prompt_at_end
+            && matches!(
+                self.protocol,
+                RelayProtocol::Responses | RelayProtocol::ChatCompletions
+            )
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否在转发前移除托管生图工具：只对经本地代理转发的第三方 Responses 上游生效。
+    /// Chat / Anthropic 上游在协议转换时本来就不会带托管工具。
+    pub fn strips_image_generation_tool(&self) -> bool {
+        self.strip_image_generation_tool
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -789,6 +870,202 @@ impl PromptEnhanceSettings {
     }
 }
 
+/// Agent 桌宠目前支持的宿主；其余值保存时过滤掉。
+pub const AGENT_PET_SUPPORTED_AGENTS: &[&str] = &["codex"];
+/// 随启动器内嵌的桌宠音效组。设置里还认可下载音效组 id 和 `custom`，其余值回落到 `duck`。
+pub const AGENT_PET_SOUND_SETS: &[&str] = &["duck", "fx1"];
+pub const AGENT_PET_MIN_SIZE: u32 = 64;
+pub const AGENT_PET_MAX_SIZE: u32 = 240;
+const AGENT_PET_DEFAULT_SIZE: u32 = 112;
+const AGENT_PET_DEFAULT_VOLUME: f64 = 0.6;
+/// 已移除的旧用量挂件开关；只在迁移时读取，保存时不再写出。
+const LEGACY_PET_WIDGET_KEY: &str = "codexAppWhaleWidgetEnabled";
+/// 旧用量挂件（余额 / 价格 / 用量统计）留下的全部键，读写时一并清理。
+const LEGACY_PET_WIDGET_KEYS: [&str; 6] = [
+    LEGACY_PET_WIDGET_KEY,
+    "codexAppWhaleBalanceProtocol",
+    "codexAppWhaleBalancePath",
+    "codexAppWhaleBalanceField",
+    "codexAppWhaleBalanceCurrency",
+    "codexAppWhaleBalanceScale",
+];
+
+/// Agent 桌宠设置。反序列化是宽松的：任一字段类型不对只回落该字段默认值，
+/// 不能因为桌宠配置写坏就让整份 settings.json 解析失败。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentPetSettings {
+    pub enabled: bool,
+    /// 在哪些 Agent 里显示桌宠；目前只认 `codex`。
+    pub agents: Vec<String>,
+    /// 内置图库 id，或 `custom`（此时使用 `custom_image_url`）。
+    pub image: String,
+    /// 自定义图片地址，只接受 https://。
+    pub custom_image_url: String,
+    pub size: u32,
+    pub sound_enabled: bool,
+    /// 内嵌音效组、下载音效组 id，或 `custom`（此时使用下面两个导入文件）。
+    pub sound_set: String,
+    /// 导入的自定义按压音文件名（位于 `agent-pet-custom`），空表示没有。
+    pub custom_sound_press: String,
+    /// 导入的自定义松开音文件名，空表示没有。
+    pub custom_sound_release: String,
+    pub volume: f64,
+}
+
+impl Default for AgentPetSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            agents: vec!["codex".to_string()],
+            image: crate::agent_pet::DEFAULT_IMAGE_ID.to_string(),
+            custom_image_url: String::new(),
+            size: AGENT_PET_DEFAULT_SIZE,
+            sound_enabled: true,
+            sound_set: "duck".to_string(),
+            custom_sound_press: String::new(),
+            custom_sound_release: String::new(),
+            volume: AGENT_PET_DEFAULT_VOLUME,
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AgentPetSettings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        Ok(Self::from_json_lenient(&value))
+    }
+}
+
+impl AgentPetSettings {
+    /// 逐字段读取，缺失或类型不对的字段用默认值；结果已归一化。
+    pub fn from_json_lenient(value: &Value) -> Self {
+        let mut settings = Self::default();
+        let Some(map) = value.as_object() else {
+            return settings;
+        };
+        if let Some(value) = map.get("enabled").and_then(Value::as_bool) {
+            settings.enabled = value;
+        }
+        if let Some(items) = map.get("agents").and_then(Value::as_array) {
+            settings.agents = items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
+        }
+        if let Some(value) = map.get("image").and_then(Value::as_str) {
+            settings.image = value.to_string();
+        }
+        if let Some(value) = map.get("customImageUrl").and_then(Value::as_str) {
+            settings.custom_image_url = value.to_string();
+        }
+        if let Some(value) = map.get("size").and_then(Value::as_f64) {
+            settings.size = clamp_agent_pet_size(value);
+        }
+        if let Some(value) = map.get("soundEnabled").and_then(Value::as_bool) {
+            settings.sound_enabled = value;
+        }
+        if let Some(value) = map.get("soundSet").and_then(Value::as_str) {
+            settings.sound_set = value.to_string();
+        }
+        if let Some(value) = map.get("customSoundPress").and_then(Value::as_str) {
+            settings.custom_sound_press = value.to_string();
+        }
+        if let Some(value) = map.get("customSoundRelease").and_then(Value::as_str) {
+            settings.custom_sound_release = value.to_string();
+        }
+        if let Some(value) = map.get("volume").and_then(Value::as_f64) {
+            settings.volume = value;
+        }
+        settings.normalize();
+        settings
+    }
+
+    pub fn normalize(&mut self) {
+        let mut agents: Vec<String> = Vec::new();
+        for agent in &self.agents {
+            let agent = agent.trim().to_ascii_lowercase();
+            if AGENT_PET_SUPPORTED_AGENTS.contains(&agent.as_str()) && !agents.contains(&agent) {
+                agents.push(agent);
+            }
+        }
+        self.agents = agents;
+        let image = self.image.trim();
+        self.image = if image == crate::agent_pet::CUSTOM_IMAGE_ID
+            || crate::agent_pet::is_builtin_image(image)
+        {
+            image.to_string()
+        } else {
+            crate::agent_pet::DEFAULT_IMAGE_ID.to_string()
+        };
+        self.custom_image_url = self.custom_image_url.trim().to_string();
+        self.size = self.size.clamp(AGENT_PET_MIN_SIZE, AGENT_PET_MAX_SIZE);
+        let sound_set = self.sound_set.trim();
+        self.sound_set = if AGENT_PET_SOUND_SETS.contains(&sound_set)
+            || sound_set == crate::agent_pet::CUSTOM_SOUND_ID
+            || crate::agent_pet::is_download_sound(sound_set)
+        {
+            sound_set.to_string()
+        } else {
+            "duck".to_string()
+        };
+        for (value, slot) in [
+            (&mut self.custom_sound_press, "press"),
+            (&mut self.custom_sound_release, "release"),
+        ] {
+            let name = value.trim();
+            *value = if crate::agent_pet::is_custom_sound_file(name, slot) {
+                name.to_string()
+            } else {
+                String::new()
+            };
+        }
+        self.volume = if self.volume.is_finite() {
+            self.volume.clamp(0.0, 1.0)
+        } else {
+            AGENT_PET_DEFAULT_VOLUME
+        };
+    }
+
+    /// 是否在指定 Agent 里显示桌宠。
+    pub fn enabled_for(&self, agent: &str) -> bool {
+        self.enabled && self.agents.iter().any(|item| item == agent)
+    }
+}
+
+fn clamp_agent_pet_size(value: f64) -> u32 {
+    if !value.is_finite() {
+        return AGENT_PET_DEFAULT_SIZE;
+    }
+    value
+        .round()
+        .clamp(AGENT_PET_MIN_SIZE as f64, AGENT_PET_MAX_SIZE as f64) as u32
+}
+
+/// 旧版只有用量挂件开关：开着且还没有 `agentPet` 时，迁移成「桌宠已开启」。
+fn legacy_pet_widget_enabled(raw: &Map<String, Value>) -> bool {
+    !raw.contains_key("agentPet")
+        && raw.get(LEGACY_PET_WIDGET_KEY).and_then(Value::as_bool) == Some(true)
+}
+
+/// 把旧用量挂件开关迁移进原始设置对象，并删掉旧挂件的全部键。
+fn migrate_legacy_pet_widget(raw: &mut Map<String, Value>) {
+    if legacy_pet_widget_enabled(raw) {
+        let settings = AgentPetSettings {
+            enabled: true,
+            ..AgentPetSettings::default()
+        };
+        raw.insert(
+            "agentPet".to_string(),
+            serde_json::to_value(settings).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
+    }
+    for key in LEGACY_PET_WIDGET_KEYS {
+        raw.remove(key);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BackendSettings {
     #[serde(
@@ -845,6 +1122,14 @@ pub struct BackendSettings {
     pub relay_profiles_enabled: bool,
     #[serde(rename = "enhancementsEnabled", default = "default_true")]
     pub enhancements_enabled: bool,
+    /// 管理器启动时及运行期间自动检查 Codex++ 更新（#1272）。默认开；
+    /// 关闭后只在用户手动点「检查更新」时联网检查。
+    #[serde(rename = "updateAutoCheck", default = "default_true")]
+    pub update_auto_check: bool,
+    /// 用户在更新提示里选择「跳过此版本」的版本号（#1272）。只压制该版本及更低版本的自动提示，
+    /// 出现更高版本时重新提示；手动检查不受影响。空串表示没有跳过。
+    #[serde(rename = "updateSkippedVersion", default)]
+    pub update_skipped_version: String,
     #[serde(rename = "codexAppStandaloneQuotaUnlock", default)]
     pub codex_app_standalone_quota_unlock: bool,
     /// 纯 API 供应商下启动前把详情模式写回 Codex 视图，避开 Work 视图要求 ChatGPT 账号（#2632）。
@@ -859,6 +1144,9 @@ pub struct BackendSettings {
     pub codex_app_include_native_models: bool,
     #[serde(rename = "codexAppSessionDelete", default = "default_true")]
     pub codex_app_session_delete: bool,
+    /// 快速删除（#48）：本地会话删除时跳过确认弹窗；远端会话仍强制确认。默认关。
+    #[serde(rename = "codexAppSessionDeleteSkipConfirm", default)]
+    pub codex_app_session_delete_skip_confirm: bool,
     #[serde(rename = "codexAppSideChatSave", default)]
     pub codex_app_side_chat_save: bool,
     #[serde(rename = "codexAppMarkdownExport", default = "default_true")]
@@ -929,6 +1217,12 @@ pub struct BackendSettings {
     pub codex_app_native_browser_require_identification: bool,
     #[serde(rename = "codexAppNativeFastUnlock", default)]
     pub codex_app_native_fast_unlock: bool,
+    /// 原生输入预测（实验）：自定义 API 的本机对话使用 Codex 自带的灰字预测与 Tab 接受。默认关。
+    #[serde(rename = "codexAppNativePredictions", default)]
+    pub codex_app_native_predictions: bool,
+    /// 第三方模型回答完自动折叠过程（#2659）：本地代理给没带阶段标记的助手消息补 `phase`。默认关。
+    #[serde(rename = "codexAppThirdPartyReasoningCollapse", default)]
+    pub codex_app_third_party_reasoning_collapse: bool,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
     pub codex_app_pet_real_mouse_look: bool,
     #[serde(rename = "codexAppActivityOverlayRight", default)]
@@ -937,27 +1231,9 @@ pub struct BackendSettings {
     pub codex_app_capacity_auto_retry: bool,
     #[serde(rename = "codexAppTurnRewind", default)]
     pub codex_app_turn_rewind: bool,
-    #[serde(rename = "codexAppWhaleWidgetEnabled", default)]
-    pub codex_app_whale_widget_enabled: bool,
-    #[serde(
-        rename = "codexAppWhaleBalanceProtocol",
-        default = "default_whale_balance_protocol"
-    )]
-    pub codex_app_whale_balance_protocol: String,
-    #[serde(rename = "codexAppWhaleBalancePath", default)]
-    pub codex_app_whale_balance_path: String,
-    #[serde(rename = "codexAppWhaleBalanceField", default)]
-    pub codex_app_whale_balance_field: String,
-    #[serde(
-        rename = "codexAppWhaleBalanceCurrency",
-        default = "default_whale_balance_currency"
-    )]
-    pub codex_app_whale_balance_currency: String,
-    #[serde(
-        rename = "codexAppWhaleBalanceScale",
-        default = "default_whale_balance_scale"
-    )]
-    pub codex_app_whale_balance_scale: f64,
+    /// Agent 桌宠；旧的 `codexAppWhaleWidgetEnabled` 在读取时迁移到这里。
+    #[serde(rename = "agentPet", default)]
+    pub agent_pet: AgentPetSettings,
     #[serde(rename = "codexAppStepwiseEnabled", default)]
     pub codex_app_stepwise_enabled: bool,
     #[serde(
@@ -1191,12 +1467,15 @@ impl Default for BackendSettings {
             relay_profiles_enabled: false,
             ccs_import_sources: BTreeMap::new(),
             enhancements_enabled: true,
+            update_auto_check: true,
+            update_skipped_version: String::new(),
             codex_app_standalone_quota_unlock: false,
             codex_app_disable_work_view: false,
             codex_app_plugin_marketplace_unlock: true,
             codex_app_model_whitelist_unlock: true,
             codex_app_include_native_models: true,
             codex_app_session_delete: true,
+            codex_app_session_delete_skip_confirm: false,
             codex_app_side_chat_save: false,
             codex_app_markdown_export: true,
             codex_app_session_share: true,
@@ -1217,16 +1496,13 @@ impl Default for BackendSettings {
             codex_app_native_menu_placement: true,
             codex_app_native_browser_require_identification: false,
             codex_app_native_fast_unlock: false,
+            codex_app_native_predictions: false,
+            codex_app_third_party_reasoning_collapse: false,
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
             codex_app_capacity_auto_retry: false,
             codex_app_turn_rewind: false,
-            codex_app_whale_widget_enabled: false,
-            codex_app_whale_balance_protocol: default_whale_balance_protocol(),
-            codex_app_whale_balance_path: String::new(),
-            codex_app_whale_balance_field: String::new(),
-            codex_app_whale_balance_currency: default_whale_balance_currency(),
-            codex_app_whale_balance_scale: default_whale_balance_scale(),
+            agent_pet: AgentPetSettings::default(),
             codex_app_stepwise_enabled: false,
             codex_app_stepwise_generation_mode: default_stepwise_generation_mode(),
             codex_app_answer_outline_enabled: false,
@@ -1345,14 +1621,18 @@ impl BackendSettings {
                 custom_headers: Vec::new(),
                 standard_openai_protocol: false,
                 web_search_history_compat: false,
+                local_compaction_prompt_at_end: false,
                 trust_upstream_catalog_lite: false,
                 strict_responses_reasoning: false,
+                strip_image_generation_tool: false,
                 auto_review_model: String::new(),
+                multi_agent: String::new(),
                 anthropic_auth_header: String::new(),
                 anthropic_max_tokens: 0,
                 anthropic_prompt_cache: true,
                 anthropic_impersonate_claude_code: false,
                 anthropic_thinking_mode: String::new(),
+                gateway_proxy: None,
             };
         }
 
@@ -1412,14 +1692,18 @@ impl BackendSettings {
             custom_headers: Vec::new(),
             standard_openai_protocol: false,
             web_search_history_compat: false,
+            local_compaction_prompt_at_end: false,
             trust_upstream_catalog_lite: false,
             strict_responses_reasoning: false,
+            strip_image_generation_tool: false,
             auto_review_model: String::new(),
+            multi_agent: String::new(),
             anthropic_auth_header: String::new(),
             anthropic_max_tokens: 0,
             anthropic_prompt_cache: true,
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
+            gateway_proxy: None,
         }
     }
 
@@ -1481,8 +1765,12 @@ impl BackendSettings {
             || self
                 .active_relay_profile()
                 .web_search_history_compat_enabled()
+            || self
+                .active_relay_profile()
+                .local_compaction_prompt_at_end_enabled()
             || self.active_relay_profile().request_compatibility_enabled()
             || self.active_relay_profile().rewrites_auto_review_model()
+            || self.active_relay_profile().strips_image_generation_tool()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -1708,18 +1996,6 @@ pub fn default_computer_use_approval() -> String {
 /// 自带完整使用说明与确认规则，并能用 paste 输入中文。离散工具需要用户主动切换。
 pub fn default_computer_use_mode() -> String {
     "js".to_string()
-}
-
-fn default_whale_balance_protocol() -> String {
-    "auto".to_string()
-}
-
-fn default_whale_balance_currency() -> String {
-    "USD".to_string()
-}
-
-fn default_whale_balance_scale() -> f64 {
-    1.0
 }
 
 pub fn default_relay_base_url() -> String {
@@ -2193,6 +2469,9 @@ impl SettingsStore {
             )
         })?;
         config_schema_version(&parsed)?;
+        if let Some(raw) = parsed.as_object_mut() {
+            migrate_legacy_pet_widget(raw);
+        }
         let failures = parsed
             .as_object_mut()
             .map(decrypt_settings_secrets)
@@ -2438,6 +2717,8 @@ impl SettingsStore {
             .and_then(Value::as_array)
             .map(|items| items.len())
             .unwrap_or(0);
+        // 旧用量挂件开关迁移到 agentPet，并清掉旧挂件的全部键。
+        migrate_legacy_pet_widget(&mut raw);
         // 已移除的增强项不再接受更新；顺便清理旧版本留下的开关。
         for key in [
             "launchMode",
@@ -2471,6 +2752,10 @@ impl SettingsStore {
         raw.insert(
             "tools".to_string(),
             serde_json::to_value(&settings.tools).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
+        raw.insert(
+            "agentPet".to_string(),
+            serde_json::to_value(&settings.agent_pet).unwrap_or_else(|_| Value::Object(Map::new())),
         );
         preserve_unknown_settings_fields(&mut raw, &original_raw)?;
         let new_profile_count = raw
@@ -2964,6 +3249,14 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
     // 协议代理自动重试：管理器整份保存也会经过 normalize，这里补上部分更新路径，
     // 保证任何走 /settings/set 的调用都不会被静默丢弃。
+    // Codex++ 更新提醒偏好（#1272）：「跳过此版本」由管理器单独写入，必须在白名单里。
+    merge_bool_setting(target, source, "updateAutoCheck");
+    if let Some(value) = source.get("updateSkippedVersion").and_then(Value::as_str) {
+        target.insert(
+            "updateSkippedVersion".to_string(),
+            Value::String(value.trim().to_string()),
+        );
+    }
     merge_bool_setting(target, source, "protocolProxyAutoRetry");
     // 目录外模型映射开关同上：漏登记会让 /settings/set 补丁「保存了但没生效」。
     merge_bool_setting(target, source, "protocolProxyMapUnlistedModels");
@@ -3034,6 +3327,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppModelWhitelistUnlock");
     merge_bool_setting(target, source, "codexAppIncludeNativeModels");
     merge_bool_setting(target, source, "codexAppSessionDelete");
+    merge_bool_setting(target, source, "codexAppSessionDeleteSkipConfirm");
     merge_bool_setting(target, source, "codexAppSideChatSave");
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppSessionShare");
@@ -3055,35 +3349,40 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppNativeMenuPlacement");
     merge_bool_setting(target, source, "codexAppNativeBrowserRequireIdentification");
     merge_bool_setting(target, source, "codexAppNativeFastUnlock");
+    merge_bool_setting(target, source, "codexAppNativePredictions");
+    merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppPetRealMouseLook");
     merge_bool_setting(target, source, "codexAppActivityOverlayRight");
     merge_bool_setting(target, source, "codexAppCapacityAutoRetry");
     merge_bool_setting(target, source, "codexAppTurnRewind");
-    merge_bool_setting(target, source, "codexAppWhaleWidgetEnabled");
-    if let Some(value @ ("auto" | "custom" | "off")) = source
-        .get("codexAppWhaleBalanceProtocol")
-        .and_then(Value::as_str)
-    {
-        target.insert(
-            "codexAppWhaleBalanceProtocol".to_string(),
-            Value::String(value.to_string()),
-        );
-    }
-    for key in [
-        "codexAppWhaleBalancePath",
-        "codexAppWhaleBalanceField",
-        "codexAppWhaleBalanceCurrency",
-    ] {
-        if let Some(value) = source.get(key).and_then(Value::as_str) {
-            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+    if let Some(patch) = source.get("agentPet").and_then(Value::as_object) {
+        // 只合并补丁里出现的已知字段，再整体归一化写回。
+        let mut merged = target
+            .get("agentPet")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for key in [
+            "enabled",
+            "agents",
+            "image",
+            "customImageUrl",
+            "size",
+            "soundEnabled",
+            "soundSet",
+            "customSoundPress",
+            "customSoundRelease",
+            "volume",
+        ] {
+            if let Some(value) = patch.get(key) {
+                merged.insert(key.to_string(), value.clone());
+            }
         }
-    }
-    if let Some(value) = source
-        .get("codexAppWhaleBalanceScale")
-        .and_then(Value::as_f64)
-        .filter(|value| value.is_finite() && *value > 0.0)
-    {
-        target.insert("codexAppWhaleBalanceScale".to_string(), Value::from(value));
+        let settings = AgentPetSettings::from_json_lenient(&Value::Object(merged));
+        target.insert(
+            "agentPet".to_string(),
+            serde_json::to_value(settings).unwrap_or_else(|_| Value::Object(Map::new())),
+        );
     }
     merge_bool_setting(target, source, "codexAppStepwiseEnabled");
     if let Some(value) = source
@@ -3517,55 +3816,61 @@ fn validate_profile_updates(
     Ok(())
 }
 
+/// [`RelayProfile`] 序列化出来的全部字段名（含 skip_serializing 的旧凭据/地址字段）。
+/// 保存时不在这里的字段才算「更新版本写的未知字段」、照原样补回；网关的 gateway.json 也用它。
+pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
+    "id",
+    "name",
+    "model",
+    "baseUrl",
+    "upstreamBaseUrl",
+    "apiKey",
+    "apiKeys",
+    "activeApiKeyId",
+    "protocol",
+    "relayMode",
+    "officialMixApiKey",
+    "noAuth",
+    "hideOfficialUsageAlert",
+    "testModel",
+    "configContents",
+    "authContents",
+    "useCommonConfig",
+    "contextWindow",
+    "autoCompactLimit",
+    "modelInsertMode",
+    "modelList",
+    "modelWindows",
+    "modelAutoCompact",
+    "modelMetadata",
+    "modelVlm",
+    "vlmApiKey",
+    "vlmModel",
+    "vlmBaseUrl",
+    "userAgent",
+    "sub2apiEnabled",
+    "sub2apiMultiplier",
+    "modelRoutes",
+    "customHeaders",
+    "standardOpenaiProtocol",
+    "webSearchHistoryCompat",
+    "localCompactionPromptAtEnd",
+    "trustUpstreamCatalogLite",
+    "strictResponsesReasoning",
+    "stripImageGenerationTool",
+    "autoReviewModel",
+    "anthropicAuthHeader",
+    "anthropicMaxTokens",
+    "anthropicPromptCache",
+    "anthropicImpersonateClaudeCode",
+    "anthropicThinkingMode",
+];
+
 fn preserve_unknown_settings_fields(
     next: &mut Map<String, Value>,
     old: &Map<String, Value>,
 ) -> anyhow::Result<()> {
-    const KNOWN: &[&str] = &[
-        "id",
-        "name",
-        "model",
-        "baseUrl",
-        "upstreamBaseUrl",
-        "apiKey",
-        "apiKeys",
-        "activeApiKeyId",
-        "protocol",
-        "relayMode",
-        "officialMixApiKey",
-        "noAuth",
-        "hideOfficialUsageAlert",
-        "testModel",
-        "configContents",
-        "authContents",
-        "useCommonConfig",
-        "contextWindow",
-        "autoCompactLimit",
-        "modelInsertMode",
-        "modelList",
-        "modelWindows",
-        "modelAutoCompact",
-        "modelMetadata",
-        "modelVlm",
-        "vlmApiKey",
-        "vlmModel",
-        "vlmBaseUrl",
-        "userAgent",
-        "autoReviewModel",
-        "sub2apiEnabled",
-        "sub2apiMultiplier",
-        "modelRoutes",
-        "customHeaders",
-        "standardOpenaiProtocol",
-        "webSearchHistoryCompat",
-        "trustUpstreamCatalogLite",
-        "strictResponsesReasoning",
-        "anthropicAuthHeader",
-        "anthropicMaxTokens",
-        "anthropicPromptCache",
-        "anthropicImpersonateClaudeCode",
-        "anthropicThinkingMode",
-    ];
+    const KNOWN: &[&str] = RELAY_PROFILE_KNOWN_FIELDS;
     fn mark_profiles(value: &mut Value) {
         match value {
             Value::Object(object) => {
@@ -3659,7 +3964,10 @@ fn preserve_unknown_settings_fields(
         "codexAppCustomLayoutEnabled",
         "codexAppPluginAutoExpand",
         "computerUseGuardEnabled",
-    ] {
+    ]
+    .into_iter()
+    .chain(LEGACY_PET_WIDGET_KEYS)
+    {
         known[key] = Value::Null;
     }
     mark_profiles(&mut known);
@@ -3671,26 +3979,7 @@ fn preserve_unknown_settings_fields(
 fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendSettings {
     settings.dictation.normalize();
     settings.prompt_enhance.normalize();
-    settings.codex_app_whale_balance_protocol =
-        match settings.codex_app_whale_balance_protocol.trim() {
-            "custom" => "custom",
-            "off" => "off",
-            _ => "auto",
-        }
-        .to_string();
-    settings.codex_app_whale_balance_path =
-        settings.codex_app_whale_balance_path.trim().to_string();
-    settings.codex_app_whale_balance_field =
-        settings.codex_app_whale_balance_field.trim().to_string();
-    settings.codex_app_whale_balance_currency = settings
-        .codex_app_whale_balance_currency
-        .trim()
-        .to_ascii_uppercase();
-    if !settings.codex_app_whale_balance_scale.is_finite()
-        || settings.codex_app_whale_balance_scale <= 0.0
-    {
-        settings.codex_app_whale_balance_scale = default_whale_balance_scale();
-    }
+    settings.agent_pet.normalize();
     settings.codex_app_typing_effect = normalize_typing_effect(&settings.codex_app_typing_effect);
     settings.ccs_db_path = settings.ccs_db_path.trim().to_string();
     settings.ccs_import_sources.retain(|id, _| {
@@ -5302,6 +5591,7 @@ experimental_bearer_token = "sk-existing""#
                 session_provider: RelaySessionProvider::Openai,
                 model_aggregation_enabled: true,
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
                 strategy: AggregateRelayStrategy::WeightedRoundRobin,
                 members: vec![
                     AggregateRelayMember {
@@ -6637,6 +6927,51 @@ experimental_bearer_token = "sk-existing""#
             assert_eq!(profile.web_search_history_compat_enabled(), expected);
         }
     }
+    #[test]
+    fn strip_image_generation_tool_is_default_off_and_only_for_api_responses() {
+        let legacy = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(legacy.get("stripImageGenerationTool").is_none());
+        let enabled = RelayProfile {
+            relay_mode: RelayMode::PureApi,
+            strip_image_generation_tool: true,
+            ..RelayProfile::default()
+        };
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["stripImageGenerationTool"], json!(true));
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.strips_image_generation_tool());
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile {
+                id: "on".to_string(),
+                ..enabled
+            }],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        for (mode, protocol, mixed, expected) in [
+            (RelayMode::Official, RelayProtocol::Responses, false, false),
+            (RelayMode::Official, RelayProtocol::Responses, true, true),
+            (RelayMode::Aggregate, RelayProtocol::Responses, false, false),
+            (
+                RelayMode::PureApi,
+                RelayProtocol::ChatCompletions,
+                false,
+                false,
+            ),
+            (RelayMode::PureApi, RelayProtocol::Responses, false, true),
+        ] {
+            let profile = RelayProfile {
+                relay_mode: mode,
+                protocol,
+                official_mix_api_key: mixed,
+                strip_image_generation_tool: true,
+                ..RelayProfile::default()
+            };
+            assert_eq!(profile.strips_image_generation_tool(), expected);
+        }
+    }
+
     // 自动接管的两个设置字段必须走既有 settings.json 链路持久化：
     // 守护线程在另一个线程里读同一个文件，写不进就等于开关无效。
     #[test]
@@ -6766,5 +7101,22 @@ mod persistence_tests {
             defaults.codex_app_session_delete,
             BackendSettings::default().codex_app_session_delete
         );
+    }
+    #[test]
+    fn session_delete_skip_confirm_is_opt_in_and_round_trips_through_settings_file() {
+        // #48：快速删除默认关闭；旧设置文件没有这个字段时也按关闭读取。
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        assert!(!BackendSettings::default().codex_app_session_delete_skip_confirm);
+        store.save(&BackendSettings::default()).unwrap();
+        let updated = store
+            .update(json!({ "codexAppSessionDeleteSkipConfirm": true }))
+            .unwrap();
+        assert!(updated.codex_app_session_delete_skip_confirm);
+        assert!(store.load().unwrap().codex_app_session_delete_skip_confirm);
+        store
+            .update(json!({ "codexAppSessionDeleteSkipConfirm": false }))
+            .unwrap();
+        assert!(!store.load().unwrap().codex_app_session_delete_skip_confirm);
     }
 }

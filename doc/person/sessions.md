@@ -37,8 +37,9 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 - 远程、归档、有恢复文件或备份的会话受保护；确认期间恢复的会话跳过，进程重新启动时停止。中途停止仍保留已完成数量和剩余失败原因。
 - 对话内容还在、但项目目录（cwd 为绝对路径且确认不存在）已删除的会话单列为第二类，单独确认后走普通备份删除；目录读取出错、相对路径或已归档的会话不列入。
 - 会话页按项目分组时，组标题右侧可删除整个项目的会话：后端 `list_project_local_sessions` 按规范化路径（去 `\\?\`、统一斜杠、去尾斜杠、忽略大小写）在全部本地库中匹配，前端确认后逐个走普通备份删除。
-- Codex 删除快照采用上游分离文件格式，默认保留；空间预算不足时拒绝删除。旧内联快照可按份数和时间清理，分离文件快照不参与该清理。
-- 自动回收保留最新 10 份及 7 天内的全部内联备份，只识别本工具的合法 token；含 `blob_ref` 的恢复文件快照继续保留。临时副本测试覆盖批量删除、时钟回拨和旧分离文件保护。
+- Codex 删除快照采用分离文件格式，空间预算不足时拒绝删除。自动回收保留最新 20 份及 7 天内的全部备份，仅当“超过 7 天且不在最新 20 份内”同时成立时才清理，内联与分离文件快照使用同一规则。
+- Codex 会话页的“删除备份”提供列表、恢复、按规则清理和单份删除。手动删除单份可覆盖保留规则，确认后只删除该份清单及所属 `.files` 目录；原会话不受影响。恢复要求 Codex、ChatGPT 与 VS Code Codex 完全退出，沿用源数据库白名单和内容冲突检查。
+- `BackupStore` 校验合法 token、清单版本、目录边界及链接/重解析点；未知或损坏备份保留并提示。创建、清理和恢复共用跨进程备份锁。删除分离文件时只处理所属目录的普通 `.blob` 文件，未知文件不自动清除。临时副本测试覆盖批量删除、时钟回拨、文件回收、重复清理和原文件保留。
 - 清理只针对数据库能列出的本地会话，不承诺清除所有仅存在于侧栏或索引的残留。不要直接使用当前页或隐藏名单作为删除依据。
 
 ## 代码入口
@@ -58,6 +59,8 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 
 ## Claude Code 会话管理
 
+全局会话页的 Claude 页签与独立 Claude 导航共用 `ClaudeSessionsScreen`。多 Agent 摘要列表点击 Claude 删除时转到该页；Tauri `delete_agent_session` 拒绝 Claude 删除，避免绕过下述进程、路径、备份和恢复检查。Grok 继续沿用上游移入废纸篓的独立入口。
+
 - Claude 工具的“全局管理 → 会话管理”使用独立 `claudeSessions` 路由和 `screens/ClaudeSessionsScreen.tsx`，不触发 Codex 会话维护。列表按项目或时间分组，默认每页 50 条；标题、目录、ID 搜索由后端在分页前执行。详情按需读取用户与 Claude 对话，工具调用和思考默认折叠，附件只显示类型和名称。
 - 数据入口为 `crates/codex-plus-data/src/claude_sessions/`。扫描默认 `~/.claude` 和 `CLAUDE_CONFIG_DIR`，规范化并去重配置目录；只列出 `projects/<project>/<uuid>.jsonl` 主会话，子代理目录随主会话处理。摘要缓存文件长度和修改时间，读取文件头尾；正文按 UUID、parentUuid 重建最新分支，合并同一回复的流式块。单行超过 16 MiB 会跳过并提示；正文扫描超过 512 MiB 或 10 万节点时停止，提示从 Claude Code 导出。
 - 每个会话使用文件路径摘要作为 `key`，不能用会话 ID 合并不同位置的文件。项目删除在全量本机会话中匹配规范化目录，预览返回固定目标集合；预览最多保留 10 分钟，执行只接受后端 token。异常会话、重复 ID 或桌面端关联歧义受保护。
@@ -65,7 +68,8 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 - Tauri 接口独立注册于 `commands/claude_sessions.rs`：`list_claude_sessions`、`read_claude_session`、`preview_claude_session_deletion`、`delete_claude_sessions`、`list_claude_session_backups`、`restore_claude_session`。列表保留 `sessions/offset/limit/totalCount/hasMore/warnings`；详情使用 `messages` 分页；删除返回 `outcomes` 内的逐项 `status/message/backupToken` 与 `stopped`，部分完成时外层状态为 `partial`。
 - 删除和恢复要求 Claude 桌面端、原生 CLI、Node/Bun/Deno 启动的 CLI 全部退出；无法读取相关脚本进程命令行时也拒绝操作。逐项复核进程和文件 SHA-256，重新启动或文件变化即停止。路径校验拒绝上级目录、符号链接和 Windows 重解析点。
 - 删除先备份主记录、对应会话目录及明确关联的 `history.jsonl` 条目、`sessions-index.json` 条目和桌面元数据，再修改源文件。项目源码、工作树和共享 memory 保留。共享索引保留其他记录与未知字段；索引损坏时不继续删除。
-- 备份位于管理器状态目录的 `backups/claude-sessions/<token>/`，包含清单与原始文件，保留最近 50 份及 7 天内全部快照。删除部分完成仍返回备份 token；恢复先检查全部冲突，再还原文件并合并该会话的索引条目，已有不同内容时停止，重复恢复不追加重复记录。
+- 备份位于管理器状态目录的 `backups/claude-sessions/<token>/`，包含清单与原始文件，保留最新 20 份及 7 天内全部快照；超过 7 天且排在最新 20 份之外才清理。备份页支持按规则清理及确认后删除单份备份，未知文件和越界路径拒绝处理。删除部分完成仍返回备份 token；恢复先检查全部冲突，再还原文件并合并该会话的索引条目，已有不同内容时停止，重复恢复不追加重复记录。
+- Codex 备份命令集中在 `commands/session_backups.rs`，Claude 备份命令继续位于 `commands/claude_sessions.rs`；均只接受后端 token，不接收前端文件路径，清理在阻塞线程执行。
 - 首版管理本机文件，不接入云端、SSH、WSL，也不创建桌面端历史索引。默认开启后台写入的应用必须完全退出后再操作。
 
 验证入口：数据层 `claude_sessions/tests.rs`、`claude_sessions/deletion/tests.rs`；管理器 `claude-sessions.test.ts`。`cargo test -p codex-plus-data inspect_local_claude_sessions -- --ignored --nocapture` 可显式执行本机只读检查，不输出标题或消息正文。Windows 本机读盘、消息读取和进程保护已验证；桌面端元数据使用测试样本，macOS、Linux 的真实应用行为尚未验证。

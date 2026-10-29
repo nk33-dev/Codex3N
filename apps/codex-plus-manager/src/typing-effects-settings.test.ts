@@ -61,7 +61,7 @@ test("backend heartbeat synchronizes live effects and updates the in-app selecto
     },
     syncOfficialUsagePolicy: () => {}, refreshConversationView: () => {},
     syncCodexPlusTypingEffects: () => { syncs += 1; },
-    renderCodexPlusMenu: () => { renders += 1; }, runScanStep: (fn: () => void) => fn(),
+    renderCodexPlusMenu: () => { renders += 1; }, runScanStep: (fn: () => void) => fn(), syncCodexPlusBackendToggleButtons: () => {},
   });
   const source = fragment("40-backend-settings.js");
   const start = source.indexOf("  let syncBackendSettingsInFlight");

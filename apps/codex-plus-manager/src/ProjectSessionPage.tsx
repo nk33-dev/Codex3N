@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
-import { Archive, ArrowLeft, ArrowRight, ChevronDown, Copy, Info, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, ArrowRight, ChevronDown, Copy, History, Info, RefreshCw, Search, Trash2 } from "lucide-react";
+import { SessionBackups } from "./SessionBackups";
 import { t, tf } from "./i18n";
 import { sessionGroups, type ManagedSession } from "./management-model";
 import { ManagementDrawer } from "./ManagementPages";
@@ -39,6 +40,7 @@ export function ProjectSessionPage({
   notify: (title: string, message: string, status?: "ok" | "failed") => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
+  const [view, setView] = useState<"sessions" | "backups">("sessions");
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [mode, setMode] = useState<"project" | "time">("project");
   const [expanded, setExpanded] = useState<Map<string, boolean>>(new Map());
@@ -131,7 +133,13 @@ export function ProjectSessionPage({
   };
   const pageSize = sessions?.limit || 50;
   const page = sessions ? Math.floor(sessions.offset / pageSize) + 1 : 0;
+  const tabs = <div className="mg-tabs-bar"><div className="mg-tabs" role="tablist" aria-label={t("会话视图")}>
+    <button type="button" role="tab" aria-selected={view === "sessions"} data-active={view === "sessions"} disabled={operationPending} onClick={() => setView("sessions")}><History size={14}/>{t("会话")}</button>
+    <button type="button" role="tab" aria-selected={view === "backups"} data-active={view === "backups"} disabled={operationPending} onClick={() => setView("backups")}><ArchiveRestore size={14}/>{t("删除备份")}</button>
+  </div></div>;
+  if (view === "backups") return <div className="mg-page mg-session-page">{tabs}<SessionBackups /></div>;
   return <div className="mg-page mg-session-page">
+    {tabs}
     <div className="mg-session-toolbar">
       <SearchBox value={query} onChange={(value) => { ++revision.current; setQuery(value); setExpanded(new Map()); }} placeholder={t("搜索标题、目录或会话 ID")} />
       <div className="mg-segmented" role="group" aria-label={t("会话视图")}>

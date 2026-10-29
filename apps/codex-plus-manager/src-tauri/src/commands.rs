@@ -2,11 +2,13 @@ mod claude_sessions;
 mod dream_skin;
 mod external_url;
 mod provider_import;
+mod session_backups;
 mod shared;
 pub use claude_sessions::*;
 pub use dream_skin::*;
 pub use external_url::*;
 pub use provider_import::*;
+pub use session_backups::*;
 pub use shared::*;
 
 use std::collections::BTreeMap;
@@ -292,20 +294,6 @@ pub async fn clean_agent_cache(
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillsPayload {
-    pub repository_skills: Vec<codex_plus_core::skills::SkillEntry>,
-    pub repo_counts: std::collections::BTreeMap<String, usize>,
-    pub skills: Vec<codex_plus_core::skills::SkillEntry>,
-    pub repos: Vec<codex_plus_core::skills::SkillRepo>,
-    pub backups: Vec<codex_plus_core::skills::SkillBackup>,
-    /// 单个仓库拉取失败不该让整块面板空掉，把错误单独带回前端提示。
-    pub repo_errors: Vec<String>,
-    pub skills_dir: String,
-    pub codex_skills_dir: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct VersionPayload {
     pub version: String,
 }
@@ -569,6 +557,8 @@ pub struct ProviderDoctorPayload {
 #[serde(rename_all = "camelCase")]
 pub struct EnvConflictsPayload {
     pub conflicts: Vec<codex_plus_core::env_conflicts::EnvConflict>,
+    /// 本机回环中转地址遇上 Codex 的 SSH 远端连接时的转发提示（issue #1195）。
+    pub ssh_remote_loopback: Option<codex_plus_core::ssh_remote_loopback::SshRemoteLoopbackNotice>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -802,6 +792,22 @@ pub struct WatcherPayload {
 pub struct ScriptMarketPayload {
     pub market: Value,
     pub user_scripts: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsPayload {
+    pub skills: Vec<codex_plus_core::skills::SkillEntry>,
+    pub repos: Vec<codex_plus_core::skills::SkillRepo>,
+    pub repository_skills: Vec<codex_plus_core::skills::SkillEntry>,
+    pub repo_counts: std::collections::BTreeMap<String, usize>,
+    pub backups: Vec<codex_plus_core::skills::SkillBackup>,
+    /// 单个仓库拉取失败不该让整块面板空掉，把错误单独带回前端提示。
+    pub repo_errors: Vec<String>,
+    pub skills_dir: String,
+    pub codex_skills_dir: String,
+    /// Codex 之外各 Agent 的 skills 目录（Agent id → 目录），前端用来标列头的提示。
+    pub agent_skills_dirs: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2603,31 +2609,9 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         10,
     ));
     let native_browser_shutdown = match stop_codex_plus_for_restart(
-        || {
-            // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
-            // 这里允许「按端口没匹配到就退回全局结束」，否则重启会卡在
-            // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
-            #[cfg(windows)]
-            codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(
-                request.debug_port,
-                true,
-            );
-            #[cfg(not(windows))]
-            codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(
-                request.debug_port,
-            );
-            anyhow::ensure!(
-                !codex_plus_core::cdp::endpoint_available(request.debug_port),
-                "Codex 进程尚未退出；未启动新实例"
-            );
-            Ok(())
-        },
+        || stop_main_codex_process(request.debug_port),
         codex_plus_launcher::stop,
-        || {
-            codex_plus_core::native_browser::wait_for_monitor_shutdown(
-                std::time::Duration::from_secs(10),
-            )
-        },
+        wait_native_browser_shutdown,
     ) {
         Ok(shutdown) => shutdown,
         Err(error) => {
@@ -2721,6 +2705,93 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
 }
 
+/// 结束主 Codex 进程并确认调试端口已关闭。重启和「停止 Codex」共用。
+fn stop_main_codex_process(debug_port: u16) -> anyhow::Result<()> {
+    // 主实例在 Windows 上是 AUMID 激活的，命令行未必带调试端口；
+    // 这里允许「按端口没匹配到就退回全局结束」，否则会卡在
+    // 「Codex 进程尚未退出」。多开页的结束走的是不允许退回的那个版本。
+    #[cfg(windows)]
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_with_fallback(debug_port, true);
+    #[cfg(not(windows))]
+    codex_plus_core::watcher::stop_codex_processes_for_debug_port_and_wait(debug_port);
+    anyhow::ensure!(
+        !codex_plus_core::cdp::endpoint_available(debug_port),
+        "Codex 进程尚未退出"
+    );
+    Ok(())
+}
+
+fn wait_native_browser_shutdown()
+-> anyhow::Result<codex_plus_core::native_browser::NativeBrowserShutdown> {
+    codex_plus_core::native_browser::wait_for_monitor_shutdown(std::time::Duration::from_secs(10))
+}
+
+/// 侧栏 Codex 行的「停止」：走和重启相同的停止流程（结束进程 → 清理后台服务 → 等浏览器恢复），
+/// 只是不再启动新实例。状态记为 stopped / user_stopped，前端据此不把它当成「意外停止」。
+#[tauri::command]
+pub async fn stop_codex_plus(request: LaunchRequest) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || stop_codex_plus_blocking(request)).await {
+        Ok(result) => result,
+        Err(error) => failed(&format!("停止后台任务失败：{error}"), json!({})),
+    }
+}
+
+fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
+    let _launch_guard = match try_acquire_launch_guard() {
+        Ok(guard) => guard,
+        Err(message) => return failed(message, json!({})),
+    };
+    let request = normalize_launch_request(request);
+    if !codex_plus_core::cdp::endpoint_available(request.debug_port) {
+        return ok("Codex 没有在运行。", json!({}));
+    }
+    let Ok(_guard) = relay_switch_mutex().try_lock() else {
+        return failed("供应商切换正在进行，未停止 Codex；请稍后重试。", json!({}));
+    };
+    let _provider_guard = match ensure_provider_sync_is_idle_before_stop() {
+        Ok(guard) => guard,
+        Err(message) => return failed(&message, json!({})),
+    };
+    let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
+        &request,
+        "stopping",
+        "正在停止 Codex 并清理后台服务…",
+        current_timestamp_ms(),
+        "user_stopping",
+        10,
+    ));
+    match stop_codex_plus_for_restart(
+        || stop_main_codex_process(request.debug_port),
+        codex_plus_launcher::stop,
+        wait_native_browser_shutdown,
+    ) {
+        Ok(_) => {
+            let _ = StatusStore::default().save_latest(&requested_launch_status_with_phase(
+                &request,
+                "stopped",
+                "Codex 已停止。",
+                current_timestamp_ms(),
+                "user_stopped",
+                100,
+            ));
+            ok("Codex 已停止。", json!({}))
+        }
+        Err(error) => failed(&stop_failure_message(&error), json!({})),
+    }
+}
+
+fn stop_failure_message(error: &RestartStopError) -> String {
+    match error {
+        RestartStopError::Codex(error) => format!("Codex 进程尚未确认退出：{error}"),
+        RestartStopError::NativeBrowser(error) => {
+            format!("Codex 已停止，但原生浏览器文件尚未恢复：{error}")
+        }
+        RestartStopError::Runtime(error) => {
+            format!("Codex 已停止，但后台服务尚未清理完成：{error}")
+        }
+    }
+}
+
 fn stop_codex_plus_for_restart(
     stop_codex: impl FnOnce() -> anyhow::Result<()>,
     stop_runtime: impl FnOnce() -> anyhow::Result<()>,
@@ -2796,8 +2867,11 @@ pub fn sync_resident_helper() -> Option<u16> {
     let claude_voice_needs_helper = settings
         .as_ref()
         .is_some_and(codex_plus_core::claude_localization::voice_input_needs_helper);
+    // 第四个信号：有 Agent 开着网关模式，它的请求随时会打到 helper 的 `/gw/*`。
+    let gateway_needs_helper = codex_plus_core::gateway::needs_helper();
     if !settings_need_proxy
         && !claude_voice_needs_helper
+        && !gateway_needs_helper
         && !codex_plus_core::relay_config::live_config_uses_managed_protocol_proxy_in_home(&home)
     {
         return None;
@@ -5407,6 +5481,24 @@ pub async fn install_plugin_market_item(source: String, id: String) -> Value {
 }
 
 #[tauri::command]
+pub async fn uninstall_plugin_market_item(source: String, id: String) -> Value {
+    // 只撤销插件市场安装时写入的目录与配置条目（#2701）；删目录放到阻塞线程，避免卡住界面。
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::plugin_market::uninstall_plugin(
+            &codex_plus_core::codex_home::default_codex_home_dir(),
+            &source,
+            &id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(payload)) => payload,
+        Ok(Err(error)) => json!({"status": "failed", "message": error.to_string()}),
+        Err(error) => json!({"status": "failed", "message": format!("插件卸载失败：{error}")}),
+    }
+}
+
+#[tauri::command]
 pub fn plugin_market_install_status(source: String, id: String) -> Value {
     match codex_plus_core::plugin_market::install_status(
         &codex_plus_core::codex_home::default_codex_home_dir(),
@@ -5760,6 +5852,58 @@ pub fn import_ccs_skills() -> CommandResult<SkillsPayload> {
     }
 }
 
+/// 从用户选择的本地目录导入 Skills（#511）。选中的目录本身含 `SKILL.md` 时导入这一个；
+/// 否则把它当作一组 Skills 的父目录，导入其中含 `SKILL.md` 的子目录。导入是复制，默认停用。
+#[tauri::command]
+pub async fn import_local_skills(path: String) -> CommandResult<SkillsPayload> {
+    tauri::async_runtime::spawn_blocking(move || import_local_skills_blocking(&path))
+        .await
+        .unwrap_or_else(|error| {
+            failed(
+                &format!("本地导入 Skill 失败：{error}"),
+                current_skills_payload(&default_skills_manager()),
+            )
+        })
+}
+
+fn import_local_skills_blocking(path: &str) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let dir = std::path::PathBuf::from(path.trim());
+    let candidates = match codex_plus_core::skills::local_skill_import_candidates(&dir) {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            return failed(
+                &format!("本地导入 Skill 失败：{error}"),
+                current_skills_payload(&manager),
+            );
+        }
+    };
+    let mut imported = 0usize;
+    let mut errors = Vec::new();
+    for (id, path) in candidates {
+        match manager.import_from_local_directory(&id, &path) {
+            Ok(_) => imported += 1,
+            Err(error) => errors.push(format!("{id}：{error}")),
+        }
+    }
+    let payload = current_skills_payload(&manager);
+    if errors.is_empty() {
+        ok(
+            &format!("已从本地导入 {imported} 个 Skill，默认停用，可在列表中勾选启用。"),
+            payload,
+        )
+    } else {
+        failed(
+            &format!(
+                "已从本地导入 {imported} 个 Skill，{} 个失败：{}",
+                errors.len(),
+                errors.join("；")
+            ),
+            payload,
+        )
+    }
+}
+
 #[tauri::command]
 pub async fn install_skill(repo_key: String, id: String) -> CommandResult<SkillsPayload> {
     install_or_update_skill(&repo_key, &id, "Skill 已安装。", "安装 Skill 失败").await
@@ -6079,6 +6223,11 @@ fn skills_payload(
         repo_errors,
         skills_dir: manager.source_dir().to_string_lossy().to_string(),
         codex_skills_dir: manager.linked_dir().to_string_lossy().to_string(),
+        agent_skills_dirs: manager
+            .agent_dirs()
+            .iter()
+            .map(|(agent, dir)| (agent.clone(), dir.to_string_lossy().to_string()))
+            .collect(),
     }
 }
 
@@ -6093,6 +6242,46 @@ fn default_skills_manager() -> codex_plus_core::skills::SkillsManager {
         codex_plus_core::paths::default_skills_state_path(),
         codex_plus_core::codex_home::default_codex_home_dir(),
     )
+    // Claude Code 与 Grok 都按 `<dir>/<id>/SKILL.md` 读 Skill，可以同一份源软链过去。
+    .with_agent_dirs(vec![
+        (
+            "claude".to_string(),
+            codex_plus_core::tools::default_claude_home_dir().join("skills"),
+        ),
+        (
+            "grok".to_string(),
+            codex_plus_core::grok_config::default_grok_home_dir().join("skills"),
+        ),
+    ])
+}
+
+/// 把 Skill 启用到 / 停用于某个 Agent（codex / claude / grok）。
+#[tauri::command]
+pub fn set_skill_enabled_for(
+    agent: String,
+    id: String,
+    enabled: bool,
+) -> CommandResult<SkillsPayload> {
+    let manager = default_skills_manager();
+    let name = match agent.as_str() {
+        "claude" => "Claude Code",
+        "grok" => "Grok",
+        _ => "Codex",
+    };
+    match manager.set_enabled_for(agent.trim(), id.trim(), enabled) {
+        Ok(()) => ok(
+            &if enabled {
+                format!("已启用到 {name}，下次对话生效。")
+            } else {
+                format!("已在 {name} 停用。")
+            },
+            current_skills_payload(&manager),
+        ),
+        Err(error) => failed(
+            &format!("Skill 启停失败：{error:#}"),
+            current_skills_payload(&manager),
+        ),
+    }
 }
 
 /// 上一次成功拉取的远端清单，按仓库 key 存。
@@ -6175,6 +6364,26 @@ pub async fn repair_shortcuts() -> InstallActionResult {
         .unwrap_or_else(|error| install_background_failure("修复快捷方式", error))
 }
 
+/// 更新提示里的「跳过此版本」（#1272）：只写 settings.json 的 `updateSkippedVersion` 一个键，
+/// 不经前端整份表单保存，避免把其他未保存的草稿一起写进去。返回最新设置供前端合并版本号。
+#[tauri::command]
+pub fn skip_update_version(version: String) -> CommandResult<SettingsPayload> {
+    let version = version.trim().to_string();
+    if version.is_empty() {
+        return failed("要跳过的版本号为空。", fallback_settings_payload());
+    }
+    match SettingsStore::default().update(json!({ "updateSkippedVersion": version })) {
+        Ok(_) => settings_payload(
+            &format!("已跳过 {version}，出现更新的版本时再提示。"),
+            "保存跳过版本后重新读取设置失败",
+        ),
+        Err(error) => failed(
+            &format!("保存跳过版本失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
 #[tauri::command]
 pub async fn check_update() -> CommandResult<Value> {
     match codex_plus_core::update::check_for_update(codex_plus_core::version::VERSION).await {
@@ -6223,8 +6432,21 @@ pub async fn perform_update(
     app: tauri::AppHandle,
     release: Option<codex_plus_core::update::Release>,
 ) -> CommandResult<Value> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     let emitter = app.clone();
+    let launching = Arc::new(AtomicBool::new(false));
+    let restored = Arc::new(AtomicBool::new(false));
+    let restored_flag = restored.clone();
     let result = perform_update_inner(release, move |progress| {
+        // 安装包已下载校验、马上启动安装器：先把接入网关的 Agent 恢复成直连（不看「退出时恢复直连」开关）。
+        // 新版本没起来或回滚到旧版时，Agent 不会因为网关不在而全部连不上。
+        if progress.stage == codex_plus_core::update::UpdateStage::Launching
+            && !launching.swap(true, Ordering::SeqCst)
+            && crate::gateway_commands::restore_for_update()
+        {
+            restored_flag.store(true, Ordering::SeqCst);
+        }
         let _ = emitter.emit("update-progress", progress);
     })
     .await;
@@ -6234,6 +6456,9 @@ pub async fn perform_update(
             std::thread::sleep(std::time::Duration::from_millis(750));
             app.exit(0);
         });
+    } else if restored.load(Ordering::SeqCst) {
+        // 安装器没启动起来，Codex++ 继续运行：重新接回网关。
+        crate::gateway_commands::undo_restore_for_update();
     }
     result
 }
@@ -6370,10 +6595,28 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
 }
 
 #[tauri::command]
-pub fn load_request_logs(limit: Option<usize>) -> CommandResult<Value> {
+pub fn load_request_logs(
+    limit: Option<usize>,
+    since_ms: Option<u64>,
+    agent: Option<String>,
+    relay_id: Option<String>,
+    model: Option<String>,
+) -> CommandResult<Value> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
-    match codex_plus_core::request_log::read_request_logs(limit) {
-        Ok(entries) => {
+    let present = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
+    let filter = codex_plus_core::request_log::RequestLogFilter {
+        since_ms,
+        agent: present(agent),
+        relay_id: present(relay_id),
+        model: present(model),
+    };
+    match codex_plus_core::request_log::read_request_log_page(limit, &filter) {
+        Ok(page) => {
+            let entries = page.entries;
+            // 费用按供应商里现在填的价格估算，和用量统计一致。
+            let gateway = codex_plus_core::gateway::store::GatewayStore::default()
+                .load()
+                .unwrap_or_default();
             // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
             let thread_ids: Vec<String> = entries
                 .iter()
@@ -6399,12 +6642,17 @@ pub fn load_request_logs(limit: Option<usize>) -> CommandResult<Value> {
                     {
                         object.insert("threadTitle".to_string(), json!(title));
                     }
+                    if let Some(cost) = codex_plus_core::gateway::usage::entry_cost(entry, &gateway)
+                        && let Some(object) = value.as_object_mut()
+                    {
+                        object.insert("cost".to_string(), json!(cost));
+                    }
                     value
                 })
                 .collect();
             ok(
                 &format!("已读取 {} 条请求日志。", entries.len()),
-                json!({ "entries": entries }),
+                json!({ "entries": entries, "more": page.more, "oldestMs": page.oldest_ms }),
             )
         }
         Err(error) => failed(
@@ -6480,7 +6728,11 @@ pub fn set_relay_feature(
 #[tauri::command]
 pub fn read_latest_logs(request: LogRequest) -> CommandResult<LogsPayload> {
     let path = codex_plus_core::paths::default_diagnostic_log_path();
-    match read_tail(&path, request.lines) {
+    read_latest_logs_at(&path, request)
+}
+
+fn read_latest_logs_at(path: &Path, request: LogRequest) -> CommandResult<LogsPayload> {
+    match read_tail(path, request.lines) {
         Ok(tail) => ok(
             "日志已读取。",
             LogsPayload {
@@ -6897,15 +7149,24 @@ pub fn read_relay_files() -> CommandResult<RelayFilesPayload> {
 
 #[tauri::command]
 pub fn check_env_conflicts() -> CommandResult<EnvConflictsPayload> {
-    let conflicts = codex_plus_core::env_conflicts::detect_env_conflicts_for_home(
-        &codex_plus_core::relay_config::default_codex_home_dir(),
-    );
+    let codex_home = codex_plus_core::relay_config::default_codex_home_dir();
+    let conflicts = codex_plus_core::env_conflicts::detect_env_conflicts_for_home(&codex_home);
+    // Codex++ 不往 SSH 远端写配置；远端 Codex 若沿用本机 127.0.0.1 中转地址会连到服务器自己，
+    // 这里只读检测并把 ssh -R 转发做法交给供应商页提示。
+    let ssh_remote_loopback =
+        codex_plus_core::ssh_remote_loopback::inspect_ssh_remote_loopback_for_home(&codex_home);
     let message = if conflicts.is_empty() {
         "未检测到会覆盖 Codex 供应商配置的 OPENAI 环境变量。"
     } else {
         "检测到可能覆盖 Codex 供应商配置的 OPENAI 环境变量。"
     };
-    ok(message, EnvConflictsPayload { conflicts })
+    ok(
+        message,
+        EnvConflictsPayload {
+            conflicts,
+            ssh_remote_loopback,
+        },
+    )
 }
 
 #[tauri::command]
@@ -7031,6 +7292,20 @@ pub fn switch_relay_profile(
     let previous_active_relay_id = request.previous_active_relay_id;
     let settings = normalize_settings_before_save(request.settings);
     let resolution = request.live_conflict_resolution;
+    // Codex 被网关接管时不能在这里直接切走：先断开并还原，网关才能把接入前的配置恢复干净。
+    if codex_plus_core::gateway::apply::codex_switch_blocked_by_gateway(
+        &store,
+        &settings.active_relay_id,
+    ) {
+        return failed(
+            "Codex 正由 Codex++ 网关接管：先在「供应商配置」顶部或「Agent 接入」里点「断开并还原」，再切换供应商。",
+            relay_switch_payload(
+                store.load().unwrap_or_default(),
+                codex_plus_core::relay_config::relay_status_from_home(&home),
+                None,
+            ),
+        );
+    }
     log_manager_event(
         "manager.switch_relay_profile.start",
         json!({
@@ -7057,6 +7332,12 @@ pub fn switch_relay_profile(
                     "importedProfileId": outcome.imported_profile_id.as_ref(),
                     "liveBackupPath": outcome.live_backup_path.as_ref()
                 }),
+            );
+            // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 网关」等于重新接入。
+            let _ = codex_plus_core::gateway::apply::note_codex_switched(
+                &codex_plus_core::gateway::store::GatewayStore::default(),
+                &result.settings.active_relay_id,
+                &previous_active_relay_id,
             );
             // 新配置已经写进 config.toml：需要本地代理时立即让它常驻，
             // 这样不经过 Codex++ 启动的客户端也能直接用。
@@ -8807,7 +9088,17 @@ struct TailRead {
 }
 
 fn read_tail(path: &Path, max_lines: usize) -> std::io::Result<TailRead> {
-    let mut file = fs::File::open(path)?;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(TailRead {
+                text: String::new(),
+                truncated: false,
+                file_size: 0,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let file_size = file.metadata()?.len();
     if max_lines == 0 || file_size == 0 {
         return Ok(TailRead {
@@ -9630,12 +9921,19 @@ base_url = "https://example.invalid/v1"
     }
 
     #[test]
-    fn missing_logs_return_failed_status() {
-        let result = read_latest_logs(LogRequest { lines: 25 });
+    fn read_latest_logs_after_clear_returns_empty_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("codex-plus.log");
+        std::fs::write(&path, "old log\n").unwrap();
+        std::fs::remove_file(&path).unwrap();
 
-        if result.payload.text.is_empty() {
-            assert_eq!(result.status, "failed");
-        }
+        let result = read_latest_logs_at(&path, LogRequest { lines: 25 });
+
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.message, "日志已读取。");
+        assert_eq!(result.payload.path, path.to_string_lossy());
+        assert!(result.payload.text.is_empty());
+        assert_eq!(result.payload.file_size, 0);
     }
 
     #[test]
@@ -10025,6 +10323,7 @@ base_url = "https://example.invalid/v1"
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -10061,6 +10360,7 @@ base_url = "https://example.invalid/v1"
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -10119,6 +10419,7 @@ base_url = "https://example.invalid/v1"
                 routes: Vec::new(),
                 default_relay_id: String::new(),
                 sync_default_member_login: false,
+                auto_review_relay_id: String::new(),
             }],
             ..BackendSettings::default()
         };
@@ -10235,6 +10536,25 @@ base_url = "https://example.invalid/v1"
             anyhow::anyhow!("Invalid native cleanup receipt"),
         ));
         assert!(failed.contains("原生浏览器文件恢复失败"));
+    }
+
+    #[test]
+    fn stop_errors_name_the_step_without_mentioning_a_new_instance() {
+        // 侧栏「停止 Codex」不会启动新实例，提示里不能出现「未启动新实例」这类重启用语。
+        let codex = stop_failure_message(&RestartStopError::Codex(anyhow::anyhow!(
+            "app remains running"
+        )));
+        let runtime = stop_failure_message(&RestartStopError::Runtime(anyhow::anyhow!(
+            "runtime still exiting"
+        )));
+        let browser =
+            stop_failure_message(&RestartStopError::NativeBrowser(anyhow::anyhow!("receipt")));
+        assert!(codex.contains("Codex 进程尚未确认退出"));
+        assert!(runtime.contains("后台服务尚未清理完成"));
+        assert!(browser.contains("原生浏览器文件尚未恢复"));
+        for message in [codex, runtime, browser] {
+            assert!(!message.contains("新实例"), "{message}");
+        }
     }
 
     #[test]

@@ -63,7 +63,7 @@ function fixture(overrides: Record<string, any> = {}) {
     setTimeout: (callback: () => void) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: (id: number) => timers.delete(id),
     useMemo: (create: () => unknown) => create(),
-    Archive: "Archive", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", ChevronDown: "ChevronDown", Copy: "Copy", History: "History", Info: "Info",
+    Archive: "Archive", ArchiveRestore: "ArchiveRestore", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", ChevronDown: "ChevronDown", Copy: "Copy", History: "History", Info: "Info",
     RefreshCw: "RefreshCw", Search: "Search", Trash2: "Trash2", ManagementDrawer: "ManagementDrawer",
   });
   vm.runInContext(code, context);

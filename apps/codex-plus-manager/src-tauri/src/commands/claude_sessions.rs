@@ -97,3 +97,17 @@ pub async fn restore_claude_session(token: String) -> CommandResult<Value> {
     })
     .await
 }
+
+#[tauri::command]
+pub async fn cleanup_claude_session_backups() -> CommandResult<Value> {
+    execute(|store| Ok(json!({"removed": store.cleanup_expired_backups()?}))).await
+}
+
+#[tauri::command]
+pub async fn delete_claude_session_backup(token: String) -> CommandResult<Value> {
+    execute(move |store| {
+        store.delete_backup(&token)?;
+        Ok(json!({}))
+    })
+    .await
+}

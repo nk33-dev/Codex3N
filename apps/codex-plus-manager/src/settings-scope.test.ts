@@ -56,19 +56,21 @@ test("设置菜单只属于 Codex，Claude / Grok 不再显示只有跳转按钮
   assert.doesNotMatch(agent, /没有独立设置项|前往 Grok 配置|前往 Claude 增强/);
 });
 
-test("Computer Use 独立在最左栏，不再出现在每个 Agent 的菜单里", () => {
+test("Computer Use 放在侧栏「工具」组，不再出现在每个 Agent 的菜单里", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"computerUse"/);
 
   const globalNavigation = variableSource("globalNavigationRoutes");
   assert.match(globalNavigation, /"computerUse"/);
-  // 图标和 Agent 排在最左栏上方同一组，不放进底部的系统导航。
-  assert.match(variableSource("railAgentGroupRoutes"), /const railAgentGroupRoutes: Route\[\] = \["computerUse"\]/);
-  assert.match(functionSource("ApplicationRail"), /railAgentGroupRoutes\.map\(renderNavItem\)/);
+  assert.match(variableSource("toolNavigationRoutes"), /const toolNavigationRoutes: Route\[\] = \["computerUse",/);
+  assert.match(variableSource("gatewayNavigationRoutes"), /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
+  const sidebar = functionSource("AppSidebar");
+  assert.match(sidebar, /gatewayNavigationRoutes\.map/);
+  assert.match(sidebar, /toolNavigationRoutes\.map/);
 });
 
 test("Agent 设置标题跟随当前 Agent，整体设置标题固定", () => {
   const entry = functionSource("App");
-  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : routeTitle\(route\)/);
+  assert.match(entry, /route === "agentSettings" \? tf\("\{0\} 设置", \[activeToolName\]\) : routeTitle\(navAliasRoute\[route\] \?\? route\)/);
   assert.match(entry, /const activeToolName = toolEntries\.find/);
 });

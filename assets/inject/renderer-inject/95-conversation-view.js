@@ -244,12 +244,44 @@
     }
   }
 
+  // 当前供应商是模型聚合时，按成员判断是否等同于「官登混入 Key」（#2704）：
+  // 成员里既有官方登录、又至少有一个走 API Key 的成员，官方额度用完时仍能经 API 成员发送。
+  // 与后端 active_aggregate_relay_profile 一致：activeAggregateRelayId 为空时取当前供应商 id，
+  // 不一致则视为没有生效的聚合。
+  function officialUsageAggregateMembers(profile) {
+    if (String(profile?.relayMode || "") !== "aggregate") return null;
+    const activeId = String(profile.id || "");
+    const aggregateId = String(codexPlusBackendSettings.activeAggregateRelayId || "").trim() || activeId;
+    if (!aggregateId || aggregateId !== activeId) return null;
+    const aggregates = Array.isArray(codexPlusBackendSettings.aggregateRelayProfiles)
+      ? codexPlusBackendSettings.aggregateRelayProfiles
+      : [];
+    const aggregate = aggregates.find((item) => String(item?.id || "") === aggregateId);
+    if (!aggregate || !Array.isArray(aggregate.members)) return null;
+    const relays = Array.isArray(codexPlusBackendSettings.relayProfiles) ? codexPlusBackendSettings.relayProfiles : [];
+    return aggregate.members
+      .map((member) => relays.find((item) => String(item?.id || "") === String(member?.relayId || "")))
+      .filter((member) => member && String(member.relayMode || "") !== "aggregate");
+  }
+
+  function officialUsageAggregateMixed(profile) {
+    const members = officialUsageAggregateMembers(profile);
+    if (!members) return false;
+    const hasOfficialLogin = members.some((member) => String(member.relayMode || "") === "official");
+    // 官登混入 Key 的成员本身也带 API Key；其余非官方成员都走 API Key。
+    const hasApiKey = members.some((member) => String(member.relayMode || "") !== "official"
+      || member.officialMixApiKey === true);
+    return hasOfficialLogin && hasApiKey;
+  }
+
   function officialUsagePolicy() {
     // 新一代设置尚未返回时沿用最后一次真实配置，避免重新注入短暂恢复额度锁。
     if (!codexPlusBackendSettingsLoaded && officialUsageRuntime.lastPolicy) return officialUsageRuntime.lastPolicy;
     const profile = codexRemoteSessionActiveProfile();
-    const official = String(profile?.relayMode || "") === "official";
-    const mixed = official && profile?.officialMixApiKey === true;
+    const aggregateMixed = officialUsageAggregateMixed(profile);
+    const gateway = String(profile?.id || "") === "codex-plus-gateway";
+    const official = String(profile?.relayMode || "") === "official" || aggregateMixed || gateway;
+    const mixed = aggregateMixed || gateway || (official && profile?.officialMixApiKey === true);
     const policy = {
       official,
       hideAlerts: mixed,
@@ -299,7 +331,7 @@
     return changed ? next : null;
   }
 
-  // 低额度提示和发送锁都只看当前是不是官登混入 Key。纯官登不改这份用量。
+  // 低额度提示和发送锁都只看当前是不是官登混入 Key（含官登 + API 成员的模型聚合）。纯官登不改这份用量。
   // 桌面端发送按钮读 rate_limit.allowed；limit_reached 为 true 也会被当成已用完。
   // 混入时在查询发布前把 allowed 写成 true，并清掉 limit_reached。
   // 百分比、重置时间、账号、积分和消费上限不动。图片额度横幅单独留下。
@@ -599,350 +631,6 @@
     };
   }
 
-  function sessionCopyMenuRow(menu) {
-    const triggerId = menu?.getAttribute?.("aria-labelledby") || "";
-    const trigger = triggerId ? document.getElementById(triggerId) : null;
-    const labeledTrigger = trigger && /^(聊天操作|Chat actions)$/i.test(trigger.getAttribute("aria-label") || "")
-      ? trigger
-      : null;
-    const fallbackTrigger = lastSessionActionTrigger?.isConnected
-      ? lastSessionActionTrigger
-      : document.querySelector('button[aria-label="聊天操作"], button[aria-label="Chat actions"]');
-    const row = (labeledTrigger || fallbackTrigger)?.closest?.(selectors.sidebarThread)
-      || [...document.querySelectorAll(selectors.sidebarThread)]
-        .find((candidate) => candidate.getAttribute("data-app-action-sidebar-thread-selected") === "true");
-    const ref = row ? sessionRefFromRow(row) : null;
-    if (!row || !ref?.session_id || isClientNewThreadId(ref.session_id)) return null;
-    return row;
-  }
-
-  function looksLikeSessionActionMenu(menu) {
-    if (!(menu instanceof HTMLElement) || menu.hidden) return false;
-    if (menu.matches(`.${moreMenuClass}, .${codexPlusMenuFloatingClass}, #${codexPlusMenuId}`)) return false;
-    const text = normalizedElementText(menu);
-    const hasRename = /(?:重命名|rename)/i.test(text);
-    const hasOtherSessionAction = /(?:置顶|取消置顶|pin|unpin|归档|archive|删除|delete|移动|move)/i.test(text);
-    return hasRename || hasOtherSessionAction;
-  }
-
-  function isNativeSessionRenameMenuItem(candidate) {
-    if (!(candidate instanceof HTMLElement) || !visibleElement(candidate)) return false;
-    const text = normalizedElementText(candidate);
-    const label = candidate.getAttribute("aria-label") || "";
-    const testid = candidate.getAttribute("data-testid") || "";
-    // Codex 26.1007 changed the visible label from the bare "重命名"/
-    // "Rename" to a longer localized label. Match the native semantic
-    // affordance while excluding Codex++'s own auto-rename entry.
-    if (/自动重命名当前会话|auto.?rename current session/i.test(`${text} ${label}`)) return false;
-    return /重命名|rename/i.test(`${text} ${label} ${testid}`);
-  }
-
-  function rememberSessionActionTrigger(event) {
-    const trigger = event.target?.closest?.('button[aria-label="聊天操作"], button[aria-label="Chat actions"]');
-    if (trigger) lastSessionActionTrigger = trigger;
-  }
-
-  function sessionCopyMenuScopes(scope = document) {
-    const root = scope?.querySelectorAll ? scope : document;
-    const menus = [];
-    if (scope instanceof HTMLElement && scope.matches?.('[role="menu"]')) menus.push(scope);
-    root.querySelectorAll?.('[role="menu"]').forEach((menu) => menus.push(menu));
-    return Array.from(new Set(menus));
-  }
-
-  function sessionCopyMenuItemIcon() {
-    return '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"></path></svg>';
-  }
-
-  function sessionCopyMenuActivationIsDuplicate(target) {
-    if (!(target instanceof HTMLElement)) return false;
-    const now = Date.now();
-    const activatedAt = Number(target.dataset.codexSessionCopyActivatedAt || 0);
-    if (activatedAt && now - activatedAt < 600) return true;
-    target.dataset.codexSessionCopyActivatedAt = String(now);
-    return false;
-  }
-
-  async function selectSessionRowForAction(row) {
-    if (!(row instanceof HTMLElement) || !row.isConnected) return false;
-    const targetId = row.getAttribute("data-app-action-sidebar-thread-id") || "";
-    if (!targetId) return false;
-    if (row.getAttribute("data-app-action-sidebar-thread-selected") !== "true") row.click();
-
-    const deadline = Date.now() + sessionCopyMenuActivationTimeoutMs;
-    while (Date.now() < deadline) {
-      const selected = [...document.querySelectorAll(selectors.sidebarThread)]
-        .find((candidate) => candidate.getAttribute("data-app-action-sidebar-thread-selected") === "true");
-      if (selected?.getAttribute("data-app-action-sidebar-thread-id") === targetId) return true;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return false;
-  }
-
-  function dispatchNativePointerClick(node) {
-    if (!(node instanceof HTMLElement)) return;
-    node.focus?.();
-    if (typeof PointerEvent === "function") {
-      node.dispatchEvent(new PointerEvent("pointerdown", {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        button: 0,
-        buttons: 1,
-        pointerId: 1,
-        pointerType: "mouse",
-        isPrimary: true,
-      }));
-      node.dispatchEvent(new PointerEvent("pointerup", {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        button: 0,
-        buttons: 0,
-        pointerId: 1,
-        pointerType: "mouse",
-        isPrimary: true,
-      }));
-    }
-    node.click();
-  }
-
-  async function waitForSessionElement(resolveElement, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const element = resolveElement();
-      if (element) return element;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return null;
-  }
-
-  function visibleSessionRenameDialog() {
-    return [...document.querySelectorAll('[role="dialog"]')]
-      .filter(visibleElement)
-      .find((dialog) => dialog.querySelector('input[aria-label="聊天标题"], input[aria-label="Chat title"]')) || null;
-  }
-
-  function closeSessionRenameDialog(dialog) {
-    const cancelButton = [...dialog?.querySelectorAll?.("button") || []]
-      .find((button) => /^(取消|Cancel)$/i.test(normalizedElementText(button)));
-    if (cancelButton) {
-      cancelButton.click();
-      return;
-    }
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
-  }
-
-  function sessionActionTrigger(row) {
-    const direct = row?.querySelector?.('button[aria-label="聊天操作"], button[aria-label="Chat actions"]');
-    if (direct instanceof HTMLElement && visibleElement(direct)) return direct;
-    if (lastSessionActionTrigger instanceof HTMLElement && lastSessionActionTrigger.isConnected && visibleElement(lastSessionActionTrigger)) {
-      return lastSessionActionTrigger;
-    }
-    const candidates = Array.from(document.querySelectorAll([
-      'button[aria-label="聊天操作"]',
-      'button[aria-label="Chat actions"]',
-      'button[aria-label="会话操作"]',
-      'button[aria-label="Thread actions"]',
-      'button[aria-label="更多"]',
-      'button[aria-label="More"]',
-      'button[aria-label="More options"]',
-      'button[aria-label="更多操作"]',
-      'button[aria-label="More actions"]',
-      'button[aria-label="会话选项"]',
-      'button[aria-label="Conversation options"]',
-      'button[aria-label="Thread options"]',
-      'button[aria-haspopup="menu"]',
-    ].join(","))).filter((button) => {
-      if (!(button instanceof HTMLElement) || !visibleElement(button) || isExtensionUiNode(button)) return false;
-      const header = button.closest?.(selectors.appHeader);
-      return !!header || /聊天操作|Chat actions|会话操作|Thread actions|更多|More|选项|options/i.test(button.getAttribute("aria-label") || "");
-    });
-    if (candidates.length) return candidates.at(-1);
-    const header = document.querySelector(selectors.appHeader);
-    const iconButtons = Array.from(header?.querySelectorAll?.("button") || [])
-      .filter((button) => button instanceof HTMLElement && visibleElement(button) && !isExtensionUiNode(button))
-      .filter((button) => {
-        const text = normalizedElementText(button);
-        return text === "..." || text === "⋯" || text === "···" || button.getAttribute("aria-expanded") != null;
-      });
-    return iconButtons.at(-1) || null;
-  }
-
-  function nativeSessionRenameCapability(dialog, initialTitle) {
-    if (!(dialog instanceof HTMLElement)) return null;
-    const buttons = [...dialog.querySelectorAll("button")].filter((button) => visibleElement(button) && !button.disabled);
-    const suggestion = buttons.find((button) => {
-      const text = normalizedElementText(button);
-      if (!text || text === initialTitle || /^(取消|保存|Cancel|Save)$/i.test(text)) return false;
-      const semantics = `${button.getAttribute("aria-label") || ""} ${button.getAttribute("data-testid") || ""}`;
-      return button.classList.contains("text-info")
-        || /(?:title|name)[-_ ]suggestion|(?:use|apply|accept).*(?:suggested|suggestion)|使用.*建议|采用.*建议/i.test(semantics);
-    }) || null;
-    const generate = buttons.find((button) => /生成.*(?:名称|标题)|(?:generate|suggest).*(?:title|name)/i.test(
-      `${normalizedElementText(button)} ${button.getAttribute("aria-label") || ""}`)) || null;
-    const pending = dialog.matches('[aria-busy="true"], [data-state="loading"]')
-      || !!dialog.querySelector('[aria-busy="true"], [role="progressbar"], [data-state="loading"]');
-    return suggestion || generate || pending ? { suggestion, generate, pending } : null;
-  }
-
-  async function activateSessionAutoRenameMenuItem(event) {
-    if (event?.type === "keydown" && !["Enter", " "].includes(event.key)) return;
-    const item = event?.currentTarget;
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-    event?.stopImmediatePropagation?.();
-    if (sessionCopyMenuActivationIsDuplicate(item)) return;
-    closeSessionMoreMenus();
-
-    const row = item?.__codexSessionAutoRenameRow;
-    if (!(row instanceof HTMLElement) || !row.isConnected) {
-      showToast("找不到要重命名的会话", null);
-      return;
-    }
-    if (!await selectSessionRowForAction(row)) {
-      showToast("会话加载超时，请稍后重试", null);
-      return;
-    }
-
-    const trigger = sessionActionTrigger(row);
-    if (!(trigger instanceof HTMLElement)) {
-      showToast("找不到 Codex 原生重命名入口", null);
-      return;
-    }
-    lastSessionActionTrigger = trigger;
-    dispatchNativePointerClick(trigger);
-
-    let renameItem = await waitForSessionElement(() => {
-      return sessionCopyMenuScopes()
-        .filter((menu) => visibleElement(menu) && looksLikeSessionActionMenu(menu))
-        .flatMap((menu) => [...menu.querySelectorAll('[role="menuitem"]')])
-        .find(isNativeSessionRenameMenuItem) || null;
-    }, 1200);
-    if (!renameItem) {
-      trigger.click();
-      renameItem = await waitForSessionElement(() => {
-        return [...document.querySelectorAll('[role="menuitem"]')]
-          .filter(visibleElement)
-          .find(isNativeSessionRenameMenuItem) || null;
-      }, 1200);
-    }
-    if (!(renameItem instanceof HTMLElement)) {
-      showToast("无法打开 Codex 原生重命名入口", null);
-      return;
-    }
-    renameItem.click();
-
-    const dialog = await waitForSessionElement(visibleSessionRenameDialog, 3000);
-    if (!(dialog instanceof HTMLElement)) {
-      showToast("无法打开 Codex 原生重命名窗口", null);
-      return;
-    }
-    const titleInput = dialog.querySelector('input[aria-label="聊天标题"], input[aria-label="Chat title"]');
-    const initialTitle = titleInput?.value || "";
-    // 新版可能只有手动输入框。先确认原生能力，不能空等 20 秒后关掉用户窗口。
-    const capability = await waitForSessionElement(() => nativeSessionRenameCapability(visibleSessionRenameDialog(), initialTitle), 800);
-    if (!capability) {
-      showToast("当前 Codex 未提供自动命名，可在此窗口手动重命名", null);
-      return;
-    }
-    if (!capability.suggestion && capability.generate) capability.generate.click();
-    showToast("正在使用 Codex 生成会话名称…", null);
-
-    const suggestionButton = await waitForSessionElement(() => {
-      const currentDialog = visibleSessionRenameDialog();
-      if (!currentDialog) return null;
-      return nativeSessionRenameCapability(currentDialog, initialTitle)?.suggestion || null;
-    }, sessionAutoRenameTimeoutMs);
-    if (!(suggestionButton instanceof HTMLElement)) {
-      showToast("Codex 未能生成新名称，可在此窗口手动重命名", null);
-      return;
-    }
-
-    suggestionButton.click();
-    const renamedInput = await waitForSessionElement(() => {
-      const input = visibleSessionRenameDialog()?.querySelector('input[aria-label="聊天标题"], input[aria-label="Chat title"]');
-      return input?.value?.trim() && input.value.trim() !== initialTitle.trim() ? input : null;
-    }, 1500);
-    const activeDialog = visibleSessionRenameDialog();
-    const saveButton = [...activeDialog?.querySelectorAll?.("button") || []]
-      .find((button) => /^(保存|Save)$/i.test(normalizedElementText(button)));
-    if (!renamedInput || !(saveButton instanceof HTMLElement) || saveButton.disabled) {
-      showToast("Codex 未能应用新名称，可在此窗口手动重命名", null);
-      return;
-    }
-    saveButton.click();
-    showToast("已自动重命名当前会话", null);
-  }
-
-  async function activateSessionCopyMenuItem(event) {
-    if (event?.type === "keydown" && !["Enter", " "].includes(event.key)) return;
-    const item = event?.currentTarget;
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-    event?.stopImmediatePropagation?.();
-    if (sessionCopyMenuActivationIsDuplicate(item)) return;
-    const row = item?.__codexSessionCopyRow;
-    if (!(row instanceof HTMLElement) || !row.isConnected) {
-      showToast("找不到要复制的会话", null);
-      return;
-    }
-    if (!await selectSessionRowForAction(row)) {
-      showToast("会话加载超时，请稍后重试", null);
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    const forkButtons = [...document.querySelectorAll('button[aria-label="从这里创建聊天分支"], button[aria-label="Fork from here"]')]
-      .filter(visibleElement)
-      .filter((button) => !isExtensionUiNode(button));
-    const forkButton = forkButtons.at(-1);
-    if (!forkButton) {
-      showToast("当前会话没有可用的官方分支入口", null);
-      return;
-    }
-    forkButton.click();
-  }
-
-  function createSessionCopyMenuItem(referenceItem, row) {
-    const item = document.createElement("div");
-    item.className = referenceItem?.className || "no-drag outline-hidden rounded-lg px-[var(--padding-row-x)] py-[var(--padding-row-y)] text-sm text-default group cursor-interaction flex flex-col";
-    item.classList.add(sessionCopyMenuItemClass);
-    item.setAttribute("role", referenceItem?.getAttribute("role") || "menuitem");
-    item.setAttribute("tabindex", referenceItem?.getAttribute("tabindex") || "-1");
-    item.setAttribute("data-orientation", referenceItem?.getAttribute("data-orientation") || "vertical");
-    item.setAttribute("data-codex-session-copy-menu", "true");
-    item.dataset.codexSessionCopyVersion = sessionCopyMenuItemVersion;
-    item.__codexSessionCopyRow = row;
-    item.innerHTML = `<div class="flex w-full items-center gap-1.5"><span class="inline-flex h-5 w-5 shrink-0 items-center justify-center opacity-75 group-focus:opacity-100 group-hover:opacity-100">${sessionCopyMenuItemIcon()}</span><span class="flex-1 min-w-0 truncate">原地复制会话 - Codex++</span></div>`;
-    item.addEventListener("pointerup", activateSessionCopyMenuItem, true);
-    item.addEventListener("click", activateSessionCopyMenuItem, true);
-    item.addEventListener("keydown", activateSessionCopyMenuItem, true);
-    return item;
-  }
-
-  function refreshSessionCopyMenuItems(scope = document) {
-    sessionCopyMenuScopes(scope).forEach((menu) => {
-      if (!(menu instanceof HTMLElement) || isExtensionUiNode(menu)) return;
-      if (menu.matches(`.${moreMenuClass}, .${codexPlusMenuFloatingClass}, #${codexPlusMenuId}`)) {
-        menu.querySelectorAll(`.${sessionCopyMenuItemClass}`).forEach((item) => item.remove());
-        return;
-      }
-      const row = sessionCopyMenuRow(menu);
-      if (!looksLikeSessionActionMenu(menu)) return;
-      const existing = menu.querySelector(`.${sessionCopyMenuItemClass}`);
-      if (!row) {
-        existing?.remove();
-        return;
-      }
-      if (existing) {
-        existing.__codexSessionCopyRow = row;
-        return;
-      }
-      const referenceItem = menu.querySelector('[role="menuitem"]');
-      menu.appendChild(createSessionCopyMenuItem(referenceItem, row));
-    });
-  }
-
   function scanDeferred(work = codexPlusAllScanWork) {
     if (work.shell || work.menus) {
       if (codexPluginMarketplacePatchEnabled()) {
@@ -967,10 +655,11 @@
       }
     }
     if (work.shell || work.conversation) {
-      if (typeof syncCodexPlusWhaleWidget === "function") runScanStep(syncCodexPlusWhaleWidget);
+      if (typeof syncCodexPlusAgentPet === "function") runScanStep(syncCodexPlusAgentPet);
       refreshDreamSkin();
     }
     if (work.shell || work.sidebar) {
+      runScanStep(filterDeletedSessionRows);
       refreshThreadIdBadges();
       sessionRows().forEach(tryAttachButton);
       updateDeleteButtonOffsets();

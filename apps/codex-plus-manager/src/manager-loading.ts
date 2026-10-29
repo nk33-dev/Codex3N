@@ -1,4 +1,4 @@
-export type ManagerRoute = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "claudeRelay" | "claudeSessions" | "computerUse" | "requestLog" | "agentSettings" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "agentCollaboration" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings";
+export type ManagerRoute = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "claudeRelay" | "claudeSessions" | "computerUse" | "requestLog" | "agentSettings" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "agentCollaboration" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "agentPet";
 
 type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "logs" | "diagnostics" | "watcher";
 export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
@@ -29,7 +29,14 @@ const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
   userScripts: [["settings"], ["scriptMarket"], ["userScriptInventory"]],
   maintenance: [["overview", "watcher"]],
   about: [["overview", "logs", "diagnostics"]],
-  settings: [["settings"]],
+  settings: [["settings", "overview", "logs", "diagnostics"]],
+  hub: [],
+  gateway: [],
+  gatewayProviders: [],
+  gatewayRouting: [],
+  gatewayUsage: [],
+  gatewaySettings: [["overview"]],
+  agentPet: [["settings"]],
 };
 
 export async function loadManagerPage(

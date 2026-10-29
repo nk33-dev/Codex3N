@@ -133,12 +133,16 @@ export function ClaudeSessionsScreen() {
         if (current) { setPage(result); setSelected(new Set()); }
       })
       : request<{ backups: Backup[]; warnings: string[] }>("list_claude_session_backups").then((result) => {
-        if (current) { setBackups(result.backups); setBackupWarnings(result.warnings); }
+        if (current) {
+          setBackups(result.backups); setBackupWarnings(result.warnings);
+          const count = result.backups.filter((backup) => matchesManagementQuery([backup.title, backup.cwd, backup.sessionId], debouncedQuery)).length;
+          setOffset((value) => Math.min(value, Math.max(0, Math.ceil(count / 50) - 1) * 50));
+        }
       });
     load.catch((reason) => { if (current) setError(String(reason)); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [view, debouncedQuery, offset, revision]);
+  }, [view, debouncedQuery, view === "sessions" ? offset : 0, revision]);
 
   const disabled = busy || loading || query !== debouncedQuery;
   const groups = claudeSessionGroups(page?.sessions ?? [], mode);
@@ -189,10 +193,21 @@ export function ClaudeSessionsScreen() {
     await request("restore_claude_session", { token: backup.token });
     if (mounted.current) { setNotice(t("会话已恢复")); refresh(); }
   });
+  const cleanupBackups = () => operate(async () => {
+    if (!(await confirm(t("清理超过 7 天且不在最新 20 份内的备份？清理后无法恢复这些备份。"), { title: t("清理备份"), kind: "warning", okLabel: t("删除备份"), cancelLabel: t("取消") })) || !mounted.current) return;
+    const result = await request<{ removed: number }>("cleanup_claude_session_backups");
+    if (mounted.current) { setNotice(tf("已清理 {0} 份备份", [result.removed])); refresh(); }
+  });
+  const deleteBackup = (backup: Backup) => operate(async () => {
+    if (!(await confirm(t("永久删除这份备份？原会话不受影响，此备份将无法恢复。"), { title: t("删除备份"), kind: "warning", okLabel: t("删除备份"), cancelLabel: t("取消") })) || !mounted.current) return;
+    await request("delete_claude_session_backup", { token: backup.token });
+    if (mounted.current) { setNotice(t("备份已删除")); refresh(); }
+  });
 
   return <div className="mg-page mg-session-page claude-sessions-page" aria-busy={busy || loading}>
     <PageHeader icon={<History size={20}/>} title={t("会话")} actions={<>
       <Action disabled={busy} onClick={refresh}><RefreshCw size={14}/>{t("刷新列表")}</Action>
+      {view === "backups" && <Action disabled={disabled} onClick={() => void cleanupBackups()}><Trash2 size={14}/>{t("清理过期备份")}</Action>}
       {view === "sessions" && <Action disabled={disabled} onClick={() => { setSelection(!selection); setSelected(new Set()); }}><CheckSquare size={14}/>{t("选择多个…")}</Action>}
     </>}/>
     <div className="mg-tabs-bar"><div className="mg-tabs" role="tablist" aria-label={t("会话视图")}>
@@ -200,6 +215,7 @@ export function ClaudeSessionsScreen() {
       <button type="button" role="tab" aria-selected={view === "backups"} data-active={view === "backups"} disabled={busy} onClick={() => switchView("backups")}><ArchiveRestore size={14}/>{t("删除备份")}</button>
     </div></div>
     <div className="mg-session-controls">
+      {view === "backups" && <span>{t("保留最新 20 份及 7 天内的全部备份")}</span>}
       <div className="mg-search"><Search size={15}/><input value={query} disabled={busy} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索标题、目录或会话 ID")} aria-label={t("搜索标题、目录或会话 ID")}/>{query && <IconAction disabled={busy} label={t("清除搜索")} onClick={() => setQuery("")}><X size={14}/></IconAction>}</div>
       {view === "sessions" && <div className="mg-segmented">
         <button type="button" data-active={mode === "project"} aria-pressed={mode === "project"} onClick={() => setMode("project")}>{t("按项目")}</button>
@@ -240,7 +256,7 @@ export function ClaudeSessionsScreen() {
           : visibleBackups.map((backup) => <article className="claude-backup-row" key={backup.token}>
             <div><strong>{backup.title || backup.sessionId}</strong><small>{backup.cwd}</small><code>{backup.token}</code></div>
             <div className="mg-session-meta"><span>{backup.restored ? t("已恢复") : backup.complete ? t("已备份") : t("部分操作")}</span><time>{time(backup.createdAtMs)}</time><small>{tf("{0} 个文件", [backup.fileCount])}</small></div>
-            <IconAction disabled={disabled || backup.restored} label={t("恢复会话")} onClick={() => void restore(backup)}><RotateCcw size={16}/></IconAction>
+            <div className="mg-row-actions"><IconAction disabled={disabled || backup.restored} label={t("恢复会话")} onClick={() => void restore(backup)}><RotateCcw size={16}/></IconAction><IconAction disabled={disabled} label={t("删除备份")} onClick={() => void deleteBackup(backup)}><Trash2 size={16}/></IconAction></div>
           </article>)}
     </div></div>
     <div className="mg-pagination">

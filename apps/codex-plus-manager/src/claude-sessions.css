@@ -107,7 +107,7 @@
 
 .claude-backup-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 160px 32px;
+  grid-template-columns: minmax(0, 1fr) 160px 72px;
   align-items: center;
   gap: 12px;
   padding: 12px;
@@ -120,6 +120,10 @@
   flex-direction: column;
   gap: 4px;
   overflow-wrap: anywhere;
+}
+
+.shell .claude-backup-row .mg-session-meta {
+  display: flex;
 }
 
 .claude-backup-row small,
@@ -227,9 +231,9 @@
   .claude-sessions-page .mg-session-row { grid-template-columns: 20px minmax(0, 1fr) 34px; padding-block: 8px; }
   .claude-sessions-page .mg-session-row .mg-session-meta { grid-column: 2; align-items: flex-start; }
   .claude-sessions-page .mg-session-row .mg-row-actions { grid-column: 3; grid-row: 1 / 3; }
-  .claude-backup-row { grid-template-columns: minmax(0, 1fr) 32px; }
+  .claude-backup-row { grid-template-columns: minmax(0, 1fr) 72px; }
   .claude-backup-row .mg-session-meta { grid-column: 1; align-items: flex-start; }
-  .claude-backup-row > button { grid-column: 2; grid-row: 1 / 3; }
+  .claude-backup-row > .mg-row-actions { grid-column: 2; grid-row: 1 / 3; }
 }
 
 @media (prefers-reduced-motion: reduce) {

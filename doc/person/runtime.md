@@ -8,6 +8,10 @@
 
 ## 管理器加载和后台刷新
 
+网关总览为启动页；新网关页面由上游各组件读取自己的状态，个人版 `manager-loading.ts` 仍是原有页面任务的唯一编排入口。设置与关于合并到整体设置，安装维护并入 Codex 设置；旧路由通过同一 `navigate` 归一化。托盘快捷面板和 Computer Use 预览通过 `main.tsx` 的 hash 分流，不运行第二个主 App。
+
+轻量模式默认关闭。开启后关窗会销毁 WebView，重新打开经 `build_main_window` 恢复窗口尺寸、最大化和隔离数据目录；未保存草稿随窗口销毁，设置页已有说明。托盘、helper 与网关继续运行，聚焦或唤起取消待执行的销毁。个人设置仍手动保存，外部设置事件按已保存基线合并草稿，不自动重试旧修订号。
+
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描和环境检查进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。
 - 工具栏在本地设置初始化后读取，与概览请求并行。语言经用户偏好保存成功后通知 React 原地更新，保留页面草稿；回归见 `manager-loading.test.ts`、`issue-20261018.test.ts`。上游启动 effect 的工具栏修复已由此入口覆盖。
@@ -201,7 +205,7 @@ Windows 官方 App 26.1013.3656.0 的隔离验收在同一临时用户目录连�
 
 ## 低功耗后续验收
 
-完整数据服务的隔离入口为 `cargo run -p codex-plus-launcher --example whale_power_probe -- <官方 App 目录> <系统临时目录> <调试端口> [--whale]`；核心库的 `low_power_probe` example 继续用于不依赖业务数据服务的启动与清理验证。二者都要求显式设置隔离的 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，前者的 `--whale` 仅开启测试实例挂件。
+完整数据服务的隔离入口为 `cargo run -p codex-plus-launcher --example isolated_app_probe -- <官方 App 目录> <系统临时目录> <调试端口> [--pet]`；核心库的 `low_power_probe` example 继续用于不依赖业务数据服务的启动与清理验证。二者都要求显式设置隔离的 `CODEX_PLUS_STATE_DIR`、`CODEX_HOME` 和 `CODEX_PLUS_MULTI_INSTANCE=1`，前者的 `--pet` 仅开启测试实例桌宠。
 
 切换诊断沿现有原生 RPC 包装采集请求标识、方法、主机等值组、参数等值组和起止时刻。分组只在单轮采样内有效，不导出参数、路径、主机名或会话正文；最多保留 2048 条请求。`rpcOverlaps` 只统计同主机、同参数、1 秒内发起且执行区间重叠的 `thread/list`。诊断请求允许等待繁忙页面最多 30 秒，采样窗口仍为 60 秒。无有效 RPC 记录时不据此判断重复请求。
 

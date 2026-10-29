@@ -3,6 +3,13 @@ import type { ManagerRoute } from "./manager-loading";
 
 export function routeSubtitle(route: ManagerRoute): string {
   const subtitles: Record<ManagerRoute, string> = {
+    hub: t("网关总览"),
+    gateway: t("Agent 接入"),
+    gatewayProviders: t("供应商池"),
+    gatewayRouting: t("路由"),
+    gatewayUsage: t("用量"),
+    gatewaySettings: t("网关设置"),
+    agentPet: t("Agent 桌宠"),
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),

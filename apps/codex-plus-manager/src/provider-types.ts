@@ -1,4 +1,4 @@
-import type { WhaleBalanceSettings } from "./whale-settings";
+import type { AgentPetSettings } from "./agent-pet-settings";
 import type { DreamSkinThemeConfig } from "./dream-skin";
 import type { DictationSettings } from "./dictation-settings";
 import type { PromptEnhanceSettings } from "./prompt-enhance-settings";
@@ -23,6 +23,7 @@ export type RelayAggregateConfig = {
   modelAggregationEnabled?: boolean;
   defaultRelayId?: string;
   syncDefaultMemberLogin?: boolean;
+  autoReviewRelayId?: string;
 };
 
 export type RelayProfile = {
@@ -73,6 +74,9 @@ export type RelayProfile = {
   autoReviewModel?: string;
   trustUpstreamCatalogLite?: boolean;
   strictResponsesReasoning?: boolean;
+  multiAgent?: string;
+  localCompactionPromptAtEnd?: boolean;
+  stripImageGenerationTool?: boolean;
 };
 
 export type AggregateRelayMember = { relayId: string; weight: number };
@@ -83,6 +87,7 @@ export type AggregateRelayProfile = {
   modelAggregationEnabled?: boolean;
   defaultRelayId?: string;
   syncDefaultMemberLogin?: boolean;
+  autoReviewRelayId?: string;
   strategy: RelayAggregateStrategy;
   members: AggregateRelayMember[];
   routes?: { pattern: string; relayId: string; priority: number }[];
@@ -99,7 +104,13 @@ export type ToolShard = {
   relayTestModel?: string;
 };
 
-export type BackendSettings = WhaleBalanceSettings & {
+export type BackendSettings = {
+  agentPet: AgentPetSettings;
+  updateAutoCheck?: boolean;
+  updateSkippedVersion?: string;
+  codexAppSessionDeleteSkipConfirm: boolean;
+  codexAppNativePredictions: boolean;
+  codexAppThirdPartyReasoningCollapse: boolean;
   secretDecryptionFailures?: string[];
   revision?: string;
   codexAppNativeFastUnlock: boolean;

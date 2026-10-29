@@ -9,6 +9,7 @@
 // 语言通过外部 store 通知 React 原地更新；模块级标签使用 getter，保留页面和草稿。
 
 import { EN_BACKEND, EN_BACKEND_PATTERNS, EN_PLAIN, EN_TEMPLATE } from "@/i18n-en";
+import { appAlert } from "./app-dialog";
 
 export type Language = "zh" | "en";
 
@@ -66,7 +67,7 @@ export function setLanguage(language: Language): void {
     LANG = language;
     for (const listener of listeners) listener();
   })
-    .catch((error) => window.alert(`保存语言失败：${String(error)}`));
+    .catch((error) => void appAlert(`保存语言失败：${String(error)}`));
 }
 
 /** Flip between Chinese and English. */

@@ -54,7 +54,7 @@ pub async fn fetch_sub2api_billing_info(
 
     let endpoint = sub2api_billing_endpoint(base_url);
     let client =
-        crate::http_client::client_for_profile_url(&profile.user_agent, &profile.id, &endpoint)?;
+        crate::http_client::client_for_relay_url(&profile.user_agent, &profile, &endpoint)?;
     let response = client
         .get(&endpoint)
         .bearer_auth(api_key)

@@ -27,6 +27,8 @@ use sha2::{Digest, Sha256};
 
 const SKILL_MANIFEST_FILE: &str = "SKILL.md";
 const BUNDLED_SKILLS_DIR: &str = ".system";
+/// 从本地目录导入的 Skill 的来源标记（#511），前端按它显示「本地导入」分组。
+pub const LOCAL_IMPORT_REPO_KEY: &str = "local";
 /// 单个仓库 zip 的下载上限。skill 仓库都是纯文本，64 MiB 足够宽松了。
 const REPO_ZIP_DOWNLOAD_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
@@ -165,6 +167,10 @@ pub struct SkillEntry {
     pub content_hash: String,
     pub remote_hash: String,
     pub update_available: bool,
+    /// 已经启用到哪些 Agent（"codex" / "claude" / "grok"）：它们的 skills 目录里有这个 Skill。
+    pub agents: Vec<String>,
+    /// Codex++ 的受控源目录里有它（安装或导入过）；只在某个 Agent 自己目录里的 Skill 为 false。
+    pub managed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -182,6 +188,8 @@ pub struct SkillsManager {
     backups_dir: PathBuf,
     state_path: PathBuf,
     codex_home: PathBuf,
+    /// Codex 之外也读 `<dir>/<id>/SKILL.md` 的 Agent：(Agent id, skills 目录)。
+    agent_dirs: Vec<(String, PathBuf)>,
     state_lock: Arc<Mutex<()>>,
 }
 
@@ -197,8 +205,107 @@ impl SkillsManager {
             backups_dir: backups_dir.into(),
             state_path: state_path.into(),
             codex_home: codex_home.into(),
+            agent_dirs: Vec::new(),
             state_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// 让 Skill 也能启用到其它 Agent（例如 Claude Code 的 `~/.claude/skills`、Grok 的 `~/.grok/skills`）。
+    pub fn with_agent_dirs(mut self, dirs: Vec<(String, PathBuf)>) -> Self {
+        self.agent_dirs = dirs;
+        self
+    }
+
+    pub fn agent_dirs(&self) -> &[(String, PathBuf)] {
+        &self.agent_dirs
+    }
+
+    fn agent_dir(&self, agent: &str) -> anyhow::Result<PathBuf> {
+        self.agent_dirs
+            .iter()
+            .find(|(id, _)| id == agent)
+            .map(|(_, dir)| dir.clone())
+            .with_context(|| format!("不支持的 Agent：{agent}"))
+    }
+
+    /// 把 Skill 启用到 / 停用于某个 Agent。Codex 沿用 [`Self::set_enabled`]；其它 Agent 同样是软链到受控源目录。
+    ///
+    /// 启用时若还没有受控源（Codex 或其它 Agent 自建的 Skill），先从它所在的目录导入一份。
+    /// 停用只删本工具建的软链；Agent 自己目录里的真实 Skill 不删，报错说明。
+    pub fn set_enabled_for(&self, agent: &str, id: &str, enabled: bool) -> anyhow::Result<()> {
+        validate_skill_id(id)?;
+        if enabled {
+            self.ensure_managed_source(id)?;
+        }
+        if agent == "codex" {
+            return self.set_enabled(id, enabled);
+        }
+        let dir = self.agent_dir(agent)?;
+        let link = dir.join(id);
+        let metadata = std::fs::symlink_metadata(&link);
+        if !enabled {
+            return match metadata {
+                Ok(metadata) if metadata.file_type().is_symlink() || is_managed_copy(&link) => {
+                    remove_link(&link)
+                }
+                Ok(_) => anyhow::bail!(
+                    "{} 是这个 Agent 自己的 Skill，不由 Codex++ 管理，未删除",
+                    link.display()
+                ),
+                Err(_) => Ok(()),
+            };
+        }
+        if link.join(SKILL_MANIFEST_FILE).is_file() {
+            return Ok(());
+        }
+        if metadata.is_ok() {
+            anyhow::bail!("启用位置已存在其他内容，未覆盖：{}", link.display());
+        }
+        let source = self.source_dir.join(id);
+        if !source.is_dir() {
+            anyhow::bail!("skill 源目录不存在：{}", source.display());
+        }
+        std::fs::create_dir_all(&dir).with_context(|| format!("创建 {} 失败", dir.display()))?;
+        if let Err(error) = link_or_copy(&source, &link) {
+            remove_link(&link).context(format!("启用失败且清理未完成：{error:#}"))?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// 没有受控源时，从 Codex 或其它 Agent 目录里找到这个 Skill 的真实目录，纳入受控源。
+    ///
+    /// - 在 Codex 目录里：走一遍「停用 → 启用」，停用会把真实目录复制成受控源（原目录进备份），
+    ///   启用再软链回来，Codex 照常可用；
+    /// - 只在其它 Agent 目录里：复制一份成受控源，那个 Agent 自己的目录保持不动。
+    fn ensure_managed_source(&self, id: &str) -> anyhow::Result<()> {
+        if self.source_dir.join(id).is_dir() {
+            return Ok(());
+        }
+        let physical = |path: &Path| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+                && path.join(SKILL_MANIFEST_FILE).is_file()
+        };
+        let codex = self.linked_dir().join(id);
+        if physical(&codex) {
+            self.set_enabled(id, false)?;
+            return self.set_enabled(id, true);
+        }
+        if std::fs::symlink_metadata(&codex).is_ok() {
+            // Codex 目录里同名的是别的东西（例如断掉的软链），导入会把它挪进备份；交给用户处理。
+            anyhow::bail!(
+                "Codex 的 skills 目录里已有同名内容，未导入：{}",
+                codex.display()
+            );
+        }
+        for (_, dir) in &self.agent_dirs {
+            let candidate = dir.join(id);
+            if physical(&candidate) {
+                self.import_from_directory(id, &candidate)?;
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 
     pub fn source_dir(&self) -> &Path {
@@ -332,6 +439,8 @@ impl SkillsManager {
                                 && item.content_hash != skill.content_hash
                         })
                         .unwrap_or(false),
+                    agents: Vec::new(),
+                    managed: false,
                 },
             );
         }
@@ -356,6 +465,8 @@ impl SkillsManager {
                     content_hash: installed.content_hash.clone(),
                     remote_hash: String::new(),
                     update_available: false,
+                    agents: Vec::new(),
+                    managed: false,
                 });
         }
 
@@ -378,7 +489,55 @@ impl SkillsManager {
             }
         }
 
-        entries.into_values().collect()
+        // 只放在 Claude / Grok 自己 skills 目录里的 Skill（不是本工具建的软链），也要能看见、能启用到别处。
+        for (agent, dir) in &self.agent_dirs {
+            for skill in scan_skill_dirs(dir) {
+                if !entries.values().any(|item| item.id == skill.0) {
+                    let (name, description) = skill.1;
+                    entries.insert(
+                        (String::new(), skill.0.clone()),
+                        SkillEntry {
+                            id: skill.0.clone(),
+                            name,
+                            description,
+                            repo_key: String::new(),
+                            repo_path: String::new(),
+                            installed: true,
+                            enabled: false,
+                            bundled: false,
+                            content_hash: String::new(),
+                            remote_hash: String::new(),
+                            update_available: false,
+                            agents: vec![agent.clone()],
+                            managed: false,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut entries: Vec<SkillEntry> = entries.into_values().collect();
+        for entry in &mut entries {
+            if !entry.installed {
+                continue;
+            }
+            entry.managed = self.source_dir.join(&entry.id).is_dir();
+            let mut agents = Vec::new();
+            if entry.enabled || entry.bundled {
+                agents.push("codex".to_string());
+            }
+            if !entry.bundled {
+                for (agent, dir) in &self.agent_dirs {
+                    if dir.join(&entry.id).join(SKILL_MANIFEST_FILE).is_file()
+                        && !agents.contains(agent)
+                    {
+                        agents.push(agent.clone());
+                    }
+                }
+            }
+            entry.agents = agents;
+        }
+        entries
     }
 
     /// 本地目录 inventory 不混入仅出现在远端/缓存清单中的未安装条目，也不写 TOML。
@@ -424,18 +583,57 @@ impl SkillsManager {
                 content_hash: String::new(),
                 remote_hash: String::new(),
                 update_available: false,
+                agents: Vec::new(),
+                managed: false,
             });
         }
         skills
     }
 
-    /// 从外部 Skill 目录导入到 Codex++ 的受控源目录，并默认停用。
+    /// 从外部 Skill 目录导入到 Codex++ 的受控源目录，并默认停用。来源记为 cc-switch。
     pub fn import_from_directory(
         &self,
         id: &str,
         external_dir: &Path,
     ) -> anyhow::Result<SkillsState> {
+        self.import_directory_with_source(id, external_dir, "cc-switch")
+    }
+
+    /// 用户在管理器里选择的本地目录导入（#511）。与 cc-switch 导入同一套流程，来源记为本地导入。
+    pub fn import_from_local_directory(
+        &self,
+        id: &str,
+        external_dir: &Path,
+    ) -> anyhow::Result<SkillsState> {
+        self.import_directory_with_source(id, external_dir, LOCAL_IMPORT_REPO_KEY)
+    }
+
+    fn import_directory_with_source(
+        &self,
+        id: &str,
+        external_dir: &Path,
+        repo_key: &str,
+    ) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
+        if repo_key == LOCAL_IMPORT_REPO_KEY {
+            // Codex 的 skills 目录本来就会被扫描显示；从这里「导入」会把原目录挪进备份，反而让它从 Codex 消失。
+            if let Ok(external) = external_dir.canonicalize() {
+                for (root, label) in [
+                    (self.linked_dir(), "Codex 的 skills 目录"),
+                    (self.source_dir.clone(), "Codex++ 的 Skills 受控目录"),
+                ] {
+                    if root
+                        .canonicalize()
+                        .is_ok_and(|root| external.starts_with(root))
+                    {
+                        anyhow::bail!(
+                            "{} 已在{label}里，Codex++ 会直接识别，无需导入",
+                            external_dir.display()
+                        );
+                    }
+                }
+            }
+        }
         let manifest = external_dir.join(SKILL_MANIFEST_FILE);
         if !manifest.is_file() {
             anyhow::bail!(
@@ -465,7 +663,7 @@ impl SkillsManager {
                 id: id.to_string(),
                 name,
                 description,
-                repo_key: "cc-switch".to_string(),
+                repo_key: repo_key.to_string(),
                 repo_path: String::new(),
                 content_hash: String::new(),
                 installed_at: current_unix_timestamp_string(),
@@ -574,6 +772,8 @@ impl SkillsManager {
                 content_hash: String::new(),
                 remote_hash: String::new(),
                 update_available: false,
+                agents: Vec::new(),
+                managed: false,
             });
         }
         skills
@@ -683,6 +883,16 @@ impl SkillsManager {
     /// 卸载：删软链，源目录整体移进备份目录。不做自动轮转删除。
     pub fn uninstall(&self, id: &str) -> anyhow::Result<SkillsState> {
         validate_skill_id(id)?;
+        // 其它 Agent 里指向它的软链先摘掉，源目录移走后它们会变成断链。
+        for (_, dir) in &self.agent_dirs {
+            let link = dir.join(id);
+            if std::fs::symlink_metadata(&link)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                || is_managed_copy(&link)
+            {
+                remove_link(&link)?;
+            }
+        }
         let link = self.linked_dir().join(id);
         let source = self.source_dir.join(id);
         let _guard = self.state_lock.lock().unwrap();
@@ -890,6 +1100,48 @@ fn validate_skill_id(id: &str) -> anyhow::Result<()> {
         anyhow::bail!("非法的 skill id：{id}");
     }
     Ok(())
+}
+
+/// 把用户选中的本地目录解析成待导入的 Skill 目录（#511）。
+///
+/// - 目录本身含 `SKILL.md`：它就是一个 Skill，id 取目录名；
+/// - 否则当作 Skills 集合目录，收直接子目录里含 `SKILL.md` 的（跳过隐藏目录）；
+/// - 两者都没有时报错，明确提示缺少 `SKILL.md`。
+pub fn local_skill_import_candidates(dir: &Path) -> anyhow::Result<Vec<(String, PathBuf)>> {
+    if !dir.is_dir() {
+        anyhow::bail!("{} 不是可读取的目录", dir.display());
+    }
+    if dir.join(SKILL_MANIFEST_FILE).is_file() {
+        let id = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("无法从 {} 推断 Skill 名称", dir.display()))?;
+        return Ok(vec![(id, dir.to_path_buf())]);
+    }
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if id.starts_with('.') || !path.is_dir() || !path.join(SKILL_MANIFEST_FILE).is_file() {
+            continue;
+        }
+        candidates.push((id, path));
+    }
+    if candidates.is_empty() {
+        anyhow::bail!(
+            "{} 下没有 SKILL.md，子目录里也没有，不是有效的 Skill 目录",
+            dir.display()
+        );
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(candidates)
 }
 
 /// GitHub trees API 的响应 → 该仓库里的 skill 清单。
@@ -1536,6 +1788,9 @@ async fn read_repo_zip(mut response: reqwest::Response, limit: usize) -> anyhow:
     Ok(bytes)
 }
 
+/// 复制回退时放进副本的标记：有它说明这份副本是 Codex++ 建的，停用时可以删。
+const MANAGED_COPY_MARKER: &str = ".codex-plus-managed";
+
 /// 软链优先，失败回退复制。Windows 上建目录软链要开发者模式或管理员权限，
 /// 拿不到就退化成复制——功能一样，只是更新时要重装。
 fn link_or_copy(source: &Path, link: &Path) -> anyhow::Result<()> {
@@ -1543,7 +1798,15 @@ fn link_or_copy(source: &Path, link: &Path) -> anyhow::Result<()> {
         return Ok(());
     }
     copy_dir_all(source, link)
-        .with_context(|| format!("复制 skill 到 {} 失败（软链也没建成）", link.display()))
+        .with_context(|| format!("复制 skill 到 {} 失败（软链也没建成）", link.display()))?;
+    std::fs::write(link.join(MANAGED_COPY_MARKER), "")
+        .with_context(|| format!("标记 {} 失败", link.display()))
+}
+
+/// 复制回退建的副本（不是软链，但带标记）。
+fn is_managed_copy(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
+        && path.join(MANAGED_COPY_MARKER).is_file()
 }
 
 #[cfg(unix)]
@@ -1563,6 +1826,10 @@ fn copy_dir_all(source: &Path, destination: &Path) -> anyhow::Result<()> {
         std::fs::read_dir(source).with_context(|| format!("读取目录失败：{}", source.display()))?
     {
         let entry = entry?;
+        // 副本标记只属于那一份副本，不跟着复制（例如停用 Codex 的副本时复制回受控源）。
+        if entry.file_name() == MANAGED_COPY_MARKER {
+            continue;
+        }
         let from = entry.path();
         let to = destination.join(entry.file_name());
         if from.is_dir() {
@@ -1617,6 +1884,35 @@ fn remove_symlink(link: &Path, file_type: &std::fs::FileType) -> std::io::Result
 #[cfg(not(windows))]
 fn remove_symlink(link: &Path, _file_type: &std::fs::FileType) -> std::io::Result<()> {
     std::fs::remove_file(link)
+}
+
+/// 扫描一个 skills 目录里「真实目录 + SKILL.md」的 Skill（跳过软链和隐藏目录），返回 (id, (名称, 描述))。
+fn scan_skill_dirs(root: &Path) -> Vec<(String, (String, String))> {
+    let Ok(dir) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut skills = Vec::new();
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let Some(id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if id.starts_with('.') {
+            continue;
+        }
+        let physical = std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir());
+        let manifest = path.join(SKILL_MANIFEST_FILE);
+        if physical && manifest.is_file() {
+            let meta = read_skill_manifest(&manifest, &id);
+            skills.push((id, meta));
+        }
+    }
+    skills.sort_by(|left, right| left.0.cmp(&right.0));
+    skills
 }
 
 fn is_linked(link: &Path) -> bool {
@@ -1692,6 +1988,148 @@ mod tests {
             temp.path().join("skills.json"),
             temp.path().join("codex-home"),
         )
+    }
+
+    fn multi_agent_manager(temp: &tempfile::TempDir) -> SkillsManager {
+        manager(temp).with_agent_dirs(vec![
+            ("claude".into(), temp.path().join("claude-skills")),
+            ("grok".into(), temp.path().join("grok-skills")),
+        ])
+    }
+
+    fn write_skill(dir: &Path, content: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), content).unwrap();
+    }
+
+    fn entry<'a>(entries: &'a [SkillEntry], id: &str) -> &'a SkillEntry {
+        entries.iter().find(|item| item.id == id).unwrap()
+    }
+
+    #[test]
+    fn managed_skill_enables_into_other_agents_as_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(
+            &temp.path().join("external/alpha"),
+            "---\nname: Alpha\n---\n",
+        );
+        manager
+            .import_from_directory("alpha", &temp.path().join("external/alpha"))
+            .unwrap();
+
+        manager.set_enabled_for("claude", "alpha", true).unwrap();
+        let link = temp.path().join("claude-skills/alpha");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let entries = manager.local_inventory();
+        assert_eq!(entry(&entries, "alpha").agents, vec!["claude".to_string()]);
+        assert!(entry(&entries, "alpha").managed);
+
+        manager.set_enabled_for("claude", "alpha", false).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(
+            manager.source_dir.join("alpha/SKILL.md").is_file(),
+            "停用不动源目录"
+        );
+    }
+
+    /// Windows 没有建软链的权限时退化成复制：带标记的副本停用时照样删掉，复制回受控源时不带标记。
+    #[test]
+    fn copied_fallback_can_be_disabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(
+            &temp.path().join("external/alpha"),
+            "---\nname: Alpha\n---\n",
+        );
+        manager
+            .import_from_directory("alpha", &temp.path().join("external/alpha"))
+            .unwrap();
+        let copy = temp.path().join("claude-skills/alpha");
+        copy_dir_all(&manager.source_dir.join("alpha"), &copy).unwrap();
+        std::fs::write(copy.join(MANAGED_COPY_MARKER), "").unwrap();
+
+        manager.set_enabled_for("claude", "alpha", false).unwrap();
+        assert!(std::fs::symlink_metadata(&copy).is_err(), "副本被删掉");
+        assert!(
+            manager.source_dir.join("alpha/SKILL.md").is_file(),
+            "停用不动源目录"
+        );
+
+        let again = temp.path().join("copy-again");
+        std::fs::write(
+            manager.source_dir.join("alpha").join(MANAGED_COPY_MARKER),
+            "",
+        )
+        .unwrap();
+        copy_dir_all(&manager.source_dir.join("alpha"), &again).unwrap();
+        assert!(!again.join(MANAGED_COPY_MARKER).exists(), "标记不跟着复制");
+    }
+
+    #[test]
+    fn codex_local_skill_is_adopted_and_stays_enabled_in_codex() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(&manager.linked_dir().join("beta"), "codex local");
+
+        manager.set_enabled_for("claude", "beta", true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(manager.linked_dir().join("beta/SKILL.md")).unwrap(),
+            "codex local",
+            "Codex 照常可用"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("claude-skills/beta/SKILL.md")).unwrap(),
+            "codex local"
+        );
+        assert!(manager.source_dir.join("beta/SKILL.md").is_file());
+        let entries = manager.local_inventory();
+        let agents = &entry(&entries, "beta").agents;
+        assert!(agents.contains(&"codex".to_string()) && agents.contains(&"claude".to_string()));
+    }
+
+    #[test]
+    fn agent_own_skill_is_listed_never_deleted_and_can_enable_into_codex() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        let own = temp.path().join("claude-skills/gamma");
+        write_skill(&own, "claude own");
+
+        let entries = manager.local_inventory();
+        let gamma = entry(&entries, "gamma");
+        assert_eq!(gamma.agents, vec!["claude".to_string()]);
+        assert!(!gamma.managed && !gamma.enabled);
+
+        assert!(
+            manager.set_enabled_for("claude", "gamma", false).is_err(),
+            "Agent 自己的 Skill 不删"
+        );
+        assert!(own.join("SKILL.md").is_file());
+
+        manager.set_enabled_for("codex", "gamma", true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(manager.linked_dir().join("gamma/SKILL.md")).unwrap(),
+            "claude own"
+        );
+        assert!(own.join("SKILL.md").is_file(), "原目录保持不动");
+    }
+
+    #[test]
+    fn uninstall_unlinks_other_agents() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = multi_agent_manager(&temp);
+        write_skill(&temp.path().join("external/delta"), "delta");
+        manager
+            .import_from_directory("delta", &temp.path().join("external/delta"))
+            .unwrap();
+        manager.set_enabled_for("grok", "delta", true).unwrap();
+        manager.uninstall("delta").unwrap();
+        assert!(std::fs::symlink_metadata(temp.path().join("grok-skills/delta")).is_err());
     }
 
     #[test]
@@ -1783,6 +2221,64 @@ mod tests {
                 .unwrap()
                 .enabled
         );
+    }
+
+    #[test]
+    fn local_import_accepts_a_skill_or_a_folder_of_skills_and_explains_missing_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(&temp);
+
+        // 选中的目录本身就是一个 Skill。
+        let single = temp.path().join("picked/my-skill");
+        write_skill(&single, "---\nname: My Skill\ndescription: demo\n---\n");
+        let candidates = local_skill_import_candidates(&single).unwrap();
+        assert_eq!(candidates, vec![("my-skill".to_string(), single.clone())]);
+        manager
+            .import_from_local_directory("my-skill", &single)
+            .unwrap();
+        let entries = manager.local_inventory();
+        let skill = entry(&entries, "my-skill");
+        assert!(skill.installed);
+        assert!(!skill.enabled, "本地导入与 cc-switch 导入一样默认停用");
+        assert_eq!(skill.repo_key, LOCAL_IMPORT_REPO_KEY);
+        assert_eq!(skill.name, "My Skill");
+        assert!(manager.source_dir().join("my-skill/SKILL.md").is_file());
+        assert!(
+            single.join("SKILL.md").is_file(),
+            "导入是复制，原目录保持不动"
+        );
+
+        // 选中的是一组 Skill 的父目录：只收含 SKILL.md 的子目录，跳过隐藏目录和普通文件夹。
+        let bundle = temp.path().join("bundle");
+        write_skill(&bundle.join("beta"), "---\nname: beta\n---\n");
+        write_skill(&bundle.join("alpha"), "---\nname: alpha\n---\n");
+        write_skill(&bundle.join(".hidden"), "---\nname: hidden\n---\n");
+        std::fs::create_dir_all(bundle.join("notes")).unwrap();
+        let ids: Vec<_> = local_skill_import_candidates(&bundle)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, vec!["alpha".to_string(), "beta".to_string()]);
+
+        // 没有 SKILL.md 时给出明确提示。
+        let empty = temp.path().join("empty");
+        std::fs::create_dir_all(empty.join("notes")).unwrap();
+        let error = local_skill_import_candidates(&empty)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("SKILL.md"), "{error}");
+        assert!(local_skill_import_candidates(&temp.path().join("missing")).is_err());
+
+        // Codex 自己的 skills 目录里的 Skill 已会被扫描显示，不允许再「导入」把原目录挪走。
+        let codex_local = manager.linked_dir().join("codex-local");
+        write_skill(&codex_local, "---\nname: codex-local\n---\n");
+        let error = manager
+            .import_from_local_directory("codex-local", &codex_local)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("无需导入"), "{error}");
+        assert!(codex_local.join("SKILL.md").is_file());
     }
 
     #[test]

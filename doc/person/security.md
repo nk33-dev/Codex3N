@@ -12,6 +12,8 @@
 
 Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限；文件对话框仍限于打开和保存。Computer Use 接入由用户手动写入目标客户端配置；JS 模式具有文件和网络访问能力。审批默认自动放行，选择弹卡确认但客户端不声明 elicitation 时沿用上游的自动放行回退，不能把该选项描述为所有客户端上的强制授权门禁。
 
+`tray-panel` 共用同一 CSP 与文件对话框权限。Agent 桌宠的远程图片由 Rust 下载、限制 HTTPS 和重定向后返回 data URI，不放宽 WebView 的连接或图片来源。
+
 主题卡片的远程封面仅允许 `https://raw.githubusercontent.com/BigPizzaV3/CodexPlusPlus-Themes/` 与 `https://api.dreamskin.cc/v1/themes/` 两个图片来源路径；生产与开发 CSP 保持一致。失败显示不可用占位，不使用其他主题图片代替。脚本与连接来源不随图片白名单扩大。
 
 ## 注入页的设置下发
@@ -23,6 +25,8 @@ Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限�
 注入进 Codex 渲染进程的脚本通过桥接读设置。`routes.rs::settings_payload_value` 对 `/settings/get` 和 `/settings/set` 共用明确的用途白名单：只下发渲染开关、展示配置和连接状态。供应商仅保留身份、协议、模型列表及由 TOML 提取的单行 `model_provider`，不传完整 `configContents`、`authContents`、请求头、Key 列表或工具分片；微信令牌及连接凭据也不下发。听写和提示词工具分别构造公开子对象，密钥只给 `apiKeyConfigured`。新设置默认不开放，增加白名单时须同步核对消费者和敏感性。注入页需要 Key 名称时走 `/relay-api-keys`，该路由只回 `id`/`name`。
 
 **边界差异**：管理器自己的设置编辑器要能显示密钥正文，读的是 Tauri IPC 的 `get_settings`，那份仍返回明文；加密只发生在落盘边界（见[runtime.md](runtime.md)）。因此「管理器能读到明文」是设计内行为，不代表桥接也可以下发。
+
+`/settings/catalog` 只返回公开设置项清单；新增的输入预测、推理折叠、删除确认及 `agentPet` 展示配置明确列入白名单。网关凭据不进入此响应。`gateway.json` 沿用上游的本机文件与权限保护，尚未接入个人版 `settings.json` 的密钥加密；导出、备份与共享该文件时按明文凭据处理。
 
 换 Key 的运行时认证更新走独立的 CDP 调用：后端将密钥作为临时参数交给本机 RPC 的 `account/login/start`，不写入页面全局状态、列表响应或诊断日志。页面只回传是否更新成功，CDP 与 RPC 的原始错误不向页面回显。入口固定为认证更新，不提供读取密钥的桥接路由，也不向远端 host 发送。
 

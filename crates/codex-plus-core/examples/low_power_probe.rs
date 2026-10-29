@@ -44,7 +44,6 @@ async fn main() -> anyhow::Result<()> {
         provider_sync_enabled: false,
         relay_profiles_enabled: false,
         codex_app_force_chinese_locale: true,
-        codex_app_whale_widget_enabled: false,
         ..BackendSettings::default()
     };
     SettingsStore::new(state.join("settings.json")).save(&settings)?;

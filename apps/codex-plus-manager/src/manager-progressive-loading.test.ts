@@ -49,6 +49,7 @@ function harness(file: string, component: string) {
     react,
     "@tauri-apps/api/core": { invoke: (command: string, args: unknown) => new Promise((resolve, reject) => calls.push({ command, args, resolve, reject })) },
     "./management-model": { matchesManagementQuery: () => true },
+    "./agent-mcp-model": { MCP_AGENTS: ["codex", "claude", "grok"] },
     "@/i18n": { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, i) => String(args[i])) },
     "./i18n": { t: (text: string) => text },
   };
@@ -98,7 +99,8 @@ test("Skills 写操作隔离旧刷新并合并重复点击", async () => {
   screen.calls[2].resolve(payload("new")); await tick();
   screen.calls[1].resolve(payload("old")); await tick();
   root = screen.render();
-  assert.equal(find(root, node => node.props.rowHeight === 68).props.items[0].id, "new");
+  assert.ok(nodes(root).some(node => node.type === "strong" && node.props.children?.includes("new")));
+  assert.ok(!nodes(root).some(node => node.type === "strong" && node.props.children?.includes("old")));
   importButton.props.onClick();
   screen.unmount();
   const before = screen.changes();

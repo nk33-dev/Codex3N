@@ -20,7 +20,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
@@ -30,6 +30,7 @@ import {
   Blocks,
   Cable,
   BookOpen,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -62,6 +63,7 @@ import {
   FolderOpen,
   Moon,
   MousePointerClick,
+  PawPrint,
   Network,
   Power,
   PowerOff,
@@ -76,6 +78,7 @@ import {
   Sparkles,
   ShieldCheck,
   ShieldAlert,
+  Square,
   Star,
   Store,
   Stethoscope,
@@ -88,6 +91,15 @@ import {
   Bug,
   Server,
   Tag,
+  Waypoints,
+  Plug,
+  Split,
+  BarChart3,
+  MessagesSquare,
+  SlidersHorizontal,
+  TriangleAlert,
+  CircleX,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { ProviderPresetSelector } from "@/components/ProviderPresetSelector";
@@ -106,20 +118,50 @@ import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
+import { rebaseSettingsEdits } from "./settings-rebase";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
-import { ClaudeProviderPage } from "./ClaudeProviderPage";
+import { SectionLabel, Switch } from "./gateway-ui";
+import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
+import { AppSelect, type AppSelectOption } from "./AppSelect";
+import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
+import { GatewayPage, type GatewayTab } from "./GatewayPage";
+import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
+import { CommandPalette, type PaletteCommand } from "./CommandPalette";
+import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
+import { agentName, formatRequestCost, maskAccountName, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
+import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
+import { noticeDuration, noticeTone } from "./notice-model";
+import { agentTabGroups, agentTarget } from "./page-groups";
+import { TopbarActions } from "./TopbarActions";
+import { OnboardingTour } from "./OnboardingTour";
+import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
+import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
+import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
 import { ReleaseNotes } from "./ReleaseNotes";
-import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications } from "./update-notification";
+import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, PageHeader } from "./ManagementPages";
 import { SkillsPage } from "./ManagementExtra";
 import { ProjectSessionPage } from "./ProjectSessionPage";
 import { ClaudeSessionsScreen } from "./screens/ClaudeSessionsScreen";
 import { ENHANCEMENT_SECTION_IDS, managerNavigationDestination, type EnhancementTab, type ManagerNavigationIntent } from "./enhancement-navigation";
+import {
+  enhancementGroup,
+  enhancementGroupAnchorId,
+  enhancementItem,
+  enhancementPlatformFromUserAgent,
+  isEnhancementItemMasterGated,
+  managerGeneralGroups,
+  managerGroupItems,
+  managerStandaloneGroup,
+  type EnhancementSettingItem,
+} from "./enhancement-catalog";
 import { autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
-import { normalizeWhaleBalanceSettings, whaleBalanceSettingsIssue, type WhaleBalanceIssue, type WhaleBalanceProtocol, type WhaleBalanceSettings } from "./whale-settings";
+import { agentPetSettingsIssue, defaultAgentPetSettings, normalizeAgentPetSettings, type AgentPetIssue, type AgentPetSettings } from "./agent-pet-settings";
+import { AgentPetPage } from "./AgentPetPage";
 import {
   applyDictationPreset,
   defaultDictationSettings,
@@ -154,9 +196,12 @@ import {
   normalizeTokenCountInput,
   modelMetadataKey,
   modelFastSupportMode,
+  modelMultiAgentMode,
   synchronizeModelMetadataLiteSupport,
   synchronizeModelMetadataFastSupport,
+  synchronizeModelMetadataMultiAgentVersion,
   type ModelFastSupportMode,
+  type ModelMultiAgentMode,
   parseModelMetadataDocument,
   parseModelMetadataMap,
   remapModelMetadataSlugs,
@@ -179,6 +224,7 @@ import {
   independentProxyEnabled,
   setIndependentProxyConfigured,
   requestCompatibilityEnabled,
+  stripImageGenerationToolEnabled,
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
   normalizeRelayModelRoutes,
@@ -266,8 +312,10 @@ import {
 } from "./multi-launch-model";
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
-const isMacPlatform = /\bMacintosh\b/i.test(navigator.userAgent);
-const supportsPetRealMouseLook = isWindowsPlatform || isMacPlatform;
+/// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
+const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
+/// 会话维护页的「启动前自动修复历史会话」与 Codex 设置页共用清单里的同一条文案。
+const providerSyncItem = enhancementItem("providerSyncEnabled");
 
 /// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
 const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
@@ -316,6 +364,8 @@ type PathState = {
 type LaunchStatus = {
   status: string;
   message: string;
+  /** 阶段；侧栏「停止 Codex」写的是 user_stopped，用来和意外退出区分。 */
+  phase?: string | null;
   started_at_ms: number;
   debug_port: number | null;
   helper_port: number | null;
@@ -437,6 +487,8 @@ type RequestLogAttemptDetail = {
 
 type RequestLogEntry = {
   id: string;
+  /** 网关模式下发起请求的 Agent（claude / grok）；Codex 直连代理的记录为空。 */
+  agent?: string | null;
   timestampMs: number;
   startedAtMs: number;
   durationMs: number;
@@ -469,12 +521,18 @@ type RequestLogEntry = {
   streamOutcome?: string | null;
   usage?: RequestLogUsage | null;
   cacheHitRatio?: number | null;
+  /** 按供应商里填的价格估算的费用（后端读日志时补上；没填价格时没有）。 */
+  cost?: UsageCost | null;
 };
 
 type RequestLogsResult = {
   status: Status;
   message: string;
   entries: RequestLogEntry[];
+  /** 符合条件的不止返回的这些。 */
+  more?: boolean;
+  /** 日志文件里最早一条的开始时间（日志按大小滚动）。 */
+  oldestMs?: number | null;
 };
 
 export type SettingsResult = CommandResult<{
@@ -667,8 +725,16 @@ type EnvConflict = {
   valuePresent: boolean;
 };
 
+// 本机回环中转地址遇上 Codex 的 SSH 远端连接（issue #1195），后端只读检测。
+type SshRemoteLoopbackNoticeData = {
+  loopbackEndpoints: Array<{ key: string; url: string; port: number }>;
+  ports: number[];
+  remotes: Array<{ label: string; forwardCommand: string; sshConfigLines: string[] }>;
+};
+
 type EnvConflictsResult = CommandResult<{
   conflicts: EnvConflict[];
+  sshRemoteLoopback?: SshRemoteLoopbackNoticeData | null;
 }>;
 
 type RelayEnvironmentResult = CommandResult<{
@@ -990,63 +1056,100 @@ const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string }> = [
   // 概览在两个工具下都可见，显示各自的状态。
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
-  { id: "relay", get label() { return t("供应商配置"); }, icon: KeyRound, tool: "codex" },
-  { id: "multiLaunch", get label() { return t("Codex多开"); }, icon: Layers3, badge: "NEW", tool: "codex" },
-  { id: "grok", get label() { return t("Grok 配置"); }, icon: Blocks, tool: "grok" },
-  { id: "claudeRelay", get label() { return t("供应商配置"); }, icon: KeyRound, tool: "claude" },
-  { id: "claude", get label() { return t("Claude 增强"); }, icon: Languages, tool: "claude" },
+  { id: "relay", get label() { return t("旧版供应商配置"); }, icon: KeyRound, tool: "codex" },
+  { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
+  { id: "claude", get label() { return t("增强"); }, icon: Languages, tool: "claude" },
   { id: "claudeSessions", get label() { return t("会话管理"); }, icon: MessageCircle, tool: "claude" },
-  { id: "sessions", get label() { return t("会话管理"); }, icon: MessageCircle, tool: "codex" },
-  { id: "context", label: "MCP", icon: Network, tool: "codex" },
-  { id: "skills", label: "Skills", icon: BookOpen, tool: "codex" },
+  // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
+  { id: "sessions", get label() { return t("会话"); }, icon: MessagesSquare },
+  { id: "context", label: "MCP", icon: Network },
+  { id: "skills", label: "Skills", icon: BookOpen },
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
-  { id: "enhance", get label() { return t("Codex增强"); }, icon: Hammer, tool: "codex" },
+  { id: "enhance", get label() { return t("增强"); }, icon: Hammer, tool: "codex" },
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
-  { id: "userScripts", get label() { return t("拓展"); }, icon: FileCode2, tool: "codex" },
-  { id: "pluginMarket", get label() { return t("Codex 插件市场"); }, icon: Store, tool: "codex" },
+  { id: "userScripts", get label() { return t("脚本"); }, icon: FileCode2, tool: "codex" },
+  { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", get label() { return t("AI Agent 缓存清理"); }, icon: Trash2 },
   // 跨客户端协作属于应用级能力，各工具下共用同一组任务。
   { id: "agentCollaboration", get label() { return t("Agent 协作"); }, icon: GitBranch, badge: "实验" },
   { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick, badge: "实验" },
+  // 桌宠服务所有 Agent（目前只接入了 Codex），与具体 Agent 无关，放在「工具」里。
+  { id: "agentPet", get label() { return t("Agent 桌宠"); }, icon: PawPrint },
+  // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
+  { id: "hub", get label() { return t("总览"); }, icon: Waypoints },
+  // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
+  { id: "gatewayProviders", get label() { return t("供应商池"); }, icon: Server },
+  { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
+  { id: "gatewayRouting", get label() { return t("路由"); }, icon: Split },
+  { id: "gatewayUsage", get label() { return t("用量"); }, icon: BarChart3 },
+  { id: "gatewaySettings", get label() { return t("网关设置"); }, icon: SlidersHorizontal },
   { id: "maintenance", get label() { return t("安装维护"); }, icon: Wrench, tool: "codex" },
   { id: "about", get label() { return t("关于"); }, icon: Info },
   { id: "settings", get label() { return t("整体设置"); }, icon: Settings },
   // Agent 专属设置：目前只有 Codex 有专属选项（图片覆盖层、启动参数）。
   // Claude / Grok 没有独立设置项，原来那页只有一个跳回各自主页的按钮，所以不再给它们显示。
   { id: "agentSettings", get label() { return t("设置"); }, icon: Settings, tool: "codex" },
-  { id: "relayEnvironment", get label() { return t("代理设置"); }, icon: ShieldCheck, tool: "codex" },
-  { id: "requestLog", get label() { return t("请求日志"); }, icon: List, tool: "codex" },
+  { id: "relayEnvironment", get label() { return t("旧版代理设置"); }, icon: ShieldCheck, tool: "codex" },
+  { id: "requestLog", get label() { return t("请求日志"); }, icon: List },
 ];
 
-const navigationSections: Array<{ label: string; routes: Route[]; placement?: "bottom" }> = [
-  {
-    get label() { return t("工作区"); },
-    routes: ["overview", "relay", "relayEnvironment", "requestLog", "multiLaunch", "grok", "claudeRelay", "claude", "agentSettings"],
-  },
-  {
-    get label() { return t("全局管理"); },
-    routes: ["context", "skills", "sessions", "claudeSessions"],
-  },
-  {
-    get label() { return t("扩展"); },
-    routes: ["weixin", "enhance", "dreamSkin", "userScripts", "pluginMarket"],
-  },
-  {
-    get label() { return t("系统"); },
-    routes: ["maintenance"],
-    placement: "bottom",
-  },
+/**
+ * Agent 的页面分组：侧栏只列 Agent，点开后它的全部页面都在内容区顶部的页签里，分组之间用细线隔开。
+ * 每个页面仍按 `routes` 里的 `tool` 归属过滤；只有一个页面的 Agent 不显示页签。
+ */
+const navigationSections: Array<{ id: string; routes: Route[] }> = [
+  { id: "overview", routes: ["overview"] },
+  { id: "providers", routes: ["relay", "relayEnvironment", "multiLaunch"] },
+  { id: "enhance", routes: ["claude", "claudeSessions", "enhance", "dreamSkin", "userScripts", "pluginMarket", "weixin"] },
+  // 安装维护并进了设置页（排在设置下方），不再单独占一个页签；"maintenance" 路由保留为设置页的别名。
+  { id: "settings", routes: ["agentSettings"] },
 ];
+const routeTool = (routeId: Route) => routes.find((candidate) => candidate.id === routeId)?.tool;
+/** 某个 Agent 能看到的全部页面，按页签顺序。 */
+const agentRoutes = (toolId: ToolId) => agentTabGroups(navigationSections, routeTool, toolId).flatMap((entry) => entry.routes);
+/** 每个 Agent 上次打开的页面：在侧栏点 Agent 时回到那里。 */
+const lastAgentRoute = new Map<string, Route>();
 
-/** 应用级入口放在最左栏；概览仍随当前 Agent 显示各自的状态。 */
-const globalNavigationRoutes: Route[] = ["agentCache", "agentCollaboration", "computerUse", "about", "settings"];
-const railAgentGroupRoutes: Route[] = ["computerUse"];
+/**
+ * 与具体 Agent 无关的应用级页面：网关、工具、关于、整体设置。打开它们时侧栏里没有 Agent 处于选中态。
+ * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
+ * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
+ */
+const globalNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentPet", "agentCollaboration", "agentCache", "about", "settings"];
+/** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
+// 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
+const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
+/** 侧栏「全局管理」分组：同时管理所有 Agent 的请求日志、会话、MCP 与 Skills。 */
+const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills"];
+/** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
+const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
+/** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
+const toolNavigationRoutes: Route[] = ["computerUse", "agentPet", "agentCollaboration", "agentCache"];
+/** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
+const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
+  gateway: "agents",
+  gatewayProviders: "providers",
+  gatewayRouting: "routing",
+  gatewayUsage: "usage",
+  gatewaySettings: "gateway",
+};
+// 网关里的「会话」已并进全局管理的「会话」页。
+const gatewayRouteByTab = { ...Object.fromEntries(Object.entries(gatewayTabByRoute).map(([route, tab]) => [tab, route])), sessions: "sessions" } as Record<GatewayTab, Route>;
+/**
+ * 每个 Agent 在侧栏里的落脚页：点 Agent 名字先到这里。
+ * Claude Code / Grok 的供应商不再在 Codex++ 里单独配置：要么经网关接入供应商池（「Agent 接入」），
+ * 要么不接入、照它自己的配置文件直连。
+ */
+const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
+const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
 
 export function App() {
   useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
   const [theme, setTheme] = useState<Theme>(() => loadInitialTheme());
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  /** 合并后的「设置」页里要滚到的分组（原来跳「关于」的地方滚到版本与更新、日志）。 */
+  const [settingsFocus, setSettingsFocus] = useState<string | null>(() => initialSettingsFocus());
   const [enhancementTab, setEnhancementTab] = useState<EnhancementTab>("general");
   const [pendingEnhancementSection, setPendingEnhancementSection] = useState<ManagerNavigationIntent["section"] | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
@@ -1067,6 +1170,9 @@ export function App() {
   } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
+  // 外部改设置时要拿「上次读到的设置」与当前编辑比对，监听回调里读这个 ref 拿最新值。
+  const settingsRef = useRef<SettingsResult | null>(null);
+  settingsRef.current = settings;
   const [weixinStatus, setWeixinStatus] = useState<WeixinConnectStatusResult | null>(null);
   const [weixinQr, setWeixinQr] = useState<WeixinQrResult | null>(null);
   const [relay, setRelay] = useState<RelayResult | null>(null);
@@ -1108,10 +1214,36 @@ export function App() {
   const [dreamSkinUnsavedDialog, setDreamSkinUnsavedDialog] = useState(false);
   const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [tourOpen, setTourOpen] = useState(() => initialTourOpen());
+  const closeTour = useCallback(() => {
+    // 看完或跳过都记下来，下次不再自动弹出；设置页里可以重新打开。
+    try { window.localStorage.setItem(TOUR_STORAGE_KEY, String(TOUR_VERSION)); } catch { /* 存不了就只影响本次 */ }
+    setTourOpen(false);
+  }, []);
+  // 「会话」页默认看所有 Agent；切到 Codex 页签才是带删除 / 归档 / 修复的完整会话管理。
+  const [sessionTab, setSessionTab] = useState<SessionTab>("all");
+  /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
+  const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
+  const [requestLogFocus, setRequestLogFocus] = useState<RequestLogFocus>({});
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const [updatePrompt, setUpdatePrompt] = useState<UpdateResult | null>(null);
   const updateNotifications = useRef(new UpdateNotifications());
   const updateCheckPending = useRef<{ manual: boolean } | null>(null);
   const updateInstallPending = useRef(false);
+  // 更新提醒偏好以已保存的设置为准。
+  useEffect(() => {
+    if (settings) updateNotifications.current.setPreferences(updatePreferencesFrom(settings.settings));
+  }, [settings]);
   const [updateInstallProgress, setUpdateInstallProgress] = useState<TaskProgress>({
     active: false,
     percent: 0,
@@ -1137,6 +1269,9 @@ export function App() {
   // 同时开着时才不会各说各话。
   const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
   const [activeTool, setActiveTool] = useState<ToolId>("codex");
+  useEffect(() => {
+    if (!globalNavigationRoutes.includes(route)) lastAgentRoute.set(activeTool, route);
+  }, [route, activeTool]);
   const [providerSyncProgress, setProviderSyncProgress] = useState<ProviderSyncProgress>({
     active: false,
     percent: 0,
@@ -1209,10 +1344,12 @@ export function App() {
 
   /// 切换侧栏聚焦的工具。纯 UI 状态：写回 settings.json 的 `activeTool`，
   /// 不触发任何供应商配置写入 —— 切工具 ≠ 切供应商。
-  const switchTool = async (toolId: ToolId) => {
+  /// 传了 `destination` 就在切换成功后直接落到那一页（侧栏点 Agent 或它的子页面时用）。
+  const switchTool = async (toolId: ToolId, destination?: Route) => {
     if (toolId === activeTool) {
+      if (destination) await navigate(destination);
       // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
-      if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      else if (globalNavigationRoutes.includes(route)) await navigate("overview");
       return;
     }
     const target = toolEntries.find((tool) => tool.id === toolId);
@@ -1226,18 +1363,16 @@ export function App() {
     // 供应商页是跟着工具走的，切工具后如果当前页不属于新工具就跳到它自己的页。
     // 设置页也只属于 Codex，同样按这条规则跳走。
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (toolId === "claude") {
-      // 切到 Claude 时和 Codex 一样先落在供应商配置；正在看 Claude 自己的页面时不动。
-      if (currentRoute?.tool !== "claude") setRoute("claudeRelay");
-    } else if (currentRoute?.tool && currentRoute.tool !== toolId) {
-      setRoute(toolId === "grok" ? "grok" : "relay");
+    if (currentRoute?.tool && currentRoute.tool !== toolId) {
+      setRoute(agentHomeRoute[toolId] ?? "overview");
     }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
-      if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      if (destination) await navigate(destination);
+      else if (globalNavigationRoutes.includes(route)) await navigate("overview");
     } else {
       // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
       setActiveTool(activeTool);
@@ -1252,7 +1387,9 @@ export function App() {
       // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
       const prev = prevLaunchStatusRef.current;
       const current = result.latest_launch?.status;
-      if (prev && prev === "running" && current && (current === "stopped" || current === "failed" || current === "crashed")) {
+      // 用户在侧栏点了「停止」不算意外停止。
+      const stoppedByUser = result.latest_launch?.phase === "user_stopped";
+      if (prev && prev === "running" && current && !stoppedByUser && (current === "stopped" || current === "failed" || current === "crashed")) {
         showNotice(t("Codex 意外停止"), tf("进程状态：{0}。是否要重新启动？", [current]), "failed");
       }
       prevLaunchStatusRef.current = current ?? null;
@@ -1337,7 +1474,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("拓展"), result, { silentSuccess: true });
+      if (!silent || !isSuccessStatus(result.status)) showResultNotice(t("脚本"), result, { silentSuccess: true });
     }
   };
 
@@ -1355,7 +1492,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地拓展"), result);
+      showResultNotice(t("本地脚本"), result);
     }
   };
 
@@ -1364,7 +1501,7 @@ export function App() {
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? { ...current, user_scripts: result.user_scripts } : current));
-      showResultNotice(t("拓展"), result);
+      showResultNotice(t("脚本"), result);
     }
   };
 
@@ -1373,7 +1510,7 @@ export function App() {
     if (!result) return;
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-    showResultNotice(t("本地拓展"), result);
+    showResultNotice(t("本地脚本"), result);
     if (isSuccessStatus(result.status)) await reloadUserScripts();
   };
 
@@ -1382,7 +1519,7 @@ export function App() {
     if (!result) return;
     setSettings(result);
     setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-    showResultNotice(t("本地拓展"), result);
+    showResultNotice(t("本地脚本"), result);
   };
 
   const setUserScriptEnabled = async (key: string, enabled: boolean) => {
@@ -1390,7 +1527,7 @@ export function App() {
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地拓展"), result);
+      showResultNotice(t("本地脚本"), result);
       await refreshUserScriptInventory();
     }
   };
@@ -1398,12 +1535,12 @@ export function App() {
   const deleteUserScript = async (key: string) => {
     const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
     const name = script?.name || key;
-    if (!window.confirm(tf("删除拓展“{0}”？此操作会移除本地拓展文件。", [name]))) return;
+    if (!(await appConfirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]), { title: t("删除脚本"), confirmText: t("删除"), danger: true }))) return;
     const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
     if (result) {
       setSettings(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
-      showResultNotice(t("本地拓展"), result);
+      showResultNotice(t("本地脚本"), result);
       await refreshUserScriptInventory();
     }
   };
@@ -1446,14 +1583,15 @@ export function App() {
   const removeEnvConflicts = async (names: string[]) => {
     const uniqueNames = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
     if (!uniqueNames.length) return;
-    if (!window.confirm(tf("删除这些环境变量？\n\n{0}\n\n删除前会写入备份。", [uniqueNames.join("\n")]))) return;
+    if (!(await appConfirm(tf("删除这些环境变量？\n\n{0}\n\n删除前会写入备份。", [uniqueNames.join("\n")]), { title: t("删除环境变量"), confirmText: t("删除"), danger: true }))) return;
     const result = await run(() => call<RemoveEnvConflictsResult>("remove_env_conflicts", { request: { names: uniqueNames } }));
     if (result) {
-      setEnvConflicts({
+      setEnvConflicts((current) => ({
         status: result.status,
         message: result.message,
         conflicts: result.remaining,
-      });
+        sshRemoteLoopback: current?.sshRemoteLoopback ?? null,
+      }));
       showNotice(t("环境变量清理"), result.message, result.status);
     }
   };
@@ -1934,7 +2072,7 @@ export function App() {
   };
 
   const renameDreamSkinTheme = async (item: DreamSkinThemeSummary) => {
-    const name = window.prompt(t("输入新的主题名称"), item.name)?.trim();
+    const name = (await appPrompt(t("重命名主题"), { defaultValue: item.name, placeholder: t("输入新的主题名称") }))?.trim();
     if (!name || name === item.name) return;
     const result = await run(() => call<DreamSkinThemeLibraryResult>("rename_dream_skin_theme", { id: item.id, name }));
     if (!result || !isSuccessStatus(result.status)) {
@@ -1990,7 +2128,7 @@ export function App() {
       showResultNotice(t("会话删除"), result);
       await refreshLocalSessions(true, localSessions?.offset ?? 0);
     }
-    return !!result && isSuccessStatus(result.status);
+    return !!result && sessionDeleteSucceeded(result.status);
   };
 
   const deleteLocalSessions = async (sessions: LocalSession[]) => {
@@ -2014,7 +2152,7 @@ export function App() {
     const failed: Array<{ label: string; reason: string }> = [];
     for (const session of uniqueSessions) {
       const result = await run(() => requestDeleteLocalSession(session));
-      if (result && isSuccessStatus(result.status)) {
+      if (result && sessionDeleteSucceeded(result.status)) {
         succeeded += 1;
       } else {
         failed.push({ label: session.title || session.id, reason: result?.message || t("删除失败") });
@@ -2230,7 +2368,9 @@ export function App() {
     sessionIndexRepairReport: () => refreshSessionIndexRepairReport(),
   };
 
-  const navigate = async (next: Route, skipDreamSkinDraftGuard = false) => {
+  const navigate = async (target: Route, skipDreamSkinDraftGuard = false) => {
+    if (target === "about") setSettingsFocus("app-settings-update");
+    const next: Route = target === "maintenance" ? "agentSettings" : target === "about" ? "settings" : target;
     const revision = ++navigationRevision.current;
     if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
       runAfterDreamSkinDraftGuard(() => void navigate(next, true));
@@ -2240,6 +2380,11 @@ export function App() {
     await loadManagerPage(next, managerPageLoaders, undefined, () => revision === navigationRevision.current);
   };
   navigateRef.current = navigate;
+  useEffect(() => onOpenRequestLog((focus) => {
+    setRequestLogAgentFilter(focus.agent ?? "all");
+    setRequestLogFocus(focus);
+    void navigateRef.current?.("requestLog");
+  }), []);
 
   const consumePendingManagerNavigation = async (initialLoad = false): Promise<boolean> => {
     try {
@@ -2347,7 +2492,7 @@ export function App() {
   const stopMultiLaunchInstance = async (instance: MultiLaunchInstance) => {
     if (multiLaunchActionPending) return;
     const name = formatMultiLaunchInstanceLabel(instance, { main: t("主 Codex"), fallback: t("Codex 实例") });
-    if (!window.confirm(tf("确定结束“{0}”吗？", [name]))) return;
+    if (!(await appConfirm(tf("确定结束“{0}”吗？", [name]), { title: t("结束实例"), confirmText: t("结束"), danger: true }))) return;
     setMultiLaunchActionPending(instance.instanceId);
     try {
       const result = await run(() => call<CommandResult<{ instanceId?: string }>>("stop_codex_multi_instance", {
@@ -2360,20 +2505,25 @@ export function App() {
     }
   };
 
-  const launch = async () => {
-    if (launchPendingRef.current) return;
+  /** 启动 Codex；返回是否确认启动成功（托盘面板据此决定要不要把主窗口叫出来看提示）。 */
+  const launch = async (): Promise<boolean> => {
+    if (launchPendingRef.current) return false;
     launchPendingRef.current = true;
     setLaunchPending(true);
     try {
       const result = await launchCommand("launch_codex_plus");
-      if (!result) return;
+      if (!result) return false;
       if (!isSuccessStatus(result.status)) {
         showNotice(t("启动任务"), result.message, result.status);
-        return;
+        return false;
       }
       showNotice(t("启动任务"), t("正在等待 Codex 启动结果…"), "accepted");
       const completion = await waitForLaunchCompletion(result.launchStartedAtMs);
       showLaunchCompletionNotice(t("启动任务"), completion, result.launchStartedAtMs);
+      return Boolean(
+        completion
+        && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
+      );
     } finally {
       launchPendingRef.current = false;
       setLaunchPending(false);
@@ -2412,7 +2562,23 @@ export function App() {
     }
   };
 
-  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus", syncActiveRelay = false) => {
+  /** 侧栏 Codex 行的「停止」：结束主 Codex，和重启共用停止流程。 */
+  const stopCodex = async (): Promise<boolean> => {
+    if (launchPendingRef.current) return false;
+    launchPendingRef.current = true;
+    setLaunchPending(true);
+    try {
+      const result = await launchCommand("stop_codex_plus");
+      if (result) showNotice(t("停止 Codex"), result.message, result.status);
+      await refreshOverview(true);
+      return Boolean(result && isSuccessStatus(result.status));
+    } finally {
+      launchPendingRef.current = false;
+      setLaunchPending(false);
+    }
+  };
+
+  const launchCommand = async (command: "launch_codex_plus" | "restart_codex_plus" | "stop_codex_plus", syncActiveRelay = false) => {
     const result = await run(() =>
       call<LaunchCommandResult>(command, {
         request: {
@@ -2490,7 +2656,22 @@ export function App() {
     }
   };
 
+  // 启动时的后台检查早于设置加载：先单独读一次更新偏好，避免漏掉「跳过此版本」和「关闭自动检查」。
+  const ensureUpdatePreferences = async () => {
+    try {
+      const result = await call<SettingsResult>("load_settings");
+      if (!updateNotifications.current.preferencesLoaded) updateNotifications.current.setPreferences(updatePreferencesFrom(result.settings));
+    } catch {
+      // 读不到设置时按默认（自动检查、不跳过）继续，不打扰用户。
+    }
+  };
+
   const checkUpdate = async (silent = false) => {
+    if (silent) {
+      if (!updateNotifications.current.preferencesLoaded) await ensureUpdatePreferences();
+      // 关闭「启动时自动检查更新」后，启动与定时的后台检查都不再联网；手动检查不受影响。
+      if (!updateNotifications.current.autoCheckEnabled()) return;
+    }
     if (updateInstallPending.current) return;
     if (updateCheckPending.current) {
       // 手动检查复用正在进行的后台请求，但仍按用户主动检查显示结果。
@@ -2518,6 +2699,25 @@ export function App() {
   const closeUpdatePrompt = () => {
     if (updatePrompt?.latestVersion) updateNotifications.current.dismiss(updatePrompt.latestVersion);
     setUpdatePrompt(null);
+  };
+
+  // 「跳过此版本」：本次会话立即生效，并只把这一个键写进 settings.json；
+  // 写完只合并该键和版本号，别处没保存的草稿保持不动。
+  const skipUpdateVersion = async (version: string) => {
+    updateNotifications.current.skipVersion(version);
+    setUpdatePrompt(null);
+    try {
+      const result = await call<SettingsResult>("skip_update_version", { version });
+      if (!isSuccessStatus(result.status)) {
+        showNotice(t("跳过此版本"), result.message, "failed");
+        return;
+      }
+      const fresh = normalizeSettings(result.settings);
+      setSettings(result);
+      setSettingsForm((current) => ({ ...current, updateSkippedVersion: fresh.updateSkippedVersion, revision: fresh.revision }));
+    } catch (error) {
+      showNotice(t("跳过此版本"), stringifyError(error), "failed");
+    }
   };
 
   const performUpdate = async (selectedUpdate = update) => {
@@ -2609,9 +2809,9 @@ export function App() {
     const formAtSave = settingsFormRef.current;
     try {
       const normalized = normalizeSettings(next);
-      const whaleIssue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalized));
-      if (whaleIssue) {
-        showNotice(t("Codex 用量挂件"), whaleIssue, "failed");
+      const petIssue = agentPetValidationMessage(agentPetSettingsIssue(normalized.agentPet));
+      if (petIssue) {
+        showNotice(t("Agent 桌宠"), petIssue, "failed");
         return null;
       }
       const dictationIssue = dictationSettingsValidationMessage(dictationSettingsIssue(normalized.dictation));
@@ -2855,7 +3055,7 @@ export function App() {
   const recoverProviderSync = async () => {
     const backupDir = providerSyncProgress.result?.backupDir;
     if (providerSyncProgress.active || !backupDir) return;
-    if (!window.confirm(t("恢复这次未完成的修复？期间被其他操作修改的数据会保留，并报告冲突。"))) return;
+    if (!(await appConfirm(t("恢复这次未完成的修复？期间被其他操作修改的数据会保留，并报告冲突。"), { title: t("恢复修复"), confirmText: t("恢复") }))) return;
     setProviderSyncProgress((current) => ({ ...current, active: true, message: t("正在恢复…") }));
     try {
       const result = await run(() => call<CommandResult<ProviderSyncPayload>>("recover_provider_sync", { backupDir }));
@@ -3175,15 +3375,15 @@ export function App() {
   };
 
   const switchRelayProfile = async (next: BackendSettings, previousActiveRelayId = settingsForm.activeRelayId, liveConflictResolution?: LiveConflictResolution) => {
-    if (settingsSavingRef.current) return;
+    if (settingsSavingRef.current) return false;
     if (relaySwitchingRef.current) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
-      return;
+      return false;
     }
     let switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
-      return;
+      return false;
     }
     const targetBeforeSnapshot = activeRelayProfile(switchSettings);
     logDiagnostic("switchRelayProfile.start", {
@@ -3201,11 +3401,12 @@ export function App() {
         error: validationError,
       });
       showNotice(t("供应商配置可能不正确"), validationError, "failed");
-      return;
+      return false;
     }
     relaySwitchingRef.current = true;
     setRelaySwitching(true);
     const formAtSwitch = settingsFormRef.current;
+    let switched = false;
     let liveConflict: { profileId: string; profileName: string } | null = null;
     try {
       if (!liveConflictResolution) switchSettings = await snapshotActiveRelayFilesBeforeSwitch(switchSettings, previousActiveRelayId);
@@ -3221,7 +3422,7 @@ export function App() {
         logDiagnostic("switchRelayProfile.apply_no_result", {
           targetRelayId: selectedAfterSave.id,
         });
-        return;
+        return false;
       }
       const selectedSettings = normalizeSettings(result.settings);
       setSettings({
@@ -3264,13 +3465,16 @@ export function App() {
           status: result.status,
         });
         if (liveConflictResolution) showNotice(t("供应商切换"), result.message, result.status);
+        switched = true;
       }
     } finally {
       relaySwitchingRef.current = false;
       setRelaySwitching(false);
     }
     const conflict = liveConflict;
-    if (!conflict) return;
+    if (!conflict) return switched;
+    // 从托盘面板发起时主窗口可能是隐藏的：弹窗前先把主窗口叫出来，否则弹窗没人看得见。
+    void invoke("tray_panel_action", { action: "open" }).catch(() => {});
     const choice = await new Promise<LiveConflictResolution | null>((resolve) => {
       setLiveConflictDialog({ profileName: conflict.profileName, resolve });
     });
@@ -3278,7 +3482,8 @@ export function App() {
       profileId: conflict.profileId,
       choice: choice ?? "cancel",
     });
-    if (choice) await switchRelayProfile(next, previousActiveRelayId, choice);
+    if (!choice) return false;
+    return switchRelayProfile(next, previousActiveRelayId, choice);
   };
 
   const snapshotActiveRelayFilesBeforeSwitch = async (
@@ -3347,6 +3552,14 @@ export function App() {
     showNotice(title, result.message, result.status);
   };
 
+  // 正在处理的快捷面板请求数。轻量模式下主窗口可能是为请求在后台重建的，
+  // 请求没做完时不能释放窗口，否则结果回不去（#2677）。
+  const trayRequestsInFlight = useRef(0);
+  // 主窗口仍隐藏时按轻量模式释放（窗口可见、开关关掉时后端不做任何事）。
+  const releaseMainWindowWhenHidden = () => {
+    if (trayRequestsInFlight.current === 0) void invoke("main_window_release_when_hidden").catch(() => {});
+  };
+
   useEffect(() => {
     let disposed = false;
     const initialForm = settingsFormRef.current;
@@ -3362,12 +3575,14 @@ export function App() {
       const handledNavigation = untouched && await consumePendingManagerNavigation(true);
       if (disposed) return;
       if (!handledNavigation && navigationRevision.current === 0 && settingsFormRef.current === initialForm) {
-        const initialRoute = startup?.showUpdate ? "about" : route;
+        const initialRoute = startup?.showUpdate ? "settings" : route;
+        if (startup?.showUpdate) setSettingsFocus("app-settings-update");
         setRoute(initialRoute);
         void loadManagerPage(initialRoute as ManagerLoadingRoute, managerPageLoaders, new Set(["settings", "overview"]), () => !disposed && navigationRevision.current === 0);
       }
       void checkUpdate(handledNavigation || !startup?.showUpdate);
       setStartupReady(true);
+      releaseMainWindowWhenHidden();
     })();
     return () => { disposed = true; };
   }, []);
@@ -3421,6 +3636,54 @@ export function App() {
       onError: (error) => showNotice(t("微信扫码登录"), stringifyError(error), "failed"),
     });
   }, [weixinQrPending, weixinQr?.qrContent]);
+
+  // 托盘快捷面板发来的请求：打开某页、启动 / 重启 / 停止 Codex。
+  // 复用主窗口现有流程（校验、冲突弹窗、等待启动结果），做完给面板回一个结果；
+  // 没成功时把主窗口叫出来，失败提示是在主窗口里弹的。
+  // 监听只注册一次，处理函数每次渲染更新到 ref 里，读到的总是最新状态。
+  const trayRequestHandlerRef = useRef<(request: TrayRequest) => Promise<TrayResult>>(async (request) => ({ id: request.id, ok: false }));
+  trayRequestHandlerRef.current = async (request: TrayRequest): Promise<TrayResult> => {
+    const revealMainWindow = () => void invoke("tray_panel_action", { action: "open" }).catch(() => {});
+    if (request.kind === "navigate") {
+      if (request.route === "sessions" || request.route === "requestLog") setActiveTool("codex");
+      await navigate(request.route);
+      return { id: request.id, ok: true };
+    }
+    const done = request.kind === "launch" ? await launch() : request.kind === "restart" ? await restart() : await stopCodex();
+    if (!done) revealMainWindow();
+    return { id: request.id, ok: done };
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen<unknown>(TRAY_REQUEST_EVENT, (event) => {
+      const request = parseTrayRequest(event.payload);
+      if (disposed || !request) return;
+      trayRequestsInFlight.current += 1;
+      void trayRequestHandlerRef.current(request)
+        .catch((error): TrayResult => ({ id: request.id, ok: false, message: stringifyError(error) }))
+        .then((result) => emit(TRAY_RESULT_EVENT, result))
+        .catch(() => {})
+        .finally(() => {
+          trayRequestsInFlight.current -= 1;
+          // 做完仍隐藏就再释放；要显示主窗口的情况（失败、打开某页）后端会取消这次释放。
+          releaseMainWindowWhenHidden();
+        });
+    }).then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        stopListening = unlisten;
+        // 告诉后端监听已就绪：轻量模式下快捷面板会等这个信号再把请求发过来（#2677）。
+        void emit(MAIN_WINDOW_READY_EVENT).catch(() => {});
+      }
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  }, []);
 
   useEffect(() => {
     if (route !== "sessions") return;
@@ -3484,6 +3747,39 @@ export function App() {
     const refresh = () => { void refreshOverview(true); };
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
+  }, []);
+
+  // 网关改了 Codex 的直连设置（接入 / 断开网关），或在 Codex 设置页改了开关：
+  // 重新读取并把尚未保存的编辑叠上去，免得用旧设置整份写回或撞上 revision 冲突。
+  useEffect(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    const syncExternalSettings = async () => {
+      const baseline = settingsRef.current;
+      let result: SettingsResult;
+      try {
+        result = await call<SettingsResult>("load_settings");
+      } catch {
+        return;
+      }
+      if (disposed || settingsRef.current !== baseline || !isSuccessStatus(result.status)) return;
+      const previous = baseline?.settings;
+      const latest = normalizeSettings(result.settings);
+      setSettings(result);
+      setSettingsForm((current) => (previous
+        ? rebaseSettingsEdits(normalizeSettings(current), normalizeSettings(previous), latest)
+        : latest));
+    };
+    void listen("codex-plus-settings-changed", () => {
+      if (!disposed) void syncExternalSettings();
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -3591,11 +3887,13 @@ export function App() {
       restartMultiLaunchInstance,
       stopMultiLaunchInstance,
       restart,
+      stopCodex,
       repairShortcuts,
       checkUpdate,
       performUpdate,
       saveSettings,
       settingsSaving,
+      previewSettingsForm: (next: BackendSettings) => setSettingsForm(normalizeSettings(next)),
       saveSettingsValue,      refreshSettings,
       resetSettings,
       exportSettings,
@@ -3774,7 +4072,7 @@ export function App() {
       showMessage: async (title: string, message: string, status?: Status) => showNotice(title, message, status),
       copyLogs: () => copyText(logs?.text ?? "", t("日志已复制。")),
       copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
-      goLogs: () => navigate("about"),
+      goLogs: () => { setSettingsFocus("app-settings-logs"); return navigate("settings"); },
       checkHealth: async () => {
         await refreshOverview(true);
         await refreshRelay(true);
@@ -3798,99 +4096,80 @@ export function App() {
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
 
+  const isGatewayPage = gatewayNavigationRoutes.includes(route);
+  const crumbGroup = isGatewayPage ? t("网关") : managementNavigationRoutes.includes(navAliasRoute[route] ?? route) ? t("全局管理") : isGlobalPage ? "Codex++" : activeToolName;
+  // ⌘K：页面、各 Agent 的页面和常用操作。非当前 Agent 的页面会先切到那个 Agent。
+  const paletteCommands: PaletteCommand[] = [];
+  const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
+    const item = routes.find((candidate) => candidate.id === routeId);
+    if (!item) return null;
+    const Icon = item.icon;
+    return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
+  };
+  const pushCommand = (command: PaletteCommand | null) => { if (command) paletteCommands.push(command); };
+  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("网关"), () => void navigate(routeId), "gateway")));
+  managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
+  pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
+  for (const tool of toolEntries.filter((entry) => entry.switchable)) {
+    agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
+  }
+  [...toolNavigationRoutes, "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
+  paletteCommands.push(
+    {
+      id: "action:codex",
+      group: t("操作"),
+      label: codexAppRunning ? t("重启 Codex") : t("启动 Codex"),
+      keywords: "codex restart launch",
+      icon: <Rocket className="h-4 w-4" />,
+      run: () => void (codexAppRunning ? actions.restart() : actions.launch()),
+    },
+    { id: "action:theme", group: t("操作"), label: theme === "dark" ? t("切换到浅色") : t("切换到深色"), keywords: "theme", icon: theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />, run: actions.toggleTheme },
+    { id: "action:language", group: t("操作"), label: getLanguage() === "en" ? t("切换到中文") : t("切换到英文"), keywords: "language", icon: <Languages className="h-4 w-4" />, run: () => toggleLanguage() },
+  );
+
   return (
-    <div className={`shell ${theme} ${isGlobalPage ? "global-workspace" : ""}`}>
-      <ApplicationRail
+    <div className={`shell ${theme}`}>
+      <AppSidebar
         tools={toolEntries}
         activeTool={activeTool}
-        codexAppRunning={codexAppRunning}
         route={route}
         theme={theme}
-        onSelect={(toolId) => void switchTool(toolId)}
+        version={overview?.current_version ?? update?.currentVersion ?? ""}
+        onOpenAgent={(toolId, destination) => void switchTool(toolId, destination ?? agentEntryRoute(toolId))}
         onNavigate={(next) => void navigate(next)}
         onToggleTheme={actions.toggleTheme}
+        onOpenPalette={() => setPaletteOpen(true)}
         pendingUpdateVersion={update?.updateAvailable && update.latestVersion ? update.latestVersion : null}
         onOpenUpdate={() => { if (update) setUpdatePrompt(update); }}
+        codexRun={{ running: codexAppRunning, busy: launchPending, onStart: () => void actions.launch(), onStop: () => void actions.stopCodex() }}
       />
-      {!isGlobalPage ? (
-        <aside className="sidebar">
-          <nav className="nav" aria-label={t("主导航")}>
-            {navigationSections.map((section) => {
-              // 按当前工具过滤：只留下属于这个工具、或与工具无关的页面。
-              const visibleRoutes = section.routes.filter((routeId) => {
-                const item = routes.find((candidate) => candidate.id === routeId);
-                if (!item) return false;
-                return !item.tool || item.tool === activeTool;
-              });
-              // 整节都被过滤掉时不渲染标题，免得 Grok 下出现一个空的分组标签。
-              if (visibleRoutes.length === 0) return null;
-              return (
-              <div className={`nav-section ${section.placement === "bottom" ? "nav-section-bottom" : ""}`} key={section.label}>
-                <div className="nav-section-label">{section.label}</div>
-                {visibleRoutes.map((routeId) => {
-                  const item = routes.find((candidate) => candidate.id === routeId);
-                  if (!item) return null;
-                  const Icon = item.icon;
-                  return (
-                    <button
-                      className={`nav-item ${route === item.id ? "active" : ""}`}
-                      key={item.id}
-                      onClick={() => void navigate(item.id)}
-                      title={item.label}
-                      type="button"
-                    >
-                      <span className="nav-icon">
-                        <Icon className="h-4 w-4" aria-hidden="true" />
-                      </span>
-                      <span className="nav-label">{item.label}</span>
-                      {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
-                    </button>
-                  );
-                })}
-              </div>
-              );
-            })}
-          </nav>
-        </aside>
-      ) : null}
+      <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
+      {tourOpen ? <OnboardingTour onClose={closeTour} /> : null}
       <main className="workspace">
         <header className="topbar" key={`topbar-${route}`}>
-          <div>
-            <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : routeTitle(route)}</h1>
+          <div className="topbar-heading">
+            <div className="topbar-title">
+              <span className="topbar-crumb">{crumbGroup}</span>
+              <ChevronRight aria-hidden="true" className="topbar-crumb-sep" />
+              <h1>{route === "agentSettings" ? tf("{0} 设置", [activeToolName]) : routeTitle(navAliasRoute[route] ?? route)}</h1>
+            </div>
             <p>
               {route === "agentSettings"
-                ? tf("只作用于 {0}；界面主题、配置备份等整体设置在最左侧齿轮里。", [activeToolName])
-                : routeSubtitle(route)}
+                ? tf("只作用于 {0}；界面主题、配置备份等整体设置在侧栏底部的齿轮里。", [activeToolName])
+                : routeSubtitle(navAliasRoute[route] ?? route)}
             </p>
           </div>
-          {/* data-topbar-actions：页面级操作的挂载点，Claude 增强页把「启动增强版」portal 进来。 */}
-          <div className="topbar-actions" data-topbar-actions>
-            {activeTool === "codex" && !isGlobalPage ? (
-              <>
-                <span className="codex-app-state" aria-live="polite">
-                  <UiBadge
-                    className={statusClass(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
-                    variant="secondary"
-                  >
-                    Codex {statusLabel(overview?.runtime_health?.codex_app?.status ?? "not_checked")}
-                  </UiBadge>
-                </span>
-                <Button
-                  disabled={launchPending || !overview?.runtime_health}
-                  onClick={() => void (codexAppRunning ? actions.restart() : actions.launch())}
-                  title={codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
-                >
-                  <Rocket className="h-4 w-4" />
-                  {codexAppRunning ? t("重启 Codex") : t("启动 Codex")}
-                </Button>
-              </>
-            ) : null}
+          <div className="topbar-actions">
+            {/* data-topbar-actions：页面级操作的挂载点（TopbarActions / PageHeader），Claude 增强页把「启动增强版」portal 进来。
+                Codex 的启动 / 停止在侧栏 Codex 行的播放键上，顶栏不再重复。 */}
+            <div className="topbar-page-actions" data-topbar-actions />
           </div>
         </header>
         <section
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
           key={route}
         >
+          <AgentPageTabs activeTool={activeTool} onNavigate={(next) => void navigate(next)} route={route} />
           {route === "overview" ? (
             <OverviewScreen
               overview={overview}
@@ -3899,7 +4178,29 @@ export function App() {
               toolEntries={toolEntries}
               form={settingsForm}
               onNavigate={(next) => void navigate(next)}
+              onOpenList={(kind, agent) => {
+                // 从 Agent 概览跳过去：会话页停在这个 Agent 的页签，请求日志按它过滤。
+                if (kind === "sessions") setSessionTab(agent);
+                else setRequestLogAgentFilter(agent);
+                void navigate(kind);
+              }}
               actions={actions}
+            />
+          ) : null}
+          {route === "relay" ? (
+            <LegacyRelayGatewayHint
+              form={settingsForm}
+              onDisconnect={async () => {
+                try {
+                  const result = await invoke<{ status: string; message: string }>("disable_gateway_binding", { agent: "codex" });
+                  await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
+                } catch (error) {
+                  await showNotice(t("断开失败"), String(error), "failed");
+                }
+                await refreshSettings(true);
+              }}
+              onManageAgents={() => void navigate("gateway")}
+              onOpenGateway={() => void navigate("gatewayProviders")}
             />
           ) : null}
           {route === "relay" ? (
@@ -3918,29 +4219,32 @@ export function App() {
           {route === "relayEnvironment" ? (
             <ProxySettingsScreen
               dirty={settingsDirty}
-              overview={overview}
               form={settingsForm}
               relayEnvironment={relayEnvironment}
               onFormChange={setSettingsForm}
+              onOpenGatewaySettings={() => void navigate("gatewaySettings")}
               actions={actions}
             />
           ) : null}
+          {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {route === "requestLog" ? (
-            <RequestLogScreen />
-          ) : null}
-          {route === "grok" ? (
-            <GrokScreen settings={settings} form={settingsForm} actions={actions} />
-          ) : null}
-          {route === "claudeRelay" ? (
-            <ClaudeProviderPage
-              notify={actions.showMessage}
-              onProvidersChanged={() => void refreshTools()}
-              openUrl={(url) => void actions.openExternalUrl(url)}
+            <RequestLogScreen
+              initialAgent={requestLogAgentFilter}
+              initialFocus={requestLogFocus}
+              onConsumeInitialAgent={() => { setRequestLogAgentFilter("all"); setRequestLogFocus({}); }}
             />
           ) : null}
           {route === "claude" ? <ClaudeLocalizationScreen /> : null}
-          {route === "claudeSessions" ? <ClaudeSessionsScreen /> : null}
-          {route === "sessions" ? (
+          {route === "sessions" ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
+          {route === "claudeSessions" || (route === "sessions" && sessionTab === "claude") ? <ClaudeSessionsScreen /> : null}
+          {route === "sessions" && sessionTab !== "codex" && sessionTab !== "claude" ? (
+            <div className="mg-page gateway-page">
+              <div className="mg-content gw-content">
+                <SessionsView agent={sessionTab} notify={actions.showMessage} onManageClaude={() => setSessionTab("claude")} />
+              </div>
+            </div>
+          ) : null}
+          {route === "sessions" && sessionTab === "codex" ? (
             <ProjectSessionPage
               repairPanel={<SessionMaintenance
                 dirty={settingsDirty}
@@ -4046,48 +4350,91 @@ export function App() {
           {route === "agentCache" ? <AgentCachePanel /> : null}
           {route === "agentCollaboration" ? <AgentCollaborationPage /> : null}
           {route === "computerUse" ? <ComputerUsePage /> : null}
-          {route === "maintenance" ? (
-            <MaintenanceScreen
-              overview={overview}
-              launchPending={launchPending}
-              watcher={watcher}
-              autoTakeover={autoTakeover}
-              settings={settings}
-              launchForm={launchForm}
-              onLaunchFormChange={setLaunchForm}
-              actions={actions}
+          {route === "agentPet" ? (
+            <AgentPetPage
+              settings={settingsForm.agentPet}
+              onChange={(agentPet) => setSettingsForm((current) => ({ ...current, agentPet }))}
+              autoSave={<SettingsSaveActions dirty={settingsDirty} form={settingsForm} actions={actions} />}
             />
           ) : null}
-          {route === "about" ? (
-            <AboutScreen
-              overview={overview}
-              update={update}
-              updateInstallProgress={updateInstallProgress}
-              logs={logs}
-              diagnostics={diagnostics}
-              actions={actions}
+          {/* 置顶推荐位只放在网关总览一处，内容与「推荐内容」页同源；各 Agent 的概览不再重复。 */}
+          {route === "hub" ? (
+            <HubOverview
+              codex={{ running: codexAppRunning, providerName: toolEntries.find((entry) => entry.id === "codex")?.activeRelayName ?? null }}
+              notify={actions.showMessage}
+              onNavigate={(next) => void navigate(next)}
+              onOpenAgent={(agent) => void switchTool(agent, agentHomeRoute[agent] ?? "overview")}
             />
           ) : null}
-          {route === "settings" ? (
-            <GlobalSettingsScreen
-              dirty={settingsDirty}
-              form={settingsForm}
-              settings={settings}
-              theme={theme}
-              actions={actions}
-              onOpenAgentSettings={() => void (async () => {
-                if (activeTool !== "codex") await switchTool("codex");
-                await navigate("agentSettings");
-              })()}
+          {gatewayTabByRoute[route] ? (
+            <GatewayPage
+              extraSettings={
+                <SharedServiceSettings
+                  autoSave={<SettingsSaveActions dirty={settingsDirty} form={settingsForm} actions={actions} />}
+                  form={settingsForm}
+                  onFormChange={setSettingsForm}
+                  overview={overview}
+                />
+              }
+              notify={actions.showMessage}
+              onTabChange={(tab) => void navigate(gatewayRouteByTab[tab])}
+              tab={gatewayTabByRoute[route]}
             />
           ) : null}
-          {route === "agentSettings" ? (
-            <AgentSettingsScreen
-              dirty={settingsDirty}
-              form={settingsForm}
-              onFormChange={setSettingsForm}
-              actions={actions}
-            />
+          {route === "agentSettings" || route === "maintenance" ? (
+            // 设置与安装维护合在一页：左侧分类目录，右侧限宽列表。
+            <div className="settings-page codex-settings-page sectioned-page">
+              <PageSectionNav label={t("设置分类")} sections={codexSettingsSections()} />
+              <div className="sectioned-body">
+                <AgentSettingsScreen
+                  dirty={settingsDirty}
+                  form={settingsForm}
+                  onFormChange={setSettingsForm}
+                  actions={actions}
+                />
+                <MaintenanceScreen
+                  overview={overview}
+                  launchPending={launchPending}
+                  watcher={watcher}
+                  autoTakeover={autoTakeover}
+                  settings={settings}
+                  launchForm={launchForm}
+                  onLaunchFormChange={setLaunchForm}
+                  actions={actions}
+                />
+              </div>
+            </div>
+          ) : null}
+          {route === "settings" || route === "about" ? (
+            // 设置与关于合在一页：左侧分类目录，右侧限宽。
+            <div className="settings-page app-settings-page sectioned-page">
+              <PageSectionNav label={t("设置分类")} sections={appSettingsSections()} />
+              <div className="sectioned-body">
+                <AppSettingsFocus focus={settingsFocus} onDone={() => setSettingsFocus(null)} />
+                <GlobalSettingsScreen
+                  onOpenTour={() => setTourOpen(true)}
+                  dirty={settingsDirty}
+                  form={settingsForm}
+                  settings={settings}
+                  theme={theme}
+                  actions={actions}
+                  onOpenAgentSettings={() => void (async () => {
+                    if (activeTool !== "codex") await switchTool("codex");
+                    await navigate("agentSettings");
+                  })()}
+                />
+                <AboutScreen
+                  form={settingsForm}
+                  onFormChange={setSettingsForm}
+                  overview={overview}
+                  update={update}
+                  updateInstallProgress={updateInstallProgress}
+                  logs={logs}
+                  diagnostics={diagnostics}
+                  actions={actions}
+                />
+              </div>
+            </div>
           ) : null}
         </section>
       </main>
@@ -4096,6 +4443,9 @@ export function App() {
           update={updatePrompt}
           progress={updateInstallProgress}
           onClose={closeUpdatePrompt}
+          onSkipVersion={() => {
+            if (updatePrompt.latestVersion) void skipUpdateVersion(updatePrompt.latestVersion);
+          }}
           onMuteToday={() => {
             updateNotifications.current.muteToday();
             setUpdatePrompt(null);
@@ -4111,6 +4461,7 @@ export function App() {
           onClose={() => setNotice(null)}
         />
       ) : null}
+      <AppDialogHost />
       {confirmDialog ? (
         <ConfirmDialog
           confirm={confirmDialog}
@@ -4272,8 +4623,8 @@ function ModelReasoningLevelsCell({
                 role="option"
                 type="button"
               >
-                {selected ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
-                <span>{level}</span>
+                <span className="app-select-option-label">{level}</span>
+                {selected ? <Check aria-hidden className="app-select-check" /> : null}
               </button>
             );
           })}
@@ -4317,7 +4668,7 @@ function ModelReasoningLevelsCell({
 
 export type Actions = {
   refreshCurrent: () => Promise<void>;
-  launch: () => Promise<void>;
+  launch: () => Promise<boolean>;
   launchMultiInstance: (profile: RelayProfile) => Promise<void>;
   multiLaunchPending: string | null;
   multiLaunchInstances: MultiLaunchInstance[];
@@ -4327,11 +4678,13 @@ export type Actions = {
   restartMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   stopMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
   restart: (syncActiveRelay?: boolean) => Promise<boolean>;
+  stopCodex: () => Promise<boolean>;
   repairShortcuts: () => Promise<void>;
   checkUpdate: () => Promise<void>;
   performUpdate: () => Promise<void>;
   saveSettings: () => Promise<void>;
   settingsSaving: boolean;
+  previewSettingsForm: (settings: BackendSettings) => void;
   saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;  refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
   resetSettings: () => Promise<void>;
   exportSettings: () => Promise<void>;
@@ -4410,7 +4763,7 @@ export type Actions = {
   diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
   testStepwiseSettings: (settings: BackendSettings) => Promise<void>;
   fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<void>;
+  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<boolean>;
   relaySwitching: boolean;
   switchOfficialMode: () => Promise<void>;
   switchPureApiMode: () => Promise<void>;
@@ -4620,8 +4973,15 @@ function WeixinConnectScreen({
   }[runtimeState] ?? runtimeState;
 
   return (
-    <div className="weixin-connect-page">
-      <Panel className={`weixin-status-panel is-${runtimeState}`}>
+    <div className="weixin-connect-page sectioned-page">
+      <PageSectionNav label={t("微信连接分类")} sections={[
+        { id: "weixin-section-status", label: t("连接状态") },
+        { id: "weixin-section-account", label: t("账号") },
+        { id: "weixin-section-session", label: t("会话管理") },
+        { id: "weixin-section-cli", label: "Codex CLI" },
+      ]} />
+      <div className="sectioned-body">
+      <Panel className={`weixin-status-panel is-${runtimeState}`} id="weixin-section-status">
         <CardContent className="weixin-status-content">
           <div className="weixin-connect-head">
             <div className="weixin-status-primary">
@@ -4709,7 +5069,7 @@ function WeixinConnectScreen({
           </div>
         </CardHeader>
         <CardContent className="weixin-connect-form">
-          <section className="weixin-form-section">
+          <section className="weixin-form-section" id="weixin-section-account">
             <div className="weixin-form-section-title">
               <KeyRound className="h-4 w-4" />
               <strong>{t("账号")}</strong>
@@ -4764,7 +5124,7 @@ function WeixinConnectScreen({
             </div>
           </section>
 
-          <section className="weixin-form-section">
+          <section className="weixin-form-section" id="weixin-section-session">
             <div className="weixin-form-section-title">
               <MessageCircle className="h-4 w-4" />
               <strong>{t("会话管理")}</strong>
@@ -4810,23 +5170,21 @@ function WeixinConnectScreen({
               </label>
               <label className="field">
                 <span>{t("沙箱权限")}</span>
-                <select
-                  className="field-select"
-                  onChange={(event) => onFormChange({
-                    ...form,
-                    weixinConnectSandbox: event.target.value as BackendSettings["weixinConnectSandbox"],
-                  })}
+                <AppSelect
+                  ariaLabel={t("沙箱权限")}
+                  onChange={(next) => onFormChange({ ...form, weixinConnectSandbox: next })}
+                  options={[
+                    { value: "read-only", label: t("只读") },
+                    { value: "workspace-write", label: t("允许修改工作目录") },
+                    { value: "danger-full-access", label: t("完全访问") },
+                  ]}
                   value={form.weixinConnectSandbox}
-                >
-                  <option value="read-only">{t("只读")}</option>
-                  <option value="workspace-write">{t("允许修改工作目录")}</option>
-                  <option value="danger-full-access">{t("完全访问")}</option>
-                </select>
+                />
               </label>
             </div>
           </section>
 
-          <section className="weixin-form-section">
+          <section className="weixin-form-section" id="weixin-section-cli">
             <div className="weixin-form-section-title">
               <Settings className="h-4 w-4" />
               <strong>Codex CLI</strong>
@@ -4861,6 +5219,7 @@ function WeixinConnectScreen({
           </section>
         </CardContent>
       </Panel>
+      </div>
     </div>
   );
 }
@@ -4872,6 +5231,7 @@ function OverviewScreen({
   toolEntries,
   form,
   onNavigate,
+  onOpenList,
   actions,
 }: {
   overview: OverviewResult | null;
@@ -4880,6 +5240,8 @@ function OverviewScreen({
   toolEntries: ToolEntry[];
   form: BackendSettings;
   onNavigate: (route: Route) => void;
+  /** 打开会话页 / 请求日志并选中这个 Agent。 */
+  onOpenList: (kind: "sessions" | "requestLog", agent: DashboardAgent) => void;
   actions: Actions;
 }) {
   const health = healthItems(overview);
@@ -4893,7 +5255,8 @@ function OverviewScreen({
     let cancelled = false;
     void invoke<RequestLogsResult>("load_request_logs", { limit: 300 })
       .then((result) => {
-        if (!cancelled) setRecent(summarizeRecentRequests(result.status === "ok" ? result.entries : [], Date.now()));
+        // 网关记录里也有 Claude Code / Grok 的请求，Codex 概览只统计 Codex 自己的。
+        if (!cancelled) setRecent(summarizeRecentRequests(result.status === "ok" ? result.entries.filter((entry) => requestLogAgent(entry) === "codex") : [], Date.now()));
       })
       .catch(() => { if (!cancelled) setRecent(summarizeRecentRequests([], Date.now())); });
     return () => { cancelled = true; };
@@ -4902,169 +5265,302 @@ function OverviewScreen({
     if (!profileId || profileId === normalized.activeRelayId) return;
     void actions.switchRelayProfile(syncLegacyRelayFields({ ...normalized, activeRelayId: profileId }), normalized.activeRelayId);
   };
+  const gatewayManaged = activeProfile?.id === CODEX_GATEWAY_RELAY_ID;
+  // Codex 的状态栏：经网关 / 直连哪家供应商，操作是网关管理或切换供应商。
+  const codexStatus: DashboardStatus = gatewayManaged
+    ? { tone: "gateway", text: codexGatewayModelCount(activeProfile) ? tf("经 Codex++ 网关 · {0} 个模型", [codexGatewayModelCount(activeProfile)]) : t("经 Codex++ 网关") }
+    : activeProfile
+      ? { tone: "relay", text: tf("直连 · {0}", [[activeProfile.name || t("未命名供应商"), relayProtocolLabel(activeProfile.protocol), activeProfile.model].filter(Boolean).join(" · ")]) }
+      : { tone: "missing", text: t("还没有配置供应商。") };
+  const codexActions = gatewayManaged ? (
+    <>
+      <Button onClick={() => onNavigate("gateway")} size="sm">{t("管理接入")}</Button>
+    </>
+  ) : activeProfile ? (
+    <>
+      <AppSelect
+        ariaLabel={t("切换供应商")}
+        className="overview-current-select agent-dash-select"
+        disabled={actions.relaySwitching || !normalized.relayProfilesEnabled || normalized.relayProfiles.length < 2}
+        onChange={(next) => switchFromOverview(next)}
+        options={normalized.relayProfiles.map((profile) => ({ value: profile.id, label: profile.name || t("未命名供应商") }))}
+        size="sm"
+        title={!normalized.relayProfilesEnabled ? t("供应商配置切换已关闭，在供应商配置页打开后才能切换") : t("切换供应商")}
+        value={normalized.activeRelayId}
+      />
+      <Button onClick={() => onNavigate("relay")} size="sm" variant="secondary">{t("管理供应商")}</Button>
+    </>
+  ) : (
+    <Button onClick={() => onNavigate("relay")} size="sm">{t("添加供应商")}</Button>
+  );
+  const codexStats: DashboardStat[] = [
+    { label: t("24 小时请求"), value: recent ? recent.total : "—" },
+    { label: t("成功率"), value: recent?.successRate == null ? "—" : `${Math.round(recent.successRate * 100)}%`, tone: recent?.failed ? "warn" : "ok" },
+    { label: t("平均耗时"), value: recent?.avgDurationMs == null ? "—" : `${(recent.avgDurationMs / 1000).toFixed(1)}s` },
+    { label: t("常用模型"), value: recent?.topModel ?? "—", mono: false },
+  ];
   return (
     <>
-      {/* 置顶推荐位两个工具下都显示，内容与「推荐内容」页同源。 */}
       {activeTool === "codex" ? (
-        <>
-          {/* 推荐位之下是最常用的两件事：现在用的是哪个供应商（可直接切换），以及最近请求是否正常。 */}
-          <div className="overview-top-grid">
-            <Panel className="overview-current-panel">
-              <CardHead title={t("当前供应商")} detail="" />
-              <CardContent className="overview-current">
-                {activeProfile ? (
-                  <>
-                    <div className="overview-current-main">
-                      <span className="relay-index">{providerInitial(activeProfile.name)}</span>
-                      <span className="overview-current-text">
-                        <strong>{activeProfile.name || t("未命名供应商")}</strong>
-                        <small>
-                          {[relayProfileModeLabel(activeProfile), relayProtocolLabel(activeProfile.protocol), activeProfile.model]
-                            .filter(Boolean)
-                            .join(" · ")}
-                        </small>
-                      </span>
-                    </div>
-                    <div className="overview-current-actions">
-                      <select
-                        aria-label={t("切换供应商")}
-                        className="request-log-filter overview-current-select"
-                        disabled={actions.relaySwitching || !normalized.relayProfilesEnabled || normalized.relayProfiles.length < 2}
-                        onChange={(event) => switchFromOverview(event.currentTarget.value)}
-                        title={!normalized.relayProfilesEnabled ? t("供应商配置切换已关闭，在供应商配置页打开后才能切换") : t("切换供应商")}
-                        value={normalized.activeRelayId}
-                      >
-                        {normalized.relayProfiles.map((profile) => (
-                          <option key={profile.id} value={profile.id}>{profile.name || t("未命名供应商")}</option>
-                        ))}
-                      </select>
-                      <Button onClick={() => onNavigate("relay")} variant="secondary">{t("管理供应商")}</Button>
-                    </div>
-                  </>
-                ) : (
-                  <div className="overview-current-empty">
-                    <span>{t("还没有配置供应商。")}</span>
-                    <Button onClick={() => onNavigate("relay")}>{t("添加供应商")}</Button>
-                  </div>
-                )}
-              </CardContent>
-            </Panel>
-            <Panel className="overview-recent-panel">
-              <CardHead title={t("最近 24 小时请求")} detail="" />
-              <CardContent className="overview-recent">
-                {!recent ? (
-                  <span className="field-hint">{t("读取中…")}</span>
-                ) : recent.total === 0 ? (
-                  <span className="field-hint">{t("最近 24 小时没有经过本地代理的请求。直连且未开启协议转换时，请求不经过本地代理，这里不会有记录。")}</span>
-                ) : (
-                  <dl className="overview-recent-stats">
-                    <div><dt>{t("请求")}</dt><dd>{recent.total}</dd></div>
-                    <div data-state={recent.failed ? "warn" : "ok"}><dt>{t("成功率")}</dt><dd>{Math.round((recent.successRate ?? 0) * 100)}%</dd></div>
-                    <div><dt>{t("平均耗时")}</dt><dd>{((recent.avgDurationMs ?? 0) / 1000).toFixed(1)}s</dd></div>
-                    <div className="overview-recent-model"><dt>{t("常用模型")}</dt><dd title={recent.topModel ?? undefined}>{recent.topModel ?? "—"}</dd></div>
-                  </dl>
-                )}
-                <Button className="overview-recent-link" onClick={() => onNavigate("requestLog")} size="sm" variant="ghost">
-                  {t("查看请求日志")}
-                </Button>
-              </CardContent>
-            </Panel>
-          </div>
-          <Panel>
-            <CardHeader className="panel-head overview-health-header">
-              <CardTitle>{t("健康检查")}</CardTitle>
-              <div className="overview-health-header-actions">
-                <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
-                <Button
-                  aria-label={t("刷新状态")}
-                  title={t("刷新状态")}
-                  size="icon"
-                  variant="outline"
-                  className="shrink-0"
-                  onClick={() => void actions.refreshCurrent()}
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="health-grid overview-health-grid">
-                <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
-                  <span className={`health-icon ${overview?.codex_version ? "good" : "warn"}`}><Tag className="h-4 w-4" /></span>
-                  <div>
-                    <strong>{t("Codex 版本")}</strong>
-                    <span title={overview?.codex_version ?? undefined}>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
-                  </div>
-                  <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
-                </div>
-                {health.map((item) => (
-                  <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
-                    <span className={`health-icon ${statusClass(item.status)}`}><item.icon className="h-4 w-4" /></span>
-                    <div>
-                      <strong>{item.title}</strong>
-                      <span title={item.detail}>{item.detail}</span>
-                    </div>
-                    <Badge status={item.status} />
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Panel>
-        </>
-      ) : (
-        <>
+        // 三个 Agent 的概览同一套仪表板；Codex 另在下面放健康检查。
+        <AgentDashboard
+          actions={codexActions}
+          agent="codex"
+          name="Codex"
+          notify={actions.showMessage}
+          onNavigate={onNavigate}
+          onOpenList={onOpenList}
+          stats={codexStats}
+          status={codexStatus}
+          version={overview?.codex_version}
+        >
         <Panel>
-          <CardHead title={tf("{0} 状态", [tool?.name ?? t("工具")])} detail={t("该工具由它自己的页签管理")} />
+          <CardHeader className="panel-head overview-health-header">
+            <CardTitle>{t("健康检查")}</CardTitle>
+            <div className="overview-health-header-actions">
+              <CardDescription>{t("概览只展示关键问题，具体配置在对应页面处理")}</CardDescription>
+              <Button
+                aria-label={t("刷新状态")}
+                title={t("刷新状态")}
+                size="icon"
+                variant="outline"
+                className="shrink-0"
+                onClick={() => void actions.refreshCurrent()}
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </div>
+          </CardHeader>
           <CardContent>
-            <div className="health-grid">
-              <div className={`health-item ${tool?.switchable ? "ok" : "needs-fix"}`}>
-                {tool?.switchable ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+            <div className="health-grid overview-health-grid">
+              <div className={`health-item ${overview?.codex_version ? "ok" : "needs-fix"}`}>
+                <span className={`health-icon ${overview?.codex_version ? "good" : "warn"}`}><Tag className="h-4 w-4" /></span>
                 <div>
-                  <strong>{t("配置切换")}</strong>
-                  <span>{tool?.switchable ? t("已接入，可在该工具页切换供应商。") : t("尚未接入配置切换。")}</span>
+                  <strong>{t("Codex 版本")}</strong>
+                  <span title={overview?.codex_version ?? undefined}>{overview?.codex_version ?? t("未检测到 Codex 应用版本。")}</span>
                 </div>
-                <Badge status={tool?.switchable ? "ok" : "not_checked"} />
+                <Badge status={overview?.codex_version ? "ok" : "not_checked"} />
               </div>
-              <div className={`health-item ${tool?.relayCount ? "ok" : "needs-fix"}`}>
-                {tool?.relayCount ? <CheckCircle2 className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
-                <div>
-                  <strong>{t("供应商")}</strong>
-                  <span>{tf("{0} 个已保存", [String(tool?.relayCount ?? 0)])}</span>
+              {health.map((item) => (
+                <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`} key={item.title}>
+                  <span className={`health-icon ${statusClass(item.status)}`}><item.icon className="h-4 w-4" /></span>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <span title={item.detail}>{item.detail}</span>
+                  </div>
+                  <Badge status={item.status} />
                 </div>
-                <Badge status={tool?.relayCount ? "ok" : "not_checked"} />
-              </div>
-              <div className="health-item ok">
-                <CheckCircle2 className="h-4 w-4" />
-                <div>
-                  <strong>{t("配置目录")}</strong>
-                  <span>{tool?.homeDir || t("未配置目录")}</span>
-                </div>
-                <Badge status="ok" />
-              </div>
+              ))}
             </div>
           </CardContent>
         </Panel>
-        </>
-      )}
+        </AgentDashboard>
+      ) : activeTool === "claude" || activeTool === "grok" ? (
+        <AgentDashboard agent={activeTool} name={tool?.name ?? activeTool} notify={actions.showMessage} onNavigate={onNavigate} onOpenList={onOpenList} />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * 新旧两套共用的本地服务设置：服务状态、请求体上限、请求避震。放在「网关 → 网关设置」，
+ * 按网关设置的行样式排版，随主窗口设置一起手动保存。
+ */
+function SharedServiceSettings({
+  overview,
+  form,
+  onFormChange,
+  autoSave,
+}: {
+  overview: OverviewResult | null;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  /** 保存操作放在第一个分组标题右侧。 */
+  autoSave?: ReactNode;
+}) {
+  const [retryStatusInput, setRetryStatusInput] = useState("");
+  const setRetryStatusCodes = (codes: number[]) =>
+    onFormChange({ ...form, protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(codes) });
+  const addRetryStatusCodes = () => {
+    const next = retryStatusInput.split(/[,，\s]+/).map(Number);
+    if (!normalizeRetryStatusCodes(next).length) return;
+    setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...next]);
+    setRetryStatusInput("");
+  };
+  // 本地服务的地址与运行状态在上面「监听地址」已经有了，这里只列协议转换与调试连接。
+  const health = healthItems(overview).filter((item) => item.title === t("协议转换") || item.title === t("调试连接状态"));
+  const tone = (item: (typeof health)[number]) => (["running", "connected", "ok"].includes(item.status) ? "ok" : item.ok ? undefined : "warning");
+  const number = (value: number, min: number, max: number, unit: string, apply: (next: number) => void, step = 1) => (
+    <label className="gw-unit-input">
+      <input
+        max={max}
+        min={min}
+        onChange={(event) => apply(clampNumber(Number(event.currentTarget.value), min, max))}
+        step={step}
+        type="number"
+        value={value}
+      />
+      <span>{unit}</span>
+    </label>
+  );
+  const retry = form.protocolProxyAutoRetry;
+  return (
+    <div className="gw-shared-settings">
+      <SectionLabel aside={autoSave}>{t("本地服务（新旧共用）")}</SectionLabel>
+      <div className="gw-card">
+        {health.map((item) => (
+          <div className="gw-setting-row" key={item.title}>
+            <div>
+              <strong>{item.title}</strong>
+              <small title={item.detail}>{item.detail}</small>
+            </div>
+            <span />
+            <span className="gw-pill" data-tone={tone(item)}>{statusLabel(item.status)}</span>
+          </div>
+        ))}
+        <div className="gw-setting-row">
+          <div>
+            <strong>{t("请求体上限")}</strong>
+            <small title={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}>
+              {t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
+            </small>
+          </div>
+          <span />
+          {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
+        </div>
+      </div>
+
+      <SectionLabel>{t("请求避震（新旧共用）")}</SectionLabel>
+      <div className="gw-card">
+        <div className="gw-setting-row">
+          <div>
+            <strong>{t("启用请求避震")}</strong>
+            <small>
+              {retry
+                ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过网关和旧版本地协议代理的请求。")
+                : t("已关闭：上游过载或限流时，错误直接交给 Agent。")}
+            </small>
+          </div>
+          <span />
+          <Switch label={t("启用请求避震")} on={retry} onToggle={() => onFormChange({ ...form, protocolProxyAutoRetry: !retry })} />
+        </div>
+        {retry ? (
+          <>
+            <div className="gw-setting-row">
+              <div>
+                <strong>{t("最多自动重试次数")}</strong>
+                <small>{t("0–20 次；次数用尽后把错误交给 Agent。")}</small>
+              </div>
+              <span />
+              {number(form.protocolProxyAutoRetryMaxAttempts, 0, 20, t("次"), (next) => onFormChange({ ...form, protocolProxyAutoRetryMaxAttempts: next }))}
+            </div>
+            <div className="gw-setting-row">
+              <div>
+                <strong>{t("首次重试间隔")}</strong>
+                <small>{t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")}</small>
+              </div>
+              <span />
+              {number(form.protocolProxyAutoRetryIntervalSeconds, 0, 30, t("秒"), (next) => onFormChange({ ...form, protocolProxyAutoRetryIntervalSeconds: next }))}
+            </div>
+            <div className="gw-setting-row">
+              <div>
+                <strong>{t("避震模式")}</strong>
+                <small title={t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}>
+                  {form.protocolProxyAutoRetryMode === "buffered"
+                    ? t("始终由代理重试，但要等整段生成完才显示。")
+                    : form.protocolProxyAutoRetryMode === "streaming-legacy"
+                      ? t("旧版流式行为，仅在新版有问题时使用。")
+                      : t("保留实时输出；正文出现前遇到过载由代理重试。")}
+                </small>
+              </div>
+              <span />
+              <AppSelect
+                label={t("避震模式")}
+                onChange={(next) => onFormChange({ ...form, protocolProxyAutoRetryMode: next })}
+                options={[
+                  { value: "streaming", label: t("流式（推荐）"), hint: t("保留实时输出；正文出现前遇到过载由代理重试。") },
+                  { value: "streaming-legacy", label: t("流式（旧行为）"), hint: t("旧版流式行为，仅在新版有问题时使用。") },
+                  { value: "buffered", label: t("整段缓冲"), hint: t("始终由代理重试，但要等整段生成完才显示。") },
+                ]}
+                value={form.protocolProxyAutoRetryMode}
+                menuWidth={300}
+              />
+            </div>
+            {form.protocolProxyAutoRetryMode === "streaming" ? (
+              <div className="gw-setting-row">
+                <div>
+                  <strong>{t("首字提交延迟")}</strong>
+                  <small>{t("出现正文后再缓冲的时长，0 表示立即提交。")}</small>
+                </div>
+                <span />
+                {number(form.protocolProxyAutoRetryCommitDelayMs, 0, 10000, "ms", (next) => onFormChange({ ...form, protocolProxyAutoRetryCommitDelayMs: next }), 100)}
+              </div>
+            ) : null}
+            {/* 状态码编辑不能放进 <label>：WebKit 会把点击转发给第一个按钮，一次删掉两个状态码。 */}
+            <div className="gw-setting-row gw-setting-row-stacked">
+              <div>
+                <strong>{t("重试的 HTTP 状态码")}</strong>
+                <small>{t("命中时退避重发。默认不选；常用 429（限流）和 5xx（服务端故障）。")}</small>
+              </div>
+              <div className="gw-retry-codes" role="group" aria-label={t("重试的 HTTP 状态码")}>
+                {form.protocolProxyAutoRetryStatusCodes.map((status) => (
+                  <button
+                    className="gw-chip gw-retry-code"
+                    key={status}
+                    onClick={() => setRetryStatusCodes(form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status))}
+                    title={t("点击移除")}
+                    type="button"
+                  >
+                    {status} ×
+                  </button>
+                ))}
+                <input
+                  aria-label={t("输入状态码后回车")}
+                  className="gw-retry-input"
+                  inputMode="numeric"
+                  onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addRetryStatusCodes();
+                    }
+                  }}
+                  placeholder={t("加状态码，回车")}
+                  value={retryStatusInput}
+                />
+                <button
+                  className="gw-text-button"
+                  onClick={() => setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...COMMON_RETRY_STATUS_CODES])}
+                  type="button"
+                >
+                  {t("填入常用")}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
 function ProxySettingsScreen({
   dirty,
-  overview,
   form,
   relayEnvironment,
   onFormChange,
+  onOpenGatewaySettings,
   actions,
 }: {
   dirty: boolean;
-  overview: OverviewResult | null;
   form: BackendSettings;
   relayEnvironment: RelayEnvironmentResult | null;
   onFormChange: (value: BackendSettings) => void;
+  onOpenGatewaySettings: () => void;
   actions: Actions;
 }) {
+  // Codex 被新版网关接管时，旧版专用的设置不起作用，隐藏。
+  const takenOverByGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   const proxyProfiles = useMemo(
     () => (form.relayProfiles ?? []).filter((profile) => profile.relayMode !== "aggregate"),
     [form.relayProfiles],
@@ -5075,15 +5571,6 @@ function ProxySettingsScreen({
   const [savedProxyUrls, setSavedProxyUrls] = useState<Record<string, string>>({});
   const [proxyConfigured, setProxyConfigured] = useState<Record<string, boolean>>({});
   const [proxyBusyId, setProxyBusyId] = useState<string | null>(null);
-  const [retryStatusInput, setRetryStatusInput] = useState("");
-  const setRetryStatusCodes = (codes: number[]) =>
-    onFormChange({ ...form, protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(codes) });
-  const addRetryStatusCodes = () => {
-    const next = retryStatusInput.split(/[,，\s]+/).map(Number);
-    if (!normalizeRetryStatusCodes(next).length) return;
-    setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...next]);
-    setRetryStatusInput("");
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -5140,224 +5627,36 @@ function ProxySettingsScreen({
     }
   };
 
-  const localServer = overview?.runtime_health?.local_server;
-  const debuggerState = overview?.runtime_health?.debugger;
-  const conversionEnabled = overview?.runtime_health?.protocol_conversion_enabled === true;
 
   return (
     <div className="settings-page proxy-settings-page">
       <SettingsSaveActions dirty={dirty} form={form} actions={actions} />
       <Panel>
         <CardHead
-          title={t("本地协议代理")}
-          detail={t("需要协议转换、聚合或请求避震时随 Codex++ 常驻；退出 Codex++ 才关闭")}
+          title={t("本地服务与请求避震已移到网关设置")}
+          detail={t("本地服务状态、请求体上限和请求避震对新旧两套同时生效，统一在「网关 → 网关设置」里改。")}
         />
-        <CardContent className="settings-content setting-rows">
-          {/* 与概览页健康检查同一套带图标状态卡。 */}
-          <div className="health-grid overview-health-grid proxy-status-grid">
-            {healthItems(overview)
-              .filter((item) => item.title !== t("Codex 应用"))
-              .map((item) => <HealthTile item={item} key={item.title} />)}
-          </div>
-          <SettingRow
-            title={t("请求体上限")}
-            description={t("长上下文会话超过上限会报 413；调大会增加本地代理的内存占用。")}
-            detail={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}
-          >
-            <div className="setting-input-unit">
-              <Input
-                max={512}
-                min={32}
-                step={16}
-                type="number"
-                value={form.helperMaxRequestBodyMib}
-                onChange={(event) =>
-                  onFormChange({
-                    ...form,
-                    helperMaxRequestBodyMib: clampNumber(Number(event.currentTarget.value), 32, 512),
-                  })
-                }
-              />
-              <span>MiB</span>
-            </div>
-          </SettingRow>
-          <p className="setting-footnote">
-            {t("本地代理地址由 Codex++ 写入 config.toml；切换供应商或修改协议后重启 Codex 生效。")}
-          </p>
+        <CardContent className="settings-content">
+          <Button onClick={onOpenGatewaySettings} size="sm" variant="secondary">
+            {t("打开网关设置")}
+            <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+          </Button>
         </CardContent>
       </Panel>
 
-      <Panel>
-        <SwitchPanelHead
-          checked={form.protocolProxyAutoRetry}
-          detail={t("在本地代理内消化上游过载与限流，尽量不把错误交给 Codex")}
-          label={t("启用请求避震")}
-          onChange={(checked) => onFormChange({ ...form, protocolProxyAutoRetry: checked })}
-          title={t("请求避震")}
-        />
-        <CardContent className="settings-content setting-rows">
-          {form.protocolProxyAutoRetry ? (
-            <>
-              <SettingRow title={t("最多自动重试次数")} description={t("0–20 次；次数用尽后把错误交给 Codex。")}>
-                <div className="setting-input-unit">
-                  <Input
-                    max={20}
-                    min={0}
-                    type="number"
-                    value={form.protocolProxyAutoRetryMaxAttempts}
-                    onChange={(event) =>
-                      onFormChange({
-                        ...form,
-                        protocolProxyAutoRetryMaxAttempts: clampNumber(
-                          Number(event.currentTarget.value),
-                          0,
-                          20,
-                        ),
-                      })
-                    }
-                  />
-                  <span>{t("次")}</span>
-                </div>
-              </SettingRow>
-              <SettingRow title={t("首次重试间隔")} description={t("之后按 2 倍退避，单次最长 30 秒；有 Retry-After 时优先采用。")}>
-                <div className="setting-input-unit">
-                  <Input
-                    max={30}
-                    min={0}
-                    type="number"
-                    value={form.protocolProxyAutoRetryIntervalSeconds}
-                    onChange={(event) =>
-                      onFormChange({
-                        ...form,
-                        protocolProxyAutoRetryIntervalSeconds: clampNumber(
-                          Number(event.currentTarget.value),
-                          0,
-                          30,
-                        ),
-                      })
-                    }
-                  />
-                  <span>{t("秒")}</span>
-                </div>
-              </SettingRow>
-              {/* 状态码编辑不能放进 <label>（Field）：WebKit 会把点击转发给第一个按钮，一次删掉两个状态码。 */}
-              <SettingRow
-                stacked
-                title={t("重试的 HTTP 状态码")}
-                description={t("命中时退避重发。默认不选；常用 429（限流）和 5xx（服务端故障）。")}
-              >
-                <div role="group" aria-label={t("重试的 HTTP 状态码")}>
-                  <div className="retry-status-editor">
-                    <div className="retry-status-list">
-                      {form.protocolProxyAutoRetryStatusCodes.map((status) => (
-                        <button
-                          key={status}
-                          className="retry-status-chip"
-                          onClick={() =>
-                            setRetryStatusCodes(
-                              form.protocolProxyAutoRetryStatusCodes.filter((item) => item !== status),
-                            )
-                          }
-                          title={t("点击移除")}
-                          type="button"
-                        >
-                          {status} ×
-                        </button>
-                      ))}
-                    </div>
-                    <div className="retry-status-input-row">
-                      <Input
-                        aria-label={t("输入状态码后回车")}
-                        inputMode="numeric"
-                        placeholder={t("输入状态码后回车，如 429")}
-                        value={retryStatusInput}
-                        onChange={(event) => setRetryStatusInput(event.currentTarget.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            addRetryStatusCodes();
-                          }
-                        }}
-                      />
-                      <Button
-                        onClick={() =>
-                          setRetryStatusCodes([...form.protocolProxyAutoRetryStatusCodes, ...COMMON_RETRY_STATUS_CODES])
-                        }
-                        type="button"
-                        variant="outline"
-                      >
-                        {t("填入常用")}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              </SettingRow>
-              <SettingRow
-                title={t("避震模式")}
-                description={form.protocolProxyAutoRetryMode === "buffered"
-                  ? t("始终由代理重试，但要等整段生成完才显示。")
-                  : form.protocolProxyAutoRetryMode === "streaming-legacy"
-                    ? t("旧版流式行为，仅在新版有问题时使用。")
-                    : t("保留实时输出；正文出现前遇到过载由代理重试。")}
-                detail={t("流式：保留实时输出，正文提交前遇到过载由代理重试，之后交给 Codex；「首字提交延迟」为出现正文后再缓冲的时长，0 表示立即提交。整段缓冲：始终由代理重试，但要等整段生成完才显示。")}
-              >
-                <select
-                  className="request-log-filter"
-                  value={form.protocolProxyAutoRetryMode}
-                  onChange={(event) =>
-                    onFormChange({
-                      ...form,
-                      protocolProxyAutoRetryMode:
-                        event.currentTarget.value === "buffered"
-                          ? "buffered"
-                          : event.currentTarget.value === "streaming-legacy"
-                            ? "streaming-legacy"
-                            : "streaming",
-                    })
-                  }
-                >
-                  <option value="streaming">{t("流式（推荐）")}</option>
-                  <option value="streaming-legacy">{t("流式（旧行为）")}</option>
-                  <option value="buffered">{t("整段缓冲")}</option>
-                </select>
-              </SettingRow>
-              {form.protocolProxyAutoRetryMode === "streaming" ? (
-                <SettingRow title={t("首字提交延迟")} description={t("出现正文后再缓冲的时长，0 表示立即提交。")}>
-                  <div className="setting-input-unit">
-                    <Input
-                      max={10000}
-                      min={0}
-                      step={100}
-                      type="number"
-                      value={form.protocolProxyAutoRetryCommitDelayMs}
-                      onChange={(event) =>
-                        onFormChange({
-                          ...form,
-                          protocolProxyAutoRetryCommitDelayMs: clampNumber(Number(event.currentTarget.value), 0, 10000),
-                        })
-                      }
-                    />
-                    <span>ms</span>
-                  </div>
-                </SettingRow>
-              ) : null}
-              <p className="setting-footnote">
-                {t("仅作用于经过本地协议代理的请求：自动重试 200 流内的过载/容量错误，以及上面选择的 HTTP 状态码。")}
-              </p>
-            </>
-          ) : (
-            <p className="setting-footnote">{t("已关闭：上游过载或限流时，错误直接交给 Codex。")}</p>
-          )}
-        </CardContent>
-      </Panel>
-
+      {takenOverByGateway ? (
+        <p className="relay-switch-off-note" role="status">
+          {t("Codex 正由 Codex++ 网关接管，旧版代理设置不起作用，已隐藏。断开并还原后恢复。")}
+        </p>
+      ) : (
+      <>
       <Panel>
         <SwitchPanelHead
           checked={form.protocolProxyMapUnlistedModels}
           detail={t("把 Codex 后台任务的固定模型名改写为当前供应商的默认模型")}
           label={t("改写目录外模型名")}
           onChange={(checked) => onFormChange({ ...form, protocolProxyMapUnlistedModels: checked })}
-          title={t("目录外模型映射")}
+          title={t("目录外模型映射（旧版）")}
         />
         <CardContent className="settings-content setting-rows">
           <p className="setting-footnote" title={t("Codex 的自动审查（codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，不经选模；第三方上游没有这些名字，原样转发只会报「模型不存在」并可能反复消耗额度。开启后，不在当前供应商模型列表里的请求模型会改写为该供应商的默认模型再转发（#1183 / #1446 / #1457）；官方登录与聚合供应商不受影响，已配置「自动审批模型」时 codex-auto-review 仍按该配置改写。默认关闭：开启后手填但未写进模型列表的模型也会被改写，请先把要用的模型都加进列表。")}>
@@ -5366,13 +5665,14 @@ function ProxySettingsScreen({
           {form.protocolProxyMapUnlistedModels ? (
             <p className="setting-warning">{t("注意：手填但没写进模型列表的模型也会被改写，请先把要用的模型都加进列表。")}</p>
           ) : null}
+          <p className="setting-footnote">{t("接入网关的 Agent 不用这一项：网关会把供应商池里没有的模型改写成该 Agent 的主模型。")}</p>
         </CardContent>
       </Panel>
 
       <Panel>
         <CardHead
-          title={t("供应商独立代理")}
-          detail={t("为单个供应商单独指定 HTTP 代理；留空表示沿用系统代理")}
+          title={t("供应商独立代理（旧版供应商）")}
+          detail={t("为旧版的单个供应商单独指定 HTTP 代理；留空表示沿用系统代理。网关供应商的代理在供应商池里编辑供应商时设置。")}
         />
         <CardContent className="settings-content">
           {proxyProfiles.length ? (
@@ -5390,9 +5690,11 @@ function ProxySettingsScreen({
                     aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
                     placeholder={t("例如 http://127.0.0.1:7890，留空表示使用系统代理")}
                     value={proxyUrls[profile.id] ?? ""}
-                    onChange={(event) =>
-                      setProxyUrls((current) => ({ ...current, [profile.id]: event.currentTarget.value }))
-                    }
+                    onChange={(event) => {
+                      // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
+                      const value = event.currentTarget.value;
+                      setProxyUrls((current) => ({ ...current, [profile.id]: value }));
+                    }}
                   />
                   <Button
                     disabled={
@@ -5415,6 +5717,9 @@ function ProxySettingsScreen({
           </p>
         </CardContent>
       </Panel>
+
+      </>
+      )}
 
       <RelayEnvironmentScreen result={relayEnvironment} actions={actions} />
 
@@ -5476,13 +5781,49 @@ function requestLogRetryLabel(entry: RequestLogEntry) {
   return "-";
 }
 
-function RequestLogScreen() {
+/** 请求来自哪个 Agent：网关记录带 agent 字段，Codex 直连代理的记录没有。 */
+function requestLogAgent(entry: RequestLogEntry): string {
+  return entry.agent || "codex";
+}
+
+/** 生图请求（网关记成 imageGenerations / imageEdits）：列表里标「生图」，运行中显示「生成中」而不是「流式中」。 */
+function isImageRequest(entry: { wireApi?: string }): boolean {
+  return (entry.wireApi ?? "").startsWith("image");
+}
+
+const REQUEST_LOG_LIMIT = 300;
+
+/** 失败请求在列表里直接显示的错误摘要：上游返回 JSON 时取里面的 message，否则取第一行。 */
+function requestLogErrorSummary(error: string): string {
+  const text = error.trim();
+  try {
+    const value = JSON.parse(text) as { error?: { message?: unknown } | string; message?: unknown };
+    const message = typeof value.error === "string" ? value.error : value.error?.message ?? value.message;
+    if (typeof message === "string" && message.trim()) return message.trim();
+  } catch {
+    // 不是 JSON，按原文处理。
+  }
+  return text.split("\n")[0] ?? text;
+}
+
+function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeInitialAgent }: { initialAgent?: "all" | "codex" | "claude" | "grok"; initialFocus?: RequestLogFocus; onConsumeInitialAgent?: () => void }) {
   const [entries, setEntries] = useState<RequestLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  // 时间段、供应商、模型在后端筛：日志只读最近 REQUEST_LOG_LIMIT 条，先截再筛会漏。
+  const [range, setRange] = useState<UsageRange>(initialFocus.range ?? "all");
+  const [relayFilter, setRelayFilter] = useState<{ id: string; label: string } | null>(
+    initialFocus.relayId ? { id: initialFocus.relayId, label: initialFocus.relayLabel || initialFocus.relayId } : null,
+  );
+  const [modelFilter, setModelFilter] = useState(initialFocus.model ?? "");
+  const [more, setMore] = useState(false);
+  const [oldestMs, setOldestMs] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "running" | "success" | "failed" | "retried">("all");
   const [sessionFilter, setSessionFilter] = useState("all");
+  const [agentFilter, setAgentFilter] = useState<"all" | "codex" | "claude" | "grok">(initialAgent);
+  // 初始过滤只用一次：之后从侧栏进来仍是「全部」。
+  useEffect(() => { if (initialAgent !== "all" || Object.keys(initialFocus).length) onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -5495,12 +5836,28 @@ function RequestLogScreen() {
     return () => window.clearInterval(timer);
   }, [hasRunning]);
 
+  const sinceMs = usageRangeStart(range);
+  const filterArgs = {
+    limit: REQUEST_LOG_LIMIT,
+    sinceMs: sinceMs ?? null,
+    agent: agentFilter === "all" ? null : agentFilter,
+    relayId: relayFilter?.id ?? null,
+    model: modelFilter || null,
+  };
+  // 自动刷新的定时器拿最新的筛选条件；序号保证只认最后一次读取。
+  const filterRef = useRef(filterArgs);
+  filterRef.current = filterArgs;
+  const latestLoad = useRef(0);
   const load = async (silent = false) => {
+    const id = ++latestLoad.current;
     if (!silent) setLoading(true);
     try {
-      const result = await invoke<RequestLogsResult>("load_request_logs", { limit: 300 });
+      const result = await invoke<RequestLogsResult>("load_request_logs", filterRef.current);
+      if (id !== latestLoad.current) return;
       if (result.status === "ok") {
         setEntries(result.entries ?? []);
+        setMore(Boolean(result.more));
+        setOldestMs(result.oldestMs ?? null);
         setError("");
       } else {
         setError(result.message || t("读取请求日志失败。"));
@@ -5514,7 +5871,8 @@ function RequestLogScreen() {
 
   useEffect(() => {
     void load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range, agentFilter, relayFilter?.id, modelFilter]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -5525,7 +5883,7 @@ function RequestLogScreen() {
   }, [autoRefresh]);
 
   const clearLogs = async () => {
-    if (!window.confirm(t("清空全部请求日志？此操作不可撤销。"))) return;
+    if (!(await appConfirm(t("清空全部请求日志？此操作不可撤销。"), { title: t("清空请求日志"), confirmText: t("清空"), danger: true }))) return;
     setClearing(true);
     try {
       const result = await invoke<{ status: Status; message: string }>("clear_request_logs");
@@ -5569,6 +5927,9 @@ function RequestLogScreen() {
     }
   }, [sessionFilter, sessions]);
 
+  // 筛的时间段（或点进来的那一项）比日志里最早的一条还早：日志里看到的比统计少。
+  const partial = oldestMs !== null && (sinceMs ?? 0) < oldestMs && (range !== "all" || relayFilter !== null || modelFilter !== "");
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return entries.filter((entry) => {
@@ -5577,6 +5938,7 @@ function RequestLogScreen() {
       if (filter === "success" && (running || !entry.success)) return false;
       if (filter === "failed" && (running || entry.success)) return false;
       if (filter === "retried" && entry.autoRetries === 0 && entry.attempts <= 1) return false;
+      if (agentFilter !== "all" && requestLogAgent(entry) !== agentFilter) return false;
       const threadId = (entry.threadId ?? "").trim();
       if (sessionFilter === "__none__") {
         if (threadId) return false;
@@ -5597,14 +5959,10 @@ function RequestLogScreen() {
         .toLowerCase()
         .includes(needle);
     });
-  }, [entries, filter, query]);
+  }, [entries, filter, query, sessionFilter, agentFilter]);
 
   return (
     <Panel className="request-log-panel">
-      <CardHead
-        title={t("请求日志")}
-        detail={tf("最近 {0} 条代理请求，含状态、模型、重试与 token 用量", [String(entries.length)])}
-      />
       <CardContent className="request-log-content">
         <div className="request-log-toolbar">
           <div className="request-log-search">
@@ -5616,36 +5974,68 @@ function RequestLogScreen() {
               onChange={(event) => setQuery(event.currentTarget.value)}
             />
           </div>
-          <select
-            aria-label={t("状态筛选")}
-            className="request-log-filter"
+          <AppSelect
+            ariaLabel={t("按 Agent 筛选")}
+            className="request-log-select"
+            menuWidth={160}
+            onChange={(next) => setAgentFilter(next)}
+            options={[
+              { value: "all", label: t("全部 Agent") },
+              { value: "codex", label: "Codex" },
+              { value: "claude", label: "Claude Code" },
+              { value: "grok", label: "Grok" },
+            ] as AppSelectOption<typeof agentFilter>[]}
+            size="sm"
+            value={agentFilter}
+          />
+          <AppSelect
+            ariaLabel={t("时间段")}
+            className="request-log-select"
+            menuWidth={140}
+            onChange={(next) => setRange(next)}
+            options={[
+              { value: "all", label: t("全部时间") },
+              { value: "today", label: t("今天") },
+              { value: "7d", label: t("近 7 天") },
+              { value: "30d", label: t("近 30 天") },
+            ] as AppSelectOption<UsageRange>[]}
+            size="sm"
+            value={range}
+          />
+          <AppSelect
+            ariaLabel={t("状态筛选")}
+            className="request-log-select"
+            menuWidth={140}
+            onChange={(next) => setFilter(next)}
+            options={[
+              { value: "all", label: t("全部状态") },
+              { value: "running", label: t("进行中") },
+              { value: "success", label: t("仅成功") },
+              { value: "failed", label: t("仅失败") },
+              { value: "retried", label: t("含重试") },
+            ] as AppSelectOption<typeof filter>[]}
+            size="sm"
             value={filter}
-            onChange={(event) => setFilter(event.currentTarget.value as typeof filter)}
-          >
-            <option value="all">{t("全部")}</option>
-            <option value="running">{t("进行中")}</option>
-            <option value="success">{t("仅成功")}</option>
-            <option value="failed">{t("仅失败")}</option>
-            <option value="retried">{t("含重试")}</option>
-          </select>
-          <select
-            aria-label={t("按会话筛选")}
-            className="request-log-filter request-log-session-filter"
-            onChange={(event) => setSessionFilter(event.currentTarget.value)}
-            title={t("按会话筛选")}
-            value={sessionFilter}
-          >
-            <option value="all">{t("全部会话")}</option>
-            {sessions.map((session) => (
-              <option key={session.id} value={session.id}>
-                {tf("{0}（{1} 条）", [
+          />
+          <AppSelect
+            ariaLabel={t("按会话筛选")}
+            className="request-log-select request-log-session-select"
+            menuWidth={280}
+            onChange={(next) => setSessionFilter(next)}
+            options={[
+              { value: "all", label: t("全部会话") },
+              ...sessions.map((session) => ({
+                value: session.id,
+                label: tf("{0}（{1} 条）", [
                   session.title || tf("会话 {0}", [formatRequestLogSession(session.id)]),
                   String(session.count),
-                ])}
-              </option>
-            ))}
-            {hasUnknownSession ? <option value="__none__">{t("未记录会话")}</option> : null}
-          </select>
+                ]),
+              })),
+            ]}
+            size="sm"
+            title={t("按会话筛选")}
+            value={sessionFilter}
+          />
           <label className="check-row request-log-auto">
             <input
               checked={autoRefresh}
@@ -5660,9 +6050,26 @@ function RequestLogScreen() {
           </Button>
           <Button disabled={clearing || entries.length === 0} variant="secondary" onClick={() => void clearLogs()}>
             <Trash2 className="h-4 w-4" />
-            {t("清空")}
+            {t("清空日志")}
           </Button>
         </div>
+
+        {relayFilter || modelFilter ? (
+          <div className="request-log-chips">
+            {relayFilter ? (
+              <button className="request-log-chip" onClick={() => setRelayFilter(null)} title={t("去掉这个筛选")} type="button">
+                {tf("供应商：{0}", [relayFilter.label])}
+                <X aria-hidden="true" className="h-3 w-3" />
+              </button>
+            ) : null}
+            {modelFilter ? (
+              <button className="request-log-chip" onClick={() => setModelFilter("")} title={t("去掉这个筛选")} type="button">
+                {tf("模型：{0}", [modelFilter])}
+                <X aria-hidden="true" className="h-3 w-3" />
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
         {error ? (
           <p className="field-hint request-log-error" role="alert">{error}</p>
@@ -5681,6 +6088,7 @@ function RequestLogScreen() {
               <span>{t("输入")}</span>
               <span>{t("输出")}</span>
               <span>{t("缓存")}</span>
+              <span>{t("费用")}</span>
               <span>{t("耗时")}</span>
             </div>
             {filtered.map((entry) => (
@@ -5702,7 +6110,7 @@ function RequestLogScreen() {
                       className={`request-log-status ${entry.success ? "ok" : "bad"}`}
                       title={entry.error ?? ""}
                     >
-                      {entry.statusCode || "ERR"}
+                      {entry.statusCode || (entry.success ? "OK" : "ERR")}
                       {!entry.success ? (
                         <small className="request-log-stream-failed">
                           {entry.stream ? t("流失败") : t("失败")}
@@ -5710,8 +6118,12 @@ function RequestLogScreen() {
                       ) : null}
                     </span>
                   )}
-                  <span className="request-log-ellipsis" title={entry.relayName}>{entry.relayName || "-"}</span>
+                  <span className="request-log-ellipsis request-log-source" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
+                    <AgentGlyph agent={requestLogAgent(entry)} />
+                    {maskAccountName(entry.relayName) || "-"}
+                  </span>
                   <span className="request-log-ellipsis" title={entry.upstreamModel ? `${entry.model} → ${entry.upstreamModel}` : entry.model}>
+                    {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
                     {entry.model || "-"}
                     {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
                       <small> → {entry.upstreamModel}</small>
@@ -5723,38 +6135,46 @@ function RequestLogScreen() {
                   >
                     {requestLogRetryLabel(entry)}
                   </span>
-                  <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
-                    {entry.state === "running" ? t("流式中") : formatRequestLogTokens(entry.usage?.inputTokens)}
-                  </span>
-                  <span
-                    className="request-log-muted"
-                    title={entry.state === "running"
-                      ? t("按流式增量估算，完成后会更新为准确值")
-                      : ""}
-                  >
-                    {entry.state === "running"
-                      ? entry.estimatedOutputTokens
-                        ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
-                        : t("流式中")
-                      : formatRequestLogTokens(entry.usage?.outputTokens)}
-                  </span>
-                  <span>
-                    {entry.state === "running" ? (
-                      <span className="request-log-muted">{t("流式中")}</span>
-                    ) : entry.usage?.cachedTokens ? (
-                      <>
-                        {formatRequestLogTokens(entry.usage.cachedTokens)}
-                        <small>
-                          {" · "}
-                          {formatRequestLogCacheHitRatio(
-                            entry.usage.inputTokens,
-                            entry.usage.cachedTokens,
-                            entry.cacheHitRatio,
-                          )}
-                        </small>
-                      </>
-                    ) : "-"}
-                  </span>
+                  {entry.state !== "running" && !entry.success && entry.error ? (
+                    // 失败的请求没有 token 和费用：这几列直接显示错误原因。
+                    <span className="request-log-error-cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
+                  ) : (
+                    <>
+                      <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
+                        {entry.state === "running" ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
+                      </span>
+                      <span
+                        className="request-log-muted"
+                        title={entry.state === "running"
+                          ? t("按流式增量估算，完成后会更新为准确值")
+                          : ""}
+                      >
+                        {entry.state === "running"
+                          ? entry.estimatedOutputTokens
+                            ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
+                            : (isImageRequest(entry) ? t("生成中") : t("流式中"))
+                          : formatRequestLogTokens(entry.usage?.outputTokens)}
+                      </span>
+                      <span>
+                        {entry.state === "running" ? (
+                          <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
+                        ) : entry.usage?.cachedTokens ? (
+                          <>
+                            {formatRequestLogTokens(entry.usage.cachedTokens)}
+                            <small>
+                              {" · "}
+                              {formatRequestLogCacheHitRatio(
+                                entry.usage.inputTokens,
+                                entry.usage.cachedTokens,
+                                entry.cacheHitRatio,
+                              )}
+                            </small>
+                          </>
+                        ) : "-"}
+                      </span>
+                      <span className="request-log-muted">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
+                    </>
+                  )}
                   <span className="request-log-duration">
                     {formatRequestLogDuration(
                       entry.state === "running"
@@ -5819,9 +6239,15 @@ function RequestLogScreen() {
           <div className="empty">
             {entries.length
               ? t("没有匹配当前筛选条件的请求。")
-              : t("还没有请求日志。启动 Codex 发起一次对话后即可看到。")}
+              : t("还没有请求日志。在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。")}
           </div>
         )}
+        {more || partial ? (
+          <p className="field-hint request-log-note">
+            {more ? tf("只显示最近 {0} 条。", [REQUEST_LOG_LIMIT]) : ""}
+            {partial && oldestMs ? tf("请求日志按大小滚动，最早只到 {0}；更早的请求只计入统计。", [new Date(oldestMs).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })]) : ""}
+          </p>
+        ) : null}
       </CardContent>
     </Panel>
   );
@@ -5904,6 +6330,130 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
   );
 }
 
+/** Codex 接入网关时，网关在直连模式的供应商列表里放的托管供应商（core 的 `CODEX_GATEWAY_RELAY_ID`）。 */
+const CODEX_GATEWAY_RELAY_ID = "codex-plus-gateway";
+
+function codexGatewayModelCount(profile: RelayProfile | undefined): number {
+  return (profile?.modelList ?? "").split("\n").filter((line) => line.trim()).length;
+}
+
+/** 托管的网关供应商带 openai 会话身份：Codex 保留 ChatGPT 官方登录，请求经本地代理进网关。 */
+function codexGatewayKeepsLogin(profile: RelayProfile | undefined): boolean {
+  return /^\s*model_provider\s*=\s*["']openai["']/m.test(profile?.configContents ?? "");
+}
+
+/**
+ * 旧版 Codex 供应商配置页顶部的提示。
+ * - Codex 还指向托管供应商、网关里却没有它的接入记录（降级后又升级、gateway.json 换过或坏了）：
+ *   给「切回直连」，否则页面一直显示「被网关接管」却断不开；
+ * - Codex 正经网关接入：显示状态，可去管理或直接断开并还原；
+ * - 断开过但托管供应商还在：提示点它的「使用」即可重新接入；
+ * - 其余：建议改用新版网关的供应商池（这里的配置照旧生效）。
+ */
+function LegacyRelayGatewayHint({
+  form,
+  onOpenGateway,
+  onManageAgents,
+  onDisconnect,
+}: {
+  form: BackendSettings;
+  onOpenGateway: () => void;
+  onManageAgents: () => void;
+  onDisconnect: () => Promise<void>;
+}) {
+  const [disconnecting, setDisconnecting] = useState(false);
+  const managed = form.relayProfiles.find((profile) => profile.id === CODEX_GATEWAY_RELAY_ID);
+  const onGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
+  // 网关里有没有开着的 Codex 接入记录；读不出 gateway.json 也算没有。
+  const [bound, setBound] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!onGateway) return;
+    let cancelled = false;
+    invoke<GatewayResult>("load_gateway")
+      .then((result) => {
+        if (!cancelled) setBound(result.status === "ok" && result.gateway?.bindings?.codex?.enabled === true);
+      })
+      .catch(() => {
+        if (!cancelled) setBound(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [onGateway, form.relayProfiles]);
+  const disconnect = () => {
+    setDisconnecting(true);
+    void onDisconnect().finally(() => setDisconnecting(false));
+  };
+  if (onGateway && (!managed || bound === false)) {
+    return (
+      <div className="legacy-gateway-hint" data-state="orphan" role="status">
+        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
+        <div className="legacy-gateway-hint-text">
+          <strong>{t("Codex 还指向网关托管的供应商")}</strong>
+          <span>{t("网关里没有 Codex 的接入记录（可能降级后又升级过，或网关状态文件损坏），请求可能连不上。点「切回直连」切回接入前或列表里第一个直连供应商。")}</span>
+        </div>
+        <Button disabled={disconnecting} onClick={disconnect} size="sm">
+          {disconnecting ? t("切换中…") : t("切回直连")}
+        </Button>
+      </div>
+    );
+  }
+  if (managed && onGateway) {
+    const count = codexGatewayModelCount(managed);
+    return (
+      <div className="legacy-gateway-hint" data-state="connected" role="status">
+        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
+        <div className="legacy-gateway-hint-text">
+          <strong>
+            {t("Codex 当前经 Codex++ 网关（新版）")}
+            {codexGatewayKeepsLogin(managed) ? <span className="legacy-gateway-hint-badge">{t("保留 ChatGPT 登录")}</span> : null}
+          </strong>
+          <span>
+            {count
+              ? tf("用网关供应商池里的 {0} 个模型。接入期间旧版供应商列表已隐藏；要改用它们，先点「断开并还原」恢复接入前的配置。", [count])
+              : t("用网关供应商池里的模型。接入期间旧版供应商列表已隐藏；要改用它们，先点「断开并还原」恢复接入前的配置。")}
+          </span>
+        </div>
+        <Button onClick={onManageAgents} size="sm" variant="secondary">
+          {t("管理接入")}
+          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+        </Button>
+        <Button disabled={disconnecting} onClick={disconnect} size="sm" variant="outline">
+          {disconnecting ? t("断开中…") : t("断开并还原")}
+        </Button>
+      </div>
+    );
+  }
+  if (managed) {
+    return (
+      <div className="legacy-gateway-hint" role="note">
+        <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
+        <div className="legacy-gateway-hint-text">
+          <strong>{t("Codex 已从网关切回直连")}</strong>
+          <span>{t("想回到新版网关，在下面「Codex++ 网关」那一项点「使用」，或到「Agent 接入」里打开 Codex。")}</span>
+        </div>
+        <Button onClick={onManageAgents} size="sm" variant="secondary">
+          {t("打开 Agent 接入")}
+          <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="legacy-gateway-hint" role="note">
+      <Waypoints aria-hidden="true" className="legacy-gateway-hint-icon" />
+      <div className="legacy-gateway-hint-text">
+        <strong>{t("建议改用新版网关")}</strong>
+        <span>{t("在网关的「供应商池」统一管理供应商，多个 Agent 共用，支持多 Key 轮换、按模型路由、故障转移与用量统计。这里是旧版的 Codex 直连配置，仍可继续使用。")}</span>
+      </div>
+      <Button onClick={onOpenGateway} size="sm" variant="secondary">
+        {t("打开供应商池")}
+        <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+      </Button>
+    </div>
+  );
+}
+
 function RelayScreen({
   settings,
   relayFiles,
@@ -5920,6 +6470,7 @@ function RelayScreen({
   actions: Actions;
 }) {
   const normalized = normalizeSettings(form);
+  const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
@@ -5975,6 +6526,30 @@ function RelayScreen({
   const isNewProfile = !!newProfileDraft;
   const saveRelaySettings = async (next: BackendSettings) => {
     return actions.saveSettingsValue(next, true);
+  };
+  // 拖拽排序专用保存：松手时乐观写入表单，卡片立即落位；等 save_settings 回读
+  // 会让卡片先弹回原位、保存完成后再整体跳一次。详情页保存与「配置切换」开关
+  // 仍走 saveRelaySettings，不参与乐观更新。
+  // 连续快速拖拽共用一条回滚基线：只有链尾那次失败才回滚，且基线随链中的成功
+  // 保存推进，早先的失败不会盖掉后续已落盘的结果。
+  const relayReorderSeqRef = useRef(0);
+  const relayReorderRollbackRef = useRef<BackendSettings | null>(null);
+  const reorderRelaySettings = async (next: BackendSettings) => {
+    const seq = ++relayReorderSeqRef.current;
+    if (seq === 1) relayReorderRollbackRef.current = form;
+    actions.previewSettingsForm(next);
+    const saved = await actions.saveSettingsValue(next, true);
+    if (seq === relayReorderSeqRef.current) {
+      if (!saved) {
+        const rollback = relayReorderRollbackRef.current;
+        if (rollback) actions.previewSettingsForm(rollback);
+      }
+      relayReorderSeqRef.current = 0;
+      relayReorderRollbackRef.current = null;
+    } else if (saved) {
+      relayReorderRollbackRef.current = saved;
+    }
+    return saved;
   };
   const createNewAggregateProfile = (mode: AggregateMode) => {
     const draft = aggregateProfileForMode(createAggregateRelayProfile(normalized), normalized, mode);
@@ -6121,9 +6696,10 @@ function RelayScreen({
       <PageHeader
         icon={<KeyRound className="h-5 w-5" />}
         title={t("供应商列表")}
-        actions={(
+        actions={takenOverByGateway ? null : (
           <>
             {/* 总开关很少改动：收成标题栏里的小开关，完整说明放在悬停提示里；关闭时下方另有提示条。 */}
+            {/* Codex 被新版网关接管时，旧版的切换、导入、添加都不起作用，整组隐藏；先「断开并还原」。 */}
             <label
               className="switch-row compact relay-master-switch relay-master-switch-compact"
               title={t("关闭后本工具不会在手动切换时写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
@@ -6203,14 +6779,17 @@ function RelayScreen({
                           <strong title={provider.name}>{provider.name}</strong>
                           <small title={provider.baseUrl}>{urlHost(provider.baseUrl) || t("未填写地址")}</small>
                         </span>
-                        <select
-                          aria-label={tf("{0} 导入为", [provider.name])}
-                          onChange={(event) => setCcsBindings((current) => ({ ...current, [provider.sourceId]: event.currentTarget.value }))}
+                        <AppSelect
+                          ariaLabel={tf("{0} 导入为", [provider.name])}
+                          menuWidth={240}
+                          onChange={(next) => setCcsBindings((current) => ({ ...current, [provider.sourceId]: next }))}
+                          options={[
+                            { value: "", label: t("新增（同名自动关联）") },
+                            ...normalized.relayProfiles.map((profile) => ({ value: profile.id, label: `${t("关联已有")}：${profile.name}` })),
+                          ]}
+                          size="sm"
                           value={ccsBindings[provider.sourceId] || ""}
-                        >
-                          <option value="">{t("新增（同名自动关联）")}</option>
-                          {normalized.relayProfiles.map((profile) => <option key={profile.id} value={profile.id}>{t("关联已有")}：{profile.name}</option>)}
-                        </select>
+                        />
                       </label>
                     ))}
                   </div>
@@ -6235,7 +6814,9 @@ function RelayScreen({
                 </div>
               ) : null}
             </div>
-            <Button onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}>
+            <Button
+              onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }}
+            >
               <Plus className="h-4 w-4" />
               {t("添加供应商")}
             </Button>
@@ -6246,13 +6827,20 @@ function RelayScreen({
         <Panel className="relay-management-panel">
           <CardContent>
           <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
+          <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
           {!normalized.relayProfilesEnabled ? (
             <p className="relay-switch-off-note" role="status">
               {t("供应商配置切换已关闭：Codex++ 不会写入 Codex 的 config.toml / auth.json，供应商列表已隐藏。需要切换时打开右上角的「配置切换」。")}
             </p>
           ) : null}
+          {/* Codex 被新版网关接管：旧版列表整块隐藏，断开并还原后恢复（状态与断开按钮在页面顶部）。 */}
+          {normalized.relayProfilesEnabled && takenOverByGateway ? (
+            <p className="relay-switch-off-note" role="status">
+              {t("Codex 正由 Codex++ 网关接管，旧版供应商列表已隐藏。点上方「断开并还原」（或「切回直连」）后恢复。")}
+            </p>
+          ) : null}
           {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
-          {normalized.relayProfilesEnabled ? (
+          {normalized.relayProfilesEnabled && !takenOverByGateway ? (
             <>
             {/* 分页与「新建」按钮同一行：按钮靠右，不再单独占一行把列表往下推。 */}
             <div className="provider-view-bar">
@@ -6324,6 +6912,7 @@ function RelayScreen({
                 visibleProfiles={visibleProfiles}
                 onEdit={(profileId) => void editRelayProfile(profileId)}
                 onFormChange={saveRelaySettings}
+                onReorder={reorderRelaySettings}
                 onSwitch={switchRelayProfileFromList}
                 disabled={actions.relaySwitching}
                 actions={actions}
@@ -6606,65 +7195,65 @@ function EnvConflictNotice({
   );
 }
 
+const SSH_REMOTE_LOOPBACK_DISMISS_KEY = "codex-plus-ssh-remote-loopback-dismissed";
+
+// Codex++ 不往 SSH 远端写配置；远端 Codex 若沿用本机 127.0.0.1 中转地址会连到服务器自己（issue #1195）。
+// 这里只提示 ssh -R 反向转发的做法。「知道了」按端口 + 远端记住，组合变了再提示。
+function SshRemoteLoopbackNotice({ notice }: { notice: SshRemoteLoopbackNoticeData | null }) {
+  const signature = notice
+    ? `${notice.ports.join(",")}|${notice.remotes.map((remote) => remote.label).join(",")}`
+    : "";
+  const [dismissed, setDismissed] = useState<string>(() => {
+    try { return window.localStorage.getItem(SSH_REMOTE_LOOPBACK_DISMISS_KEY) ?? ""; } catch { return ""; }
+  });
+  if (!notice || !notice.remotes.length || dismissed === signature) return null;
+  const dismiss = () => {
+    setDismissed(signature);
+    try { window.localStorage.setItem(SSH_REMOTE_LOOPBACK_DISMISS_KEY, signature); } catch { /* 存不了就只影响本次 */ }
+  };
+  return (
+    <div className="env-conflict-notice ssh-remote-loopback-notice" role="note">
+      <div className="env-conflict-icon">
+        <ShieldAlert className="h-4 w-4" />
+      </div>
+      <div className="env-conflict-body">
+        <strong>{t("SSH 远端连不上本机中转地址")}</strong>
+        <p>{t("当前中转地址是本机回环地址，在 SSH 服务器上它指向服务器自己。Codex++ 不会往远端写配置；如果远端 Codex 用的也是这个地址，连接时需要把端口反向转发回本机（本机 Codex++ 要保持运行），或在远端单独配置可访问的上游地址。")}</p>
+        <div className="env-conflict-tags">
+          {notice.loopbackEndpoints.map((endpoint) => (
+            <span key={endpoint.key}>
+              {endpoint.url}
+              <small>{endpoint.key}</small>
+            </span>
+          ))}
+        </div>
+        {notice.remotes.map((remote) => (
+          <div className="ssh-remote-loopback-remote" key={remote.label}>
+            <p>{tf("连接 {0} 时带上：", [remote.label])}</p>
+            <code>{remote.forwardCommand}</code>
+            <p>{t("或写进 ~/.ssh/config 对应 Host 下：")}</p>
+            <code>{remote.sshConfigLines.join("\n")}</code>
+          </div>
+        ))}
+      </div>
+      <div className="env-conflict-actions">
+        <Button onClick={dismiss} size="sm" variant="secondary">
+          {t("知道了")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function envConflictSourceLabel(source: string): string {
   if (source === "process") return t("当前进程");
   if (source === "user") return t("用户环境");
   return source || t("环境变量");
 }
 
-function whaleBalanceValidationMessage(issue: WhaleBalanceIssue | null): string | null {
-  if (issue === "path") return t("请填写供应商同域下的余额接口路径，不包含网址、查询参数或片段。");
-  if (issue === "field") return t("请填写余额字段路径，例如 data.balance 或 data.accounts[0].balance。");
-  if (issue === "currency") return t("币种请使用三位代码，例如 USD 或 CNY。");
-  if (issue === "scale") return t("金额倍率必须是大于 0 且不超过 1e12 的有限数值。");
+function agentPetValidationMessage(issue: AgentPetIssue | null): string | null {
+  if (issue === "customUrl") return t("自定义图片地址无效，请填写 https:// 开头的图片地址。");
   return null;
-}
-
-function WhaleBalanceSettingsFields({ form, onFormChange }: {
-  form: BackendSettings;
-  onFormChange: (value: BackendSettings) => void;
-}) {
-  if (!form.codexAppWhaleWidgetEnabled) return null;
-  const update = (patch: Partial<WhaleBalanceSettings>) => onFormChange({ ...form, ...patch });
-  const issue = whaleBalanceValidationMessage(whaleBalanceSettingsIssue(normalizeWhaleBalanceSettings(form)));
-  const disabled = !form.enhancementsEnabled;
-  return (
-    <details className="settings-block">
-      <summary>{t("API 余额（可选）")}</summary>
-      <p className="field-hint">{t("跟随 Codex++ 当前供应商查询余额；Codex 订阅额度和本地 token 无需配置此项。")}</p>
-      <Field label={t("余额查询方式")}>
-        <AppSelect<WhaleBalanceProtocol>
-          value={form.codexAppWhaleBalanceProtocol}
-          disabled={disabled}
-          onChange={(value) => update({ codexAppWhaleBalanceProtocol: value })}
-          options={[
-            { value: "auto", label: t("自动识别已支持的接口") },
-            { value: "off", label: t("仅显示 Codex 用量") },
-            { value: "custom", label: t("自定义供应商余额接口") },
-          ]}
-        />
-      </Field>
-      {form.codexAppWhaleBalanceProtocol === "custom" ? <>
-        <p className="field-hint">{t("按供应商文档填写 GET 接口和返回字段，复用当前供应商的 API Key。币种和倍率应与供应商账单一致。")}</p>
-        <Field label={t("余额接口路径")}>
-          <Input disabled={disabled} value={form.codexAppWhaleBalancePath} placeholder="/api/balance" onChange={(event) => update({ codexAppWhaleBalancePath: event.currentTarget.value })} />
-        </Field>
-        <Field label={t("余额字段路径")}>
-          <Input disabled={disabled} value={form.codexAppWhaleBalanceField} placeholder="data.balance" onChange={(event) => update({ codexAppWhaleBalanceField: event.currentTarget.value })} />
-        </Field>
-        <div className="form-row">
-          <Field label={t("余额币种")}>
-            <Input disabled={disabled} maxLength={3} value={form.codexAppWhaleBalanceCurrency} placeholder="USD" onChange={(event) => update({ codexAppWhaleBalanceCurrency: event.currentTarget.value.toUpperCase() })} />
-          </Field>
-          <Field label={t("金额倍率")}>
-            <Input disabled={disabled} type="number" step="any" min={0} value={Number.isFinite(form.codexAppWhaleBalanceScale) ? form.codexAppWhaleBalanceScale : ""} onChange={(event) => update({ codexAppWhaleBalanceScale: event.currentTarget.valueAsNumber })} />
-          </Field>
-        </div>
-        <p className="field-hint">{t("显示金额 = 接口数值 × 倍率；例如接口返回分时，倍率填 0.01。")}</p>
-        {issue ? <p className="field-hint" role="alert">{issue}</p> : null}
-      </> : null}
-    </details>
-  );
 }
 
 type DictationLocalModelState = {
@@ -6733,9 +7322,9 @@ function DictationSettingsPanel({ form, onFormChange }: {
       const result = await invoke<CommandResult<GlobalDictationHotkeyState>>("set_global_dictation_hotkey", globalHotkey);
       const next = hotkeyStateFrom(result);
       if (next) setGlobalHotkey(next);
-      window.alert(result.message);
+      await appAlert(result.message, { title: t("全局听写快捷键") });
     } catch (error) {
-      window.alert(String(error));
+      await appAlert(String(error), { title: t("全局听写快捷键") });
     } finally {
       setGlobalHotkeyBusy(false);
     }
@@ -6761,7 +7350,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
             <input
               checked={globalHotkey.enabled}
               disabled={globalHotkeyBusy || !form.enhancementsEnabled}
-              onChange={(event) => setGlobalHotkey((current) => ({ ...current, enabled: event.currentTarget.checked }))}
+              onChange={(event) => { const enabled = event.currentTarget.checked; setGlobalHotkey((current) => ({ ...current, enabled })); }}
               type="checkbox"
             />
             <span><strong>{t("全局听写热键")}</strong><small>{t("Windows 首版：按一次开始录音，再按一次停止并插入文字。")}</small></span>
@@ -6769,7 +7358,7 @@ function DictationSettingsPanel({ form, onFormChange }: {
           </label>
           <div className="form-row">
             <Field label={t("全局热键") }>
-              <Input value={globalHotkey.hotkey} onChange={(event) => setGlobalHotkey((current) => ({ ...current, hotkey: event.currentTarget.value }))} placeholder="Ctrl+Shift+Space" />
+              <Input value={globalHotkey.hotkey} onChange={(event) => { const hotkey = event.currentTarget.value; setGlobalHotkey((current) => ({ ...current, hotkey })); }} placeholder="Ctrl+Shift+Space" />
             </Field>
             <Button disabled={globalHotkeyBusy} onClick={() => void saveGlobalHotkey()} type="button" variant="secondary">{t("保存全局热键")}</Button>
           </div>
@@ -7077,15 +7666,16 @@ function StepwiseSettingsPanel({ form, onFormChange, actions }: {
   onFormChange: (value: BackendSettings) => void;
   actions: Actions;
 }) {
+  const group = enhancementGroup("stepwise");
   return (
     <Panel className="enhance-service-panel">
-      <CardHead title={t("下一步建议")} detail={t("控制下一步建议与回答大纲。")} />
+      <CardHead title={t(group.title)} detail={t(group.description ?? "")} />
       <CardContent className="settings-content">
         <div className="settings-block stepwise-settings-block" id={ENHANCEMENT_SECTION_IDS.stepwise}>
           <div className="enhance-service-toggles">
-            <FeatureToggle title={t("下一步建议")} detail={t("根据当前回答生成下一步建议。")} checked={form.codexAppStepwiseEnabled} disabled={!form.enhancementsEnabled} onChange={(value) => onFormChange({ ...form, codexAppStepwiseEnabled: value })} />
-            <FeatureToggle title={t("回答大纲")} detail={t("整理当前回答的结构。")} checked={form.codexAppAnswerOutlineEnabled} disabled={!form.enhancementsEnabled} onChange={(value) => onFormChange({ ...form, codexAppAnswerOutlineEnabled: value })} />
-            <FeatureToggle title={t("建议直接发送")} detail={t("点击建议后直接发送到当前会话。")} checked={form.codexAppStepwiseDirectSend} disabled={!form.enhancementsEnabled} onChange={(value) => onFormChange({ ...form, codexAppStepwiseDirectSend: value })} />
+            {managerGroupItems(group.id, enhancementPlatform).map((item) => (
+              <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={form.enhancementsEnabled} />
+            ))}
           </div>
           <div className="stepwise-settings-section">{t("连接")}</div>
           <div className="form-row">
@@ -7229,65 +7819,93 @@ function EnhanceScreen({
 }) {
   const setEnhanceFlag = (key: keyof BackendSettings, value: boolean) => onFormChange({ ...form, [key]: value });
   const masterEnabled = form.enhancementsEnabled;
+  const masterItem = enhancementItem("enhancementsEnabled");
+  // 开关的标题、说明、分组都来自设置项清单；这里只保留一处定制：
+  // Windows 原生浏览器兼容开启前要确认，并在开关后面跟一块补丁状态。
+  const renderSetting = (item: EnhancementSettingItem) => {
+    if (item.key === "codexAppNativeBrowserRequireIdentification") {
+      return (
+        <Fragment key={item.key}>
+          <EnhancementSettingControl
+            item={item}
+            form={form}
+            onFormChange={onFormChange}
+            masterEnabled={masterEnabled}
+            onToggle={(value) => void (async () => {
+              if (value && !(await appConfirm(nativeBrowserConsent, { title: t(item.title), confirmText: t("开启") }))) return;
+              setEnhanceFlag("codexAppNativeBrowserRequireIdentification", value);
+            })()}
+          />
+          <NativeBrowserStatusView />
+        </Fragment>
+      );
+    }
+    return <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />;
+  };
   const tabs: Array<{ value: EnhancementTab; label: string }> = [
     { value: "general", label: t("常用增强") },
     { value: "dictation", label: t("语音输入") },
     { value: "promptEnhance", label: t("提示词增强") },
-    { value: "stepwise", label: t("下一步建议") },
+    { value: "stepwise", label: t(enhancementGroup("stepwise").title) },
   ];
   const selectTab = (tab: EnhancementTab) => {
     onTabChange(tab);
     document.getElementById("enhance-page-controls")?.scrollIntoView({ block: "start" });
   };
+  // 「常用增强」页里的分组，显示在左侧目录的页签下面，点了滚到对应分组。
+  // 分组按清单顺序列出，独立模式排最后；锚点 id 由清单分组 id 生成，保持稳定。
+  const generalSections = [...managerGeneralGroups(), managerStandaloneGroup()]
+    .map((group) => ({ id: enhancementGroupAnchorId(group), label: t(group.title) }));
   return (
-    <div className="settings-page enhance-page">
-      <div className="enhance-page-controls" id="enhance-page-controls">
-        <div className="enhance-page-toolbar">
-          <label className="switch-row compact enhance-master-switch">
-            <input
-              checked={form.enhancementsEnabled}
-              onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-              type="checkbox"
-            />
-            <span>
-              <strong>{t("启用 Codex增强")}</strong>
-              <small>{t("关闭后暂停增强功能，服务配置会保留。")}</small>
-            </span>
-            <ToggleVisual />
-          </label>
+    <div className="settings-page enhance-page sectioned-page">
+      <PageSectionNav label={t("增强分类")} sections={activeTab === "general" ? generalSections : []}>
+        <div className="enhance-tabs" role="tablist" aria-label={t("Codex增强")} aria-orientation="vertical">
+          {tabs.map((tab, index) => (
+            <button
+              key={tab.value}
+              id={`enhance-tab-${tab.value}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.value}
+              aria-controls={`enhance-pane-${tab.value}`}
+              tabIndex={activeTab === tab.value ? 0 : -1}
+              onClick={() => selectTab(tab.value)}
+              onKeyDown={(event) => {
+                const forward = event.key === "ArrowRight" || event.key === "ArrowDown";
+                const backward = event.key === "ArrowLeft" || event.key === "ArrowUp";
+                const nextIndex = forward ? (index + 1) % tabs.length
+                  : backward ? (index + tabs.length - 1) % tabs.length
+                    : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                const nextTab = tabs[nextIndex].value;
+                selectTab(nextTab);
+                document.getElementById(`enhance-tab-${nextTab}`)?.focus();
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
         </div>
-        {/* 开关独占一行靠右；保存状态移到分页栏右侧。 */}
-        <div className="enhance-tabs-row">
-          <div className="enhance-tabs" role="tablist" aria-label={t("Codex增强")}>
-            {tabs.map((tab, index) => (
-              <button
-                key={tab.value}
-                id={`enhance-tab-${tab.value}`}
-                type="button"
-                role="tab"
-                aria-selected={activeTab === tab.value}
-                aria-controls={`enhance-pane-${tab.value}`}
-                tabIndex={activeTab === tab.value ? 0 : -1}
-                onClick={() => selectTab(tab.value)}
-                onKeyDown={(event) => {
-                  const nextIndex = event.key === "ArrowRight" ? (index + 1) % tabs.length
-                    : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length
-                      : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
-                  if (nextIndex === null) return;
-                  event.preventDefault();
-                  const nextTab = tabs[nextIndex].value;
-                  selectTab(nextTab);
-                  document.getElementById(`enhance-tab-${nextTab}`)?.focus();
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-          <div className="enhance-save-actions">
-            <span role="status">{dirty ? t("有未保存的修改") : t("已保存")}</span>
-            <Button disabled={!dirty || actions.settingsSaving} onClick={() => void actions.saveSettings()}><Save className="h-4 w-4" />{t("保存设置")}</Button>
-          </div>
+      </PageSectionNav>
+      <div className="sectioned-body">
+      {/* 总开关一条细横幅，开关紧挨着说明；保存状态在横幅右侧。 */}
+      <div className="enhance-master-bar" id="enhance-page-controls">
+        <label className="enhance-master-switch">
+          <input
+            checked={form.enhancementsEnabled}
+            onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
+            type="checkbox"
+          />
+          <ToggleVisual />
+          <span>
+            <strong>{t(masterItem.title)}</strong>
+            <small>{t(masterItem.description)}</small>
+          </span>
+        </label>
+        <div className="enhance-save-actions">
+          <span role="status">{dirty ? t("有未保存的修改") : t("已保存")}</span>
+          <Button disabled={!dirty || actions.settingsSaving} onClick={() => void actions.saveSettings()}><Save className="h-4 w-4" />{t("保存设置")}</Button>
         </div>
       </div>
       <div className="enhance-tab-panel" id="enhance-pane-general" role="tabpanel" aria-labelledby="enhance-tab-general" hidden={activeTab !== "general"}>
@@ -7298,69 +7916,11 @@ function EnhanceScreen({
               {masterEnabled ? null : (
                 <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
               )}
-              <FeatureGroup title={t("插件与模型")} detail={t("管理插件市场、模型列表和服务档位相关增强。")}>
-                {isWindowsPlatform ? <>
-                  <FeatureToggle
-                    title={t("原生 Edge / Chrome 请求标识兼容（实验）")}
-                    detail={t("此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。")}
-                    checked={form.codexAppNativeBrowserRequireIdentification}
-                    disabled={!masterEnabled}
-                    onChange={(value) => {
-                      if (value && !window.confirm(nativeBrowserConsent)) return;
-                      setEnhanceFlag("codexAppNativeBrowserRequireIdentification", value);
-                    }}
-                  />
-                  <NativeBrowserStatusView />
-                </> : null}
-                <FeatureToggle title={t("插件市场解锁")} detail={t("API Key 模式下扩展插件市场请求，尽量显示完整插件列表；官方/混合模式通常不需要。")} checked={form.codexAppPluginMarketplaceUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPluginMarketplaceUnlock", value)} />
-                <FeatureToggle title={t("模型白名单解锁")} detail={t("从环境变量和 config.toml 的 /v1/models 拉取模型并补进模型列表。")} checked={form.codexAppModelWhitelistUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppModelWhitelistUnlock", value)} />
-                <FeatureToggle title={t("原生 Fast 强制解锁")} detail={t("纯 API Key 模式恢复原生 Fast 开关；重新启动 Codex 后生效，实际支持与计费由供应商决定。")} checked={form.codexAppNativeFastUnlock} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppNativeFastUnlock", value)} />
-              </FeatureGroup>
-              <FeatureGroup title={t("对话与输入")} detail={t("调整会话管理、输入行为和对话阅读体验。")}>
-                <FeatureToggle title={t("会话删除")} detail={t("在会话列表悬停显示删除按钮，并支持撤销。")} checked={form.codexAppSessionDelete} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSessionDelete", value)} />
-                <FeatureToggle title={t("旁支保存")} detail={t("在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。")} checked={form.codexAppSideChatSave} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppSideChatSave", value)} />
-                <FeatureToggle title={t("轮次回退（实验性）")} detail={t("在回答菜单中撤销本轮及后续轮次的可恢复操作，AI 报告全部完成后才截断会话。仅支持本地聊天；恢复记录保存在本机，不是系统快照。")} checked={form.codexAppTurnRewind} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppTurnRewind", value)} />
-                <FeatureToggle title={t("纯 API 模式禁用 Work 视图")} detail={t("Work 视图要求 ChatGPT 账号身份，纯 API Key 下发送消息会报 Work browser access requires an authenticated account。开启后每次启动 Codex 前把详情模式写回 Codex；重新启动 Codex 后生效。")} checked={form.codexAppDisableWorkView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppDisableWorkView", value)} />
-                <FeatureToggle title={t("Markdown 导出")} detail={t("在会话列表显示导出按钮，导出带时间戳的 Markdown。")} checked={form.codexAppMarkdownExport} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppMarkdownExport", value)} />
-                <FeatureToggle title={t("粘贴修复")} detail={t("从 Word 等富文本粘贴到 Codex composer 时只保留纯文本，避免被识别为图片/文件附件。需重启 Codex 才生效。")} checked={form.codexAppPasteFix} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPasteFix", value)} />
-                <FeatureToggle title={t("强制中文界面")} detail={t("强制启用 Codex App 内置 zh-CN 语言包，避免 Statsig/VPN 不通时回退英文。需重启 Codex 才能完整生效。")} checked={form.codexAppForceChineseLocale} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppForceChineseLocale", value)} />
-                <FeatureToggle title={t("容量错误自动重试")} detail={t("模型容量不足（Selected model is at capacity）时自动点「重试」。Codex 原生只会自动重试 4 次且带 10/30/120/300 秒倒计时，之后只剩手动按钮；开启后由 Codex++ 立刻接管，原生倒计时也不等。间隔与次数上限在 Codex 应用内的 Codex++ 设置里调整。")} checked={form.codexAppCapacityAutoRetry} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppCapacityAutoRetry", value)} />
-                <div className={`feature-toggle ${!masterEnabled ? "disabled" : ""}`}>
-                  <span>
-                    <strong>{t("打字特效（彩虹 P）")}</strong>
-                    <small>{t("在 Codex 输入框的光标附近显示特效；系统减少动态效果时暂停。")}</small>
-                  </span>
-                  <AppSelect<TypingEffect>
-                    ariaLabel={t("打字特效（彩虹 P）")}
-                    value={form.codexAppTypingEffect}
-                    disabled={!masterEnabled}
-                    onChange={(value) => onFormChange({ ...form, codexAppTypingEffect: value })}
-                    options={[
-                      { value: "off", label: t("关闭") },
-                      { value: "rainbow", label: t("彩虹粒子") },
-                      { value: "fireworks", label: t("烟花") },
-                      { value: "stars", label: t("星光") },
-                    ]}
-                  />
-                </div>
-                <FeatureToggle title={t("会话 ID 标识")} detail={t("在侧边栏会话标题前显示短 ID 和 UUIDv7 创建时间，方便定位历史会话。")} checked={form.codexAppThreadIdBadge} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppThreadIdBadge", value)} />
-                <FeatureToggle title={t("低功耗模式")} detail={t("减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。")} checked={form.codexAppLowPower} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppLowPower", value)} />
-                <FeatureToggle title={t("对话居中宽度")} detail={t("把主对话和输入框限制到固定最大宽度，适合大屏阅读。")} checked={form.codexAppConversationView} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppConversationView", value)} />
-                <FeatureToggle title={t("用量状态栏")} detail={t("在输入框下方显示生成速度、缓存命中率和上下文占用。数据来自本机 Codex 会话记录，不改变请求内容。")} checked={form.codexAppUsageStatusLine} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppUsageStatusLine", value)} />
-              </FeatureGroup>
-              <FeatureGroup title={t("挂件与桌宠")} detail={t("在 Codex 中查看用量，设置自己的角色和互动方式。")}>
-                <FeatureToggle
-                  title={t("Codex 用量挂件")}
-                  detail={t("原版角色、泡泡编辑器、音效库和提醒，显示 Codex 会话与全机用量。点击角色旁的菜单配置。")}
-                  checked={form.codexAppWhaleWidgetEnabled}
-                  disabled={!masterEnabled}
-                  onChange={(value) => setEnhanceFlag("codexAppWhaleWidgetEnabled", value)}
-                />
-                <FeatureToggle title={t("活动进度条右侧布局")} detail={t("把 Codex 原生活动进度条、状态波形和活动悬浮框移到右侧，并镜像波形方向。")} checked={form.codexAppActivityOverlayRight} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppActivityOverlayRight", value)} />
-                {supportsPetRealMouseLook ? <FeatureToggle title={t("桌宠跟随真实鼠标")} detail={t("仅支持 V2 桌宠；不会修改宠物文件。将 V2 的 Computer Use 光标朝向动作映射到真实鼠标，V1 开启后安全不生效；拖拽、原生悬停或 Computer Use 活跃时自动让步。")} checked={form.codexAppPetRealMouseLook} disabled={!masterEnabled} onChange={(value) => setEnhanceFlag("codexAppPetRealMouseLook", value)} /> : null}
-                {/* 余额配置独占一整行（CSS: > .settings-block），展开时不会牵动上面的开关卡。 */}
-                <WhaleBalanceSettingsFields form={form} onFormChange={onFormChange} />
-              </FeatureGroup>
+              {managerGeneralGroups().map((group) => (
+                <FeatureGroup key={group.id} id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
+                  {managerGroupItems(group.id, enhancementPlatform).map(renderSetting)}
+                </FeatureGroup>
+              ))}
               {masterEnabled ? (
                 <StandaloneModeGroup form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
               ) : null}
@@ -7381,6 +7941,7 @@ function EnhanceScreen({
       <div className="enhance-tab-panel" id="enhance-pane-stepwise" role="tabpanel" aria-labelledby="enhance-tab-stepwise" hidden={activeTab !== "stepwise"}>
         <StepwiseSettingsPanel form={form} onFormChange={onFormChange} actions={actions} />
       </div>
+      </div>
     </div>
   );
 }
@@ -7396,17 +7957,64 @@ function StandaloneModeGroup({
   onFormChange: (value: BackendSettings) => void;
   masterEnabled: boolean;
 }) {
+  const group = managerStandaloneGroup();
   return (
-    <FeatureGroup title={t("独立模式")} detail={t("增强总开关关闭后仍会生效的补丁。")}>
-      <FeatureToggle
-        title={t("官方额度解锁")}
-        detail={masterEnabled
-          ? t("增强开启时此能力已自动生效；此开关只在关闭增强后生效。")
-          : t("官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。")}
-        checked={form.codexAppStandaloneQuotaUnlock}
-        onChange={(value) => onFormChange({ ...form, codexAppStandaloneQuotaUnlock: value })}
-      />
+    <FeatureGroup id={enhancementGroupAnchorId(group)} title={t(group.title)} detail={t(group.description ?? "")}>
+      {managerGroupItems(group.id, enhancementPlatform).map((item) => (
+        <EnhancementSettingControl key={item.key} item={item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
+      ))}
     </FeatureGroup>
+  );
+}
+
+type BooleanSettingKey = { [K in keyof BackendSettings]-?: BackendSettings[K] extends boolean ? K : never }[keyof BackendSettings];
+
+/// 按设置项清单渲染一个增强设置：bool 是开关卡，select 是带下拉的卡片。
+/// 受总开关控制的项在增强关闭时禁用；独立模式补丁（masterGated: false）始终可改，
+/// 并按总开关状态切换说明（descriptionWhenEnhancementsOn）。
+function EnhancementSettingControl({
+  item,
+  form,
+  onFormChange,
+  masterEnabled,
+  onToggle,
+}: {
+  item: EnhancementSettingItem;
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
+  masterEnabled: boolean;
+  /** 需要在写入前插入确认等步骤时覆盖默认写入。 */
+  onToggle?: (value: boolean) => void;
+}) {
+  const disabled = isEnhancementItemMasterGated(item) && !masterEnabled;
+  const detail = t(masterEnabled && item.descriptionWhenEnhancementsOn ? item.descriptionWhenEnhancementsOn : item.description);
+  if (item.control === "select") {
+    const key = item.key as keyof BackendSettings;
+    return (
+      <div className={`feature-toggle ${disabled ? "disabled" : ""}`}>
+        <span>
+          <strong>{t(item.title)}</strong>
+          <small>{detail}</small>
+        </span>
+        <AppSelect<string>
+          ariaLabel={t(item.title)}
+          value={String(form[key] ?? "")}
+          disabled={disabled}
+          onChange={(value) => onFormChange({ ...form, [key]: value })}
+          options={(item.options ?? []).map((option) => ({ value: option.value, label: t(option.label) }))}
+        />
+      </div>
+    );
+  }
+  const key = item.key as BooleanSettingKey;
+  return (
+    <FeatureToggle
+      title={t(item.title)}
+      detail={detail}
+      checked={form[key]}
+      disabled={disabled}
+      onChange={onToggle ?? ((value) => onFormChange({ ...form, [key]: value }))}
+    />
   );
 }
 
@@ -8513,6 +9121,8 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
   const marketScripts = market?.market.scripts ?? [];
   const [marketSearch, setMarketSearch] = useState("");
   const [marketView, setMarketView] = useState<"grid" | "list">("grid");
+  // 市场脚本 / 本地脚本放在同一块里切换，不再上下堆三张卡片。
+  const [pane, setPane] = useState<"market" | "local">("market");
   const filteredMarketScripts = useMemo(() => {
     const query = marketSearch.trim().toLocaleLowerCase();
     if (!query) return marketScripts;
@@ -8542,125 +9152,111 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
     }
     return map;
   }, [scripts]);
+  const localEnabled = inventory?.enabled !== false;
   return (
-    <>
-      <Panel>
-        <CardHead title={t("拓展")} detail={tf("{0} 个市场拓展，已安装 {1} 个，本地整体 {2}", [marketScripts.length, installedCount, inventory?.enabled === false ? t("关闭") : t("开启")])} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("市场状态")} value={market?.market.message ?? t("尚未刷新")} />
-            <Metric label={t("远程拓展")} value={tf("{0} 个", [marketScripts.length])} />
-            <Metric label={t("已安装")} value={tf("{0} 个", [installedCount])} />
-            <Metric label={t("本地整体")} value={inventory?.enabled === false ? t("关闭") : t("开启")} />
+    <div className="tp-page user-scripts-page">
+      <TopbarActions>
+        <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} size="sm" variant="ghost">
+          <ExternalLink />
+          {t("投稿")}
+        </Button>
+        <Button onClick={() => void reload()} disabled={reloading} size="sm" variant="secondary" title={t("应用本地脚本及开关；旧脚本可能需要刷新 Codex 页面")}>
+          <RefreshCw className={reloading ? "animate-spin" : ""} />
+          {t("热重载脚本")}
+        </Button>
+        <Button onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()} size="sm" variant="secondary">
+          <RefreshCw />
+          {t("刷新")}
+        </Button>
+      </TopbarActions>
+      {/* 状态条：两个整体开关 + 一行摘要，代替原来四行「键：值」的统计卡。 */}
+      <div className="user-scripts-strip">
+        <label className="relay-bare-switch user-scripts-switch" title={t("整体开关不改变单个脚本的启停设置")}>
+          <input
+            aria-label={t("启用本地脚本")}
+            checked={localEnabled}
+            disabled={!inventory}
+            onChange={() => void actions.setUserScriptsEnabled(!localEnabled)}
+            type="checkbox"
+          />
+          <ToggleVisual />
+          <span>{t("启用本地脚本")}</span>
+        </label>
+        <label className="relay-bare-switch user-scripts-switch" title={t("脚本导致黑屏或卡死时，下一次启动先跳过脚本；脚本启停设置不会改变")}>
+          <input
+            aria-label={t("下次启动跳过脚本")}
+            checked={Boolean(inventory?.skip_next_start)}
+            disabled={!inventory}
+            onChange={() => void actions.setUserScriptsSkipNextStart(!inventory?.skip_next_start)}
+            type="checkbox"
+          />
+          <ToggleVisual />
+          <span>{t("下次启动跳过脚本")}</span>
+        </label>
+        <span className="user-scripts-summary">
+          {tf("{0} 个市场脚本，已安装 {1} 个", [marketScripts.length, installedCount])}
+          {market?.market.updatedAt ? ` · ${tf("清单更新于 {0}", [formatMarketUpdatedAt(market.market.updatedAt)])}` : market ? ` · ${market.market.message}` : ` · ${t("尚未刷新")}`}
+        </span>
+      </div>
+      <div className="script-market-toolbar">
+        <div className="mg-segmented user-scripts-panes" role="tablist" aria-label={t("脚本")}>
+          <button aria-selected={pane === "market"} data-active={pane === "market"} onClick={() => setPane("market")} role="tab" type="button">
+            {t("市场脚本")}<span>{marketScripts.length}</span>
+          </button>
+          <button aria-selected={pane === "local"} data-active={pane === "local"} onClick={() => setPane("local")} role="tab" type="button">
+            {t("本地脚本")}<span>{scripts.length}</span>
+          </button>
+        </div>
+        {pane === "market" ? <>
+          <div className="script-market-search">
+            <Search className="h-4 w-4" />
+            <Input
+              aria-label={t("搜索市场脚本")}
+              onChange={(event) => setMarketSearch(event.currentTarget.value)}
+              placeholder={t("搜索名称、作者、描述或标签")}
+              value={marketSearch}
+            />
           </div>
-          <Toolbar>
-            <Button
-              onClick={() => void actions.setUserScriptsEnabled(inventory?.enabled === false)}
-              disabled={!inventory}
-              variant="secondary"
-              aria-pressed={inventory?.enabled !== false}
-              title={t("整体开关不改变单个拓展的启停设置")}
-            >
-              {inventory?.enabled === false ? t("开启本地拓展") : t("关闭本地拓展")}
+          <div className="script-market-view-toggle" role="group" aria-label={t("脚本排版")}>
+            <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
+              <LayoutGrid className="h-4 w-4" />
+              {t("板块")}
             </Button>
-            <Button
-              onClick={() => void actions.setUserScriptsSkipNextStart(!inventory?.skip_next_start)}
-              disabled={!inventory}
-              variant={inventory?.skip_next_start ? "secondary" : "outline"}
-              title={t("脚本导致黑屏或卡死时，下一次启动先跳过脚本；脚本启停设置不会改变")}
-            >
-              {inventory?.skip_next_start ? t("取消下次启动安全模式") : t("下次启动跳过拓展")}
+            <Button aria-pressed={marketView === "list"} onClick={() => setMarketView("list")} size="sm" variant={marketView === "list" ? "secondary" : "ghost"}>
+              <List className="h-4 w-4" />
+              {t("列表")}
             </Button>
-            <Button onClick={() => void actions.refreshScriptMarket()}>
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新市场")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl(SCRIPT_MARKET_REPOSITORY_URL)} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("投稿")}
-            </Button>
-            <Button onClick={() => void actions.refreshCurrent()} variant="secondary">
-              <RefreshCw className="h-4 w-4" />
-              {t("刷新本地")}
-            </Button>
-            <Button onClick={() => void reload()} disabled={reloading} variant="secondary" title={t("应用本地拓展及开关；旧拓展可能需要刷新 Codex 页面")}>
-              <RefreshCw className={reloading ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
-              {t("热重载拓展")}
-            </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead
-          title={t("市场拓展")}
-          detail={
-            market?.market.updatedAt
-              ? tf("清单更新时间：{0}，当前显示 {1} / {2}", [formatMarketUpdatedAt(market.market.updatedAt), filteredMarketScripts.length, marketScripts.length])
-              : t("从 GitHub 静态清单加载")
-          }
-        />
-        <CardContent>
-          <div className="script-market-toolbar">
-            <div className="script-market-search">
-              <Search className="h-4 w-4" />
-              <Input
-                aria-label={t("搜索市场拓展")}
-                onChange={(event) => setMarketSearch(event.currentTarget.value)}
-                placeholder={t("搜索名称、作者、描述或标签")}
-                value={marketSearch}
-              />
-            </div>
-            <div className="script-market-view-toggle" role="group" aria-label={t("拓展排版")}>
-              <Button
-                aria-pressed={marketView === "grid"}
-                onClick={() => setMarketView("grid")}
-                size="sm"
-                variant={marketView === "grid" ? "secondary" : "ghost"}
-              >
-                <LayoutGrid className="h-4 w-4" />
-                {t("板块")}
-              </Button>
-              <Button
-                aria-pressed={marketView === "list"}
-                onClick={() => setMarketView("list")}
-                size="sm"
-                variant={marketView === "list" ? "secondary" : "ghost"}
-              >
-                <List className="h-4 w-4" />
-                {t("列表")}
-              </Button>
-            </div>
           </div>
-          {marketScripts.length ? (
-            filteredMarketScripts.length ? (
-              <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
-                {filteredMarketScripts.map((script) => (
-                  <MarketScriptCard
-                    actions={actions}
-                    installedKey={installedKeyByMarketId.get(script.id)}
-                    key={script.id}
-                    script={script}
-                    view={marketView}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="empty">{t("没有匹配的市场拓展。")}</div>
-            )
+        </> : <span className="user-scripts-summary">{t("内置、手动和市场安装脚本；可在这里启停或删除用户脚本")}</span>}
+      </div>
+      {pane === "market" ? (
+        marketScripts.length ? (
+          filteredMarketScripts.length ? (
+            <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
+              {filteredMarketScripts.map((script) => (
+                <MarketScriptCard
+                  actions={actions}
+                  installedKey={installedKeyByMarketId.get(script.id)}
+                  key={script.id}
+                  script={script}
+                  view={marketView}
+                />
+              ))}
+            </div>
           ) : (
-            <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程拓展。")}</div>
-          )}
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("本地拓展")} detail={t("内置、手动和市场安装拓展；可在这里启停或删除用户拓展")} />
-        <CardContent>
+            <div className="empty">{t("没有匹配的市场脚本。")}</div>
+          )
+        ) : (
+          <div className="empty">{market?.status === "failed" ? market.message : t("点击刷新市场加载远程脚本。")}</div>
+        )
+      ) : (
+        <Panel>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户拓展。")}</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
           </div>
-        </CardContent>
-      </Panel>
-    </>
+        </Panel>
+      )}
+    </div>
   );
 }
 
@@ -8748,8 +9344,8 @@ function SessionMaintenance({ dirty, form, providerSyncProgress, sessionIndexRep
                 type="checkbox"
               />
               <span>
-                <strong>{t("启动前自动修复历史会话")}</strong>
-                <small>{t("启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。")}</small>
+                <strong>{t(providerSyncItem.title)}</strong>
+                <small>{t(providerSyncItem.description)}</small>
               </span>
               <ToggleVisual />
             </label>
@@ -8983,7 +9579,7 @@ function MaintenanceScreen({
           {gitMessage ? <p role="status">{gitMessage}</p> : null}
         </CardContent>
       </Panel>
-      <Panel>
+      <Panel id="codex-settings-check">
         <CardHead title={t("检查与修复")} detail={t("检查 Codex++ 入口、Codex 应用和开机启动状态")} />
         <CardContent>
           <div className="status-table">
@@ -9002,7 +9598,7 @@ function MaintenanceScreen({
           </Toolbar>
         </CardContent>
       </Panel>
-      <Panel>
+      <Panel id="codex-settings-startup">
         <CardHead title={t("开机打开 Codex++")} detail={t("登录系统后打开 Codex++ 界面，可选择自动启动 Codex")} />
         <CardContent>
           <label className="switch-row">
@@ -9059,7 +9655,7 @@ function MaintenanceScreen({
           </label>
         </CardContent>
       </Panel>
-      <Panel>
+      <Panel id="codex-settings-takeover">
         <CardHead title={t("自动接管官方 App")} detail={t("你自己双击启动官方 App 时，Codex++ 自动接管并注入增强")} />
         <CardContent>
           <label className="switch-row">
@@ -9107,7 +9703,7 @@ function MaintenanceScreen({
           )}
         </CardContent>
       </Panel>
-      <Panel>
+      <Panel id="codex-settings-app-path">
         <CardHead title={t("Codex 应用路径")} detail={t("免安装版或解包版只需要选择一次，之后从界面启动会自动复用")} />
         <CardContent>
           <div className="status-table">
@@ -9128,7 +9724,7 @@ function MaintenanceScreen({
           </Toolbar>
         </CardContent>
       </Panel>
-      <Panel>
+      <Panel id="codex-settings-manual-launch">
         <CardHead title={t("手动启动")} detail={t("应用路径留空时使用已保存路径；没有保存路径时使用自动探测")} />
         <CardContent>
           <Field label={t("应用路径覆盖")}>
@@ -9171,7 +9767,11 @@ function AboutScreen({
   logs,
   diagnostics,
   actions,
+  form,
+  onFormChange,
 }: {
+  form: BackendSettings;
+  onFormChange: (value: BackendSettings) => void;
   overview: OverviewResult | null;
   update: UpdateResult | null;
   updateInstallProgress: TaskProgress;
@@ -9181,55 +9781,85 @@ function AboutScreen({
 }) {
   return (
     <>
-      <Panel>
-        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
+      <Panel id="app-settings-update">
+        <CardHead title={t("版本与更新")} detail={t("从 GitHub Release 下载安装包更新")} />
         <CardContent>
-          <div className="metric-list">
-            <Metric label={t("Codex++ 版本")} value={overview?.current_version ?? update?.currentVersion ?? "-"} />
-            <Metric label={t("Codex 版本")} value={overview?.codex_version ?? t("未检测到")} />
-            <Metric label={t("项目地址")} value="github.com/BigPizzaV3/CodexPlusPlus" />
+          {/* 一行摘要 + 操作；发布说明在下面，下载进度只在下载时出现。 */}
+          <div className="app-update-summary">
+            <div className="app-update-copy">
+              <strong>Codex++ {overview?.current_version ?? update?.currentVersion ?? "-"}</strong>
+              <span data-tone={update?.updateAvailable ? "new" : undefined}>
+                {update?.updateAvailable && update.latestVersion
+                  ? tf("有新版本 {0}", [update.latestVersion])
+                  : update?.latestVersion
+                    ? t("已是最新版本")
+                    : t("尚未检查更新")}
+                {update?.updateAvailable && update.assetName ? ` · ${update.assetName}` : ""}
+              </span>
+            </div>
+            <div className="app-update-actions">
+              <Button onClick={() => void actions.checkUpdate()} variant={update?.updateAvailable ? "secondary" : "default"}>{t("检查更新")}</Button>
+              {update?.updateAvailable ? (
+                <Button disabled={updateInstallProgress.active} onClick={() => void actions.performUpdate()}>
+                  {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
+                </Button>
+              ) : null}
+            </div>
           </div>
-          <Toolbar>
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
-              {t("打开项目主页")}
-            </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} variant="secondary">
-              <ExternalLink className="h-4 w-4" />
+          {/* 更新偏好随同页设置一起保存。 */}
+          <div className="global-settings-list app-update-preferences">
+            <div className="global-setting-row">
+              <div className="global-setting-copy">
+                <strong>{t("启动时自动检查更新")}</strong>
+                <span>{t("打开 Codex++ 时及运行期间每隔几小时在后台检查新版本并提示。关闭后不再自动检查，仍可随时点「检查更新」。")}</span>
+              </div>
+              <div className="global-setting-actions">
+                <Switch label={t("启动时自动检查更新")} on={form.updateAutoCheck !== false} onToggle={() => onFormChange({ ...form, updateAutoCheck: form.updateAutoCheck === false })} />
+              </div>
+            </div>
+          </div>
+          {update?.updateAvailable && update.releaseSummary ? (
+            <details className="app-update-notes">
+              <summary>{tf("{0} 更新说明", [update.latestVersion ?? ""])}</summary>
+              <ReleaseNotes markdown={update.releaseSummary} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
+            </details>
+          ) : null}
+          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
+        </CardContent>
+      </Panel>
+      <Panel id="app-settings-about">
+        <CardHead title={t("关于 Codex++")} detail={t("本地 Codex 增强、管理工具和安装包维护")} />
+        <CardContent className="app-about">
+          <dl className="app-about-facts">
+            <div><dt>{t("Codex 版本")}</dt><dd>{overview?.codex_version ?? t("未检测到")}</dd></div>
+            <div>
+              <dt>{t("项目地址")}</dt>
+              <dd>
+                <button className="app-about-link" onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus")} type="button">
+                  github.com/BigPizzaV3/CodexPlusPlus
+                  <ExternalLink aria-hidden="true" className="h-3 w-3" />
+                </button>
+              </dd>
+            </div>
+          </dl>
+          <div className="app-about-links">
+            <Button onClick={() => void actions.openExternalUrl("https://github.com/BigPizzaV3/CodexPlusPlus/issues")} size="sm" variant="secondary">
+              <ExternalLink className="h-3.5 w-3.5" />
               {t("反馈问题")}
             </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} variant="secondary">
-              <MessageCircle className="h-4 w-4" />
+            <Button onClick={() => void actions.openExternalUrl("https://discord.gg/y96kX7A76v")} size="sm" variant="secondary">
+              <MessageCircle className="h-3.5 w-3.5" />
               Discord
             </Button>
-            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} variant="secondary">
-              <MessageCircle className="h-4 w-4" />
+            <Button onClick={() => void actions.openExternalUrl("https://t.me/CodexPlusPlus")} size="sm" variant="secondary">
+              <MessageCircle className="h-3.5 w-3.5" />
               Telegram
             </Button>
-          </Toolbar>
-        </CardContent>
-      </Panel>
-      <Panel>
-        <CardHead title={t("GitHub Release 更新")} detail={tf("当前版本 {0}", [overview?.current_version ?? update?.currentVersion ?? "-"])} />
-        <CardContent>
-          <div className="metric-list">
-            <Metric label={t("状态")} value={update?.status ?? "not_checked"} />
-            <Metric label={t("最新版本")} value={update?.latestVersion ?? t("未检查")} />
-            <Metric label={t("资源")} value={update?.assetName ?? "-"} />
-            <Metric label={t("进度")} value={`${formatProgressPercent(update?.progress ?? 0)}%`} />
           </div>
-          <ReleaseNotes markdown={update?.releaseSummary || update?.message || t("尚未检查 GitHub Release；更新会下载并启动安装包。")} onOpenUrl={(url) => void actions.openExternalUrl(url)} />
-          <TaskProgressBox completedTitle={t("上次更新结果")} progress={updateInstallProgress} title={t("安装包更新进度")} />
-          <Toolbar>
-            <Button onClick={() => void actions.checkUpdate()}>{t("检查更新")}</Button>
-            <Button disabled={updateInstallProgress.active} variant="secondary" onClick={() => void actions.performUpdate()}>
-              {updateInstallProgress.active ? t("正在下载安装包…") : t("下载并运行安装包")}
-            </Button>
-          </Toolbar>
         </CardContent>
       </Panel>
-      <LogsPanel logs={logs} actions={actions} />
-      <DiagnosticsPanel diagnostics={diagnostics} actions={actions} />
+      <div className="app-settings-anchor" id="app-settings-logs"><LogsPanel logs={logs} actions={actions} /></div>
+      <div className="app-settings-anchor" id="app-settings-diagnostics"><DiagnosticsPanel diagnostics={diagnostics} actions={actions} /></div>
     </>
   );
 }
@@ -9257,7 +9887,7 @@ function AgentSettingsScreen({
     <div className="settings-page">
       <SettingsSaveActions dirty={dirty} form={form} actions={actions} />
       <>
-        <Panel>
+        <Panel id="codex-settings-overlay">
           <SwitchPanelHead
             checked={form.codexAppImageOverlayEnabled}
             detail={t("在当前 Codex 会话上叠加一张背景图")}
@@ -9327,7 +9957,7 @@ function AgentSettingsScreen({
           </CardContent>
         </Panel>
 
-        <Panel>
+        <Panel id="codex-settings-launch-args">
           <CardHead title={t("Codex 启动参数")} detail={t("启动 Codex App 时追加到默认 CDP 参数后。留空则保持默认启动行为。")} />
           <CardContent className="settings-content setting-rows">
             <SettingRow
@@ -9355,6 +9985,62 @@ function AgentSettingsScreen({
   );
 }
 
+/// 托盘快捷面板开关。值仍存在 gateway.json 的 `trayPanel`（老版本在网关设置里改过的选择照样有效），
+/// 由后端命令读写，后端同时更新托盘行为和内存缓存。
+function useTrayPanelSetting() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<boolean>("tray_panel_enabled")
+      .then((value) => { if (!cancelled) setEnabled(value !== false); })
+      .catch(() => { if (!cancelled) setEnabled(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const toggle = async () => {
+    if (enabled === null || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      setEnabled(await invoke<boolean>("set_tray_panel_enabled", { enabled: !enabled }));
+    } catch (failure) {
+      setError(stringifyError(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return { enabled, saving, error, toggle };
+}
+
+/// 关闭窗口时进入轻量模式（#2677）。值存在 gateway.json 的 `lightweightOnClose`，由后端命令读写，
+/// 后端同时更新内存缓存，下次关窗即生效。
+function useLightweightModeSetting() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<boolean>("lightweight_mode_enabled")
+      .then((value) => { if (!cancelled) setEnabled(value !== false); })
+      .catch(() => { if (!cancelled) setEnabled(true); });
+    return () => { cancelled = true; };
+  }, []);
+  const toggle = async () => {
+    if (enabled === null || saving) return;
+    setSaving(true);
+    setError("");
+    try {
+      setEnabled(await invoke<boolean>("set_lightweight_mode_enabled", { enabled: !enabled }));
+    } catch (failure) {
+      setError(stringifyError(failure));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return { enabled, saving, error, toggle };
+}
+
 /// 整体设置页（最左侧齿轮）。
 ///
 /// 只放与当前 Agent 无关的应用级选项，内容不随 Agent 切换而变。
@@ -9366,7 +10052,9 @@ function GlobalSettingsScreen({
   theme,
   actions,
   onOpenAgentSettings,
+  onOpenTour,
 }: {
+  onOpenTour: () => void;
   dirty: boolean;
   form: BackendSettings;
   settings: SettingsResult | null;
@@ -9375,11 +10063,13 @@ function GlobalSettingsScreen({
   onOpenAgentSettings: () => void;
 }) {
   const settingsPath = settings?.settings_path ?? "";
+  const trayPanel = useTrayPanelSetting();
+  const lightweight = useLightweightModeSetting();
   // 每一项都是同一种行：左边标题 + 说明，右边操作。路径只在「配置文件路径」里出现一次。
   return (
     <div className="settings-page global-settings-page">
       <SettingsSaveActions dirty={dirty} form={form} actions={actions} />
-      <Panel>
+      <Panel id="app-settings-general">
         <CardHead title={t("基础设置")} detail="" />
         <CardContent className="global-settings-list">
           <div className="global-setting-row">
@@ -9388,17 +10078,58 @@ function GlobalSettingsScreen({
               <span>{t("当前为")}{theme === "dark" ? t("深色") : t("浅色")}{t("模式。")}</span>
             </div>
             <div className="global-setting-actions">
-              <Button variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
+              <Button size="sm" variant="secondary" onClick={actions.toggleTheme}>{t("切换主题")}</Button>
             </div>
           </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("点击托盘图标弹出快捷面板")}</strong>
+              <span>{trayPanel.error || t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Switch disabled={trayPanel.enabled === null || trayPanel.saving} label={t("点击托盘图标弹出快捷面板")} on={trayPanel.enabled ?? true} onToggle={() => void trayPanel.toggle()} />
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("关闭窗口后释放界面内存")}</strong>
+              <span>{lightweight.error || t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("新手引导")}</strong>
+              <span>{t("一步步认识网关、供应商池、Agent 接入和各个入口。")}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Button size="sm" variant="secondary" onClick={onOpenTour}>{t("重新打开引导")}</Button>
+            </div>
+          </div>
+          <div className="global-setting-row">
+            <div className="global-setting-copy">
+              <strong>{t("Codex 专属设置")}</strong>
+              <span>{t("图片覆盖层、启动参数等只作用于 Codex 的选项，在 Codex 菜单的「设置」里。")}</span>
+            </div>
+            <div className="global-setting-actions">
+              <Button size="sm" variant="secondary" onClick={onOpenAgentSettings}>{t("打开 Codex 设置")}</Button>
+            </div>
+          </div>
+        </CardContent>
+      </Panel>
+      <Panel id="app-settings-config">
+        <CardHead title={t("配置文件")} detail={t("settings.json 的备份、迁移与存放位置")} />
+        <CardContent className="global-settings-list">
           <div className="global-setting-row">
             <div className="global-setting-copy">
               <strong>{t("配置备份与迁移")}</strong>
               <span>{t("导出文件包含供应商 API Key 等敏感信息；导入只会读入草稿，检查后仍需点击保存设置。")}</span>
             </div>
             <div className="global-setting-actions">
-              <Button variant="secondary" onClick={() => void actions.exportSettings()}>{t("导出完整配置")}</Button>
-              <Button variant="secondary" onClick={() => void actions.importSettings()}>{t("导入配置草稿")}</Button>
+              <Button size="sm" variant="secondary" onClick={() => void actions.exportSettings()}>{t("导出完整配置")}</Button>
+              <Button size="sm" variant="secondary" onClick={() => void actions.importSettings()}>{t("导入配置草稿")}</Button>
             </div>
           </div>
           <div className="global-setting-row">
@@ -9408,17 +10139,8 @@ function GlobalSettingsScreen({
               <span>{t("只迁移 settings.json；日志、备份、Skills 和运行状态仍留在原状态目录。更换后建议重新打开管理器。")}</span>
             </div>
             <div className="global-setting-actions">
-              <Button variant="secondary" onClick={() => void actions.chooseSettingsPath()}>{t("选择路径")}</Button>
-              <Button variant="secondary" onClick={() => void actions.resetSettingsPath()}>{t("恢复默认路径")}</Button>
-            </div>
-          </div>
-          <div className="global-setting-row">
-            <div className="global-setting-copy">
-              <strong>{t("Codex 专属设置")}</strong>
-              <span>{t("图片覆盖层、启动参数等只作用于 Codex 的选项，在 Codex 菜单的「设置」里。")}</span>
-            </div>
-            <div className="global-setting-actions">
-              <Button variant="secondary" onClick={onOpenAgentSettings}>{t("打开 Codex 设置")}</Button>
+              <Button size="sm" variant="secondary" onClick={() => void actions.chooseSettingsPath()}>{t("选择路径")}</Button>
+              <Button size="sm" variant="secondary" onClick={() => void actions.resetSettingsPath()}>{t("恢复默认路径")}</Button>
             </div>
           </div>
         </CardContent>
@@ -9452,11 +10174,11 @@ function LogsPanel({ logs, actions }: { logs: LogsResult | null; actions: Action
           )}
         </div>
         <Toolbar>
-          <Button onClick={() => void actions.refreshLogs()}>{t("刷新")}</Button>
-          <Button variant="secondary" onClick={() => void actions.clearLogs()}>
+          <Button onClick={() => void actions.refreshLogs()} size="sm" variant="secondary">{t("刷新")}</Button>
+          <Button size="sm" variant="secondary" onClick={() => void actions.clearLogs()}>
             {t("清理日志")}
           </Button>
-          <Button variant="secondary" onClick={() => void actions.copyLogs()}>
+          <Button size="sm" variant="secondary" onClick={() => void actions.copyLogs()}>
             {t("复制")}
           </Button>
         </Toolbar>
@@ -9472,8 +10194,8 @@ function DiagnosticsPanel({ diagnostics, actions }: { diagnostics: DiagnosticsRe
       <CardContent>
         <Textarea className="log-view tall" readOnly value={diagnostics?.report ?? t("尚未生成诊断报告。")} />
         <Toolbar>
-          <Button onClick={() => void actions.refreshDiagnostics()}>{t("重新生成")}</Button>
-          <Button variant="secondary" onClick={() => void actions.copyDiagnostics()}>
+          <Button onClick={() => void actions.refreshDiagnostics()} size="sm" variant="secondary">{t("重新生成")}</Button>
+          <Button size="sm" variant="secondary" onClick={() => void actions.copyDiagnostics()}>
             {t("复制报告")}
           </Button>
         </Toolbar>
@@ -9486,6 +10208,7 @@ function RelayProfileList({
   form,
   visibleProfiles = form.relayProfiles,
   onFormChange,
+  onReorder,
   onEdit,
   onSwitch,
   disabled = false,
@@ -9494,6 +10217,8 @@ function RelayProfileList({
   form: BackendSettings;
   visibleProfiles?: RelayProfile[];
   onFormChange: (value: BackendSettings) => void;
+  /// 拖拽排序落手专用：只走乐观更新路径；复制、删除等表单改动仍走 onFormChange。
+  onReorder: (value: BackendSettings) => void;
   onEdit: (id: string) => void;
   onSwitch: (id: string) => void;
   disabled?: boolean;
@@ -9511,7 +10236,7 @@ function RelayProfileList({
     const { active, over } = event;
     if (!over || active.id === over.id) return;
     const next = reorderRelayProfiles(form, String(active.id), String(over.id));
-    if (next !== form) onFormChange(next);
+    if (next !== form) onReorder(next);
   };
   // 卡片用 memo 包了，而父组件每次渲染都会重新生成这几个内联箭头函数。用 ref 转发
   // 保持在最新引用的同时让传下去的回调保持同一身份，否则 memo 永远命中不了。
@@ -9573,6 +10298,8 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: profile.id });
   const active = profile.id === form.activeRelayId;
+  // 网关托管的供应商：由「Agent 接入」管理，这里只能「使用」（重新接入）。
+  const gatewayManaged = profile.id === CODEX_GATEWAY_RELAY_ID;
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -9581,10 +10308,11 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
   return (
     <div
       className={`relay-profile-card ${active ? "active" : ""} ${isDragging ? "dragging" : ""}`}
+      data-gateway-managed={gatewayManaged || undefined}
       data-relay-profile-id={profile.id}
       key={profile.id}
       onKeyDown={(event) => {
-        if (event.key === "Enter") onEdit(profile.id);
+        if (event.key === "Enter" && !gatewayManaged) onEdit(profile.id);
       }}
       ref={setNodeRef}
       style={style}
@@ -9607,14 +10335,25 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
         {/* 参照 CC Switch：接入方式、非 Responses 协议做成名字旁的标签，第二行只放地址。 */}
         <strong>
           <span className="relay-summary-name">{profile.name || t("未命名供应商")}</span>
-          <span className="relay-tag" data-tone={relayProfileTagTone(profile)}>{relayProfileModeLabel(profile)}</span>
-          {!isAggregateRelayProfile(profile) && profile.protocol !== "responses" ? (
+          {gatewayManaged ? (
+            <>
+              <span className="relay-tag" data-tone="gateway">{t("新版网关")}</span>
+              {codexGatewayKeepsLogin(profile) ? <span className="relay-tag" data-tone="official">{t("ChatGPT 登录")}</span> : null}
+            </>
+          ) : (
+            <span className="relay-tag" data-tone={relayProfileTagTone(profile)}>{relayProfileModeLabel(profile)}</span>
+          )}
+          {!gatewayManaged && !isAggregateRelayProfile(profile) && profile.protocol !== "responses" ? (
             <span className="relay-tag" data-tone="protocol">{relayProtocolShortLabel(profile.protocol)}</span>
           ) : null}
           {active ? <span className="relay-active-badge">{t("使用中")}</span> : null}
         </strong>
         <small>
-          {profile.relayMode === "official"
+          {gatewayManaged
+            ? codexGatewayModelCount(profile)
+              ? tf("经 Codex++ 本地网关，用供应商池里的 {0} 个模型；在「Agent 接入」里管理", [codexGatewayModelCount(profile)])
+              : t("经 Codex++ 本地网关，用供应商池里的模型；在「Agent 接入」里管理")
+            : profile.relayMode === "official"
             ? profile.officialMixApiKey
               ? profile.baseUrl || t("未填写 URL")
               : t("使用 Codex 当前登录的 ChatGPT 账号")
@@ -9638,13 +10377,16 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
                 ? t("供应商配置总开关已关闭，点击后按提示开启")
                 : active
                   ? t("当前正在使用")
-                  : t("设为当前")
+                  : gatewayManaged
+                    ? t("重新接入 Codex++ 网关")
+                    : t("设为当前")
           }
           variant={active ? "secondary" : "outline"}
         >
           <CheckCircle2 className="h-4 w-4" />
           {active ? t("使用中") : t("使用")}
         </Button>
+        {gatewayManaged ? null : (
         <span className="relay-card-extra">
           <Button
             disabled={!multiLaunchSupported(profile) || actions.multiLaunchPending === profile.id}
@@ -9716,6 +10458,7 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
             <Trash2 className="h-4 w-4" />
           </Button>
         </span>
+        )}
       </span>
     </div>
   );
@@ -9952,7 +10695,7 @@ function RelayProfileDetail({
         next,
         activeLiveBaseUrl,
       );
-      if (requiresRestart && !window.confirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"))) {
+      if (requiresRestart && !(await appConfirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"), { title: t("需要重启 Codex"), confirmText: t("保存并重启") }))) {
         return;
       }
       const savedSettings = await onFormChange(next);
@@ -10018,10 +10761,10 @@ function RelayProfileDetail({
     <div className="relay-detail-page" key={profile.id}>
       <div className="relay-detail-header">
         <div className="relay-editor-heading">
-          <Button disabled={detailBusy} aria-label={t("返回列表")} onClick={() => {
-            if (hasUnsavedModelChanges && !window.confirm(t("有未保存的模型修改，确定放弃吗？"))) return;
+          <Button aria-label={t("返回列表")} onClick={() => void (async () => {
+            if (hasUnsavedModelChanges && !(await appConfirm(t("有未保存的模型修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
             onBack();
-          }} size="icon" title={t("返回列表")} type="button" variant="ghost">
+          })()} size="icon" title={t("返回列表")} type="button" variant="ghost">
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="relay-editor-heading-copy">
@@ -10263,8 +11006,10 @@ function RelayProfileEditor({
     profile.standardOpenaiProtocol,
     stabilizePromptPrefix,
     profile.webSearchHistoryCompat,
+    profile.localCompactionPromptAtEnd === true,
     profile.trustUpstreamCatalogLite === true,
     profile.strictResponsesReasoning === true,
+    profile.stripImageGenerationTool === true,
   ].filter(Boolean).length;
   const [stabilizePromptPrefixBusy, setStabilizePromptPrefixBusy] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
@@ -11161,36 +11906,40 @@ function RelayProfileEditor({
                     <span>{t("上下文窗口")}</span>
                     <span className="relay-model-head-bulk">
                       {t("自动压缩")}
-                      <select
-                        aria-label={t("全部模型的自动压缩")}
-                        onChange={(event) => {
-                          if (event.currentTarget.value) updateAllModelWindowRows({ autoCompact: event.currentTarget.value });
-                          event.currentTarget.value = "";
+                      <AppSelect
+                        ariaLabel={t("全部模型的自动压缩")}
+                        className="relay-model-bulk-select"
+                        menuWidth={140}
+                        onChange={(next) => {
+                          if (next) updateAllModelWindowRows({ autoCompact: next });
                         }}
+                        options={autoCompactOptions("").map((value) => ({ value, label: value }))}
+                        placeholder={t("全部设为…")}
+                        size="sm"
                         title={t("把所有模型设为同一个自动压缩比例")}
                         value=""
-                      >
-                        <option value="">{t("全部设为…")}</option>
-                        {autoCompactOptions("").map((value) => <option key={value} value={value}>{value}</option>)}
-                      </select>
+                      />
                     </span>
                     <span className="relay-model-head-bulk">
                       {t("图片处理方式")}
-                      <select
-                        aria-label={t("全部模型的图片处理方式")}
+                      <AppSelect
+                        ariaLabel={t("全部模型的图片处理方式")}
+                        className="relay-model-bulk-select"
                         disabled={vlmUnsupportedProtocol}
-                        onChange={(event) => {
-                          if (event.currentTarget.value) updateAllModelWindowRows({ imageHandling: event.currentTarget.value as ModelWindowRow["imageHandling"] });
-                          event.currentTarget.value = "";
+                        menuWidth={160}
+                        onChange={(next) => {
+                          if (next) updateAllModelWindowRows({ imageHandling: next as ModelWindowRow["imageHandling"] });
                         }}
+                        options={[
+                          { value: "send-as-is", label: t("原样发送图片") },
+                          { value: "strip", label: t("移除图片") },
+                          { value: "vlm", label: t("视觉辅助分析") },
+                        ]}
+                        placeholder={t("全部设为…")}
+                        size="sm"
                         title={t("把所有模型设为同一种图片处理方式")}
                         value=""
-                      >
-                        <option value="">{t("全部设为…")}</option>
-                        <option value="send-as-is">{t("原样发送图片")}</option>
-                        <option value="strip">{t("移除图片")}</option>
-                        <option value="vlm">{t("视觉辅助分析")}</option>
-                      </select>
+                      />
                     </span>
                     <span>{t("思考等级")}</span>
                     <span>{t("模型配置")}</span>
@@ -11408,16 +12157,33 @@ function RelayProfileEditor({
                               />
                               <p className="field-hint">{t("按当前供应商逐模型声明。仅在上游支持 service_tier=priority 时选择支持；继承会清除自定义声明，取消不会保存修改。")}</p>
                             </Field>
-                            <Field label={t("Responses Lite 支持")}>
-                              <AppSelect value={metadataImportPreview?.metadata.use_responses_lite === true ? "supported" : metadataImportPreview?.metadata.use_responses_lite === false ? "unsupported" : "inherit"}
-                                options={[{ value: "inherit", label: t("继承模型默认能力") }, { value: "supported", label: t("明确支持 Lite") }, { value: "unsupported", label: t("标准 Responses") }]}
-                                onChange={(value) => {
-                                  const changed = synchronizeModelMetadataLiteSupport(metadataImportDocument, slug, value as "inherit" | "supported" | "unsupported");
-                                  if (!changed) { setMetadataImportError(t("请先修正当前模型的 JSON 配置。")); return; }
-                                  setMetadataImportDocument(changed.document); setMetadataImportPreview(changed.preview); setImportPrefillSource("existing"); setMetadataImportError("");
-                                }} />
-                              <p className="field-hint">{t("保存此模型后还需保存并使用供应商；只为已核实支持 Lite 的上游选择支持。")}</p>
-                            </Field>
+                            <div className="form-row">
+                              <Field label={t("Responses Lite 支持")}>
+                                <AppSelect value={metadataImportPreview?.metadata.use_responses_lite === true ? "supported" : metadataImportPreview?.metadata.use_responses_lite === false ? "unsupported" : "inherit"}
+                                  options={[{ value: "inherit", label: t("继承模型默认能力") }, { value: "supported", label: t("明确支持 Lite") }, { value: "unsupported", label: t("标准 Responses") }]}
+                                  onChange={(value) => {
+                                    const changed = synchronizeModelMetadataLiteSupport(metadataImportDocument, slug, value as "inherit" | "supported" | "unsupported");
+                                    if (!changed) { setMetadataImportError(t("请先修正当前模型的 JSON 配置。")); return; }
+                                    setMetadataImportDocument(changed.document); setMetadataImportPreview(changed.preview); setImportPrefillSource("existing"); setMetadataImportError("");
+                                  }} />
+                                <p className="field-hint">{t("只为已核实支持 Lite 的上游选择支持。")}</p>
+                              </Field>
+                              <Field label={t("Multi Agent 协议")}>
+                                <AppSelect value={modelMultiAgentMode(metadataImportPreview?.metadata)}
+                                  options={[
+                                    { value: "inherit", label: t("跟随供应商设置") },
+                                    { value: "v1", label: t("v1（经典）") },
+                                    { value: "v2", label: t("v2（新版）") },
+                                    { value: "disabled", label: t("关闭子代理") },
+                                  ]}
+                                  onChange={(value) => {
+                                    const changed = synchronizeModelMetadataMultiAgentVersion(metadataImportDocument, slug, value as ModelMultiAgentMode);
+                                    if (!changed) { setMetadataImportError(t("请先修正当前模型的 JSON 配置。")); return; }
+                                    setMetadataImportDocument(changed.document); setMetadataImportPreview(changed.preview); setImportPrefillSource("existing"); setMetadataImportError("");
+                                  }} />
+                                <p className="field-hint">{t("v2 需上游支持加密子代理载荷，转 Chat 协议的中转请选 v1；仅新会话生效。")}</p>
+                              </Field>
+                            </div>
                             <Textarea
                               autoFocus
                               value={metadataImportDocument}
@@ -11706,6 +12472,22 @@ function RelayProfileEditor({
               </Field>
             ) : null}
             {showApiFields ? (
+              <Field className="relay-field-multi-agent" label={t("Multi Agent 协议")}>
+                <AppSelect
+                  value={profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "auto"}
+                  options={[
+                    { value: "auto", label: t("自动（推荐）") },
+                    { value: "v1", label: t("v1（经典，转 Chat 中转适用）") },
+                    { value: "v2", label: t("v2（新版，需上游支持加密载荷）") },
+                  ]}
+                  onChange={(value) => updateDraft({ multiAgent: value === "v1" || value === "v2" ? value : "" })}
+                />
+                <p className="field-hint">
+                  {t("子代理协议的供应商级默认；模型元数据里的 multi_agent_version 声明优先于它。选 v1 会在使用该供应商期间压下 [features] multi_agent_v2，切走时自动还原。仅对直连供应商生效，Codex 经新版网关接入时由网关配置决定。仅新会话生效。")}
+                </p>
+              </Field>
+            ) : null}
+            {showApiFields ? (
               <Field className="relay-field-proxy" label={t("供应商独立代理")}>
                 <div className="relay-inline-field">
                   <Input
@@ -11789,6 +12571,20 @@ function RelayProfileEditor({
                     <ToggleVisual />
                   </label>
                 ) : null}
+                {showApiFields && profile.relayMode !== "aggregate" && profile.protocol !== "anthropicMessages" ? (
+                  <label className="switch-row compact relay-switch-row relay-field-local-compaction">
+                    <input
+                      checked={profile.localCompactionPromptAtEnd === true}
+                      onChange={(event) => updateDraft({ localCompactionPromptAtEnd: event.currentTarget.checked })}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{t("本地压缩缓存复用（实验）")}</strong>
+                      <small>{t("仅支持旧版直连供应商，暂不支持 2.0 网关。实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。缓存按 Key 隔离，切换或轮换 Key 可能降低命中率。未命中供应商缓存时，补回的工具声明会增加输入 token 开销；上游若忽略禁用工具调用要求，可能返回空摘要。默认关闭。")}</small>
+                    </span>
+                    <ToggleVisual />
+                  </label>
+                ) : null}
                 {showApiFields && profile.protocol === "responses" ? <>
                   <label className="switch-row compact relay-switch-row">
                     <input type="checkbox" checked={profile.trustUpstreamCatalogLite === true} onChange={(event) => updateDraft({ trustUpstreamCatalogLite: event.currentTarget.checked })} />
@@ -11797,6 +12593,10 @@ function RelayProfileEditor({
                   <label className="switch-row compact relay-switch-row">
                     <input type="checkbox" checked={profile.strictResponsesReasoning === true} onChange={(event) => updateDraft({ strictResponsesReasoning: event.currentTarget.checked })} />
                     <span><strong>{t("严格 Responses 推理历史兼容")}</strong><small>{t("仅当目标上游接受当前账号的加密历史时启用。混合推理只发送可识别的加密信封；占位或无效密文会明确报错。本地记录不变。")}</small></span><ToggleVisual />
+                  </label>
+                  <label className="switch-row compact relay-switch-row relay-field-strip-image-generation">
+                    <input type="checkbox" checked={profile.stripImageGenerationTool === true} onChange={(event) => updateDraft({ stripImageGenerationTool: event.currentTarget.checked })} />
+                    <span><strong>{t("移除请求里的托管生图工具（image_generation）")}</strong><small>{t("Codex App 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发前从 tools 里去掉它（及指向它的 tool_choice），请求改走本地代理；Codex 里将无法调用内置生图。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                 </> : null}
                 </div>
@@ -12397,6 +13197,32 @@ function AggregateRelayProfileEditor({
               {t("当前默认成员不是官方登录账号，无法把登录同步到 Codex；只有「官方登录」类型的成员才有 ChatGPT 凭据。")}
             </span>
           )}
+        </div>
+      ) : null}
+      {routeTargetOptions.length ? (
+        <div className="aggregate-default-provider aggregate-auto-review">
+          <Field label={t("审批成员")}>
+            <AppSelect
+              label={t("审批成员")}
+              onChange={(value) => updateAggregate({ ...aggregate, autoReviewRelayId: value })}
+              options={[
+                { value: "", label: t("不单独指定"), hint: t("审批请求跟普通请求一样交给默认成员或轮转选中的成员") },
+                ...routeTargetOptions.map((option) => {
+                  const candidate = candidates.find((item) => item.id === option.value);
+                  const reviewModel = candidate?.autoReviewModel?.trim() || candidate?.model.trim() || "";
+                  return {
+                    value: option.value,
+                    label: option.label,
+                    hint: reviewModel ? tf("审批请求发给它，模型 {0}", [reviewModel]) : t("审批请求发给它"),
+                  };
+                }),
+              ]}
+              value={aggregate.autoReviewRelayId ?? ""}
+            />
+            <p className="field-hint">
+              {t("Codex「替我审批」的请求（codex-auto-review）只发给这个成员，模型取它的「自动审批模型」，没填用它的默认模型。默认成员是官方登录时，指定一个 API 成员可避免审批消耗官方额度。")}
+            </p>
+          </Field>
         </div>
       ) : null}
       {!modelMode ? <div className="aggregate-routes">
@@ -13037,9 +13863,55 @@ function FeatureItem({ title, detail, enabled }: { title: string; detail: string
   );
 }
 
-function FeatureGroup({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
+/**
+ * 设置类页面（增强、设置）左侧的分类目录：点一下滚到对应分组，滚动时高亮当前所在的分组。
+ * `children` 放在目录最上面（增强页把「常用增强 / 语音输入 / 下一步建议」页签放在这里）。
+ */
+function PageSectionNav({ label, sections, children }: { label: string; sections: Array<{ id: string; label: string }>; children?: ReactNode }) {
+  const [current, setCurrent] = useState(sections[0]?.id ?? "");
+  const sectionKey = sections.map((section) => section.id).join("|");
+  useEffect(() => {
+    const nodes = sections.map((section) => document.getElementById(section.id)).filter((node): node is HTMLElement => Boolean(node));
+    if (!nodes.length) return;
+    const scroller = nodes[0].closest(".screen");
+    const sync = () => {
+      const line = (scroller?.getBoundingClientRect().top ?? 0) + 96;
+      let active = nodes[0].id;
+      for (const node of nodes) if (node.getBoundingClientRect().top <= line) active = node.id;
+      setCurrent(active);
+    };
+    sync();
+    scroller?.addEventListener("scroll", sync, { passive: true });
+    return () => scroller?.removeEventListener("scroll", sync);
+    // sections 每次渲染都是新数组，按 id 列表判断是否变化。
+  }, [sectionKey]);
   return (
-    <section className="feature-group">
+    <nav aria-label={label} className="page-section-nav">
+      {children}
+      {sections.length ? (
+        <div className="page-section-nav-list">
+          {sections.map((section) => (
+            <button
+              aria-current={current === section.id ? "true" : undefined}
+              key={section.id}
+              onClick={() => {
+                setCurrent(section.id);
+                document.getElementById(section.id)?.scrollIntoView({ block: "start", behavior: "smooth" });
+              }}
+              type="button"
+            >
+              {section.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </nav>
+  );
+}
+
+function FeatureGroup({ title, detail, children, id }: { title: string; detail: string; children: ReactNode; id?: string }) {
+  return (
+    <section className="feature-group" id={id}>
       <div className="feature-group-head">
         <strong>{title}</strong>
         <small>{detail}</small>
@@ -13062,6 +13934,9 @@ function FeatureToggle({
   disabled?: boolean;
   onChange: (value: boolean) => void;
 }) {
+  // 「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
+  const experimental = EXPERIMENTAL_TITLE.test(title);
+  const needsRestart = RESTART_HINT.test(detail ?? "");
   return (
     <label className={`feature-toggle ${disabled ? "disabled" : ""}`}>
       <input
@@ -13071,13 +13946,58 @@ function FeatureToggle({
         type="checkbox"
       />
       <span>
-        <strong>{title}</strong>
-        {detail && <small>{detail}</small>}
+        <strong>
+          {experimental ? title.replace(EXPERIMENTAL_TITLE, "") : title}
+          {experimental ? <em className="feature-tag" data-tone="experimental">{t("实验")}</em> : null}
+          {needsRestart ? <em className="feature-tag">{t("需重启")}</em> : null}
+        </strong>
+        <small>{detail}</small>
       </span>
       <ToggleVisual />
     </label>
   );
 }
+
+/** 应用设置页（含原「关于」）左侧目录的分组，id 对应各张卡片。 */
+function appSettingsSections() {
+  return [
+    { id: "app-settings-general", label: t("基础设置") },
+    { id: "app-settings-config", label: t("配置文件") },
+    { id: "app-settings-update", label: t("版本与更新") },
+    { id: "app-settings-about", label: t("关于") },
+    { id: "app-settings-logs", label: t("日志") },
+    { id: "app-settings-diagnostics", label: t("诊断") },
+  ];
+}
+
+/** 打开设置页时滚到指定分组（例如启动时提示更新 → 版本与更新），滚完清掉。 */
+function AppSettingsFocus({ focus, onDone }: { focus: string | null; onDone: () => void }) {
+  useEffect(() => {
+    if (!focus) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById(focus)?.scrollIntoView({ block: "start" });
+      onDone();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focus, onDone]);
+  return null;
+}
+
+/** 设置页（含安装维护）左侧目录的分组，id 对应各张卡片。 */
+function codexSettingsSections() {
+  return [
+    { id: "codex-settings-overlay", label: t("图片覆盖层") },
+    { id: "codex-settings-launch-args", label: t("启动参数") },
+    { id: "codex-settings-check", label: t("检查与修复") },
+    { id: "codex-settings-startup", label: t("开机启动") },
+    { id: "codex-settings-takeover", label: t("自动接管") },
+    { id: "codex-settings-app-path", label: t("应用路径") },
+    { id: "codex-settings-manual-launch", label: t("手动启动") },
+  ];
+}
+
+const EXPERIMENTAL_TITLE = /\s*(?:（实验性?）|\(experimental\))$/i;
+const RESTART_HINT = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i;
 
 function ToggleVisual() {
   return (
@@ -13149,10 +14069,11 @@ function DreamSkinUnsavedDialog({
   );
 }
 
-function UpdateDialog({ update, progress, onClose, onMuteToday, onUpdate, onOpenUrl }: {
+function UpdateDialog({ update, progress, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
   update: UpdateResult;
   progress: TaskProgress;
   onClose: () => void;
+  onSkipVersion: () => void;
   onMuteToday: () => void;
   onUpdate: () => void;
   onOpenUrl: (url: string) => void;
@@ -13186,11 +14107,16 @@ function UpdateDialog({ update, progress, onClose, onMuteToday, onUpdate, onOpen
         </Button>
         <Button variant="secondary" onClick={onClose}>{t("关闭提示")}</Button>
         <Button variant="ghost" onClick={onMuteToday}>{t("今日不再提示")}</Button>
+        <Button variant="ghost" onClick={onSkipVersion}>{t("跳过此版本")}</Button>
       </Toolbar>
     </dialog>
   );
 }
 
+/**
+ * 右下角的提示卡：左侧状态色条 + 图标，按成功 / 警告 / 失败 / 信息分色。
+ * 鼠标停在卡片上时暂停倒计时；失败提示停留更久，并可一键复制详情。
+ */
 function NoticeDialog({
   notice,
   onClose,
@@ -13198,23 +14124,53 @@ function NoticeDialog({
   notice: { title: string; message: string; status?: Status };
   onClose: () => void;
 }) {
+  const tone = noticeTone(notice.status);
+  const duration = noticeDuration(tone, notice.message);
+  const [paused, setPaused] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const remaining = useRef(duration);
+
   useEffect(() => {
-    const timer = window.setTimeout(onClose, 4200);
-    return () => window.clearTimeout(timer);
-  }, []);
+    if (paused) return;
+    const startedAt = Date.now();
+    const timer = window.setTimeout(onClose, Math.max(0, remaining.current));
+    return () => {
+      window.clearTimeout(timer);
+      remaining.current -= Date.now() - startedAt;
+    };
+    // onClose 每次渲染都是新函数，倒计时只随暂停状态变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paused]);
+
+  const Icon = tone === "error" ? CircleX : tone === "warning" ? TriangleAlert : tone === "info" ? Info : CheckCircle2;
+  const copyDetails = () => {
+    void navigator.clipboard?.writeText(`${notice.title}\n${notice.message}`).then(() => setCopied(true)).catch(() => undefined);
+  };
 
   return (
-    <div className="toast-wrap" role="status" aria-live="polite">
-      <div className={`toast-card ${notice.status === "failed" ? "failed" : ""}`}>
-        <div className="toast-progress" />
-        <div className="toast-icon">
-          {notice.status === "failed" ? <Bell className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
-        </div>
+    <div className="toast-wrap" role={tone === "error" ? "alert" : "status"} aria-live={tone === "error" ? "assertive" : "polite"}>
+      <div
+        className="toast-card"
+        data-tone={tone}
+        onBlur={() => setPaused(false)}
+        onFocus={() => setPaused(true)}
+        onMouseEnter={() => setPaused(true)}
+        onMouseLeave={() => setPaused(false)}
+      >
+        <span className="toast-icon"><Icon aria-hidden="true" /></span>
         <div className="toast-body">
           <h2>{notice.title}</h2>
-          <p>{notice.message}</p>
+          {notice.message ? <p>{notice.message}</p> : null}
+          {tone === "error" && notice.message ? (
+            <button className="toast-action" onClick={copyDetails} type="button">
+              {copied ? <CheckCircle2 aria-hidden="true" /> : <Copy aria-hidden="true" />}
+              {copied ? t("已复制") : t("复制详情")}
+            </button>
+          ) : null}
         </div>
-        <button className="toast-close" onClick={onClose} type="button">×</button>
+        <button aria-label={t("关闭提示")} className="toast-dismiss" onClick={onClose} type="button">
+          <X aria-hidden="true" />
+        </button>
       </div>
     </div>
   );
@@ -13477,9 +14433,9 @@ function TaskProgressBox({ progress, title, completedTitle = t("上次修复结�
   );
 }
 
-function Panel({ children, fill = false, className = "" }: { children: React.ReactNode; fill?: boolean; className?: string }) {
+function Panel({ children, fill = false, className = "", id }: { children: React.ReactNode; fill?: boolean; className?: string; id?: string }) {
   return (
-    <Card className={`panel ${fill ? "fill" : ""} ${className}`}>
+    <Card className={`panel ${fill ? "fill" : ""} ${className}`} id={id}>
       {children}
     </Card>
   );
@@ -13909,39 +14865,6 @@ function Toolbar({ children, className = "" }: { children: React.ReactNode; clas
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
 }
 
-type GrokProvidersResult = CommandResult<{
-  profiles: RelayProfile[];
-  activeRelayId: string;
-  live: {
-    grokHome: string;
-    configPath: string;
-    configExists: boolean;
-    cliPath: string | null;
-    cliInstalled: boolean;
-    revision: string;
-    defaultModel: string;
-    modelsBaseUrl: string;
-    models: Array<{ alias: string; model: string; baseUrl: string; contextWindow: number | null; apiKeyConfigured: boolean }>;
-  };
-  liveProfile: RelayProfile;
-}>;
-
-function newGrokProfileDraft(): RelayProfile {
-  return {
-    ...defaultSettings.relayProfiles[0],
-    id: `grok-${Date.now().toString(36)}`,
-    name: t("新建 Grok 供应商"),
-    modelList: "",
-    upstreamBaseUrl: "",
-    baseUrl: "",
-    apiKey: "",
-    protocol: "chatCompletions",
-    relayMode: "pureApi",
-    configContents: "",
-    authContents: "",
-  };
-}
-
 /**
  * Grok 分区的供应商管理。
  *
@@ -13950,529 +14873,275 @@ function newGrokProfileDraft(): RelayProfile {
  * （`[ui]`、`[models].web_search` 等）保留。所以「应用到 Grok」是需要确认的
  * 破坏性操作，这里显式二次确认。
  */
-function GrokScreen({
-  settings,
-  form,
-  actions,
-}: {
-  settings: SettingsResult | null;
-  form: BackendSettings;
-  actions: {
-    saveSettingsValue: (next: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
-    showMessage: (title: string, message: string, status?: Status) => Promise<void>;
-    refreshCurrent: () => void;
-  };
-}) {
-  const [result, setResult] = useState<GrokProvidersResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [applying, setApplying] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  // 编辑区走本地草稿 + 显式保存，跟 Codex 供应商页一致。
-  // 直接在 onChange 里写盘的话，敲一个 Base URL 会触发几十次全量 save_settings。
-  const [draft, setDraft] = useState<RelayProfile | null>(null);
+const SIDEBAR_COLLAPSED_KEY = "codex-plus-sidebar-collapsed";
 
-  const shard = form.tools?.grok;
-  const profiles = shard?.relayProfiles?.length ? shard.relayProfiles : [];
-  const activeId = shard?.activeRelayId || "";
-  const activeProfile = profiles.find((profile) => profile.id === activeId);
+function loadCollapsedGroups(): string[] {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
-  // 切换选中的供应商（或外部刷新）时，把草稿重置成磁盘上的值。
-  useEffect(() => {
-    setDraft(activeProfile ? { ...activeProfile } : null);
-    // 只在选中的供应商变化时重置，不要在每次 profiles 数组变化时打断编辑。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProfile?.id, activeProfile?.name, activeProfile?.upstreamBaseUrl, activeProfile?.apiKey, activeProfile?.modelList]);
-
-  const draftDirty = Boolean(
-    draft
-      && activeProfile
-      && (draft.name !== activeProfile.name
-        || draft.upstreamBaseUrl !== activeProfile.upstreamBaseUrl
-        || draft.apiKey !== activeProfile.apiKey
-        || draft.modelList !== activeProfile.modelList),
-  );
-
-  const refresh = async () => {
-    setLoading(true);
-    try {
-      const loaded = await invoke<GrokProvidersResult>("load_grok_providers");
-      setResult(loaded);
-    } catch (error) {
-      await actions.showMessage(t("调用失败"), String(error), "failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    void refresh();
-    // 只在进入本页时拉一次；后续状态由本页自己的操作维护。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  /// 唯一真正落盘的地方。结构性操作（新增/删除/切换选中）用它，
-  /// 编辑区则攒够了再调一次。
-  const writeShard = async (
-    nextProfiles: RelayProfile[],
-    nextActiveId: string,
-  ): Promise<boolean> => {
-    const next: BackendSettings = {
-      ...form,
-      activeTool: "grok",
-      tools: {
-        ...form.tools,
-        grok: {
-          ...shard,
-          relayProfiles: nextProfiles,
-          activeRelayId: nextActiveId,
-        },
-      },
-    };
-    // saveSettingsValue 会把结果写回 settings / settingsForm，所以这里不需要
-    // 自己先 setState（那反而会跟服务端归一化后的结果打架）。
-    const saved = await actions.saveSettingsValue(next, true);
-    if (!saved) return false;
-    await refresh();
-    return true;
-  };
-
-  const addProfile = async () => {
-    const fresh = newGrokProfileDraft();
-    const ok = await writeShard([...profiles, fresh], fresh.id);
-    if (!ok) return;
-    // 新增后直接把草稿铺好，用户马上就能填。
-    setDraft({ ...fresh });
-    await actions.showMessage(t("已新增"), tf("已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。", [fresh.name]), "ok");
-  };
-
-  const saveDraft = async () => {
-    if (!draft || !activeProfile || saving) return;
-    setSaving(true);
-    try {
-      const ok = await writeShard(
-        profiles.map((profile) => (profile.id === draft.id ? { ...profile, ...draft } : profile)),
-        activeId,
-      );
-      if (ok) await actions.showMessage(t("已保存"), tf("供应商「{0}」已保存。", [draft.name]), "ok");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeProfile = async (id: string) => {
-    const rest = profiles.filter((profile) => profile.id !== id);
-    await writeShard(rest, activeId === id ? (rest[0]?.id ?? "") : activeId);
-  };
-
-  const selectProfile = async (id: string) => {
-    if (id === activeId) return;
-    await writeShard(profiles, id);
-  };
-
-  const applyToGrok = async () => {
-    if (draftDirty) {
-      await actions.showMessage(t("有未保存修改"), t("请先保存当前供应商，再应用到 Grok。"), "failed");
-      setConfirming(false);
-      return;
-    }
-    setApplying(true);
-    try {
-      // 只把 Grok 分片交给后端，避免整份 settings 被当成「本次改动」写回去。
-      const applied = await invoke<GrokProvidersResult>("apply_grok_relay_profile", {
-        settings: {
-          ...form,
-          tools: { ...form.tools, grok: { ...shard, activeRelayId: activeId } },
-        },
-      });
-      setConfirming(false);
-      if (applied.status === "ok") {
-        await actions.showMessage(t("已应用"), applied.message, "ok");
-      } else {
-        await actions.showMessage(t("应用失败"), applied.message, "failed");
-      }
-      await refresh();
-    } catch (error) {
-      await actions.showMessage(t("调用失败"), String(error), "failed");
-    } finally {
-      setApplying(false);
-    }
-  };
-
-  const live = result?.live;
-
+/**
+ * 唯一的侧栏：任意 Agent → Codex++ → 任意供应商。
+ *
+ * - 顶部是网关状态卡和 ⌘K 快速跳转；
+ * - 「网关」：总览、供应商池、Agent 接入、路由、用量、网关设置；
+ * - 「全局管理」：请求日志、会话、MCP、Skills，同时管理所有 Agent；
+ * - 「Agent」：每个 Agent 一行（状态点表示接入方式）；它自己的页面（供应商配置、增强、皮肤……）在内容区顶部的页签里；
+ * - 「工具」：服务所有 Agent、但与供应商无关的页面；
+ * - 底部：版本与更新、整体设置、关于、语言和主题。
+ */
+/**
+ * 当前 Agent 的全部页面：内容区顶部一排页签，分组（概览 / 供应商 / 增强 / 设置）之间用细线隔开。
+ * 网关、全局管理、工具这些通用页面不显示；只有一个页面的 Agent 也不显示。
+ */
+function AgentPageTabs({ route, activeTool, onNavigate }: { route: Route; activeTool: ToolId; onNavigate: (route: Route) => void }) {
+  if (globalNavigationRoutes.includes(route)) return null;
+  const groups = agentTabGroups(navigationSections, routeTool, activeTool);
+  if (groups.reduce((count, entry) => count + entry.routes.length, 0) < 2) return null;
   return (
-    <div className="grok-page-layout">
-      {/* 最重要的是 Grok 实际生效的配置：放最上面，刷新跟它放在一起。 */}
-      <Panel className="grok-panel grok-live-panel">
-        <CardHeader className="panel-head grok-head">
-          <div>
-            <CardTitle>{t("Grok 当前配置")}</CardTitle>
-            <CardDescription>{live?.configPath || t("读取 ~/.grok/config.toml")}</CardDescription>
-          </div>
-          <Button disabled={loading} onClick={() => void refresh()} size="sm" variant="outline">
-            <RefreshCw className="h-4 w-4" />
-            {loading ? t("刷新中") : t("刷新")}
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {live ? (
-            <div className="grok-live-grid">
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("CLI")}</span>
-                <span className="grok-live-value">{live.cliPath || t("未检测到")}</span>
-              </div>
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("默认模型")}</span>
-                <span className="grok-live-value">{live.defaultModel || t("未设置")}</span>
-              </div>
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("全局端点")}</span>
-                <span className="grok-live-value">{live.modelsBaseUrl || t("未设置")}</span>
-              </div>
-              <div className="grok-live-item">
-                <span className="grok-live-label">{t("受管模型")}</span>
-                <span className="grok-live-value">
-                  {live.models.length ? live.models.map((model) => model.alias).join("、") : t("无")}
-                </span>
-              </div>
-            </div>
-          ) : (
-            <p className="muted-line">{t("尚未读取。")}</p>
-          )}
-        </CardContent>
-      </Panel>
-
-      {/* 左边选供应商，右边编辑；按钮各归各：新增在列表头，保存与应用在编辑区头。 */}
-      <div className="grok-workspace">
-        <Panel className="grok-panel grok-list-panel">
-          <CardHeader className="panel-head grok-head">
-            <div>
-              <CardTitle>{t("Grok 供应商")}</CardTitle>
-              <CardDescription>{t("每个供应商对应一套 Base URL + API Key + 模型列表。")}</CardDescription>
-            </div>
-            <Button onClick={() => void addProfile()} size="sm" variant="outline">
-              <Plus className="h-4 w-4" />
-              {t("新增")}
-            </Button>
-          </CardHeader>
-          <CardContent>
-          {profiles.length === 0 ? (
-            <div className="grok-empty">
-              <Blocks className="h-5 w-5" aria-hidden="true" />
-              <div>
-                <strong>{t("还没有 Grok 供应商")}</strong>
-                <span>{t("点「新增供应商」，填好 Base URL、API Key 和模型列表，再点「应用到 Grok」。")}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="grok-provider-list">
-              {profiles.map((profile) => {
-                const selected = profile.id === activeId;
-                const modelCount = profile.modelList.split(/[\r\n,]+/).filter((line) => line.trim()).length;
-                const endpoint = profile.upstreamBaseUrl || profile.baseUrl;
-                return (
-                  <div className={`grok-provider-row ${selected ? "active" : ""}`} key={profile.id}>
-                    {/* 与 Codex 供应商列表同一套：两字头像 + 名称 / 地址，删除悬停才出现。 */}
-                    <button
-                      className="grok-provider-pick"
-                      onClick={() => void selectProfile(profile.id)}
-                      type="button"
-                    >
-                      <span className="relay-index" aria-hidden="true">{providerInitial(profile.name)}</span>
-                      <span className="grok-provider-text">
-                        <span className="grok-provider-name">
-                          <span className="relay-summary-name">{profile.name || t("未命名供应商")}</span>
-                          {selected ? <span className="relay-active-badge">{t("使用中")}</span> : null}
-                        </span>
-                        {/* 左列较窄：模型数放进第二行，给名称留出空间。 */}
-                        <span className="grok-provider-url">
-                          {endpoint || t("未填写 Base URL")} · {tf("{0} 个模型", [String(modelCount)])}
-                        </span>
-                      </span>
-                    </button>
-                    <Button
-                      className="grok-provider-delete"
-                      onClick={() => void removeProfile(profile.id)}
-                      size="icon"
-                      title={t("删除供应商")}
-                      variant="ghost"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          </CardContent>
-        </Panel>
-
-        <Panel className="grok-panel grok-editor-panel">
-          <CardHeader className="panel-head grok-head">
-            <div>
-              <CardTitle>{draft ? draft.name || t("未命名供应商") : t("编辑供应商")}</CardTitle>
-              <CardDescription>
-                {!draft ? t("在左边选一个供应商") : draftDirty ? t("有未保存修改") : t("改完先保存，再应用到 Grok 生效")}
-              </CardDescription>
-            </div>
-            <div className="grok-editor-actions">
-              <Button
-                disabled={saving || !draftDirty}
-                onClick={() => void saveDraft()}
-                size="sm"
-                title={draftDirty ? undefined : t("没有需要保存的修改")}
-                variant="outline"
-              >
-                <Save className="h-4 w-4" />
-                {saving ? t("保存中") : t("保存")}
-              </Button>
-              <Button
-                disabled={!activeProfile || applying || draftDirty}
-                onClick={() => setConfirming(true)}
-                size="sm"
-                title={
-                  !activeProfile
-                    ? t("请先选择一个供应商")
-                    : draftDirty
-                      ? t("请先保存当前修改")
-                      : undefined
-                }
-              >
-                <Play className="h-4 w-4" />
-                {applying ? t("应用中") : t("应用到 Grok")}
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {draft ? (
-              <>
-                <div className="grok-provider-editor">
-              <Field label={t("名称")}>
-                <Input
-                  onChange={(event) => setDraft({ ...draft, name: event.currentTarget.value })}
-                  value={draft.name}
-                />
-              </Field>
-                  <div className="grok-editor-pair">
-              <Field label="Base URL">
-                <Input
-                  onChange={(event) => setDraft({ ...draft, upstreamBaseUrl: event.currentTarget.value })}
-                  placeholder="https://your-endpoint.example/v1"
-                  value={draft.upstreamBaseUrl}
-                />
-              </Field>
-              <Field label="API Key">
-                <Input
-                  onChange={(event) => setDraft({ ...draft, apiKey: event.currentTarget.value })}
-                  placeholder={t("留空则不改动 Grok 里已有的 Key")}
-                  type="password"
-                  value={draft.apiKey}
-                />
-              </Field>
-                  </div>
-              <Field label={t("模型列表")}>
-                <Textarea
-                  onChange={(event) => setDraft({ ...draft, modelList: event.currentTarget.value })}
-                  placeholder={"grok-4.5[1M]\ngrok-4.1-fast"}
-                  rows={4}
-                  value={draft.modelList}
-                />
-              </Field>
-                </div>
-                <p className="muted-line">{t("每行一个模型，可用 [1M] / [200K] 后缀声明上下文窗口。")}</p>
-              </>
-            ) : (
-              <p className="muted-line">{t("还没有选中的供应商。")}</p>
-            )}
-          </CardContent>
-        </Panel>
-      </div>
-
-      {confirming ? (
-        <ConfirmDialog
-          confirm={{            title: t("应用到 Grok？"),
-            message: tf(
-              "Grok 里所有由 Codex++ 管理的模型表会被供应商「{0}」的模型列表整体替换（[ui]、web_search 等未管理字段保留）。原配置会先备份。",
-              [activeProfile?.name || ""],
-            ),
-            confirmText: applying ? t("应用中") : t("确认应用"),
-            cancelText: t("取消"),
-          }}
-          onCancel={() => setConfirming(false)}
-          onConfirm={() => void applyToGrok()}
-        />
-      ) : null}
-    </div>
+    <nav aria-label={t("Agent 页面")} className="tp-tabs agent-page-tabs" role="tablist">
+      {groups.map(({ group, routes: groupRoutes }, index) => (
+        <Fragment key={group.id}>
+          {index > 0 ? <span aria-hidden="true" className="agent-page-tabs-sep" /> : null}
+          {groupRoutes.map((routeId) => {
+            const item = routes.find((candidate) => candidate.id === routeId);
+            if (!item) return null;
+            const Icon = item.icon;
+            return (
+              <button aria-selected={route === routeId} data-active={route === routeId} key={routeId} onClick={() => onNavigate(routeId)} role="tab" type="button">
+                <Icon aria-hidden="true" size={14} />
+                {item.label}
+              </button>
+            );
+          })}
+        </Fragment>
+      ))}
+    </nav>
   );
 }
 
-/** 应用栏：上方切换 Agent，下方访问通用页面与界面设置。 */
-function ApplicationRail({
+function AppSidebar({
   tools,
   activeTool,
-  codexAppRunning,
   route,
   theme,
-  onSelect,
+  version,
+  onOpenAgent,
   onNavigate,
   onToggleTheme,
+  onOpenPalette,
   pendingUpdateVersion,
   onOpenUpdate,
+  codexRun,
 }: {
+  /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。 */
+  codexRun: { running: boolean; busy: boolean; onStart: () => void; onStop: () => void };
   tools: ToolEntry[];
   activeTool: ToolId;
-  codexAppRunning: boolean;
   route: Route;
   theme: Theme;
-  onSelect: (toolId: ToolId) => void;
+  version: string;
+  /** 切到某个 Agent 并打开 `destination`（缺省为它的落脚页）。 */
+  onOpenAgent: (toolId: ToolId, destination?: Route) => void;
   onNavigate: (route: Route) => void;
   onToggleTheme: () => void;
+  onOpenPalette: () => void;
   /** 后台检查到的新版本号；没有新版本时为 null。 */
   pendingUpdateVersion: string | null;
   onOpenUpdate: () => void;
 }) {
+  const gateway = useGatewayPayload(10_000);
+  const [collapsed, setCollapsed] = useState<string[]>(loadCollapsedGroups);
+  const toggleGroup = (key: string) => {
+    setCollapsed((current) => {
+      const next = current.includes(key) ? current.filter((item) => item !== key) : [...current, key];
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, JSON.stringify(next));
+      } catch {
+        // 存不了就只在本次会话里生效。
+      }
+      return next;
+    });
+  };
+  const onGlobalPage = globalNavigationRoutes.includes(route);
   const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
   const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
-  const renderNavItem = (routeId: Route) => {
+  const connectedAgents = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
+  const gatewayState = !gateway
+    ? t("读取中…")
+    : gateway.helperRunning
+      ? tf("网关运行中 · 端口 {0}", [gateway.port])
+      : connectedAgents.size
+        ? t("网关未运行")
+        : t("还没有 Agent 接入");
+
+  const renderItem = (routeId: Route) => {
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item) return null;
     const Icon = item.icon;
-    const selected = route === item.id;
+    const selected = route === item.id || navAliasRoute[route] === item.id;
     return (
       <button
         aria-current={selected ? "page" : undefined}
-        aria-label={item.label}
-        className={`tool-chip rail-nav-item ${selected ? "active" : ""}`}
+        className={`side-item ${selected ? "active" : ""}`}
+        data-tour={`nav-${item.id}`}
         key={item.id}
         onClick={() => onNavigate(item.id)}
         title={item.label}
         type="button"
       >
-        <Icon aria-hidden="true" className="rail-nav-icon" />
+        <Icon aria-hidden="true" className="side-item-icon" />
+        <span className="side-item-label">{item.label}</span>
+        {item.badge ? <span className="side-item-badge">{t(item.badge)}</span> : null}
       </button>
     );
   };
+
+  const groupLabel = (key: string, label: string, aside?: ReactNode) => (
+    <div className="side-group-label">
+      <button aria-expanded={!collapsed.includes(key)} onClick={() => toggleGroup(key)} type="button">
+        <ChevronDown aria-hidden="true" className="side-group-chevron" />
+        {label}
+      </button>
+      {aside}
+    </div>
+  );
+
   return (
-    <aside className="app-rail">
-      {/* 程序左上角的 logo：点一下回到当前 Agent 的概览。
-          有新版本时右上角挂一个更新角标（独立按钮，不能嵌在 logo 按钮里），点角标弹出更新框。 */}
-      <div className="rail-brand-wrap">
-        <button
-          aria-label={t("Codex++ 概览")}
-          className="rail-brand"
-          onClick={() => onNavigate("overview")}
-          title="Codex++"
-          type="button"
-        >
-          <img alt="" draggable={false} src={APP_LOGO_URL} />
-        </button>
+    <aside className="side">
+      <button className={`side-hub ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
+        <img alt="" draggable={false} src={APP_LOGO_URL} />
+        <span className="side-hub-text">
+          <strong>Codex++</strong>
+          <small><i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />{gatewayState}</small>
+        </span>
+      </button>
+      <button className="side-search" data-tour="palette" onClick={onOpenPalette} type="button">
+        <Search aria-hidden="true" className="side-item-icon" />
+        <span>{t("快速跳转")}</span>
+        <kbd>⌘K</kbd>
+      </button>
+
+      <nav aria-label={t("主导航")} className="side-nav">
+        <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
+          {groupLabel("gateway", t("网关"))}
+          <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+        </section>
+
+        <section className={`side-group ${collapsed.includes("management") ? "collapsed" : ""}`} data-tour="management">
+          {groupLabel("management", t("全局管理"))}
+          <div className="side-group-items">{managementNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+        </section>
+
+        <section className={`side-group ${collapsed.includes("agents") ? "collapsed" : ""}`} data-tour="agents">
+          {groupLabel(
+            "agents",
+            "Agent",
+            <button aria-label={t("接入 Agent")} className="side-group-add" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
+              <Plus aria-hidden="true" />
+            </button>,
+          )}
+          <div className="side-group-items">
+            {/* 每个 Agent 一行，始终都在；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面都在内容区顶部的页签里。 */}
+            {tools.map((tool) => {
+              const current = tool.id === activeTool;
+              const title = tool.switchable
+                ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
+                : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
+              // 状态点表示接入方式，不表示运行状态（运行状态在顶栏）：Codex 由 Codex++ 直接管理供应商配置，
+              // 其余 Agent 看是否已经接入网关。
+              // 接入了网关一律绿色；Codex 没接入网关时是直连（紫色），由 Codex++ 直接管理供应商配置。
+              const access = connectedAgents.has(tool.id)
+                ? { tone: "ok", label: t("已经通过 Codex++ 网关接入") }
+                : tool.id === "codex"
+                  ? { tone: "direct", label: t("Codex 的供应商配置由 Codex++ 直接管理") }
+                  : { tone: "off", label: t("未接入网关") };
+              return (
+                <div className="side-agent-wrap" key={tool.id}>
+                  <button
+                    aria-current={current && !onGlobalPage ? "true" : undefined}
+                    aria-label={tool.switchable ? `${tool.name} · ${access.label}` : `${tool.name} · ${t("待接入")}`}
+                    className={`side-item side-agent ${current && !onGlobalPage ? "current active" : ""}`}
+                    disabled={!tool.switchable}
+                    onClick={() => onOpenAgent(tool.id)}
+                    title={`${title}｜${access.label}`}
+                    type="button"
+                  >
+                    <AgentGlyph agent={tool.id} className="side-item-icon" />
+                    <span className="side-item-label">{tool.name}</span>
+                    <i aria-hidden="true" className="side-dot side-agent-dot" data-tone={access.tone} />
+                  </button>
+                  {tool.id === "codex" && tool.switchable ? (
+                    <button
+                      aria-label={codexRun.running ? t("停止 Codex") : t("启动 Codex")}
+                      className="side-agent-run"
+                      data-running={codexRun.running}
+                      disabled={codexRun.busy}
+                      onClick={codexRun.running ? codexRun.onStop : codexRun.onStart}
+                      title={codexRun.busy ? t("处理中…") : codexRun.running ? t("停止 Codex") : t("启动 Codex")}
+                      type="button"
+                    >
+                      {codexRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : codexRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        <section className={`side-group ${collapsed.includes("tools") ? "collapsed" : ""}`}>
+          {groupLabel("tools", t("工具"))}
+          <div className="side-group-items">{toolNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
+        </section>
+      </nav>
+
+      <footer className="side-foot">
+        <span className="side-version">{version ? `v${version}` : "Codex++"}</span>
         {pendingUpdateVersion ? (
           <button
             aria-label={tf("发现新版本 {0}，点击查看更新", [pendingUpdateVersion])}
-            className="rail-update-badge"
+            className="side-update"
             onClick={onOpenUpdate}
             title={tf("发现新版本 {0}，点击查看更新", [pendingUpdateVersion])}
             type="button"
           >
-            <ArrowUp aria-hidden="true" strokeWidth={3} />
+            <ArrowUp aria-hidden="true" />
+            {t("更新")}
           </button>
         ) : null}
-      </div>
-      <ToolSwitcher
-        tools={tools}
-        activeTool={activeTool}
-        codexAppRunning={codexAppRunning}
-        showSelection={!globalNavigationRoutes.includes(route)}
-        onSelect={onSelect}
-      >
-        {railAgentGroupRoutes.map(renderNavItem)}
-      </ToolSwitcher>
-      <div className="rail-bottom">
-        <nav className="rail-navigation" aria-label={t("系统")}>
-          {globalNavigationRoutes.filter((routeId) => !railAgentGroupRoutes.includes(routeId)).map(renderNavItem)}
-        </nav>
-        <div className="rail-preferences">
-          <button
-            aria-label={languageLabel}
-            className="tool-chip rail-nav-item"
-            onClick={() => toggleLanguage()}
-            title={languageLabel}
-            type="button"
-          >
-            <Languages aria-hidden="true" className="rail-nav-icon" />
-          </button>
-          <button
-            aria-label={themeLabel}
-            className="tool-chip rail-nav-item"
-            onClick={onToggleTheme}
-            title={themeLabel}
-            type="button"
-          >
-            {theme === "dark" ? <Sun aria-hidden="true" className="rail-nav-icon" /> : <Moon aria-hidden="true" className="rail-nav-icon" />}
-          </button>
-        </div>
-      </div>
+        <span className="side-foot-spacer" />
+        {(["settings"] as Route[]).map((routeId) => {
+          const item = routes.find((candidate) => candidate.id === routeId);
+          if (!item) return null;
+          const Icon = item.icon;
+          return (
+            <button
+              aria-current={route === routeId ? "page" : undefined}
+              aria-label={item.label}
+              className={`side-icon-button ${route === routeId ? "active" : ""}`}
+              data-tour={routeId}
+              key={routeId}
+              onClick={() => onNavigate(routeId)}
+              title={item.label}
+              type="button"
+            >
+              <Icon aria-hidden="true" />
+            </button>
+          );
+        })}
+        <button aria-label={languageLabel} className="side-icon-button" onClick={() => toggleLanguage()} title={languageLabel} type="button">
+          <Languages aria-hidden="true" />
+        </button>
+        <button aria-label={themeLabel} className="side-icon-button" onClick={onToggleTheme} title={themeLabel} type="button">
+          {theme === "dark" ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}
+        </button>
+      </footer>
     </aside>
-  );
-}
-
-/**
- * 应用栏上方的 Agent 图标组：点击切换当前聚焦的工具。
- *
- * 这里的「工具」指 Codex / Grok / 后续接入的 CLI，每个工具在自己的供应商
- * 分区里，互相不串配置。未接入供应商写盘的工具仍可进入自己的管理页。
- */
-function ToolSwitcher({
-  tools,
-  activeTool,
-  codexAppRunning,
-  showSelection = true,
-  onSelect,
-  children,
-}: {
-  tools: ToolEntry[];
-  activeTool: ToolId;
-  codexAppRunning: boolean;
-  showSelection?: boolean;
-  onSelect: (toolId: ToolId) => void;
-  /** 排在 Agent 图标之后的同组入口。 */
-  children?: ReactNode;
-}) {
-  return (
-    <nav className="tool-switcher" aria-label={t("工具切换")}>
-      {tools.map((tool) => {
-        const icon = TOOL_ICONS[tool.id];
-        const selected = showSelection && tool.id === activeTool;
-        const running = tool.id === "codex" && codexAppRunning;
-        const title = tool.switchable
-          ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
-          : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
-        return (
-          <button
-            aria-label={tool.switchable ? `${tool.name}${running ? ` · ${t("运行中")}` : ""}` : `${tool.name} · ${t("待接入")}`}
-            aria-pressed={selected}
-            className={`tool-chip ${selected ? "active" : ""}`}
-            disabled={!tool.switchable}
-            key={tool.id}
-            onClick={() => onSelect(tool.id)}
-            title={`${title}${running ? `｜${t("运行中")}` : ""}`}
-            type="button"
-          >
-            {icon ? (
-              <span
-                aria-hidden="true"
-                className={`tool-chip-icon tool-chip-brand-icon tool-chip-icon-${tool.id}`}
-                style={{ maskImage: `url("${icon}")`, WebkitMaskImage: `url("${icon}")` }}
-              />
-            ) : (
-              <Blocks aria-hidden="true" className="tool-chip-icon" />
-            )}
-          </button>
-        );
-      })}
-      {children}
-    </nav>
   );
 }
 
@@ -14482,92 +15151,6 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span>{label}</span>
       {children}
     </Label>
-  );
-}
-
-type AppSelectOption<T extends string> = {
-  value: T;
-  label: ReactNode;
-  disabled?: boolean;
-  title?: string;
-};
-
-function AppSelect<T extends string>({
-  value,
-  options,
-  onChange,
-  disabled = false,
-  className = "",
-  title = "",
-  ariaLabel,
-}: {
-  value: T;
-  options: AppSelectOption<T>[];
-  onChange: (value: T) => void;
-  disabled?: boolean;
-  className?: string;
-  title?: string;
-  ariaLabel?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const selected = options.find((option) => option.value === value) || options[0];
-  const selectOption = (option: AppSelectOption<T>) => {
-    if (option.disabled) return;
-    onChange(option.value);
-    setOpen(false);
-  };
-  const { rootRef, menuRef, menuStyle } = usePopoverLayer({
-    open: open && !disabled,
-    onOpenChange: setOpen,
-    minWidth: 180,
-    maxHeight: 260,
-  });
-  return (
-    <div
-      className={`app-select ${open ? "open" : ""} ${disabled ? "disabled" : ""} ${className}`.trim()}
-      ref={rootRef}
-    >
-      <button
-        aria-expanded={open}
-        aria-label={ariaLabel}
-        className="app-select-trigger"
-        disabled={disabled}
-        onClick={() => setOpen((current) => !current)}
-        title={title}
-        type="button"
-      >
-        <span>{selected?.label ?? value}</span>
-        <ChevronDown className="h-4 w-4" />
-      </button>
-      {open && !disabled ? createPortal(
-        <div
-          className={`app-select-menu app-select-menu-portal ${className}`.trim()}
-          ref={menuRef}
-          role="listbox"
-          style={menuStyle}
-        >
-          {options.map((option) => (
-            <button
-              aria-selected={option.value === value}
-              className={`app-select-option ${option.value === value ? "selected" : ""}`}
-              disabled={option.disabled}
-              key={option.value}
-              onClick={() => selectOption(option)}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                selectOption(option);
-              }}
-              title={option.title}
-              type="button"
-            >
-              {option.value === value ? <CheckCircle2 className="h-4 w-4" /> : <span className="app-select-option-spacer" />}
-              <span>{option.label}</span>
-            </button>
-          ))}
-        </div>,
-        document.body,
-      ) : null}
-    </div>
   );
 }
 
@@ -15382,7 +15965,8 @@ function normalizeSettings(settings: BackendSettings): BackendSettings {
   return syncLegacyRelayFields({
     ...defaultSettings,
     ...settings,
-    ...normalizeWhaleBalanceSettings(settings),
+    // 旧版「Codex 用量挂件」开着、还没有桌宠设置的用户，升级后桌宠保持开启。
+    agentPet: normalizeAgentPetSettings(settings.agentPet, (settings as { codexAppWhaleWidgetEnabled?: unknown }).codexAppWhaleWidgetEnabled === true),
     ccsDbPath: (settings.ccsDbPath || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     promptEnhance: normalizePromptEnhanceSettings(settings.promptEnhance),
@@ -15542,13 +16126,16 @@ function normalizeRelayProfile(profile: RelayProfile, defaultContextSelection = 
     modelRoutes: relayMode === "official" && !officialMixApiKey ? [] : normalizeRelayModelRoutes(profile.modelRoutes),
     userAgent: profile.userAgent || "",
     autoReviewModel: profile.autoReviewModel?.trim() || "",
+    multiAgent: profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "",
     customHeaders: profile.customHeaders || [],
     sub2apiEnabled: profile.noAuth ? false : profile.sub2apiEnabled === true,
     sub2apiMultiplier: !profile.noAuth && profile.sub2apiEnabled === true ? profile.sub2apiMultiplier || "" : "",
     standardOpenaiProtocol: profile.standardOpenaiProtocol === true,
     webSearchHistoryCompat: profile.webSearchHistoryCompat === true,
+    localCompactionPromptAtEnd: profile.localCompactionPromptAtEnd === true,
     trustUpstreamCatalogLite: profile.trustUpstreamCatalogLite === true,
     strictResponsesReasoning: profile.strictResponsesReasoning === true,
+    stripImageGenerationTool: profile.stripImageGenerationTool === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
     anthropicMaxTokens: normalizeAnthropicMaxTokens(profile.anthropicMaxTokens),
     anthropicPromptCache: profile.anthropicPromptCache !== false,
@@ -15577,6 +16164,7 @@ function hydrateAggregateRelayProfile(profile: RelayProfile, aggregate: Aggregat
       routes: normalizeAggregateRoutes(aggregate.routes ?? []),
       defaultRelayId: aggregate.defaultRelayId ?? "",
       syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
+      autoReviewRelayId: aggregate.autoReviewRelayId ?? "",
     },
   };
 }
@@ -15820,14 +16408,18 @@ function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "strictResponsesReasoning" | "modelMetadata">,
+  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "stripImageGenerationTool" | "modelMetadata">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
   const searchHistoryCompat = profile.webSearchHistoryCompat === true
     && profile.protocol === "responses"
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || requestCompatibilityEnabled(profile)
+  const localCompaction = profile.localCompactionPromptAtEnd === true
+    && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile)
     ? PROTOCOL_PROXY_BASE_URL
     : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -15978,12 +16570,16 @@ function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "strictResponsesReasoning" in patch || "modelMetadata" in patch) {
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "modelMetadata" in patch) {
     const searchHistoryCompat = next.webSearchHistoryCompat === true
       && next.protocol === "responses"
       && next.relayMode !== "aggregate"
       && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || requestCompatibilityEnabled(next)
+    const localCompaction = next.localCompactionPromptAtEnd === true
+      && (next.protocol === "responses" || next.protocol === "chatCompletions")
+      && next.relayMode !== "aggregate"
+      && (next.relayMode !== "official" || next.officialMixApiKey);
+    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next)
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -16606,6 +17202,7 @@ function normalizeAggregateProfilesFromRelayProfiles(profiles: RelayProfile[]): 
       })),
       defaultRelayId: aggregate.defaultRelayId ?? "",
       syncDefaultMemberLogin: aggregate.syncDefaultMemberLogin === true,
+      autoReviewRelayId: aggregate.autoReviewRelayId ?? "",
     };
   });
 }
@@ -16952,6 +17549,11 @@ function normalizeAggregateConfig(
     aggregate?.defaultRelayId,
     new Set(members.map((member) => member.profileId)),
   );
+  // 审批成员同样必须是当前成员；成员被移出时清空为「未设置」（#2703）。
+  const autoReviewRelayId = normalizeAggregateDefaultRelayId(
+    aggregate?.autoReviewRelayId,
+    new Set(members.map((member) => member.profileId)),
+  );
   return {
     strategy: modelAggregationEnabled ? "failover" : strategy,
     modelAggregationEnabled,
@@ -16959,6 +17561,7 @@ function normalizeAggregateConfig(
     routes,
     defaultRelayId,
     syncDefaultMemberLogin: aggregate?.syncDefaultMemberLogin === true,
+    autoReviewRelayId,
   };
 }
 
@@ -17043,15 +17646,34 @@ function loadInitialTheme(): Theme {
   return readPreference("codex-plus-theme") === "light" ? "light" : "dark";
 }
 
+/** 启动落在网关「总览」：Agent 概览跟着上次点的 Agent 走，落在那里像是停在了某个 Agent 里。 */
 function loadInitialRoute(): Route {
-  if (typeof window === "undefined") return "overview";
+  if (typeof window === "undefined") return "hub";
   const params = new URLSearchParams(window.location.search);
   const previewRoute = params.get("previewRoute");
   if (previewRoute && routes.some((item) => item.id === previewRoute)) {
     return previewRoute as Route;
   }
   if (params.get("showUpdate") === "1" || window.location.hash === "#about") {
-    return "about";
+    return "settings";
   }
-  return "overview";
+  return "hub";
+}
+
+/** 首次使用引导：没看过当前版本就自动打开；预览模式（?previewRoute=）不打开。 */
+function initialTourOpen(): boolean {
+  if (typeof window === "undefined") return false;
+  if (new URLSearchParams(window.location.search).has("previewRoute")) return false;
+  try {
+    return shouldShowTour(window.localStorage.getItem(TOUR_STORAGE_KEY));
+  } catch {
+    return false;
+  }
+}
+
+/** 「关于」已经并进「设置」：启动时要看更新，就滚到版本与更新。 */
+function initialSettingsFocus(): string | null {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  return params.get("showUpdate") === "1" || window.location.hash === "#about" ? "app-settings-update" : null;
 }

@@ -90,13 +90,9 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 语音全局热键经 `global_dictation.rs` 和管理器同名模块保存、注册，默认关闭；热键只切换已有听写入口，模型下载仍须用户点击配置页。Windows 和 macOS 的注册能力由平台实现决定。
 
-`codexAppWhaleWidgetEnabled` 默认关闭，挂件入口是 `96-whale-compat.js` 与 `97-whale-widget.js`，完整引擎由 `assets.rs` 内联。余额查询复用已保存的供应商凭据，币种、路径、字段与倍率由 `whale-settings.ts` 校验；本地用量、余额账本和账户校正分别保存在 `whale_usage.rs`、`whale_history.rs` 与 `whale_full.rs` 的运行路径。相关读写回归使用临时数据，不操作活动数据库。
+Agent 桌宠使用上游 `agentPet` 配置、`AgentPetPage.tsx`、`agent_pet.rs` 与 `97-agent-pet.js`。图片经 Rust 按需下载缓存，音效支持内嵌、下载与自定义导入；管理器编辑随设置手动保存。旧 `codexAppWhaleWidgetEnabled` 在尚无 `agentPet` 时迁移开启状态，旧用量挂件运行时及其轮询、账本入口已撤下，磁盘历史文件不主动删除。用量改由网关统计与输入框状态栏展示。
 
-挂件状态由 Codex 适配层统一调度：生成中最多每 5 秒读取摘要，空闲每 30 秒；原生轮次事件立即更新提示并使摘要失效，余额维持每 60 秒刷新，手动刷新立即执行。隐藏时暂停状态轮询，恢复时补查一次；隐藏前正在生成的轮次完成后，恢复可见仍只提示一次。切换主机、会话和挂件生命周期均推进代次，旧请求即使晚到，也不能覆盖切走再切回的同一会话。
-
-`LauncherDataService` 在存储范围不变时复用鲸鱼适配器及其路径缓存。缓存按 Codex 根目录、候选数据库和会话隔离，最多 128 项；有效路径保留 5 分钟且每次命中复查路径边界与文件存在性，缺失最多冷却 10 秒，数据库及 WAL 指纹变化立即失效。同一查找持锁合并，数据库或目录读取失败不缓存为正常缺失。rollout 摘要继续按偏移增量读取。
-
-完整鲸鱼适配产物由 `scripts/assemble-whale-runtime.mjs` 生成，原始上游源码保持可校验。`CODEX_PLUS_PERF_DIAGNOSTICS=1` 时，挂件只暴露调用计数，后端记录 `whale.path_lookup` 的查询、扫描与缓存命中计数；默认不写这些采样日志。回归覆盖调度次数、缺失冷却和重新发现、跨请求共享、主机隔离、隐藏恢复、销毁及迟到响应。
+原生输入预测 `codexAppNativePredictions`、第三方推理折叠 `codexAppThirdPartyReasoningCollapse` 和快速删除 `codexAppSessionDeleteSkipConfirm` 默认关闭。增强设置的标题、分组和说明来自 `crates/codex-plus-core/assets/enhancement-settings.json`，管理器与注入设置页共用，个人低功耗与原生模型混入也在此清单维护。Fast 与输入预测共用原生模块补丁启动入口，恢复 binding 不重复注册这些补丁。
 
 
 会话导出、Stepwise、大纲、插件市场等大部分能力源自上游；这里记录个人版的兼容和交互差异，不将上游能力都列作个人原创。

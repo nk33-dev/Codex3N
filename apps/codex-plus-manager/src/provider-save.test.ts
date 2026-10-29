@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import ts from "typescript";
-import { whaleBalanceSettingsIssue, defaultWhaleBalanceSettings } from "./whale-settings.ts";
+import { agentPetSettingsIssue, defaultAgentPetSettings } from "./agent-pet-settings.ts";
 
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const start = source.indexOf("  const saveSettingsValue = async");
@@ -15,18 +15,18 @@ function harness() {
   const form = { current: { id: "original" } };
   const saving = { current: false }, switching = { current: false };
   const savingStates: boolean[] = [];
-  const save = new Function("settingsSavingRef", "setSettingsSaving", "relaySwitchingRef", "settingsFormRef", "normalizeSettings", "run", "call", "isSuccessStatus", "setSettings", "setSettingsForm", "showNotice", "t", "dictationSettingsIssue", "dictationSettingsValidationMessage", "whaleBalanceSettingsIssue", "whaleBalanceValidationMessage", "promptEnhanceSettingsIssue", "promptEnhanceSettingsValidationMessage", compiled + "return saveSettingsValue;")(
+  const save = new Function("settingsSavingRef", "setSettingsSaving", "relaySwitchingRef", "settingsFormRef", "normalizeSettings", "run", "call", "isSuccessStatus", "setSettings", "setSettingsForm", "showNotice", "t", "dictationSettingsIssue", "dictationSettingsValidationMessage", "agentPetSettingsIssue", "agentPetValidationMessage", "promptEnhanceSettingsIssue", "promptEnhanceSettingsValidationMessage", compiled + "return saveSettingsValue;")(
     saving, (value: boolean) => savingStates.push(value), switching, form, (v: unknown) => v, (f: () => unknown) => f(),
     () => new Promise(resolve => pending.push(resolve)), (status: string) => status === "ok",
     (v: unknown) => saved.push(v), (v: unknown) => drafts.push(v), () => {}, (v: string) => v, () => null, (v: unknown) => v,
-    whaleBalanceSettingsIssue, (issue: unknown) => issue, () => null, (v: unknown) => v,
+    (pet: Parameters<typeof agentPetSettingsIssue>[0]) => pet ? agentPetSettingsIssue(pet) : null, (issue: unknown) => issue, () => null, (v: unknown) => v,
   );
   return { save, pending, saved, drafts, form, saving, switching, savingStates };
 }
 
-test("余额配置校验失败时保留草稿并释放保存锁", async () => {
+test("桌宠配置校验失败时保留草稿并释放保存锁", async () => {
   const h = harness();
-  assert.equal(await h.save({ ...defaultWhaleBalanceSettings(), codexAppWhaleWidgetEnabled: true, codexAppWhaleBalanceProtocol: "custom", codexAppWhaleBalancePath: "https://elsewhere.example" }), null);
+  assert.equal(await h.save({ agentPet: { ...defaultAgentPetSettings(), enabled: true, image: "custom", customImageUrl: "http://elsewhere.example" } }), null);
   assert.equal(h.pending.length, 0);
   assert.equal(h.saving.current, false);
   assert.deepEqual(h.savingStates, [true, false]);

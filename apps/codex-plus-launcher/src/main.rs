@@ -1040,14 +1040,16 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     // 复用后台服务也属于用户主动启动；已有资源补丁由原服务持有，
     // 这里只执行与完整启动相同的首次应用检查，不能重新创建 helper 或 watchdog。
     if settings.enhancements_enabled
-        && settings.codex_app_native_fast_unlock
+        && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
         && let Ok(launch) = &launch_result
         && let Err(error) = hooks
-            .apply_native_fast_unlock_on_launch(launch.debug_port().unwrap_or(options.debug_port))
+            .apply_native_module_patches_on_launch(
+                launch.debug_port().unwrap_or(options.debug_port),
+            )
             .await
     {
         let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
-            "launcher.native_fast_unlock_failed",
+            "launcher.native_module_patch_failed",
             json!({"message": error.to_string(), "phase": "activate_existing"}),
         );
     }
@@ -1492,13 +1494,13 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
-    async fn apply_native_fast_unlock_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
+    async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
         // 恢复后台服务只补回桥接，不刷新用户正在使用的页面。
         if self.attach_only {
             return Ok(());
         }
         self.core
-            .apply_native_fast_unlock_on_launch(debug_port)
+            .apply_native_module_patches_on_launch(debug_port)
             .await
     }
 
@@ -1583,8 +1585,6 @@ fn require_completed_provider_sync(
 struct LauncherDataService {
     db_path: PathBuf,
     backup_dir: PathBuf,
-    whale_adapter:
-        std::sync::Mutex<Option<(Vec<PathBuf>, PathBuf, codex_plus_data::SQLiteStorageAdapter)>>,
 }
 
 impl Default for LauncherDataService {
@@ -1592,7 +1592,6 @@ impl Default for LauncherDataService {
         Self {
             db_path: default_codex_db_path(),
             backup_dir: codex_plus_core::paths::default_app_state_dir().join("backups"),
-            whale_adapter: std::sync::Mutex::new(None),
         }
     }
 }
@@ -1670,24 +1669,6 @@ impl BridgeDataService for LauncherDataService {
         tokio::task::spawn_blocking(move || adapter.codex_thread_usage_live(&session))
             .await
             .map_err(|error| anyhow::anyhow!("thread usage live task failed: {error}"))
-    }
-
-    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
-        let adapter = self.whale_storage_adapter();
-        tokio::task::spawn_blocking(move || {
-            codex_plus_data::whale_usage::session_summary(&adapter, &session)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("whale session task failed: {error}"))
-    }
-
-    async fn whale_history(&self, query: Value) -> anyhow::Result<Value> {
-        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-        tokio::task::spawn_blocking(move || {
-            codex_plus_data::whale_history::query_history(&home, &query)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("whale history task failed: {error}"))
     }
 
     async fn find_archived_thread_by_title(
@@ -1770,38 +1751,6 @@ impl BridgeDataService for LauncherDataService {
 }
 
 impl LauncherDataService {
-    fn whale_storage_adapter(&self) -> codex_plus_data::SQLiteStorageAdapter {
-        self.whale_storage_adapter_for(
-            self.candidate_db_paths(),
-            codex_plus_core::codex_sqlite::default_codex_home_dir(),
-        )
-    }
-
-    fn whale_storage_adapter_for(
-        &self,
-        paths: Vec<PathBuf>,
-        home: PathBuf,
-    ) -> codex_plus_data::SQLiteStorageAdapter {
-        let mut cached = self
-            .whale_adapter
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some((previous_paths, previous_home, adapter)) = cached.as_ref()
-            && *previous_paths == paths
-            && *previous_home == home
-        {
-            return adapter.clone();
-        }
-        let adapter = codex_plus_data::SQLiteStorageAdapter::new(
-            self.db_path.clone(),
-            codex_plus_data::BackupStore::new(self.backup_dir.clone()),
-        )
-        .with_allowed_db_paths(paths.clone())
-        .with_codex_home(&home);
-        *cached = Some((paths, home, adapter.clone()));
-        adapter
-    }
-
     fn candidate_db_paths(&self) -> Vec<PathBuf> {
         let mut paths = vec![self.db_path.clone()];
         for path in codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(
@@ -2897,7 +2846,9 @@ mod tests {
             .expect("next function after existing launcher activation");
         let body = &source[start..end];
         let launch = body.find("let launch_result = hooks").unwrap();
-        let patch = body.find(".apply_native_fast_unlock_on_launch(").unwrap();
+        let patch = body
+            .find(".apply_native_module_patches_on_launch(")
+            .unwrap();
 
         assert!(
             launch < patch,
@@ -2906,9 +2857,10 @@ mod tests {
         let guard = &body[launch..patch];
         assert!(guard.contains("settings.enhancements_enabled"));
         assert!(guard.contains("settings.codex_app_native_fast_unlock"));
+        assert!(guard.contains("settings.codex_app_native_predictions"));
         assert!(guard.contains("let Ok(launch) = &launch_result"));
         assert!(body[patch..].contains("launch.debug_port().unwrap_or(options.debug_port)"));
-        assert!(body[patch..].contains("launcher.native_fast_unlock_failed"));
+        assert!(body[patch..].contains("launcher.native_module_patch_failed"));
         assert!(body[patch..].contains("launch_result.map(|_| ())"));
     }
 
@@ -2995,51 +2947,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn whale_requests_share_negative_cache_and_storage_scope_changes_invalidate_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        std::fs::create_dir_all(home.join("sessions")).unwrap();
-        let service = LauncherDataService {
-            db_path: home.join("state.sqlite"),
-            backup_dir: temp.path().join("backups"),
-            whale_adapter: std::sync::Mutex::new(None),
-        };
-        let id = "019a11b9-193d-7c32-a71e-ae11fd3be78f";
-        let session = SessionRef::new(id, "fixture").unwrap();
-        let first = service.whale_storage_adapter_for(vec![], home.clone());
-        assert_eq!(
-            codex_plus_data::whale_usage::session_summary(&first, &session)["status"],
-            "unavailable"
-        );
-        let record = format!(
-            "{}\n{}\n",
-            json!({"type":"session_meta","payload":{"id":id}}),
-            json!({"type":"turn_context","payload":{"turn_id":"fixture-turn","model":"fixture-model"}})
-        );
-        std::fs::write(
-            home.join("sessions").join(format!("rollout-{id}.jsonl")),
-            &record,
-        )
-        .unwrap();
-        let second = service.whale_storage_adapter_for(vec![], home.clone());
-        assert_eq!(
-            codex_plus_data::whale_usage::session_summary(&second, &session)["message"],
-            "未找到本机会话记录"
-        );
-        let refreshed =
-            service.whale_storage_adapter_for(vec![home.join("new-state.sqlite")], home);
-        assert_ne!(
-            codex_plus_data::whale_usage::session_summary(&refreshed, &session)["status"],
-            "unavailable"
-        );
-    }
-
     #[tokio::test]
     async fn launcher_hooks_forward_native_fast_instead_of_using_the_default_noop() {
         let hooks = LauncherHooks::default();
         // 没有 CDP 端点时核心实现会返回错误；trait 默认的空实现则错误地成功。
-        let result = hooks.apply_native_fast_unlock_on_launch(0).await;
+        let result = hooks.apply_native_module_patches_on_launch(0).await;
         assert!(
             result.is_err(),
             "native Fast hook must reach the core launcher"
@@ -3053,7 +2965,10 @@ mod tests {
             ..LauncherHooks::default()
         };
         // 后台恢复不访问 CDP，因此相同的不可用端点也应成功跳过。
-        hooks.apply_native_fast_unlock_on_launch(0).await.unwrap();
+        hooks
+            .apply_native_module_patches_on_launch(0)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3068,7 +2983,6 @@ mod tests {
             data: Arc::new(LauncherDataService {
                 db_path: test_dir.join("state.sqlite"),
                 backup_dir: test_dir.join("backups"),
-                whale_adapter: std::sync::Mutex::new(None),
             }),
             runtime: Arc::new(LauncherRuntimeService::new(
                 9229,

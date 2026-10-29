@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 import { initializePreferences } from "./preferences";
 import { CuPipWindow } from "./CuPipWindow";
+import { TrayPanel } from "./TrayPanel";
 import "./styles.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
@@ -15,7 +16,7 @@ const app = document.getElementById("app");
 if (app instanceof HTMLElement) {
   void initializePreferences().then(async () => {
     const { App } = await import("./App");
-    createRoot(app).render(window.location.hash === "#cu-pip" ? <CuPipWindow /> : <App />);
+    createRoot(app).render(window.location.hash === "#tray-panel" ? <TrayPanel /> : window.location.hash === "#cu-pip" ? <CuPipWindow /> : <App />);
   }).catch((error) => {
     app.textContent = `读取界面设置失败：${String(error)}。请重启应用`;
   });

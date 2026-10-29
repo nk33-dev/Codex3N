@@ -1,5 +1,7 @@
 pub mod agent_cache;
 pub mod agent_collaboration;
+pub mod agent_mcp;
+pub mod agent_pet;
 pub mod aggregate_catalog;
 pub mod anthropic_bridge;
 pub mod app_paths;
@@ -33,21 +35,25 @@ pub mod dream_skin_market;
 pub mod dream_skin_package;
 pub mod dream_skin_runtime;
 pub mod env_conflicts;
+pub mod gateway;
 pub mod git_maintenance;
 pub mod global_dictation;
 pub mod grok_config;
 pub mod http_client;
 pub mod install;
 pub mod launcher;
+pub mod macos_window;
 pub mod manager_navigation;
 pub mod mcp_config;
 pub mod model_catalog;
+pub mod model_pricing;
 pub mod model_suffix;
 pub mod models;
 pub mod multi_worker;
 pub mod native_browser;
 pub mod native_browser_connection;
 pub(crate) mod native_fast;
+pub(crate) mod native_predictions;
 pub mod official_login;
 pub mod owned_processes;
 pub mod packaged_launch;
@@ -79,9 +85,11 @@ pub mod script_market;
 pub mod secret_store;
 pub mod session_share;
 pub mod settings;
+pub mod settings_catalog;
 pub mod share;
 pub mod side_chat;
 pub mod skills;
+pub mod ssh_remote_loopback;
 pub mod status;
 pub mod stepwise;
 pub mod sub2api;
@@ -91,9 +99,8 @@ pub mod user_scripts;
 pub mod version;
 pub mod vision;
 pub mod watcher;
-pub mod whale;
-pub mod whale_full;
 pub mod work_view;
+pub(crate) mod xai_responses;
 // 不加 `#[cfg(windows)]`：模块内部各项已各自标注平台门控，在非 Windows 平台上
 // 是一个只含少数无平台依赖项（如 current_process_is_elevated 的桩实现）的空模块。
 // 门控在模块级会导致 `if cfg!(windows)` 这类运行时分支在非 Windows 平台找不到符号。
@@ -117,6 +124,7 @@ pub fn windows_activate_process_window(process_id: u32) -> bool {
 }
 
 /// 设置 Codex++ 任务栏分组、名称和重启入口，保留 Codex 自己的图标。
+/// 启动器不再对打包版 Codex 调用：改写包应用的 AppUserModelID 会让任务栏丢失官方图标并单独分组（#2499、#2668）。
 #[cfg(windows)]
 pub fn windows_apply_codexplusplus_taskbar_to_process_window(process_id: u32) -> bool {
     windows_integration::apply_codexplusplus_taskbar_to_process_window(process_id)

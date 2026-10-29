@@ -32,6 +32,8 @@
 
 ## 代码入口与配置
 
+- 网关目录由 `gateway/apply.rs`、`gateway/model_sync.rs` 生成，供应商池与模型组独立于直连目录。接入 Codex 后仍经过 `70-model-catalog.js` 与 `71-model-picker-groups.js` 的本机隔离和自然排序；目录中的收藏、Fast 及审批模型能力沿用上游声明。直连目录的手工窗口、当前命名 Key 和原生模型混入规则保持原契约。
+
 - `assets/inject/renderer-inject/70-model-catalog.js`：模型目录状态、加载、`sortModelChoices`、`patchModelNameArray`、`patchModelArray` 及 RPC 适配。新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
 - 客户端定位在已加载资产中按类定义内容查找，前缀只用于排序，候选最多 24 个；覆盖 `app-initial-*` 和 `app-shared-*`。`60-plugin-marketplace.js::codexStateApi` 对新版 `app-shared-*` 按函数中的全局状态操作识别接口，保留旧版导出名兼容。
 - `20-menu.js` 的 `codexAppScopeNodes`、`collectScopedAppServerRequestCandidates`：作用域 RPC 发现；`30-service-tier.js` 维护 Fast 控件与线程模型状态。

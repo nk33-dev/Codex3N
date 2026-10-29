@@ -26,6 +26,7 @@ const SRC_FILES = [
   "src/ManagementPages.tsx",
   "src/ManagementExtra.tsx",
   "src/ProjectSessionPage.tsx",
+  "src/SessionBackups.tsx",
   "src/ComputerUsePage.tsx",
   "src/ComputerUsePreview.tsx",
   "src/CuPipWindow.tsx",
@@ -42,7 +43,28 @@ const SRC_FILES = [
   "src/screens/ClaudeSessionsScreen.tsx",
   "src/lib/default-settings.ts",
   "src/provider-utils.ts",
-  "src/ClaudeProviderPage.tsx",
+  "src/AgentDashboard.tsx",
+  "src/AgentPetPage.tsx",
+  "src/AppSelect.tsx",
+  "src/CommandPalette.tsx",
+  "src/GatewayAgents.tsx",
+  "src/GatewayModelMatrix.tsx",
+  "src/GatewayPage.tsx",
+  "src/GatewayProviders.tsx",
+  "src/GatewaySessions.tsx",
+  "src/GatewayUsage.tsx",
+  "src/HubOverview.tsx",
+  "src/OnboardingTour.tsx",
+  "src/ProviderExtrasDialog.tsx",
+  "src/ProviderFormDialog.tsx",
+  "src/ProviderModelsDialog.tsx",
+  "src/ProviderReasoningDialog.tsx",
+  "src/ProviderWindowsDialog.tsx",
+  "src/SessionAgentTabs.tsx",
+  "src/TrayPanel.tsx",
+  "src/UsageTabs.tsx",
+  "src/app-dialog.tsx",
+  "src/gateway-ui.tsx",
   "src/vlm-test-translation.ts",
 ];
 
@@ -73,6 +95,22 @@ function scanFile(relPath) {
 }
 
 for (const f of SRC_FILES) scanFile(f);
+
+// 增强设置项清单的文案在管理器里以 t(item.title) 这类动态参数翻译，扫描调用点看不到，
+// 这里按 src/enhancement-catalog.ts 的 enhancementCatalogStrings() 同样的字段补进来。
+const catalog = JSON.parse(
+  readFileSync(path.join(repoRoot, "crates", "codex-plus-core", "assets", "enhancement-settings.json"), "utf8"),
+);
+for (const group of catalog.groups) {
+  usedPlain.add(group.title);
+  if (group.description) usedPlain.add(group.description);
+}
+for (const item of catalog.items) {
+  usedPlain.add(item.title);
+  usedPlain.add(item.description);
+  if (item.descriptionWhenEnhancementsOn) usedPlain.add(item.descriptionWhenEnhancementsOn);
+  for (const option of item.options ?? []) usedPlain.add(option.label);
+}
 
 // ── Read the dictionary keys out of i18n-en.ts. ─────────────────────────────
 const dictSource = readFileSync(path.join(appRoot, "src", "i18n-en.ts"), "utf8");

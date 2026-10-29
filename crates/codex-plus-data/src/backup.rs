@@ -10,10 +10,26 @@ use uuid::Uuid;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 /// 至少保留的最新备份份数。
-const RETAINED_BACKUP_MANIFESTS: usize = 10;
+pub(crate) const RETAINED_BACKUP_MANIFESTS: usize = 20;
 /// 超过这个时长、且不在最新 [`RETAINED_BACKUP_MANIFESTS`] 份之内的备份才回收。
 /// 按时长而不是只按份数：一次批量删除几十个会话时，同一次操作的备份必须全部保留。
 const BACKUP_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionBackupSummary {
+    pub token: String,
+    pub session_id: String,
+    pub title: String,
+    pub created_at_ms: u64,
+    pub file_count: usize,
+}
+
+#[derive(Default, serde::Serialize)]
+pub struct SessionBackupPage {
+    pub backups: Vec<SessionBackupSummary>,
+    pub warnings: Vec<String>,
+}
 
 #[derive(Debug, Clone)]
 pub struct BackupStore {
@@ -54,7 +70,7 @@ impl BackupStore {
         }
     }
 
-    /// 默认保留原有撤销能力；显式预算超限时拒绝删除，不自动清理历史备份。
+    /// 显式预算超限时拒绝本次删除；历史备份另按保留规则清理。
     pub fn with_file_byte_limit(mut self, limit: u64) -> Self {
         self.file_byte_limit = Some(limit);
         self
@@ -86,6 +102,7 @@ impl BackupStore {
         private_directory(&self.root, false).with_context(|| {
             format!("failed to create backup directory {}", self.root.display())
         })?;
+        let _lock = self.management_lock()?;
         let estimated = files
             .iter()
             .try_fold(0_u64, |size, file| -> anyhow::Result<u64> {
@@ -153,7 +170,8 @@ impl BackupStore {
         if !files.is_empty() {
             sync_directory(&self.root.join(format!("{token}.files")))?;
         }
-        let payload = json!({"version": 2, "token": token, "session_id": session_id, "source_db": source_db, "tables": tables});
+        let created_at_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        let payload = json!({"version": 2, "token": token, "session_id": session_id, "created_at_ms": created_at_ms, "source_db": source_db, "tables": tables});
         // blob 完整并持久化后再发布 manifest；调用方只有拿到 token 才可删除数据库行。
         private_atomic_write(
             &self.path_for(&token),
@@ -161,52 +179,158 @@ impl BackupStore {
         )?;
         pending.committed = true;
         sync_file(&self.path_for(&token))?;
-        let _ = self.prune_retained_backups(&token);
+        let _ = self.cleanup_expired_backups_unlocked();
         Ok((token, entries))
     }
 
-    fn prune_retained_backups(&self, current: &str) -> anyhow::Result<()> {
-        let Ok(entries) = fs::read_dir(&self.root) else {
-            return Ok(());
+    pub fn list_session_backups(&self) -> anyhow::Result<SessionBackupPage> {
+        let mut page = SessionBackupPage::default();
+        check_managed_backup_path(&self.root, &self.root)?;
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(page),
+            Err(error) => return Err(error.into()),
         };
-        let mut manifests: Vec<(u64, String)> = entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let kind = entry.file_type().ok()?;
-                if !kind.is_file() || kind.is_symlink() {
-                    return None;
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(token) = name
+                .strip_suffix(".json")
+                .filter(|token| backup_token_epoch(token).is_some())
+            else {
+                continue;
+            };
+            match self.session_backup(token) {
+                Ok(snapshot) => {
+                    let tables = &snapshot["tables"];
+                    let title = ["threads", "sessions"]
+                        .into_iter()
+                        .filter_map(|table| tables[table].as_array())
+                        .flatten()
+                        .find(|row| row["id"] == snapshot["session_id"])
+                        .and_then(|row| row["title"].as_str())
+                        .unwrap_or("");
+                    page.backups.push(SessionBackupSummary {
+                        token: token.to_string(),
+                        session_id: snapshot["session_id"].as_str().unwrap_or("").to_string(),
+                        title: title.to_string(),
+                        created_at_ms: snapshot["created_at_ms"].as_u64().unwrap_or_else(|| {
+                            backup_token_epoch(token).unwrap().saturating_mul(1000)
+                        }),
+                        file_count: tables["__files"].as_array().map_or(0, Vec::len),
+                    });
                 }
-                let name = entry.file_name().to_string_lossy().to_string();
-                let token = name.strip_suffix(".json")?;
-                let epoch = backup_token_epoch(token)?;
-                (token != current).then(|| (epoch, token.to_string()))
-            })
-            .collect();
-        manifests.sort_by(|left, right| right.0.cmp(&left.0));
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        for (epoch, token) in manifests.into_iter().skip(RETAINED_BACKUP_MANIFESTS - 1) {
-            if now.saturating_sub(epoch) < BACKUP_RETENTION_SECS {
-                continue;
-            }
-            let Ok(bytes) = fs::read(self.path_for(&token)) else {
-                continue;
-            };
-            let Ok(snapshot) = serde_json::from_slice::<Value>(&bytes) else {
-                continue;
-            };
-            // 分离文件快照仍是用户的恢复来源，自动回收只处理内联快照。
-            if snapshot
-                .pointer("/tables/__files")
-                .and_then(Value::as_array)
-                .is_some_and(|files| files.iter().any(|file| file.get("blob_ref").is_some()))
-            {
-                continue;
-            }
-            if fs::remove_file(self.path_for(&token)).is_ok() {
-                remove_backup_blob_directory(&self.root, &token);
+                Err(error) => page.warnings.push(format!("备份 {token}：{error}")),
             }
         }
+        page.backups.sort_by(|a, b| {
+            b.created_at_ms
+                .cmp(&a.created_at_ms)
+                .then_with(|| a.token.cmp(&b.token))
+        });
+        Ok(page)
+    }
+
+    fn session_backup(&self, token: &str) -> anyhow::Result<Value> {
+        anyhow::ensure!(backup_token_epoch(token).is_some(), "备份标识无效");
+        let path = self.path_for(token);
+        check_managed_backup_path(&self.root, &path)?;
+        let mut bytes = Vec::new();
+        File::open(&path)?
+            .take(64 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() <= 64 * 1024 * 1024,
+            "备份清单超过 64 MiB，请先检查文件"
+        );
+        let snapshot: Value = serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(
+            snapshot["token"] == token
+                && snapshot["session_id"].is_string()
+                && snapshot["tables"].is_object()
+                && matches!(snapshot["version"].as_u64(), Some(1 | 2)),
+            "会话备份格式无效"
+        );
+        Ok(snapshot)
+    }
+
+    pub fn validate_session_backup(&self, token: &str) -> anyhow::Result<()> {
+        self.session_backup(token).map(|_| ())
+    }
+
+    pub fn delete_session_backup(&self, token: &str) -> anyhow::Result<()> {
+        let _lock = self.management_lock()?;
+        self.delete_session_backup_unlocked(token)
+    }
+
+    fn delete_session_backup_unlocked(&self, token: &str) -> anyhow::Result<()> {
+        self.session_backup(token)?;
+        let directory = self.root.join(format!("{token}.files"));
+        let directory_exists = match fs::symlink_metadata(&directory) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        if directory_exists {
+            check_managed_backup_path(&self.root, &directory)?;
+            let paths = fs::read_dir(&directory)?
+                .map(|entry| {
+                    let entry = entry?;
+                    let path = entry.path();
+                    check_managed_backup_path(&self.root, &path)?;
+                    anyhow::ensure!(
+                        entry.file_type()?.is_file()
+                            && path
+                                .extension()
+                                .is_some_and(|extension| extension == "blob"),
+                        "备份目录包含未知文件"
+                    );
+                    Ok(path)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            for path in paths {
+                check_managed_backup_path(&self.root, &path)?;
+                fs::remove_file(path)?;
+            }
+            fs::remove_dir(directory)?;
+        }
+        check_managed_backup_path(&self.root, &self.path_for(token))?;
+        fs::remove_file(self.path_for(token))?;
         Ok(())
+    }
+
+    pub fn cleanup_expired_backups(&self) -> anyhow::Result<usize> {
+        let _lock = self.management_lock()?;
+        self.cleanup_expired_backups_unlocked()
+    }
+
+    fn cleanup_expired_backups_unlocked(&self) -> anyhow::Result<usize> {
+        let page = self.list_session_backups()?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        let mut removed = 0;
+        for backup in page.backups.into_iter().skip(RETAINED_BACKUP_MANIFESTS) {
+            if now.saturating_sub(backup.created_at_ms) > BACKUP_RETENTION_SECS * 1000 {
+                self.delete_session_backup_unlocked(&backup.token)
+                    .with_context(|| format!("已清理 {removed} 份备份，后续清理失败"))?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn management_lock(&self) -> anyhow::Result<File> {
+        check_managed_backup_path(&self.root, &self.root)?;
+        private_directory(&self.root, false)?;
+        let path = self.root.join(".session-backups.lock");
+        check_managed_backup_path(&self.root, &path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        fs2::FileExt::lock_exclusive(&file)?;
+        Ok(file)
     }
 
     /// 只保留最近 `keep` 份快照，返回删除的份数。
@@ -418,6 +542,32 @@ pub(crate) fn new_private_file(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
+fn check_managed_backup_path(root: &Path, path: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        path.starts_with(root)
+            && !path
+                .components()
+                .any(|part| matches!(part, Component::ParentDir)),
+        "备份路径超出目录"
+    );
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) => {
+                let linked = metadata.file_type().is_symlink();
+                #[cfg(windows)]
+                let linked = {
+                    use std::os::windows::fs::MetadataExt;
+                    linked || metadata.file_attributes() & 0x400 != 0
+                };
+                anyhow::ensure!(!linked, "备份路径包含链接或重解析点");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn private_directory(path: &Path, exclusive: bool) -> std::io::Result<()> {
     if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         return Err(std::io::Error::other(
@@ -521,25 +671,6 @@ fn backup_token_epoch(token: &str) -> Option<u64> {
     epoch.parse().ok()
 }
 
-/// 删除某份备份的 blob 目录。逐条删除、不递归到符号链接目标。
-fn remove_backup_blob_directory(root: &Path, token: &str) {
-    let directory = root.join(format!("{token}.files"));
-    let Ok(metadata) = fs::symlink_metadata(&directory) else {
-        return;
-    };
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return;
-    }
-    if let Ok(entries) = fs::read_dir(&directory) {
-        for entry in entries.filter_map(Result::ok) {
-            if entry.file_type().is_ok_and(|file_type| file_type.is_file()) {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-    let _ = fs::remove_dir(&directory);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +751,12 @@ mod tests {
         assert_eq!(fs::read(&source).unwrap(), b"synthetic source");
         for entry in fs::read_dir(&root).unwrap() {
             let path = entry.unwrap().path();
+            if path
+                .file_name()
+                .is_some_and(|name| name == ".session-backups.lock")
+            {
+                continue;
+            }
             assert!(path.is_dir());
             assert_eq!(fs::read_dir(path).unwrap().count(), 0);
         }
@@ -657,12 +794,16 @@ mod tests {
         let old_epoch = now - BACKUP_RETENTION_SECS - 3600;
         let make = |epoch: u64, index: usize| {
             let token = format!("{epoch}-{index:032x}");
-            fs::write(store.path_for(&token), b"{}").unwrap();
+            fs::write(
+                store.path_for(&token),
+                json!({"version":2,"token":token,"session_id":"fixture","tables":{}}).to_string(),
+            )
+            .unwrap();
             fs::create_dir_all(root.join(format!("{token}.files"))).unwrap();
             fs::write(root.join(format!("{token}.files")).join("a.blob"), b"x").unwrap();
             token
         };
-        let stale: Vec<_> = (0..12)
+        let stale: Vec<_> = (0..22)
             .map(|index| make(old_epoch + index as u64, index))
             .collect();
         let foreign = root.join("env-conflicts-1700000000000.json");
@@ -684,7 +825,7 @@ mod tests {
 
         assert!(store.path_for(&fresh).exists(), "刚写的备份必须保留");
         assert!(root.join(format!("{fresh}.files")).is_dir());
-        // 保留最新 10 份（含刚写的），其余超期的连同 blob 目录删除。
+        // 保留最新 20 份（含刚写的），其余超期的连同 blob 目录删除。
         for token in &stale[..3] {
             assert!(!store.path_for(token).exists(), "{token} 应被回收");
             assert!(!root.join(format!("{token}.files")).exists());
@@ -692,7 +833,7 @@ mod tests {
         for token in &stale[3..] {
             assert!(
                 store.path_for(token).exists(),
-                "{token} 在最新 10 份内，应保留"
+                "{token} 在最新 20 份内，应保留"
             );
         }
         assert!(foreign.exists(), "其它功能的备份不能被当成会话备份回收");
@@ -700,11 +841,11 @@ mod tests {
 
     #[test]
     fn recent_backups_from_one_batch_are_all_kept() {
-        // 一次批量删除几十个会话：未超期的备份即使超过 10 份也全部保留。
+        // 同次批量删除超过 20 份时，7 天内的备份全部保留。
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("backups");
         let store = BackupStore::new(&root);
-        let tokens: Vec<_> = (0..15)
+        let tokens: Vec<_> = (0..25)
             .map(|_| {
                 store
                     .write_backup("fixture", Path::new("fake.db"), json!({}))
@@ -718,7 +859,7 @@ mod tests {
 
     #[test]
     fn backup_written_after_clock_rollback_is_never_pruned() {
-        // 已有 10 份「未来时间」的备份（时钟回拨后），新写的备份仍必须保留。
+        // 系统时钟回拨后，新写备份仍在保护期内。
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("backups");
         let store = BackupStore::new(&root);
@@ -728,10 +869,11 @@ mod tests {
             .unwrap()
             .as_secs()
             + 3600;
-        for index in 0..10 {
+        for index in 0..25 {
+            let token = format!("{}-{index:032x}", future + index);
             fs::write(
-                store.path_for(&format!("{}-{index:032x}", future + index)),
-                b"{}",
+                store.path_for(&token),
+                json!({"version":2,"token":token,"session_id":"fixture","tables":{}}).to_string(),
             )
             .unwrap();
         }
@@ -763,7 +905,7 @@ mod retention_tests {
     }
 
     #[test]
-    fn automatic_retention_preserves_manifests_referencing_recovery_files() {
+    fn automatic_retention_removes_expired_recovery_files_outside_the_latest_twenty() {
         let dir = tempfile::tempdir().unwrap();
         let store = BackupStore::new(dir.path());
         let token = format!("100-{:032x}", 1);
@@ -773,13 +915,20 @@ mod retention_tests {
         fs::write(
             store.path_for(&token),
             serde_json::to_vec(&serde_json::json!({
+                "version":2,"token":token,"session_id":"old",
                 "tables":{"__files":[{"blob_ref":format!("{token}.files/source.blob")}]}
             }))
             .unwrap(),
         )
         .unwrap();
-        for number in 2..15 {
-            fs::write(store.path_for(&format!("200-{number:032x}")), b"{}").unwrap();
+        for number in 2..22 {
+            let token = format!("200-{number:032x}");
+            fs::write(
+                store.path_for(&token),
+                serde_json::json!({"version":2,"token":token,"session_id":"fixture","tables":{}})
+                    .to_string(),
+            )
+            .unwrap();
         }
         store
             .write_backup(
@@ -788,10 +937,65 @@ mod retention_tests {
                 serde_json::json!({}),
             )
             .unwrap();
-        assert!(store.path_for(&token).is_file());
-        assert_eq!(
-            fs::read(blob_dir.join("source.blob")).unwrap(),
-            b"recovery data"
-        );
+        assert!(!store.path_for(&token).exists());
+        assert!(!blob_dir.exists());
+    }
+
+    #[test]
+    fn cleanup_keeps_recent_and_latest_backups_and_single_delete_does_not_touch_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BackupStore::new(dir.path());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for number in 0..25 {
+            let epoch = if number == 0 {
+                now
+            } else {
+                now - 8 * 86400 + number
+            };
+            let token = format!("{epoch}-{number:032x}");
+            fs::write(
+                store.path_for(&token),
+                serde_json::json!({"version":2,"token":token,"session_id":"fixture","tables":{}})
+                    .to_string(),
+            )
+            .unwrap();
+        }
+        assert_eq!(store.cleanup_expired_backups().unwrap(), 5);
+        assert_eq!(store.list_session_backups().unwrap().backups.len(), 20);
+        assert_eq!(store.cleanup_expired_backups().unwrap(), 0);
+        let source = dir.path().join("original.txt");
+        fs::write(&source, "keep").unwrap();
+        let token = store.list_session_backups().unwrap().backups[0]
+            .token
+            .clone();
+        store.delete_session_backup(&token).unwrap();
+        assert_eq!(fs::read_to_string(&source).unwrap(), "keep");
+        assert!(store.delete_session_backup("../outside").is_err());
+        assert_eq!(store.list_session_backups().unwrap().backups.len(), 19);
+    }
+
+    #[test]
+    fn unknown_manifest_and_unrecognized_blob_files_are_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BackupStore::new(dir.path());
+        let token = format!("100-{:032x}", 1);
+        fs::write(store.path_for(&token), b"{}").unwrap();
+        assert!(store.delete_session_backup(&token).is_err());
+        assert_eq!(store.list_session_backups().unwrap().warnings.len(), 1);
+        fs::write(
+            store.path_for(&token),
+            serde_json::json!({"version":2,"token":token,"session_id":"fixture","tables":{}})
+                .to_string(),
+        )
+        .unwrap();
+        let files = dir.path().join(format!("{token}.files"));
+        fs::create_dir(&files).unwrap();
+        fs::write(files.join("keep.txt"), "keep").unwrap();
+        assert!(store.delete_session_backup(&token).is_err());
+        assert!(store.path_for(&token).exists());
+        assert_eq!(fs::read_to_string(files.join("keep.txt")).unwrap(), "keep");
     }
 }

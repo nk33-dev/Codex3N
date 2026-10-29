@@ -560,19 +560,48 @@ impl ClaudeSessionStore {
     }
 
     fn prune_backups(&self) -> Result<()> {
+        self.cleanup_expired_backups().map(|_| ())
+    }
+
+    pub fn cleanup_expired_backups(&self) -> Result<usize> {
         let backups = self.backups()?.backups;
-        for backup in backups.into_iter().skip(50) {
+        let mut removed = 0;
+        for backup in backups
+            .into_iter()
+            .skip(crate::backup::RETAINED_BACKUP_MANIFESTS)
+        {
             if backup.created_at_ms >= now_ms() - 7 * 24 * 60 * 60 * 1000 {
                 continue;
             }
-            let directory = self.backup_root.join(&backup.token);
-            let paths = safety::files_under(&self.backup_root, &directory)?;
-            for path in paths {
-                safety::check_path(&self.backup_root, &path)?;
-                fs::remove_file(path)?;
-            }
-            fs::remove_dir(&directory)?;
+            self.delete_backup(&backup.token)
+                .with_context(|| format!("已清理 {removed} 份备份，后续清理失败"))?;
+            removed += 1;
         }
+        Ok(removed)
+    }
+
+    pub fn delete_backup(&self, token: &str) -> Result<()> {
+        self.read_manifest(token)?;
+        let directory = self.backup_root.join(token);
+        let paths = safety::files_under(&self.backup_root, &directory)?;
+        ensure!(
+            paths
+                .iter()
+                .all(|path| path.parent() == Some(directory.as_path())
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name == "manifest.json"
+                            || name
+                                .strip_suffix(".bin")
+                                .is_some_and(|stem| stem.parse::<usize>().is_ok()))),
+            "备份目录包含未知文件"
+        );
+        for path in paths {
+            safety::check_path(&self.backup_root, &path)?;
+            fs::remove_file(path)?;
+        }
+        fs::remove_dir(&directory)?;
         Ok(())
     }
 }
