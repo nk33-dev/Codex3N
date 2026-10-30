@@ -146,6 +146,7 @@ export type BackendSettings = {
   codexAppLowPower: boolean;
   codexAppConversationView: boolean;
   codexAppThreadScrollRestore: boolean;
+  codexAppHistoryTurnRecovery: boolean;
   codexAppNativeMenuPlacement: boolean;
   codexAppServiceTierControls: boolean;
   codexAppPetRealMouseLook: boolean;

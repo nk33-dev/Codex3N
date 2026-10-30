@@ -17,6 +17,7 @@
 - 工具栏在本地设置初始化后读取，与概览请求并行。语言经用户偏好保存成功后通知 React 原地更新，保留页面草稿；回归见 `manager-loading.test.ts`、`issue-20261018.test.ts`。上游启动 effect 的工具栏修复已由此入口覆盖。
 - `App.tsx` 的启动和 `navigate` 共用 `managerPageLoaders`，并用导航 revision 阻止旧页面启动后续批次。会话页在供应商读取后补读索引修复报告。
 - `use-manager-lifecycle.ts` 负责窗口可见性和事件接线，`manager-lifecycle.ts` 负责请求合并与定时调度。`App.tsx` 保留页面、业务状态和操作回调，不另放一套启动 effect、导航任务分支或 1.2 秒待处理轮询。
+- Codex 进程状态每 5 秒通过同一可见性队列调用 `codex_app_running`，状态变化才补读概览；慢请求不重叠，隐藏或销毁后旧响应失效。`main.tsx` 先初始化持久化偏好，再动态加载 App；旧 WebKit 兼容层先于组件执行，渲染异常由启动错误边界展示。
 - 后端 `apps/codex-plus-manager/src-tauri/src/lib.rs` 在显示、聚焦、最小化和隐藏时发送窗口事件：`manager-visibility-changed` 的布尔载荷表示实际可见状态；`manager-navigation-requested` 通知检查待处理导航、供应商导入和皮肤链接。macOS 隐藏时切到 `Accessory` 激活策略，Dock Reopen 和外链唤起显示窗口时恢复 `Regular`。失焦不等于隐藏，导航通知也不等于显示成功。
 - 待处理文件有跨进程写入，因此可见时保留 30 秒兜底，窗口恢复后立即补读。隐藏时暂停待处理检查和微信页面状态；微信后台连接服务、用户已发起的扫码登录继续运行，避免丢失后端已保存凭据并消费二维码的确认结果。已发出的调用不能强制取消，旧微信状态响应不会覆盖恢复后的状态。
 - 统一应用启动时经 `start_weixin_connect_from_saved_settings` 恢复已启用的微信连接。`resume_existing_codex_background` 恢复已有 Codex，登录时启动、打开管理器时启动分别由保存的启动选项决定；默认不自动启动。用户再次打开时沿用单实例聚焦入口，不重复创建窗口。CLI 选择在非 Windows 优先验证包内 CLI，失败再尝试独立安装的 CLI。
@@ -63,6 +64,7 @@
 | `launcher.rs::start_helper`、`start_bridge_watchdog` | `launcher/backend_services.rs` | 常驻 helper 复用、macOS/Windows 桌宠与单份 watchdog；常驻 helper 集成测试、恢复服务测试 |
 | `App.tsx` 内类型和默认值 | `provider-types.ts`、`lib/default-settings.ts` | 代理重试、旁支保存、轮次回退、Work 视图和模型跟随共用配置；类型检查、设置测试 |
 | `SessionRepairPanel`、旧 `SessionPage` | `App.tsx::SessionMaintenance`、`ProjectSessionPage.tsx` | 全库搜索、整项目选择、归档、删除保护与折叠维护区；会话和维护回归 |
+| `commands.rs` 中待确认供应商导入 | `commands/provider_import.rs` | 读取、确认和取消共用指纹校验，支持网关供应商池；导入链接回归 |
 | `scan()` 全量刷新 | `95-conversation-view.js`、`98-scan-schedule.js` | 旁支保存、回退及菜单清理接入原调度，保留输入法和隐藏门控；注入与性能回归 |
 
 `ComputerUsePage.tsx`、`computer_use_commands.rs` 提供上游 MCP 接入，独立于受管 Codex 会话；`cu_pip.rs` 与 `CuPipWindow.tsx` 负责单个悬浮预览窗口。设置更新事件只合并对应 Computer Use 字段和修订号，不覆盖其他表单草稿；翻译扫描包含接入页和预览组件。当前运行时定位依赖 macOS `.app` 内的原生 CU 与 Node，Windows/Linux 不会因编译成功获得同等能力。宿主授权、桌面控制与原生取流仍需在支持的平台实测。
@@ -101,8 +103,10 @@
 - **发往环回目标的请求显式禁用系统代理**：`reqwest` 的 `system-proxy` 特性在 `ClientBuilder::build()` 时**无条件**追加系统代理匹配器，再 `proxy()` 一个 `no_proxy` 规则也排除不掉。而 Windows 的 `ProxyOverride` 常见配置含 `127.*`，上游 hyper-util 把 `*.` 直接 `.replace("*.", "")` 得到无效条目 `127.`，且对 IP 字面量只查 IP 表而不做前缀匹配，于是发往 `127.0.0.1` 的请求仍被本机代理（如 Clash）接管：代理把请求转交远端节点后，远端去连它自己的 `127.0.0.1:<端口>`，连接被拒时本机代理回 **502**。本地 relay、把 `http://127.0.0.1:57321` 协议代理当供应商、本地 VLM / 模型目录探测都会因此失败。唯一可靠做法是按目标 URL 选 client，环回走 `reqwest::ClientBuilder::no_proxy()`（清空并禁用系统代理匹配器）。入口：`crates/codex-plus-core/src/http_client.rs` 的 `client_for_url` / `url_targets_loopback` / `direct_client`（VLM 侧为 `vlm_http_client_for_url`，connect/total 超时语义不变）。这是**有意绕开**系统代理，不是忽略用户的代理设置。
 - **非环回目标仍然走系统代理**：只有 `url_targets_loopback` 判定为真的目标（`localhost`、`127.0.0.0/8`、`::1`）才切到直连 client，其余目标继续用 `proxied_client`。调用点按实际请求 URL 选择：`protocol_proxy.rs` 用 `endpoint`、`models_url(...)`、`chat_completions_url(...)` 派生出的那个值，`model_catalog.rs`、`sub2api.rs`、`relay_config::test_relay_profile`、`stepwise.rs` 同理。Skills 的目录下载仍使用公网 GitHub 地址。
 - **client 按运行时、是否环回及 UA 池化复用**（`http_client.rs`）：同一运行时中相同 UA 与代理语义的请求共用 client，keep-alive 生效；VLM client 另按 connect/total 超时区分。连接任务属于原 Tokio 运行时，session 销毁后清空池子，避免重启时复用已停止的连接任务。系统代理只在 `build()` 时读取，连接类错误（`is_connect`/`is_request`）触发 `reset_client_pool()`，下一次请求重新读取代理。验证 `http_client.rs` 的真实 TCP 连接复用用例与 Stepwise 协议回退用例。
+- 同一 client 池同时按代理环境变量及 CA 内容或文件指纹隔离，空闲连接最多保留 30 秒；供应商显式 `direct` 会禁用全部代理。连接被关闭后的重发沿用上游 1 秒窗口与剩余响应头预算，较晚断开的请求不自动重发。
 - 会话快照、删除与撤销的数据保护见 [sessions.md](sessions.md)。
 - **诊断日志复用文件句柄**（`diagnostic_log.rs`）：代理路径每个请求要写 4 条以上日志，原先每条都 stat（压缩检查）+ open + write + close。现在按路径缓存句柄，压缩检查看自维护的字节数、超 50MB 才 stat；`clear_diagnostic_log` 与压缩都会丢掉句柄（压缩是 temp + rename 换文件，旧句柄会写进被替换的那份）。句柄不带缓冲，写完立即可读，读日志的测试不需要额外 flush。
+  每条记录连同换行一次 `write_all`，避免多个进程把记录与换行交错写入。
 
 ## 本地 helper 的请求边界
 

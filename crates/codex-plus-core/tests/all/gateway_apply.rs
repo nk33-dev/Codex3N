@@ -731,6 +731,61 @@ fn codex_with_externally_edited_config_connects_and_restores_it_byte_for_byte() 
     );
 }
 
+/// #2773：之前在 WSL 模式下写过 WSL 网卡地址、之后不在 WSL 里运行了，核对时改回回环地址；
+/// 本来就是回环时什么都不做（非 Windows 平台永远不会写出 WSL 地址）。
+#[test]
+fn codex_gateway_endpoint_returns_to_loopback_outside_wsl() {
+    use codex_plus_core::gateway::apply::sync_codex_wsl_endpoint;
+    let fixture = fixture(57398);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let loopback = "127.0.0.1:57398/gw/codex/v1";
+    let config_path = ctx.codex_home.join("config.toml");
+    assert!(
+        std::fs::read_to_string(&config_path)
+            .unwrap()
+            .contains(loopback)
+    );
+    assert!(!sync_codex_wsl_endpoint(ctx).unwrap(), "回环地址不重写");
+
+    // 模拟 WSL 模式下写下的地址：托管供应商与实时配置一起换成 WSL 网卡地址。
+    let wsl = "172.29.16.1:57398/gw/codex/v1";
+    let mut settings = ctx.settings.load().unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter_mut()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    profile.base_url = profile.base_url.replace(loopback, wsl);
+    profile.upstream_base_url = profile.upstream_base_url.replace(loopback, wsl);
+    profile.config_contents = profile.config_contents.replace(loopback, wsl);
+    ctx.settings.save(&settings).unwrap();
+    let live = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(&config_path, live.replace(loopback, wsl)).unwrap();
+    assert_eq!(
+        codex_plus_core::gateway::drift::check(ctx, &ToolId::Codex),
+        None,
+        "WSL 地址的网关入口也算指向网关"
+    );
+
+    assert!(sync_codex_wsl_endpoint(ctx).unwrap());
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    assert!(config.contains(loopback), "{config}");
+    assert!(!config.contains("172.29.16.1"), "{config}");
+    let settings = ctx.settings.load().unwrap();
+    let profile = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    assert_eq!(profile.base_url, format!("http://{loopback}"));
+    assert!(!sync_codex_wsl_endpoint(ctx).unwrap(), "改回后不再重写");
+}
+
 /// Codex 用 ChatGPT 账号登录着：接入网关后保留官方登录身份（内置 OpenAI 供应商 + 登录 token），
 /// 请求经本地代理（openai_base_url）转给网关；断开后回到原来的供应商。
 #[test]
@@ -905,6 +960,39 @@ fn pool_chatgpt_account_is_lent_to_codex_and_taken_back() {
     assert_eq!(pool_auth["codex_plus_gateway"], true);
     assert!(read_auth().get("tokens").is_none(), "Codex 回到没登录");
     assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
+}
+
+/// #2760：网关供应商可以设成「不使用代理（直连）」：存成 `direct`（不分大小写），
+/// 解析出的代理就是它（不退回系统代理或进程级代理），建 client 时关掉所有代理。
+#[test]
+fn gateway_provider_proxy_can_be_direct() {
+    let fixture = fixture(57402);
+    let ctx = &fixture.ctx;
+    let mut input = deepseek_input();
+    input.name = "直连测试".into();
+    input.proxy = Some(" Direct ".into());
+    let (_, id) = create_provider(&ctx.gateway, &input, "preset:deepseek", None).unwrap();
+    let loaded = ctx.gateway.load().unwrap();
+    let provider = loaded.provider(&id).unwrap();
+    assert_eq!(provider.proxy, codex_plus_core::relay_proxy::DIRECT_PROXY);
+    assert_eq!(
+        codex_plus_core::relay_proxy::proxy_for_relay(&provider.relay).as_deref(),
+        Some(codex_plus_core::relay_proxy::DIRECT_PROXY)
+    );
+    assert!(
+        codex_plus_core::http_client::proxied_client_for_relay("test", &provider.relay).is_ok(),
+        "直连不能被当成代理地址去解析"
+    );
+    // 详情里单独改代理也认直连。
+    let mut input = deepseek_input();
+    input.proxy = Some(String::new());
+    update_provider(&ctx.gateway, &id, &input).unwrap();
+    input.proxy = Some("DIRECT".into());
+    update_provider(&ctx.gateway, &id, &input).unwrap();
+    assert_eq!(
+        ctx.gateway.load().unwrap().provider(&id).unwrap().proxy,
+        codex_plus_core::relay_proxy::DIRECT_PROXY
+    );
 }
 
 /// 网关供应商的独立代理存在 gateway.json，载入后只用它（不按 id 查直连模式的代理表）；
@@ -1643,4 +1731,353 @@ fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {
     };
     update_provider(&store, &id, &off).unwrap();
     assert!(!relay(&store).strip_image_generation_tool);
+}
+
+/// #2746：Codex 没登录 ChatGPT 时，托管网关供应商要和直连模式手加的纯 API 供应商一样
+/// 显式声明 `requires_openai_auth = false`：原生 Fast 只认这个明确声明的本机 API 配置，
+/// 缺这一行时 Fast 按钮整个不显示；支持 Fast 的模型在目录里照样带 priority 档。
+#[test]
+fn unsigned_codex_gateway_declares_local_api_identity_for_native_fast() {
+    let fixture = fixture(57391);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    create_provider(
+        &ctx.gateway,
+        &ProviderInput {
+            name: "Relay".into(),
+            base_url: "https://relay.test/v1".into(),
+            protocol: RelayProtocol::Responses,
+            keys: vec!["sk-relay".into()],
+            model: "gpt-6-astra".into(),
+            model_list: "gpt-6-astra".into(),
+            price: None,
+            model_prices: None,
+            proxy: None,
+            strip_image_generation_tool: None,
+        },
+        "",
+        None,
+    )
+    .unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    ctx.settings.save(&seeded).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let config = || std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
+    let parsed: toml::Value = toml::from_str(&config()).unwrap();
+    assert_eq!(
+        parsed["model_provider"].as_str(),
+        Some("custom"),
+        "{}",
+        config()
+    );
+    let provider = &parsed["model_providers"]["custom"];
+    assert_eq!(provider["wire_api"].as_str(), Some("responses"));
+    assert_eq!(
+        provider["requires_openai_auth"].as_bool(),
+        Some(false),
+        "没登录时要显式声明本机 API 身份：{}",
+        config()
+    );
+    assert!(
+        provider["base_url"]
+            .as_str()
+            .is_some_and(|url| url.contains("/gw/codex/v1")),
+        "{}",
+        config()
+    );
+    assert_eq!(
+        codex_plus_core::gateway::drift::check(ctx, &ToolId::Codex),
+        None,
+        "刚接入不算被改"
+    );
+    let catalog = codex_catalog(ctx);
+    let astra = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["slug"] == "gpt-6-astra")
+        .cloned()
+        .unwrap_or_else(|| panic!("目录里没有 gpt-6-astra：{catalog}"));
+    assert!(
+        astra["service_tiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority")),
+        "支持 Fast 的模型要带 priority 档：{astra}"
+    );
+
+    // 之后登录了 ChatGPT：改成 openai 会话身份，不再带这条本机 API 声明。
+    std::fs::write(
+        ctx.codex_home.join("auth.json"),
+        r#"{"auth_mode":"chatgpt","tokens":{"id_token":"x","access_token":"at","refresh_token":"rt","account_id":"acc"}}"#,
+    )
+    .unwrap();
+    assert!(codex_plus_core::gateway::apply::sync_codex_identity(ctx).unwrap());
+    let parsed: toml::Value = toml::from_str(&config()).unwrap();
+    assert_eq!(
+        parsed["model_provider"].as_str(),
+        Some("openai"),
+        "{}",
+        config()
+    );
+}
+
+/// 直连模式：供应商模板里有用户自己的根级设置（`model_instructions_file`）和直连上游的模型参数，
+/// 通用配置里有 `developer_instructions`（#2771）。
+fn seed_direct_with_user_root_settings(ctx: &ApplyContext) {
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    let mut direct = codex_plus_core::provider_import::pool_relay_profile(
+        "直连",
+        "https://api.direct.test/v1",
+        "sk-direct",
+        RelayProtocol::Responses,
+        "gpt-direct",
+        "gpt-direct",
+        &[],
+    )
+    .unwrap();
+    direct.id = "direct".into();
+    direct.relay_mode = RelayMode::PureApi;
+    direct.config_contents = format!(
+        "model_instructions_file = \"~/.codex/instruction.md\"\nreview_model = \"gpt-direct-review\"\nmodel_reasoning_effort = \"xhigh\"\n{}",
+        direct.config_contents
+    );
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut direct).unwrap();
+    let mut seeded = BackendSettings::default();
+    seeded.relay_profiles_enabled = true;
+    seeded.relay_profiles = vec![direct];
+    seeded.active_relay_id = "direct".into();
+    seeded.relay_common_config_contents = "developer_instructions = \"按团队规范回答\"\n".into();
+    codex_plus_core::relay_switch::switch_relay_profile_in_home(
+        &ctx.settings,
+        &ctx.codex_home,
+        seeded,
+        "",
+    )
+    .unwrap();
+}
+
+fn codex_config(ctx: &ApplyContext) -> String {
+    std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap()
+}
+
+/// 网关托管的键是网关的值，直连上游的路由 / 模型参数没有带进来。
+fn assert_gateway_owns_routing(config: &str, port: u16) {
+    let parsed: toml::Value = toml::from_str(config).unwrap();
+    assert_eq!(
+        parsed["model"].as_str(),
+        Some("deepseek-v4-pro"),
+        "{config}"
+    );
+    assert_eq!(
+        parsed["model_provider"].as_str(),
+        Some("custom"),
+        "{config}"
+    );
+    assert_eq!(
+        parsed["model_providers"]["custom"]["base_url"].as_str(),
+        Some(format!("http://127.0.0.1:{port}/gw/codex/v1").as_str()),
+        "{config}"
+    );
+    assert!(parsed.get("model_catalog_json").is_some(), "{config}");
+    assert!(parsed.get("review_model").is_none(), "{config}");
+    assert!(parsed.get("model_reasoning_effort").is_none(), "{config}");
+    assert!(!config.contains("api.direct.test"), "{config}");
+    assert!(!config.contains("sk-direct"), "{config}");
+}
+
+/// #2771：网关模式下用户自己的根级设置（来自直连供应商写下的实时配置、通用配置、接入期间对实时配置的改动）
+/// 都保留，网关托管的键仍由网关决定；断开后这些键还在、且只出现一次。
+#[test]
+fn codex_gateway_keeps_user_root_settings_and_disconnect_keeps_them_once() {
+    let fixture = fixture(57381);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    assert!(codex_config(ctx).contains("model_instructions_file"));
+
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let config = codex_config(ctx);
+    assert_gateway_owns_routing(&config, 57381);
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["model_instructions_file"].as_str(),
+        Some("~/.codex/instruction.md"),
+        "直连供应商写下的指令文件跟进网关：{config}"
+    );
+    assert_eq!(
+        parsed["developer_instructions"].as_str(),
+        Some("按团队规范回答"),
+        "通用配置在网关模式下照样合并：{config}"
+    );
+    // 通用配置的键写盘时合并，不搬进托管供应商自己的配置（否则从通用配置删掉后删不干净）。
+    let settings = ctx.settings.load().unwrap();
+    let managed = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "codex-plus-gateway")
+        .unwrap();
+    assert!(managed.config_contents.contains("model_instructions_file"));
+    assert!(!managed.config_contents.contains("developer_instructions"));
+
+    // 接入期间用户改了实时配置：换了指令文件、加了 web_search。重写（池变化 / 重启）后都还在。
+    let path = ctx.codex_home.join("config.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "web_search = \"live\"\n{}",
+            config.replace("~/.codex/instruction.md", "~/.codex/team.md")
+        ),
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let config = codex_config(ctx);
+    assert_gateway_owns_routing(&config, 57381);
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["model_instructions_file"].as_str(),
+        Some("~/.codex/team.md"),
+        "{config}"
+    );
+    assert_eq!(parsed["web_search"].as_str(), Some("live"), "{config}");
+
+    let settings = ctx.settings.load().unwrap();
+    disable_binding(ctx, &settings, &ToolId::Codex).unwrap();
+    assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
+    let config = codex_config(ctx);
+    assert!(config.contains("api.direct.test"), "{config}");
+    assert!(!config.contains("/gw/codex"), "{config}");
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(parsed["model"].as_str(), Some("gpt-direct"), "{config}");
+    assert_eq!(
+        parsed["model_instructions_file"].as_str(),
+        Some("~/.codex/team.md"),
+        "接入期间的改动断开后保留：{config}"
+    );
+    assert_eq!(parsed["web_search"].as_str(), Some("live"), "{config}");
+    assert_eq!(parsed["review_model"].as_str(), Some("gpt-direct-review"));
+    for key in [
+        "model_instructions_file",
+        "developer_instructions",
+        "web_search",
+    ] {
+        assert_eq!(
+            config.matches(&format!("{key} =")).count(),
+            1,
+            "{key} 只出现一次：{config}"
+        );
+    }
+}
+
+/// #2771：退出时还原直连、下次启动再接入（默认流程）一圈下来，接入期间写进实时配置的根级设置不丢。
+#[test]
+fn codex_user_root_settings_survive_exit_restore_and_startup_reapply() {
+    let fixture = fixture(57382);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let path = ctx.codex_home.join("config.toml");
+    let config = codex_config(ctx);
+    std::fs::write(
+        &path,
+        format!("developer_instructions_extra = 1\nnotify = [\"notify-send\"]\n{config}"),
+    )
+    .unwrap();
+    let mut gateway = ctx.gateway.load().unwrap();
+    gateway.restore_on_exit = true;
+    ctx.gateway.save(&gateway).unwrap();
+
+    codex_plus_core::gateway::apply::restore_all_for_exit(ctx, &BackendSettings::default(), false)
+        .unwrap();
+    assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
+    let config = codex_config(ctx);
+    assert!(config.contains("api.direct.test"), "{config}");
+    assert!(config.contains("developer_instructions_extra"), "{config}");
+
+    assert_eq!(
+        codex_plus_core::gateway::apply::reapply_enabled(ctx).unwrap(),
+        1
+    );
+    let config = codex_config(ctx);
+    assert_gateway_owns_routing(&config, 57382);
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["model_instructions_file"].as_str(),
+        Some("~/.codex/instruction.md"),
+        "{config}"
+    );
+    assert_eq!(parsed["developer_instructions_extra"].as_integer(), Some(1));
+    assert_eq!(
+        parsed["notify"].as_array().map(Vec::len),
+        Some(1),
+        "{config}"
+    );
+    assert_eq!(config.matches("model_instructions_file =").count(), 1);
+}
+
+/// #2771：断开时接入前的供应商已被删掉、回退到别的供应商：原供应商带进网关的根级设置
+/// 只补新供应商缺的键，不覆盖新供应商自己的设置。网关下的 Fast（`service_tier`）也不从直连配置带入。
+#[test]
+fn codex_disconnect_to_a_fallback_provider_only_fills_missing_user_root_settings() {
+    let fixture = fixture(57383);
+    let ctx = &fixture.ctx;
+    seed_direct_with_user_root_settings(ctx);
+    let mut other = codex_plus_core::provider_import::pool_relay_profile(
+        "备用",
+        "https://api.other.test/v1",
+        "sk-other",
+        RelayProtocol::Responses,
+        "gpt-other",
+        "gpt-other",
+        &[],
+    )
+    .unwrap();
+    other.id = "other".into();
+    other.relay_mode = RelayMode::PureApi;
+    other.config_contents = format!(
+        "model_instructions_file = \"~/.codex/other.md\"\n{}",
+        other.config_contents
+    );
+    codex_plus_core::relay_config::normalize_relay_profile_for_storage(&mut other).unwrap();
+    // 放在列表最前：断开时找不到原供应商就回退到它。
+    let mut settings = ctx.settings.load().unwrap();
+    settings.relay_profiles.insert(0, other);
+    ctx.settings.save(&settings).unwrap();
+    let path = ctx.codex_home.join("config.toml");
+    std::fs::write(
+        &path,
+        format!("service_tier = \"fast\"\n{}", codex_config(ctx)),
+    )
+    .unwrap();
+
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let config = codex_config(ctx);
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert!(parsed.get("service_tier").is_none(), "{config}");
+    // 接入期间加了 web_search。
+    std::fs::write(&path, format!("web_search = \"live\"\n{config}")).unwrap();
+    refresh_enabled(ctx).unwrap();
+
+    // 接入前的供应商被删掉，断开时回退到列表里的另一个。
+    let mut settings = ctx.settings.load().unwrap();
+    settings
+        .relay_profiles
+        .retain(|profile| profile.id != "direct");
+    ctx.settings.save(&settings).unwrap();
+    let settings = ctx.settings.load().unwrap();
+    disable_binding(ctx, &settings, &ToolId::Codex).unwrap();
+    assert_eq!(ctx.settings.load().unwrap().active_relay_id, "other");
+    let config = codex_config(ctx);
+    assert!(config.contains("api.other.test"), "{config}");
+    let parsed: toml::Value = toml::from_str(&config).unwrap();
+    assert_eq!(
+        parsed["model_instructions_file"].as_str(),
+        Some("~/.codex/other.md"),
+        "新供应商自己的设置不被原供应商的覆盖：{config}"
+    );
+    assert_eq!(
+        parsed["web_search"].as_str(),
+        Some("live"),
+        "新供应商缺的键照样补回：{config}"
+    );
+    assert_eq!(config.matches("model_instructions_file =").count(), 1);
 }

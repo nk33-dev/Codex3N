@@ -2313,12 +2313,11 @@ pub fn merge_common_config_into_config(
 /// 用户表现为「编辑通用配置后 MCP 连接配置丢失」，实际是整份配置都没加载
 /// （#2147 / #1997 / #2123 同源）。
 fn mcp_server_entry_has_transport(table: &dyn TableLike) -> bool {
-    ["command", "url"].iter().any(|key| {
-        table
-            .get(key)
-            .and_then(Item::as_str)
-            .is_some_and(|value| !value.trim().is_empty())
-    })
+    // 和 Codex 的判断一致：只看有没有 command / url 字符串，空串 Codex 也能加载（只是起不来那一个），
+    // 不能当成残缺条目删掉。
+    ["command", "url"]
+        .iter()
+        .any(|key| table.get(key).and_then(Item::as_str).is_some())
 }
 
 /// 落盘前的 MCP 完整性校验（#2147）。
@@ -2855,7 +2854,7 @@ fn remove_provider_specific_common_keys(table: &mut dyn TableLike) {
     table.remove("model_providers");
 }
 
-fn is_provider_specific_common_root_key(key: &str) -> bool {
+pub(crate) fn is_provider_specific_common_root_key(key: &str) -> bool {
     let key = key.trim().trim_matches(['\"', '\'']);
     PROVIDER_SPECIFIC_COMMON_ROOT_KEYS.contains(&key) || is_provider_credential_root_key(key)
 }
@@ -3379,9 +3378,11 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     remove_unsupported_approval_policies(&mut target_doc);
     let live_text = read_optional_text(&home.join("config.toml"))?;
     if live_text.trim().is_empty() {
+        repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
         return Ok(normalize_optional_toml(target_doc));
     }
     let Ok(live_doc) = parse_toml_document(&live_text) else {
+        repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
         return Ok(normalize_optional_toml(target_doc));
     };
     if let Some(live_desktop) = live_doc.get("desktop").cloned() {
@@ -3409,6 +3410,9 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // 以 live 为准，避免旧快照把已删除的目录写回（#2583）。
     prefer_live_codex_managed_entries(&mut target_doc, &live_doc);
     repair_mcp_servers_from_live(&mut target_doc, &live_doc);
+    // 写盘前兜底：用 live 补过仍缺 command / url 的条目（模板减出来的残表，或 live 里本来就坏的），
+    // Codex 会以 invalid transport 拒绝整份 config.toml、桌面版起不来，这里去掉并记诊断（#2765）。
+    repair_merged_mcp_servers(&mut target_doc, &HashMap::new());
     // Preserve user-managed feature flags such as multi_agent_v2 and memories.
     // #2683：补回前先记下目标是否自己声明了 multi_agent_v2（v1 闸门写入或模板自带），
     // 补回之后据此决定要不要还原 v1 压下的闸门。
@@ -5979,6 +5983,57 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
         .unwrap_or_else(|| profile.api_key.trim().to_string())
 }
 
+/// 测试请求实际用的 Key 怎么称呼：(多个 Key 时的名称, 末 4 位)。
+///
+/// 只露名称和末 4 位（与上游报错里的 `****xxxx` 对得上），不泄露整串 Key；
+/// 不用 Key 的供应商（免 Key、聚合、官方登录）和太短的 Key（露末 4 位等于露了大半）返回 None。
+/// 直连模式的「测试」与网关供应商池的「测试」共用。
+pub fn relay_test_key_identity(profile: &RelayProfile) -> Option<(Option<String>, String)> {
+    if profile.uses_no_auth()
+        || profile.relay_mode == RelayMode::Aggregate
+        || crate::official_login::is_official_login_profile(profile)
+    {
+        return None;
+    }
+    let api_key = relay_profile_api_key(profile);
+    let chars: Vec<char> = api_key.trim().chars().collect();
+    if chars.len() < 12 {
+        return None;
+    }
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    let name = profile
+        .selected_api_key()
+        .filter(|selected| profile.api_keys.len() > 1 && !selected.name.trim().is_empty())
+        .map(|selected| selected.name.trim().to_string());
+    Some((name, tail))
+}
+
+/// 供应商测试被上游以 401 / 403 拒绝时，附在结果里的「本次实际用了哪个 Key」（#2754）。
+///
+/// 测试、切换与多开实例都取 [`relay_profile_api_key`]，即 API Keys 列表里打勾的当前 Key；
+/// 「添加 Key」不会自动切换，用户在新行里填了新 Key 却没勾选时，请求一直带着旧 Key，
+/// 上游只回「Key 无效」，用户看不出是哪个 Key。这里只露名称和末 4 位，
+/// 与 DeepSeek 等上游报错里的 `****xxxx` 对得上，方便比对，不泄露整串 Key。
+pub fn relay_test_auth_failure_hint(profile: &RelayProfile, http_status: u16) -> Option<String> {
+    if !matches!(http_status, 401 | 403) {
+        return None;
+    }
+    let (name, tail) = relay_test_key_identity(profile)?;
+    let key_label = match name {
+        Some(name) => format!("「{name}」（末 4 位 {tail}）"),
+        None => format!("末 4 位 {tail}"),
+    };
+    let mut hint = format!("本次测试用的是当前 Key：{key_label}。");
+    if profile.api_keys.len() > 1 {
+        hint.push_str(
+            "该供应商存了多个 Key，「添加 Key」不会自动切换；如果新 Key 填在了别的行，请在编辑页点它左侧的勾设为当前 Key 并保存。",
+        );
+    } else {
+        hint.push_str("如与供应商后台的 Key 对不上，请编辑该供应商重新填写并保存。");
+    }
+    Some(hint)
+}
+
 /// 写进 `[model_providers.<id>].name` 的供应商显示名（issue #192）。
 ///
 /// 去掉首尾空白，换行等控制字符折成空格；为空、或会被 codex 当成官方 OpenAI
@@ -6529,6 +6584,22 @@ fn remove_experimental_bearer_token_from_config(config_contents: &str) -> anyhow
         }
     }
     Ok(ensure_trailing_newline(doc.to_string()))
+}
+
+/// 单独增删、替换 Key 后（#2782）：从直连模式导入的供应商在 auth / config 文本里也存着 Key，
+/// 有的话同步成当前选中的 Key，删掉或换掉的旧 Key 不会留在文件里。没有就不动。
+pub(crate) fn sync_stored_api_key(profile: &mut RelayProfile) -> anyhow::Result<()> {
+    let key = profile.api_key.trim().to_string();
+    if codex_auth_api_key(&profile.auth_contents).is_some() {
+        profile.auth_contents = set_openai_api_key_in_auth_contents(&profile.auth_contents, &key)?;
+    }
+    if !profile.config_contents.trim().is_empty()
+        && experimental_bearer_token_from_config(&profile.config_contents)?.is_some()
+    {
+        profile.config_contents =
+            set_experimental_bearer_token_in_config(&profile.config_contents, &key)?;
+    }
+    Ok(())
 }
 
 fn provider_tables(doc: &DocumentMut) -> Vec<&dyn TableLike> {

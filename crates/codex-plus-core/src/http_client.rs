@@ -31,7 +31,42 @@ enum ClientKey {
     },
 }
 
-type ClientPool = Mutex<HashMap<(Option<tokio::runtime::Id>, ClientKey), reqwest::Client>>;
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ClientEnvironment {
+    proxy: [Option<String>; 8],
+    ca_certificate: Option<(String, Option<(u64, std::time::SystemTime)>)>,
+}
+
+impl ClientEnvironment {
+    fn current() -> Self {
+        Self {
+            proxy: [
+                "NO_PROXY",
+                "no_proxy",
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ]
+            .map(|name| std::env::var(name).ok()),
+            ca_certificate: std::env::var_os("CODEX_CA_CERTIFICATE")
+                .map(|value| value.to_string_lossy().trim().to_string())
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    let file = (!value.contains("BEGIN CERTIFICATE"))
+                        .then(|| std::fs::metadata(&value).ok())
+                        .flatten()
+                        .and_then(|meta| Some((meta.len(), meta.modified().ok()?)));
+                    (value, file)
+                }),
+        }
+    }
+}
+
+type ClientPool =
+    Mutex<HashMap<(Option<tokio::runtime::Id>, ClientKey, ClientEnvironment), reqwest::Client>>;
 
 fn default_client_pool() -> &'static ClientPool {
     static POOL: OnceLock<ClientPool> = OnceLock::new();
@@ -57,7 +92,12 @@ fn configured_client(
         connect,
         total,
     };
+    let loopback = loopback
+        || proxy
+            .as_deref()
+            .is_some_and(crate::relay_proxy::is_direct_proxy);
     let proxy = proxy
+        .filter(|_| !loopback)
         .map(reqwest::Proxy::all)
         .transpose()?
         .map(|proxy| proxy.no_proxy(reqwest::NoProxy::from_env()));
@@ -116,20 +156,28 @@ fn pooled_with(
     let runtime_id = tokio::runtime::Handle::try_current()
         .ok()
         .map(|handle| handle.id());
-    let pool_key = (runtime_id, key.clone());
+    let pool_key = (runtime_id, key.clone(), ClientEnvironment::current());
     if let Ok(entries) = pool.lock()
         && let Some(client) = entries.get(&pool_key)
     {
         return Ok(client.clone());
     }
     let loopback = match &key {
-        ClientKey::UserAgent { loopback, .. } | ClientKey::Vlm { loopback, .. } => *loopback,
+        ClientKey::UserAgent {
+            loopback, proxy, ..
+        } => {
+            *loopback
+                || proxy
+                    .as_deref()
+                    .is_some_and(crate::relay_proxy::is_direct_proxy)
+        }
+        ClientKey::Vlm { loopback, .. } => *loopback,
     };
     let user_agent = match &key {
         ClientKey::UserAgent { user_agent, .. } => Some(user_agent.as_str()),
         ClientKey::Vlm { .. } => None,
     };
-    let builder = configure(user_agent);
+    let builder = configure(user_agent).pool_idle_timeout(std::time::Duration::from_secs(30));
     // `no_proxy()` 会清空并禁用 reqwest 在 `build()` 时自动追加的系统代理匹配器
     // （`auto_sys_proxy = false`），这是唯一可靠的排除方式：单纯再 `proxy()` 一个
     // `no_proxy` 规则无法覆盖系统代理匹配器。
@@ -290,6 +338,62 @@ pub fn proxied_client_for_url_with_redirect(
     Ok(apply_configured_ca_certificate(builder)?.build()?)
 }
 
+pub fn relay_client_with_redirect(
+    user_agent: &str,
+    relay: &crate::settings::RelayProfile,
+    redirect: reqwest::redirect::Policy,
+) -> anyhow::Result<reqwest::Client> {
+    let url = if relay.upstream_base_url.trim().is_empty() {
+        &relay.base_url
+    } else {
+        &relay.upstream_base_url
+    };
+    let builder = reqwest::Client::builder()
+        .user_agent(normalized_user_agent(user_agent))
+        .redirect(redirect);
+    if url_targets_loopback(url) {
+        return build_with_relay_proxy(builder.no_proxy(), None);
+    }
+    let proxy =
+        crate::relay_proxy::proxy_for_relay(relay).or_else(|| resolved_proxy(None, Some(url)));
+    build_with_relay_proxy(builder, proxy.as_deref())
+}
+
+pub fn build_with_relay_proxy(
+    builder: reqwest::ClientBuilder,
+    proxy: Option<&str>,
+) -> anyhow::Result<reqwest::Client> {
+    let proxy = proxy.map(str::trim).filter(|value| !value.is_empty());
+    let builder = match proxy {
+        Some(proxy) if crate::relay_proxy::is_direct_proxy(proxy) => builder.no_proxy(),
+        Some(proxy) => {
+            let no_proxy = reqwest::NoProxy::from_env()
+                .or_else(|| reqwest::NoProxy::from_string("localhost,127.0.0.1,::1"));
+            builder.proxy(
+                reqwest::Proxy::all(proxy)
+                    .context("供应商代理地址无效")?
+                    .no_proxy(no_proxy),
+            )
+        }
+        None => builder,
+    };
+    Ok(apply_configured_ca_certificate(builder)?.build()?)
+}
+
+pub fn build_for_relay(
+    builder: reqwest::ClientBuilder,
+    relay: &crate::settings::RelayProfile,
+) -> anyhow::Result<reqwest::Client> {
+    if url_targets_loopback(&relay.base_url) {
+        build_with_relay_proxy(builder.no_proxy(), None)
+    } else {
+        build_with_relay_proxy(
+            builder,
+            crate::relay_proxy::proxy_for_relay(relay).as_deref(),
+        )
+    }
+}
+
 /// 清空 client 池，让下一次请求重新构建 client。
 ///
 /// 上游请求失败时调用：系统代理（如 Clash 的混合端口）改了以后，缓存的 client
@@ -381,6 +485,39 @@ pub(crate) fn vlm_http_client_for_url(
 #[cfg(test)]
 mod tests {
     use super::{direct_client, reset_client_pool, url_targets_loopback};
+
+    #[tokio::test]
+    async fn explicit_direct_proxy_builds_a_direct_pooled_client() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndirect",
+                )
+                .await
+                .unwrap();
+        });
+        let client = super::configured_client(
+            false,
+            "explicit-direct-test",
+            Some("direct".into()),
+            None,
+            Some(std::time::Duration::from_secs(5)),
+        )
+        .unwrap();
+        let response = client
+            .get(format!("http://{address}/v1"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "direct");
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn configured_proxy_does_not_capture_loopback_requests() {

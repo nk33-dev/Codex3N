@@ -1089,6 +1089,7 @@ const RENDERER_SETTING_FIELDS: &[&str] = &[
     "codexAppThreadIdBadge",
     "codexAppLowPower",
     "codexAppConversationView",
+    "codexAppHistoryTurnRecovery",
     "codexAppNativeMenuPlacement",
     "codexAppNativeFastUnlock",
     "codexAppNativePredictions",

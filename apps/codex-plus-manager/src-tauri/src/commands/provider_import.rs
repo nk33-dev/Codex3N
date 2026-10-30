@@ -151,30 +151,51 @@ pub fn import_ccs_providers() -> CommandResult<SettingsPayload> {
 
 #[tauri::command]
 pub fn load_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
-    match codex_plus_core::provider_import::load_pending_provider_import() {
+    match codex_plus_core::provider_import::load_pending_provider_import_with_fingerprint() {
         Ok(pending) => ok(
             "待确认供应商导入已读取。",
-            PendingProviderImportPayload { pending },
+            PendingProviderImportPayload::from_pending(pending),
         ),
         Err(error) => failed(
             &format!("读取待确认供应商导入失败：{error}"),
-            PendingProviderImportPayload { pending: None },
+            PendingProviderImportPayload::empty(),
         ),
     }
 }
 
 #[tauri::command]
-pub fn confirm_pending_provider_import() -> CommandResult<SettingsPayload> {
-    match codex_plus_core::provider_import::confirm_pending_provider_import() {
-        Ok(Some(result)) => {
-            let message = if result.imported {
-                format!("已导入供应商配置：{}。", result.profile_name)
-            } else {
-                format!("供应商配置已存在：{}。", result.profile_name)
+pub fn confirm_pending_provider_import(fingerprint: String) -> CommandResult<SettingsPayload> {
+    match codex_plus_core::provider_import::confirm_pending_provider_import_matching(&fingerprint) {
+        Ok(Some(confirmed)) => {
+            let result = confirmed.result;
+            let message = match (confirmed.to_pool, result.imported) {
+                (true, true) => {
+                    crate::gateway_commands::after_url_pool_import(result.profile_id.clone());
+                    format!(
+                        "已加入网关供应商池：{}，正在从上游获取模型。",
+                        result.profile_name
+                    )
+                }
+                (true, false) => format!(
+                    "供应商池里已有相同地址和 Key 的供应商：{}。",
+                    result.profile_name
+                ),
+                (false, true) => format!("已导入供应商配置：{}。", result.profile_name),
+                (false, false) => format!("供应商配置已存在：{}。", result.profile_name),
             };
             settings_payload(&message, "供应商导入后重新读取设置失败")
         }
         Ok(None) => settings_payload("没有待确认的供应商导入。", "设置读取失败"),
+        Err(error)
+            if error
+                .downcast_ref::<codex_plus_core::provider_import::PendingProviderImportChanged>()
+                .is_some() =>
+        {
+            failed(
+                &error.to_string(),
+                settings_payload_value().unwrap_or_else(|(_, payload)| payload),
+            )
+        }
         Err(error) => failed(
             &format!("导入供应商配置失败：{error}"),
             settings_payload_value().unwrap_or_else(|(_, payload)| payload),
@@ -183,15 +204,19 @@ pub fn confirm_pending_provider_import() -> CommandResult<SettingsPayload> {
 }
 
 #[tauri::command]
-pub fn dismiss_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
-    match codex_plus_core::provider_import::clear_pending_provider_import() {
-        Ok(()) => ok(
+pub fn dismiss_pending_provider_import(
+    fingerprint: Option<String>,
+) -> CommandResult<PendingProviderImportPayload> {
+    match codex_plus_core::provider_import::dismiss_pending_provider_import_matching(
+        fingerprint.as_deref(),
+    ) {
+        Ok(remaining) => ok(
             "已取消供应商导入。",
-            PendingProviderImportPayload { pending: None },
+            PendingProviderImportPayload::from_pending(remaining),
         ),
         Err(error) => failed(
             &format!("取消供应商导入失败：{error}"),
-            PendingProviderImportPayload { pending: None },
+            PendingProviderImportPayload::empty(),
         ),
     }
 }

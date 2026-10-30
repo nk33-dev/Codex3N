@@ -58,6 +58,7 @@ async fn main() -> anyhow::Result<()> {
         state_dir: Some(state.clone()),
         codex_home: Some(home.clone()),
         sqlite_home: Some(home),
+        replace_blocking_main_instance: false,
         status_store: StatusStore::new(state.join("latest-status.json")),
     })?;
     println!("ready port={port}");

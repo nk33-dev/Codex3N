@@ -58,6 +58,12 @@ const SRC_FILES = [
   "src/ProviderExtrasDialog.tsx",
   "src/ProviderFormDialog.tsx",
   "src/ProviderModelsDialog.tsx",
+  "src/ProviderKeyList.tsx",
+  "src/ProviderSyncDialog.tsx",
+  "src/ProviderTestDialog.tsx",
+  "src/RelayBillingLine.tsx",
+  "src/provider-test.ts",
+  "src/history-recovery-report.ts",
   "src/ProviderReasoningDialog.tsx",
   "src/ProviderWindowsDialog.tsx",
   "src/SessionAgentTabs.tsx",
@@ -85,8 +91,9 @@ function scanFile(relPath) {
         arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) ? arg.text : null;
       if (literal !== null) {
         // tr 是 vlm-test-translation.ts 注入的翻译回调：1 参->plain，2 参->template。
-        if (fn === "t" || (fn === "tr" && node.arguments.length === 1)) usedPlain.add(literal);
-        else if (fn === "tf" || (fn === "tr" && node.arguments.length >= 2)) usedTemplate.add(literal);
+        const probeHint = relPath === "src/provider-test.ts" && fn === "hint";
+        if (fn === "t" || ((fn === "tr" || probeHint) && node.arguments.length === 1)) usedPlain.add(literal);
+        else if (fn === "tf" || ((fn === "tr" || probeHint) && node.arguments.length >= 2)) usedTemplate.add(literal);
       }
     }
     ts.forEachChild(node, visit);

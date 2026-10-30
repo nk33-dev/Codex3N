@@ -81,6 +81,54 @@ test("⌘K 打开命令面板，总览页渲染在 hub 路由", () => {
   assert.match(entry, /route === "hub" \? \(\s*<HubOverview/);
 });
 
+test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，侧栏播放键常显，都复用 launch / restart（#2744 / #2745）", () => {
+  const entry = functionSource("App");
+  const button = readSource("./CodexLaunchButton.tsx");
+  const hub = readSource("./HubOverview.tsx");
+  // 一份状态喂给顶栏、侧栏：运行中是「重启 Codex」，没找到 Codex 时置灰并说明原因。
+  assert.match(entry, /const codexLaunch: CodexLaunchState = \{\n\s*running: codexAppRunning,\n\s*busy: launchPending,/);
+  assert.match(entry, /overview\?\.codex_app\?\.status === "missing"\n\s*\? t\("没有找到 Codex 应用，请先安装 Codex"\)/);
+  assert.match(entry, /onLaunch: \(\) => void actions\.launch\(\),\n\s*onRestart: \(\) => void actions\.restart\(\),/);
+  // ⌘K 里的「启动 / 重启 Codex」保留。
+  assert.match(entry, /label: codexAppRunning \? t\("重启 Codex"\) : t\("启动 Codex"\)/);
+  // 按钮本身：文字随运行状态切换；置灰时提示挂在外层 span 上，悬停仍能看到原因。
+  assert.match(button, /const label = state\.busy \? t\("处理中…"\) : state\.running \? t\("重启 Codex"\) : t\("启动 Codex"\);/);
+  assert.match(button, /onClick=\{state\.running \? state\.onRestart : state\.onLaunch\}/);
+  assert.match(button, /disabled=\{state\.busy \|\| unavailable\}/);
+  assert.match(button, /<span className=\{`codex-launch \$\{className\}`\.trim\(\)\} data-running=\{state\.running\} data-unavailable=\{unavailable\} title=\{hint\}>/);
+  assert.match(button, /variant="default"/);
+  // 顶栏：只在 Codex 的页面里、排在页面操作挂载点之后。Codex++ 不只服务 Codex，
+  // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不放。
+  assert.match(entry, /const onCodexPage = routeTool\(route\) === "codex" \|\| \(route === "overview" && activeTool === "codex"\);/);
+  assert.match(
+    entry,
+    /<div className="topbar-page-actions" data-topbar-actions \/>\n[\s\S]{0,400}\{onCodexPage \? <CodexLaunchButton className="topbar-codex-launch" size="sm" state=\{codexLaunch\} \/> : null\}/,
+  );
+  assert.equal(entry.match(/<CodexLaunchButton\b/g)?.length, 1, "启动按钮只在顶栏出现一次");
+  const codexRoutes = text.slice(text.indexOf("const routes: Array"), text.indexOf("const navigationSections")).split("\n")
+    .filter((line) => line.includes('tool: "codex"')).map((line) => /id: "(\w+)"/.exec(line)?.[1]);
+  for (const id of ["relay", "multiLaunch", "enhance", "dreamSkin", "userScripts", "pluginMarket", "weixin", "agentSettings"]) {
+    assert.ok(codexRoutes.includes(id), `${id} 属于 Codex，顶栏要显示启动按钮`);
+  }
+  for (const id of ["hub", "gatewayProviders", "gateway", "gatewayUsage", "sessions", "claude", "settings", "agentPet"]) {
+    assert.ok(!codexRoutes.includes(id), `${id} 不属于 Codex，顶栏不放启动按钮`);
+  }
+  // 网关总览面向所有 Agent，不放专门的「启动 Codex」按钮。
+  assert.doesNotMatch(hub, /CodexLaunchButton|codexLaunch/);
+  assert.doesNotMatch(entry, /codexLaunch=\{codexLaunch\}/);
+  // 侧栏播放键：常显、点击区放大、不依赖悬停；没找到 Codex 时置灰。
+  const sidebar = functionSource("AppSidebar");
+  assert.match(sidebar, /tool\.id === "codex" && tool\.switchable \? "has-run" : ""/);
+  assert.match(sidebar, /disabled=\{codexRun\.busy \|\| \(!codexRun\.running && Boolean\(codexRun\.unavailableReason\)\)\}/);
+  assert.match(entry, /codexRun=\{\{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch\.unavailableReason, onStart: codexLaunch\.onLaunch,/);
+  assert.match(styles, /\.shell \.side-agent-run \{\n(?:  [^\n]*\n)*  width: 24px;\n  height: 24px;/);
+  assert.match(styles, /\.shell \.side-agent-run\[data-running="false"\] \{\n  background: hsl\(var\(--status-success\) \/ 0\.14\);\n  color: hsl\(var\(--status-success\)\);/);
+  assert.doesNotMatch(styles, /:hover \.side-agent-run|\.side-agent-run \{[^}]*(?:opacity: 0;|visibility: hidden)/);
+  // 不用 :has()：旧版系统 WebKit 不认，整条规则会失效。
+  assert.doesNotMatch(styles, /:has\(\.side-agent-run\)/);
+  assert.match(styles, /\.shell \.side-agent-wrap\.has-run \.side-item-label \{/);
+});
+
 test("提示卡按语气分色、悬停暂停、不显示进度条，失败可复制详情", () => {
   const notice = functionSource("NoticeDialog");
   assert.match(notice, /noticeTone\(notice\.status\)/);
@@ -108,7 +156,7 @@ test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送
   for (const source of [management, extra]) assert.doesNotMatch(source, /className="mg-header"/);
   assert.match(cache, /<TopbarActions>/);
   assert.doesNotMatch(cache, /CardHeader|className="panel agent-cache-panel"/);
-  // 顶栏里给页面操作留了单独的挂载点，排在 Codex 状态与启动按钮左边。
+  // 顶栏里给页面操作留了单独的挂载点，排在「启动 / 重启 Codex」按钮左边。
   assert.match(text, /<div className="topbar-page-actions" data-topbar-actions \/>/);
 });
 
@@ -379,4 +427,26 @@ test("添加供应商是弹出框，不再铺在供应商池页面里；池为�
   assert.match(providers, /\{catalogOpen \? \(\n\s*<ProviderCatalog/);
   assert.doesNotMatch(providers, /showCatalog/);
   assert.match(providers, /className="gw-card gw-pool-empty"/);
+});
+
+test("侧栏一级分组标题比子项醒目，快速跳转的快捷键按平台显示且弱化（#2778）", () => {
+  assert.match(functionSource("AppSidebar"), /<kbd>\{paletteShortcut\}<\/kbd>/);
+  assert.doesNotMatch(functionSource("AppSidebar"), /<kbd>⌘K<\/kbd>/);
+  const label = styles.match(/\.side-group-label > button:first-child \{[^}]*\}/)?.[0] ?? "";
+  const item = styles.match(/\n\.side-item \{[^}]*\}/)?.[0] ?? "";
+  const size = (rule: string) => Number(rule.match(/font-size: ([\d.]+)px/)?.[1] ?? 0);
+  assert.ok(size(item) > 0 && size(label) >= size(item), "分组标题字号不能比子项小");
+  assert.match(label, /font-weight: 700/);
+  assert.match(styles, /\.side-search kbd \{[^}]*font-size: 9\.5px/);
+});
+
+test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态能跟上（#2778）", () => {
+  const entry = functionSource("App");
+  assert.match(entry, /invoke<boolean \| null>\("codex_app_running"\)/);
+  assert.match(entry, /isCurrent\(\) && typeof running === "boolean" && running !== displayed/);
+  assert.match(entry, /await refreshOverview\(true, isCurrent\)/);
+  const lifecycle = readSource("./use-manager-lifecycle.ts");
+  assert.match(lifecycle, /refreshCodexRunning\?\.\(isCurrent\)/);
+  assert.match(lifecycle, /intervalMs: 5_000/);
+  assert.match(lifecycle, /codex\.setVisible\(options\.ready && visible\)/);
 });

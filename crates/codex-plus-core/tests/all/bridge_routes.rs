@@ -409,6 +409,22 @@ async fn settings_get_includes_runtime_codex_app_version() {
 }
 
 #[tokio::test]
+async fn settings_get_exposes_saved_history_turn_recovery_switch() {
+    for enabled in [false, true] {
+        let ctx = BridgeContext::new(
+            Arc::new(FakeSettings::with_settings(BackendSettings {
+                codex_app_history_turn_recovery: enabled,
+                ..BackendSettings::default()
+            })),
+            Arc::new(FakeRuntime::default()),
+            Arc::new(FakeData::default()),
+        );
+        let result = handle_bridge_request(ctx, "/settings/get", json!({})).await;
+        assert_eq!(result["codexAppHistoryTurnRecovery"], json!(enabled));
+    }
+}
+
+#[tokio::test]
 async fn settings_get_exposes_active_openai_session_provider() {
     let settings = BackendSettings {
         relay_profiles: vec![codex_plus_core::settings::RelayProfile {
@@ -1186,6 +1202,7 @@ async fn user_script_manager_deletes_market_script_metadata_and_rejects_builtin_
         requirements: Vec::new(),
         limitations: Vec::new(),
         icon: String::new(),
+        updated_at: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -1406,6 +1423,7 @@ fn user_script_inventory_includes_market_metadata() {
             requirements: Vec::new(),
             limitations: Vec::new(),
             icon: String::new(),
+            updated_at: String::new(),
         })
         .unwrap();
 
@@ -1445,6 +1463,7 @@ fn install_market_script_writes_file_and_records_metadata() {
         requirements: Vec::new(),
         limitations: Vec::new(),
         icon: String::new(),
+        updated_at: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(
@@ -1485,6 +1504,7 @@ fn install_market_script_ignores_checksum_mismatch_and_replaces_existing_file() 
         requirements: Vec::new(),
         limitations: Vec::new(),
         icon: String::new(),
+        updated_at: String::new(),
     };
 
     codex_plus_core::script_market::install_market_script_content(&manager, &script, b"new")

@@ -22,6 +22,8 @@
 
 `codexAppForceChineseLocale` 默认关闭，启用后由 `00-prelude.js::installCodexPlusForceChineseLocale` 写入原生 `localeOverride` 并补充语言包探测；关闭时只还原本工具写入且用户未另改的值。`81-capacity-auto-retry.js` 处理容量错误，`codexAppCapacityAutoRetry` 默认关闭，间隔和次数保存在注入页设置中；`82-boot-shell-recovery.js` 对长时间未挂载的启动壳执行有界刷新。`codexAppActivityOverlayRight` 默认关闭，`98-avatar-overlay-layout.js` 负责活动浮层右侧布局，均经同一 manifest 拼装入口安装。
 
+强制中文优先经宿主设置服务读写，兼容旧 state API，并保留有界重试。皮肤运行时在文档根节点建立后安装；图片覆盖层同时提升原生弹窗 portal，恢复或关闭时移除自己的标记。Claude 增强页的 `claudeAppBashTimeout` 默认关闭，可分别设置 Bash 默认及最大秒数；保存后需重启增强副本，Cowork 注入失败时提示并保持原生时限。验证见 locale、皮肤、图片覆盖层及 `claude-bash-timeout*` 回归，真实宿主与跨平台运行另行验证。
+
 注入页避免后台空转：`codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上，缓存键包含 `localStorage` 原文、后端设置对象和 `__CODEX_PLUS_DREAM_SKIN_THEME__` 身份；命中时不重复 `JSON.parse`，仍合并当前后端设置。语音按钮兜底扫描和皮肤定时全量 `ensure` 在 `document.hidden` 时跳过，仍保留 DOM 变化触发的路径。
 
 扫描调度由 `98-scan-schedule.js` 保持唯一入口，200 ms 内合并侧栏、会话、菜单、壳层及模型任务；未知宿主结构完整刷新兜底。消息正文的无关变化不刷新整套增强，延迟扫描只保留一帧。导航、隐藏和重新注入会取消旧任务；隐藏期间只记脏状态，恢复后补扫一次，供应商心跳和原生后台任务不受影响。每次执行扫描先复位排队标记，否则后续变更全被丢弃。

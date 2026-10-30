@@ -146,6 +146,21 @@ pub async fn claude_localization_status() -> CommandResult<Value> {
 }
 
 #[tauri::command]
+pub async fn claude_localization_bash_timeout_status() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(
+        codex_plus_core::claude_localization::bash_timeout_status,
+    )
+    .await
+    {
+        Ok(status) => ok(
+            "Claude Bash 加载状态已读取。",
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Err(error) => failed(&format!("Claude Bash 状态读取失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
 pub async fn claude_localization_action(
     app: tauri::AppHandle,
     action: String,
@@ -236,6 +251,24 @@ pub async fn claude_localization_set_computer_use(enabled: bool) -> CommandResul
             } else {
                 "Computer Use 已关闭；重新准备副本后移除。"
             },
+            serde_json::to_value(status).unwrap_or_else(|_| json!({})),
+        ),
+        Ok(Err(error)) => failed(&error.to_string(), json!({})),
+        Err(error) => failed(&format!("Claude 设置失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_localization_set_bash_timeout(
+    timeout: codex_plus_core::settings::ClaudeBashTimeoutSettings,
+) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_localization::set_bash_timeout(timeout)
+    })
+    .await
+    {
+        Ok(Ok(status)) => ok(
+            "Bash 时间限制设置已保存；重启增强版后生效。",
             serde_json::to_value(status).unwrap_or_else(|_| json!({})),
         ),
         Ok(Err(error)) => failed(&error.to_string(), json!({})),
@@ -363,6 +396,29 @@ pub struct CcsProvidersPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PendingProviderImportPayload {
     pub pending: Option<codex_plus_core::provider_import::ProviderImportRequest>,
+    /// pending 文件内容的指纹：确认 / 取消时带回，后端比对一致才动手。
+    pub fingerprint: Option<String>,
+}
+
+impl PendingProviderImportPayload {
+    fn empty() -> Self {
+        Self {
+            pending: None,
+            fingerprint: None,
+        }
+    }
+
+    fn from_pending(
+        pending: Option<codex_plus_core::provider_import::PendingProviderImport>,
+    ) -> Self {
+        match pending {
+            Some(pending) => Self {
+                pending: Some(pending.request),
+                fingerprint: Some(pending.fingerprint),
+            },
+            None => Self::empty(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -518,20 +574,6 @@ pub struct StepwiseTestPayload {
 pub struct RelayProfileModelsPayload {
     pub models: Vec<String>,
     pub endpoint: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Sub2ApiBillingPayload {
-    pub endpoint: String,
-    pub group_rate_multiplier: f64,
-    pub user_rate_multiplier: Option<f64>,
-    pub resolved_rate_multiplier: f64,
-    pub peak_rate_enabled: bool,
-    pub peak_rate_multiplier: Option<f64>,
-    pub applied_peak_multiplier: Option<f64>,
-    pub effective_rate_multiplier: f64,
-    pub observed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1223,6 +1265,18 @@ where
     args.into_iter().any(|arg| arg.as_ref() == "--show-update") || env_value == Some("1")
 }
 
+/// 只查 Codex 桌面端进程还在不在，给前端定期轻量轮询用（#2778：在 Codex 自己的窗口里
+/// 退出后，侧栏和顶栏仍显示「运行中 / 停止 Codex」）。不读设置、不探测端口，状态变了
+/// 前端再走完整的 `load_overview`。后台任务失败返回 None，前端忽略这一轮。
+#[tauri::command]
+pub async fn codex_app_running() -> Option<bool> {
+    tauri::async_runtime::spawn_blocking(|| {
+        !codex_plus_core::watcher::find_codex_processes().is_empty()
+    })
+    .await
+    .ok()
+}
+
 #[tauri::command]
 pub async fn load_overview() -> CommandResult<OverviewPayload> {
     let payload = tauri::async_runtime::spawn_blocking(load_overview_payload).await;
@@ -1408,9 +1462,12 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
     if let Ok(existing) = load_multi_instance_manifest(&root)
         && multi_instance_is_running(&existing)
     {
+        // 运行中的实例不会重新写入供应商配置（#2754：改了 Key 再点「启动」仍用旧配置），
+        // 明确告诉用户要点「重启」，前端据 alreadyRunning 直接展示这句提示。
         return ok(
-            "Codex 多开实例已经在运行。",
+            "Codex 多开实例已经在运行；如刚修改过供应商或 API Key，请在「当前运行实例」中点「重启」使新配置生效。",
             json!({
+                "alreadyRunning": true,
                 "instanceId": existing.instance_id,
                 "profileId": existing.profile_id,
                 "pid": existing.pid,
@@ -1638,6 +1695,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
         .arg("--codex-plus-multi-worker")
         .arg(&worker_options_path)
         .env("HOME", &worker_home)
+        .env_remove("CODEX_ELECTRON_USER_DATA_PATH")
         .env("CODEX_HOME", &codex_home)
         .env("CODEX_SQLITE_HOME", &sqlite_home)
         .env("CODEX_PLUS_MULTI_INSTANCE", "1")
@@ -2173,6 +2231,8 @@ pub fn run_codex_multi_worker(options_path: &Path) -> anyhow::Result<()> {
         state_dir: Some(instance_state_dir.clone()),
         codex_home: std::env::var_os("CODEX_HOME").map(PathBuf::from),
         sqlite_home: std::env::var_os("CODEX_SQLITE_HOME").map(PathBuf::from),
+        // 多开实例自带 --user-data-dir，与主实例的单实例锁无关，绝不结束主 Codex。
+        replace_blocking_main_instance: false,
     };
     let receipt = match codex_plus_launcher::start_with_receipt(launch_options) {
         Ok(receipt) => receipt,
@@ -2333,6 +2393,35 @@ fn multi_instance_slug(value: &str) -> String {
 }
 
 fn multi_instance_user_data_dir(slug: &str) -> PathBuf {
+    multi_instance_user_data_dir_with_root(
+        slug,
+        std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").map(PathBuf::from),
+        codex_plus_core::paths::state_dir_override(),
+    )
+}
+
+fn multi_instance_user_data_dir_with_root(
+    slug: &str,
+    electron_root: Option<PathBuf>,
+    state: Option<PathBuf>,
+) -> PathBuf {
+    // 多开根与主实例 userData 同级，避免主实例清理时连带删除多开数据。
+    if let Some(root) = electron_root.filter(|root| !root.as_os_str().is_empty()) {
+        let parent = root.parent().unwrap_or_else(|| Path::new("."));
+        let name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("CodexPlusPlus");
+        return parent.join(format!("{name}-multi")).join(slug);
+    }
+    // 显式状态目录是多开的隔离边界；普通实例继续使用历史布局。
+    if let Some(state) = state.filter(|path| !path.as_os_str().is_empty()) {
+        return state.join("codex-multi").join(slug).join("user-data");
+    }
+    legacy_multi_instance_user_data_dir(slug)
+}
+
+fn legacy_multi_instance_user_data_dir(slug: &str) -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| {
             dirs.data_local_dir()
@@ -2568,7 +2657,13 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     let app_running = codex_plus_core::cdp::endpoint_available(request.debug_port);
     if restart_disposition(request.sync_active_relay, app_running) == RestartDisposition::LaunchOnly
     {
-        return spawn_codex_plus_launch(request, "Codex 未运行，已按直接启动方式在后台唤起。");
+        // 调试端口不可连不代表 Codex 没在跑：Windows 商店版主 Codex 可能开着却没带端口
+        // （issue #2764）。走重启专用的启动，由 launcher 识别并结束它后再启动。
+        return spawn_codex_plus_launch_with(
+            request,
+            "Codex 未运行，已按直接启动方式在后台唤起。",
+            start_embedded_launcher_for_restart,
+        );
     }
     let Ok(_guard) = relay_switch_mutex().try_lock() else {
         return failed(
@@ -2665,7 +2760,11 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     }
     let mut restart_message = "Codex 已请求重启，启动任务正在后台运行。".to_string();
     match restart_codex_plus_after_stop(&request, &home, settings.as_ref(), |request| {
-        spawn_after_provider_guard_release(provider_guard, request, start_embedded_launcher)
+        spawn_after_provider_guard_release(
+            provider_guard,
+            request,
+            start_embedded_launcher_for_restart,
+        )
     }) {
         Ok(warnings) => {
             for warning in warnings {
@@ -3133,6 +3232,14 @@ fn normalize_launch_request(mut request: LaunchRequest) -> LaunchRequest {
 }
 
 fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> CommandResult<Value> {
+    spawn_codex_plus_launch_with(request, accepted_message, start_embedded_launcher)
+}
+
+fn spawn_codex_plus_launch_with(
+    request: LaunchRequest,
+    accepted_message: &str,
+    start: impl FnOnce(&LaunchRequest) -> anyhow::Result<()>,
+) -> CommandResult<Value> {
     let request = normalize_launch_request(request);
     let debug_port = request.debug_port;
     let helper_port = request.helper_port;
@@ -3159,7 +3266,7 @@ fn spawn_codex_plus_launch(request: LaunchRequest, accepted_message: &str) -> Co
             }),
         );
     }
-    match start_embedded_launcher(&request) {
+    match start(&request) {
         Ok(()) => {
             let (debug_port, helper_port, started_at_ms) =
                 accepted_launch_identity(&request, launch_started_at_ms);
@@ -3272,6 +3379,19 @@ fn current_timestamp_ms() -> u64 {
 }
 
 fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
+    start_embedded_launcher_with(request, false)
+}
+
+/// 「重启 Codex」专用：允许 launcher 结束挡住本次启动的 Windows 商店版主 Codex
+/// （已在运行却没带调试端口，issue #2764）。普通启动只提示用户自行退出。
+fn start_embedded_launcher_for_restart(request: &LaunchRequest) -> anyhow::Result<()> {
+    start_embedded_launcher_with(request, true)
+}
+
+fn start_embedded_launcher_with(
+    request: &LaunchRequest,
+    replace_blocking_main_instance: bool,
+) -> anyhow::Result<()> {
     anyhow::ensure!(!crate::app_is_exiting(), "Codex++ 正在退出，未启动 Codex");
     // 先让常驻 helper 占住协议代理端口：启动链路会识别并复用，Codex 会话退出
     // 时就不再关闭它，从而实现「Codex++ 在跑，本地代理就一直可用」。
@@ -3282,6 +3402,7 @@ fn start_embedded_launcher(request: &LaunchRequest) -> anyhow::Result<()> {
         debug_port: request.debug_port,
         helper_port: request.helper_port,
         status_store: StatusStore::default(),
+        replace_blocking_main_instance,
         ..Default::default()
     })
 }
@@ -5060,16 +5181,28 @@ fn merge_manual_provider_sync_targets(
 
 #[tauri::command]
 pub async fn repair_session_index() -> CommandResult<Value> {
+    let debug_port = codex_plus_launcher::session_snapshot().debug_port;
     let result =
         tauri::async_runtime::spawn_blocking(|| codex_plus_data::repair_session_index(None))
             .await
             .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))
             .and_then(|result| result);
     match result {
-        Ok(report) => ok(
-            &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
-            json!(report),
-        ),
+        Ok(report) => {
+            codex_plus_core::history_turn_recovery::after_index_repair(
+                debug_port,
+                report.aborted_reason.is_some(),
+                report.checked_at_ms,
+            );
+            let mut payload = json!(report);
+            payload["frontendRecovery"] = json!({
+                "status": "pending", "loadedPages": 0, "metadataPages": 0,
+            });
+            ok(
+                &format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
+                payload,
+            )
+        }
         Err(error) => failed(&format!("修复会话索引失败：{error}"), json!({})),
     }
 }
@@ -5077,7 +5210,17 @@ pub async fn repair_session_index() -> CommandResult<Value> {
 #[tauri::command]
 pub async fn load_session_index_repair_report() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| {
-        codex_plus_data::load_session_index_repair_report(None)
+        codex_plus_data::load_session_index_repair_report(None).map(|report| {
+            report.map(|report| {
+                let frontend = codex_plus_core::history_turn_recovery::load_report(
+                    &codex_plus_core::relay_config::default_codex_home_dir(),
+                    report.checked_at_ms,
+                );
+                let mut payload = json!(report);
+                payload["frontendRecovery"] = json!(frontend);
+                payload
+            })
+        })
     })
     .await
     .map_err(|error| anyhow::anyhow!("session index report task failed: {error}"))
@@ -7876,11 +8019,18 @@ pub async fn test_relay_profile(profile: RelayProfile) -> CommandResult<RelayPro
                 "ok"
             };
             let preview = result.response_preview.trim();
-            let detail = if preview.is_empty() {
+            let mut detail = if preview.is_empty() {
                 "响应内容为空".to_string()
             } else {
                 format!("响应：{preview}")
             };
+            // #2754：鉴权失败时说明本次用的是哪个 Key，用户才能和上游报错里的尾号比对。
+            if let Some(hint) = codex_plus_core::relay_config::relay_test_auth_failure_hint(
+                &profile,
+                result.http_status,
+            ) {
+                detail = format!("{detail} {hint}");
+            }
             CommandResult {
                 status: status.to_string(),
                 message: format!(
@@ -7992,52 +8142,28 @@ pub async fn fetch_relay_profile_models(
     }
 }
 
+/// 识别供应商是哪种中转站（sub2api / new-api），并顺带取回倍率和余额。供应商卡片在后台静默调用，
+/// 识别不出也返回 ok，前端按 `platform` 决定是否显示。
 #[tauri::command]
-pub async fn fetch_sub2api_billing(profile: RelayProfile) -> CommandResult<Sub2ApiBillingPayload> {
-    let profile_name = if profile.name.trim().is_empty() {
-        "未命名供应商"
-    } else {
-        profile.name.trim()
+pub async fn probe_relay_billing(
+    profile: RelayProfile,
+) -> CommandResult<codex_plus_core::relay_billing::RelayBillingProbe> {
+    let probe = codex_plus_core::relay_billing::probe_relay_billing(&profile).await;
+    let message = match (&probe.platform, &probe.rate) {
+        (Some(platform), Some(rate)) => format!(
+            "已识别为 {platform}，倍率 {}x。",
+            format_multiplier(rate.multiplier)
+        ),
+        (Some(platform), None) => format!("已识别为 {platform}。"),
+        (None, _)
+            if probe.outcome
+                == codex_plus_core::relay_billing::RelayBillingOutcome::Unavailable =>
+        {
+            "暂时获取不到倍率和余额。".to_string()
+        }
+        (None, _) => "不是已知的中转站。".to_string(),
     };
-    match codex_plus_core::sub2api::fetch_sub2api_billing_info(&profile).await {
-        Ok(info) => ok(
-            &format!(
-                "已从「{profile_name}」获取倍率：{}x。",
-                format_multiplier(info.effective_rate_multiplier)
-            ),
-            Sub2ApiBillingPayload {
-                endpoint: info.endpoint,
-                group_rate_multiplier: info.group_rate_multiplier,
-                user_rate_multiplier: info.user_rate_multiplier,
-                resolved_rate_multiplier: info.resolved_rate_multiplier,
-                peak_rate_enabled: info.peak_rate_enabled,
-                peak_rate_multiplier: info.peak_rate_multiplier,
-                applied_peak_multiplier: info.applied_peak_multiplier,
-                effective_rate_multiplier: info.effective_rate_multiplier,
-                observed_at: info.observed_at,
-            },
-        ),
-        Err(error) => failed(
-            &format!("从「{profile_name}」获取 sub2api 倍率失败：{error}"),
-            Sub2ApiBillingPayload {
-                endpoint: codex_plus_core::sub2api::sub2api_billing_endpoint(
-                    if profile.upstream_base_url.trim().is_empty() {
-                        profile.base_url.trim()
-                    } else {
-                        profile.upstream_base_url.trim()
-                    },
-                ),
-                group_rate_multiplier: 0.0,
-                user_rate_multiplier: None,
-                resolved_rate_multiplier: 0.0,
-                peak_rate_enabled: false,
-                peak_rate_multiplier: None,
-                applied_peak_multiplier: None,
-                effective_rate_multiplier: 0.0,
-                observed_at: String::new(),
-            },
-        ),
-    }
+    ok(&message, probe)
 }
 
 fn format_multiplier(value: f64) -> String {
@@ -8174,16 +8300,25 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
                 id: "request".to_string(),
                 title: "真实请求".to_string(),
                 status: status.to_string(),
-                detail: if preview.is_empty() {
-                    format!(
-                        "{} 返回 HTTP {}，响应内容为空。",
-                        result.endpoint, result.http_status
-                    )
-                } else {
-                    format!(
-                        "{} 返回 HTTP {}：{}",
-                        result.endpoint, result.http_status, preview
-                    )
+                detail: {
+                    let detail = if preview.is_empty() {
+                        format!(
+                            "{} 返回 HTTP {}，响应内容为空。",
+                            result.endpoint, result.http_status
+                        )
+                    } else {
+                        format!(
+                            "{} 返回 HTTP {}：{}",
+                            result.endpoint, result.http_status, preview
+                        )
+                    };
+                    match codex_plus_core::relay_config::relay_test_auth_failure_hint(
+                        &profile,
+                        result.http_status,
+                    ) {
+                        Some(hint) => format!("{detail} {hint}"),
+                        None => detail,
+                    }
                 },
             });
         }
@@ -8956,6 +9091,7 @@ fn market_script_payload(script: &MarketScript, installed: &BTreeMap<String, Str
         "tags": script.tags,
         "homepage": script.homepage,
         "script_url": script.script_url,
+        "updatedAt": script.updated_at,
         "installed": is_installed,
         "installedVersion": installed_version,
         "updateAvailable": is_installed && installed.get(&script.id).map(|version| version != &script.version).unwrap_or(false)
@@ -9264,6 +9400,69 @@ fn default_log_lines() -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn multi_instance_user_data_respects_explicit_electron_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("electron data");
+        let state = temp.path().join("manager state");
+        let first = multi_instance_user_data_dir_with_root(
+            "instance-a",
+            Some(root.clone()),
+            Some(state.clone()),
+        );
+        let second = multi_instance_user_data_dir_with_root(
+            "instance-b",
+            Some(root.clone()),
+            Some(state.clone()),
+        );
+        let multi_root = root.parent().unwrap().join("electron data-multi");
+        assert_eq!(first, multi_root.join("instance-a"));
+        assert_eq!(second, multi_root.join("instance-b"));
+        assert_ne!(first, second);
+        assert!(!first.exists());
+        assert!(!state.exists());
+    }
+
+    #[test]
+    fn multi_instance_user_data_uses_explicit_state_before_legacy_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("manager state");
+        let expected = state.join("codex-multi/instance-a/user-data");
+        assert_eq!(
+            multi_instance_user_data_dir_with_root("instance-a", None, Some(state.clone())),
+            expected
+        );
+        assert!(!state.exists());
+    }
+
+    #[test]
+    fn multi_instance_user_data_without_override_keeps_default_layout() {
+        let expected = directories::BaseDirs::new()
+            .map(|dirs| {
+                dirs.data_local_dir()
+                    .join("CodexPlusPlus")
+                    .join("multi")
+                    .join("instance-a")
+            })
+            .unwrap_or_else(|| {
+                codex_plus_core::paths::default_app_state_dir()
+                    .join("user-data")
+                    .join("instance-a")
+            });
+        assert_eq!(
+            multi_instance_user_data_dir_with_root("instance-a", None, None),
+            expected
+        );
+        assert_eq!(
+            multi_instance_user_data_dir_with_root(
+                "instance-a",
+                Some(PathBuf::new()),
+                Some(PathBuf::new())
+            ),
+            expected
+        );
+    }
+
     use super::*;
 
     #[cfg(windows)]
@@ -11874,6 +12073,44 @@ model_reasoning_effort = "high"
         assert!(first > 0);
         assert!(second > 0);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn multi_instance_user_data_is_scoped_to_explicit_manager_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("manager a");
+        let second = temp.path().join("manager b");
+        assert_eq!(
+            multi_instance_user_data_dir_with_root("same-name", None, Some(first.clone())),
+            first.join("codex-multi/same-name/user-data")
+        );
+        assert_eq!(
+            multi_instance_user_data_dir_with_root("same-name", None, Some(second.clone())),
+            second.join("codex-multi/same-name/user-data")
+        );
+        assert_ne!(
+            multi_instance_user_data_dir_with_root("same-name", None, Some(first.clone())),
+            multi_instance_user_data_dir_with_root("same-name", None, Some(second.clone()))
+        );
+        assert_ne!(
+            multi_instance_user_data_dir_with_root("first", None, Some(first.clone())),
+            multi_instance_user_data_dir_with_root("second", None, Some(first.clone()))
+        );
+        assert!(!first.exists());
+        assert!(!second.exists());
+    }
+
+    #[test]
+    fn multi_instance_user_data_without_state_keeps_legacy_layout() {
+        let expected = legacy_multi_instance_user_data_dir("fixture");
+        assert_eq!(
+            multi_instance_user_data_dir_with_root("fixture", None, None),
+            expected
+        );
+        assert_eq!(
+            multi_instance_user_data_dir_with_root("fixture", None, Some(PathBuf::new())),
+            expected
+        );
     }
 
     #[test]

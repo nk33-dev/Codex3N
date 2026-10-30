@@ -88,7 +88,7 @@ fn append_log_line(path: &Path, line: &str) -> std::io::Result<()> {
     }
     let needs_compaction = {
         let entry = cache.get_mut(path).expect("日志句柄在上面的分支里刚插入");
-        writeln!(entry.file, "{line}")?;
+        entry.file.write_all(format!("{line}\n").as_bytes())?;
         entry.bytes = entry.bytes.saturating_add(line.len() as u64 + 1);
         entry.bytes > MAX_DIAGNOSTIC_LOG_BYTES
     };

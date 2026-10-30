@@ -27,6 +27,10 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 
 隐藏 ID 存在 `codex3n.hiddenInvalidSessions.v1`，可以恢复显示。重启后不会立即抢占资源，页面可见且空闲达到复核周期后才检查；自动复核只按已隐藏 ID 查询数据库，手动“检查并隐藏失效会话”和管理器删除预览仍执行全量扫描。远程会话和仍在内存中尚未落盘的会话不能误隐藏。
 
+## 历史轮次补载
+
+`codexAppHistoryTurnRecovery` 默认关闭，共用类型、默认值与渲染公开白名单同步维护。索引修复完成后由 `history_turn_recovery::after_index_repair` 通知受管页面，`85-history-turn-recovery.js` 单次限量补载原生消息及元数据；手动和自动修复共用此入口。报告在现有 `SessionMaintenance` 展示，包含补载状态、消息页、元数据页和失败原因，不新增修复轮询。回归见 `session-index-frontend-recovery.test.ts`、`history_turn_recovery` 测试；宿主实际补载效果须单独实测。
+
 ## 管理器删除
 
 - 单删和批删共用备份删除链路。删除涉及 SQLite、rollout、会话索引和新版侧栏目录；计数减少不等于完整成功，部分失败仍须报告。

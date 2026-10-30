@@ -128,19 +128,22 @@ import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload } from "./HubOverview";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
+import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, formatRequestCost, maskAccountName, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, formatQueueWait, formatRequestCost, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, usageRangeStart, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
 import { agentTabGroups, agentTarget } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
+import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { shouldShowTour, TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
 import { PluginMarketScreen } from "./PluginMarketScreen";
+import { defaultMarketSort, localScriptState, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, PageHeader } from "./ManagementPages";
@@ -261,9 +264,12 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
+import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { sessionProviderForProtocol } from "./relay-session";
+import { historyRecoveryStatusLabel, type FrontendRecoveryReport } from "./history-recovery-report";
 import { usePopoverLayer } from "./use-popover-layer";
 import { resolveAnchoredMenuLayout, type AnchoredMenuLayout } from "./popover-layer";
 import { providerAvatarText, resolveProviderName } from "./provider-name";
@@ -394,6 +400,8 @@ type LaunchCommandResult = CommandResult<{
 }>;
 
 type MultiLaunchResult = CommandResult<{
+  /** 实例已在运行、本次没有重新写入供应商配置（需要「重启」才生效）。 */
+  alreadyRunning?: boolean;
   instanceId?: string;
   profileId?: string;
   pid?: number;
@@ -713,11 +721,21 @@ type ProviderImportRequest = {
   relayMode: string;
   configContents: string;
   authContents: string;
+  /** 空为直连模式供应商；"pool" 为网关供应商池。 */
+  target?: string;
 };
 
 type PendingProviderImportResult = CommandResult<{
   pending: ProviderImportRequest | null;
+  /** pending 文件内容的指纹，确认 / 取消时带回。 */
+  fingerprint?: string | null;
 }>;
+
+type PendingProviderImport = { request: ProviderImportRequest; fingerprint: string };
+
+function pendingProviderImportFromResult(result: { pending: ProviderImportRequest | null; fingerprint?: string | null }): PendingProviderImport | null {
+  return result.pending ? { request: result.pending, fingerprint: result.fingerprint ?? "" } : null;
+}
 
 type EnvConflict = {
   name: string;
@@ -853,6 +871,7 @@ type UpdateProgressEvent = {
 };
 
 type SessionIndexRepairReport = {
+  frontendRecovery?: FrontendRecoveryReport | null;
   scannedFiles: number;
   cachedFiles: number;
   repairedItems: number;
@@ -942,6 +961,8 @@ type ScriptMarketItem = {
   tags: string[];
   homepage: string;
   script_url: string;
+  /// 该脚本最近更新时间（ISO），清单逐条提供；老清单没有时为空（#2781）。
+  updatedAt?: string;
   installed: boolean;
   installedVersion: string;
   updateAvailable: boolean;
@@ -1180,7 +1201,7 @@ export function App() {
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
   const [ccsProviders, setCcsProviders] = useState<CcsProvidersResult | null>(null);
-  const [pendingProviderImport, setPendingProviderImport] = useState<ProviderImportRequest | null>(null);
+  const [pendingProviderImport, setPendingProviderImport] = useState<PendingProviderImport | null>(null);
   const [localSessions, setLocalSessions] = useState<LocalSessionsResult | null>(null);
   const localSessionsRevision = useRef(0);
   const localSessionsQuery = useRef("");
@@ -1380,10 +1401,10 @@ export function App() {
     }
   };
 
-  const refreshOverview = async (silent = false) => {
+  const refreshOverview = async (silent = false, isCurrent = () => true) => {
     const requestSequence = ++overviewRequestSequence.current;
     const result = await run(() => call<OverviewResult>("load_overview"));
-    if (result && requestSequence === overviewRequestSequence.current) {
+    if (result && isCurrent() && requestSequence === overviewRequestSequence.current) {
       // 崩溃检测：进程从运行状态变为停止/失败 → 弹出通知
       const prev = prevLaunchStatusRef.current;
       const current = result.latest_launch?.status;
@@ -1618,27 +1639,35 @@ export function App() {
   const refreshPendingProviderImport = async (silent = true) => {
     const result = await run(() => call<PendingProviderImportResult>("load_pending_provider_import"));
     if (result) {
-      setPendingProviderImport(result.pending);
+      setPendingProviderImport(pendingProviderImportFromResult(result));
       if (!silent && !isSuccessStatus(result.status)) showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
     }
     return result;
   };
 
+  // 确认 / 取消都带上弹窗展示时的指纹：期间被新链接覆盖时后端拒绝写入，弹窗换成新的那条重新确认。
   const confirmPendingProviderImport = async () => {
-    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import"));
+    const fingerprint = pendingProviderImport?.fingerprint ?? "";
+    const formAtLoad = settingsFormRef.current;
+    const result = await run(() => call<SettingsResult>("confirm_pending_provider_import", { fingerprint }));
     if (result) {
-      setPendingProviderImport(null);
-      setSettings(result);
-      setSettingsForm(normalizeSettings(result.settings));
       showResultNotice(t("Codex++ 导入"), result);
+      if (isSuccessStatus(result.status)) {
+        setSettings(result);
+        if (settingsFormRef.current === formAtLoad) setSettingsForm(normalizeSettings(result.settings));
+        setPendingProviderImport(null);
+      } else {
+        await refreshPendingProviderImport(true);
+      }
       await refreshCcsProviders(true);
     }
   };
 
   const dismissPendingProviderImport = async () => {
-    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import"));
+    const fingerprint = pendingProviderImport?.fingerprint ?? null;
+    const result = await run(() => call<PendingProviderImportResult>("dismiss_pending_provider_import", { fingerprint }));
     if (result) {
-      setPendingProviderImport(null);
+      setPendingProviderImport(isSuccessStatus(result.status) ? pendingProviderImportFromResult(result) : null);
       showResultNotice(t("Codex++ 导入"), result, { silentSuccess: true });
     }
   };
@@ -2416,6 +2445,11 @@ export function App() {
         request: { profileId: profile.id },
       }));
       if (!result) return;
+      if (result.alreadyRunning) {
+        showNotice(t("Codex多开"), result.message, result.status);
+        await refreshMultiLaunchInstances(true);
+        return;
+      }
       // 父进程只知道「worker 已拉起」，真正起来没有要等它就绪（最长 90 秒），
       // 所以这里不直接报成功，改为轮询到有结论再给提示。
       await refreshMultiLaunchInstances(true);
@@ -3596,6 +3630,13 @@ export function App() {
     refreshPending: async () => { await Promise.all([consumePendingManagerNavigation(), refreshPendingProviderImport(true), refreshPendingDreamSkinCommunity()]); },
     refreshWeixin: () => refreshWeixinStatus(true),
     refreshMultiLaunch: (isCurrent) => refreshMultiLaunchInstances(true, isCurrent),
+    refreshCodexRunning: async (isCurrent) => {
+      const running = await invoke<boolean | null>("codex_app_running");
+      const displayed = overview?.runtime_health?.codex_app?.status === "running";
+      if (isCurrent() && typeof running === "boolean" && running !== displayed) {
+        await refreshOverview(true, isCurrent);
+      }
+    },
     onError: (error) => logDiagnostic("manager.background_refresh_failed", { error: stringifyError(error) }),
   });
 
@@ -4094,6 +4135,22 @@ export function App() {
   const isGlobalPage = globalNavigationRoutes.includes(route);
   const isManagementScreen = route === "relay" || route === "multiLaunch" || route === "sessions" || route === "claudeSessions" || route === "context" || route === "skills";
   const codexAppRunning = overview?.runtime_health?.codex_app?.status === "running";
+  // 「启动 / 重启 Codex」：Codex 页面的顶栏按钮和侧栏播放键共用一份状态，都走 actions.launch / actions.restart。
+  const codexToolEntry = toolEntries.find((entry) => entry.id === "codex");
+  const codexLaunch: CodexLaunchState = {
+    running: codexAppRunning,
+    busy: launchPending,
+    unavailableReason: overview?.codex_app?.status === "missing"
+      ? t("没有找到 Codex 应用，请先安装 Codex")
+      : codexToolEntry && !codexToolEntry.switchable
+        ? t("Codex 暂未接入，无法从这里启动")
+        : null,
+    onLaunch: () => void actions.launch(),
+    onRestart: () => void actions.restart(),
+  };
+  // 当前页面属于 Codex：routes 里 tool 为 codex 的页面，以及当前 Agent 是 Codex 时的 Agent 概览。
+  // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不算（Codex++ 不只服务 Codex）。
+  const onCodexPage = routeTool(route) === "codex" || (route === "overview" && activeTool === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
 
   const isGatewayPage = gatewayNavigationRoutes.includes(route);
@@ -4141,7 +4198,7 @@ export function App() {
         onOpenPalette={() => setPaletteOpen(true)}
         pendingUpdateVersion={update?.updateAvailable && update.latestVersion ? update.latestVersion : null}
         onOpenUpdate={() => { if (update) setUpdatePrompt(update); }}
-        codexRun={{ running: codexAppRunning, busy: launchPending, onStart: () => void actions.launch(), onStop: () => void actions.stopCodex() }}
+        codexRun={{ running: codexAppRunning, busy: launchPending, unavailableReason: codexLaunch.unavailableReason, onStart: codexLaunch.onLaunch, onStop: () => void actions.stopCodex() }}
       />
       <CommandPalette commands={paletteCommands} onClose={() => setPaletteOpen(false)} open={paletteOpen} />
       {tourOpen ? <OnboardingTour onClose={closeTour} /> : null}
@@ -4160,9 +4217,11 @@ export function App() {
             </p>
           </div>
           <div className="topbar-actions">
-            {/* data-topbar-actions：页面级操作的挂载点（TopbarActions / PageHeader），Claude 增强页把「启动增强版」portal 进来。
-                Codex 的启动 / 停止在侧栏 Codex 行的播放键上，顶栏不再重复。 */}
+            {/* data-topbar-actions：页面级操作的挂载点（TopbarActions / PageHeader），Claude 增强页把「启动增强版」portal 进来。 */}
             <div className="topbar-page-actions" data-topbar-actions />
+            {/* 「启动 / 重启 Codex」：只在 Codex 的页面里放在顶栏最右侧（#2744 / #2745）；
+                其它页面靠侧栏 Codex 行常驻的播放键启动，停止也在那里。 */}
+            {onCodexPage ? <CodexLaunchButton className="topbar-codex-launch" size="sm" state={codexLaunch} /> : null}
           </div>
         </header>
         <section
@@ -4522,7 +4581,7 @@ export function App() {
       ) : null}
       {pendingProviderImport ? (
         <PendingProviderImportDialog
-          request={pendingProviderImport}
+          request={pendingProviderImport.request}
           onConfirm={() => void confirmPendingProviderImport()}
           onDismiss={() => void dismissPendingProviderImport()}
         />
@@ -5776,9 +5835,31 @@ function formatRequestLogDuration(durationMs: number) {
 }
 
 function requestLogRetryLabel(entry: RequestLogEntry) {
-  if (entry.autoRetries > 0) return tf("自动重试 ×{0}", [String(entry.autoRetries)]);
-  if (entry.attempts > 1) return tf("切换 ×{0}", [String(entry.attempts)]);
-  return "-";
+  const base = entry.autoRetries > 0
+    ? tf("自动重试 ×{0}", [String(entry.autoRetries)])
+    : entry.attempts > 1
+      ? tf("切换 ×{0}", [String(entry.attempts)])
+      : "";
+  // 网关因 Codex++ 本地限速排过队：标出排了多久。
+  const queued = queueWaitMs(entry.retryReasons);
+  const queue = queued === null ? "" : tf("限速排队 {0}", [formatQueueWait(queued)]);
+  // 换上游后去掉了别家签发的压缩上下文：较早的对话内容上游已看不到，必须让用户看得见。
+  const compaction = foreignCompactionDropped(entry.retryReasons) ? t("已去掉别家压缩上下文") : "";
+  return [base, queue, compaction].filter(Boolean).join(" · ") || "-";
+}
+
+/** 重试原因的展示：网关记的限速排队换成「限速排队 Xs」，去掉别家压缩上下文换成说明，其它原样。 */
+function requestLogRetryReasons(entry: RequestLogEntry): string {
+  return (entry.retryReasons ?? [])
+    .map((reason) => {
+      if (reason === FOREIGN_COMPACTION_DROPPED_REASON) {
+        return t("已去掉别家签发的压缩上下文，较早的对话内容不可用");
+      }
+      if (!reason.startsWith(QUEUE_REASON_PREFIX)) return reason;
+      const queued = queueWaitMs([reason]);
+      return queued === null ? reason : tf("限速排队 {0}", [formatQueueWait(queued)]);
+    })
+    .join("、");
 }
 
 /** 请求来自哪个 Agent：网关记录带 agent 字段，Codex 直连代理的记录没有。 */
@@ -6130,8 +6211,8 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                     ) : null}
                   </span>
                   <span
-                    className={entry.autoRetries > 0 ? "request-log-retry" : "request-log-muted"}
-                    title={(entry.retryReasons ?? []).join("、")}
+                    className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) ? "request-log-retry" : "request-log-muted"}
+                    title={requestLogRetryReasons(entry)}
                   >
                     {requestLogRetryLabel(entry)}
                   </span>
@@ -6205,7 +6286,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
                       <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (entry.state === "running" ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
                       <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
                       <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
-                      <div><dt>{t("重试原因")}</dt><dd>{(entry.retryReasons ?? []).join("、") || "-"}</dd></div>
+                      <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
                       {entry.attemptDetails?.length ? (
                         <div className="request-log-attempts">
                           <dt>{t("尝试明细")}</dt>
@@ -7030,6 +7111,8 @@ function CodexMultiLaunchScreen({
           <CardHeader>
             <CardTitle>{t("选择供应商身份启动 Codex")}</CardTitle>
             <CardDescription>{t("每个身份使用独立的配置、会话和用户数据目录，可与其他单一 Responses 或 Chat Completions 供应商同时运行。")}</CardDescription>
+            {/* #2754：新版的 API 多加在「供应商池」，多开却只读旧版供应商配置，用户以为 Key 没生效。 */}
+            <CardDescription>{t("多开只使用「旧版供应商配置」里的供应商和 API Key，「供应商池」（网关）里添加的供应商与 Key 不会出现在这里。修改供应商或 Key 后，需在上方对运行中的实例点「重启」才会生效。")}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="relay-profile-list">
@@ -9141,6 +9224,14 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       return haystack.includes(query);
     });
   }, [marketSearch, marketScripts]);
+  // 用户没手动选排序时跟随数据：清单里每个脚本都标了更新时间就默认「最近更新」，否则保持清单原顺序。
+  const [marketSortChoice, setMarketSortChoice] = useState<ScriptMarketSort | null>(null);
+  const marketSort = marketSortChoice ?? defaultMarketSort(marketScripts);
+  const sortedMarketScripts = useMemo(
+    () => sortMarketScripts(filteredMarketScripts, marketSort),
+    [filteredMarketScripts, marketSort],
+  );
+  const hasMarketUpdateTimes = marketScripts.some((script) => parseMarketTime(script.updatedAt) !== null);
   const installedCount = marketScripts.filter((script) => script.installed).length;
   // market_id -> 本地脚本 key。只用 user 来源的脚本：内置脚本走的是 builtin: 前缀，
   // 后端 delete_user_script 只接受 user:，映射过去会直接报错。
@@ -9217,6 +9308,23 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
               value={marketSearch}
             />
           </div>
+          <AppSelect
+            ariaLabel={t("市场脚本排序")}
+            className="script-market-sort"
+            onChange={(value) => setMarketSortChoice(value)}
+            options={[
+              { value: "default", label: t("默认顺序") },
+              {
+                value: "updated",
+                label: t("最近更新"),
+                title: hasMarketUpdateTimes ? undefined : t("市场清单暂未提供脚本更新时间"),
+              },
+              { value: "name", label: t("名称") },
+            ]}
+            size="sm"
+            title={t("市场脚本排序")}
+            value={marketSort}
+          />
           <div className="script-market-view-toggle" role="group" aria-label={t("脚本排版")}>
             <Button aria-pressed={marketView === "grid"} onClick={() => setMarketView("grid")} size="sm" variant={marketView === "grid" ? "secondary" : "ghost"}>
               <LayoutGrid className="h-4 w-4" />
@@ -9233,7 +9341,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
         marketScripts.length ? (
           filteredMarketScripts.length ? (
             <div className={marketView === "list" ? "script-market-list" : "script-market-grid"}>
-              {filteredMarketScripts.map((script) => (
+              {sortedMarketScripts.map((script) => (
                 <MarketScriptCard
                   actions={actions}
                   installedKey={installedKeyByMarketId.get(script.id)}
@@ -9252,7 +9360,7 @@ function UserScriptsScreen({ settings, market, actions }: { settings: SettingsRe
       ) : (
         <Panel>
           <div className="table">
-            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
+            {scripts.length ? scripts.map((script) => <ScriptRow key={script.key} script={script} globalEnabled={localEnabled} actions={actions} />) : <div className="empty">{t("未发现用户脚本。")}</div>}
           </div>
         </Panel>
       )}
@@ -9426,6 +9534,18 @@ function SessionMaintenance({ dirty, form, providerSyncProgress, sessionIndexRep
               <p>
                 {t("恢复消息")} {sessionIndexRepairReport.repairedItems} · {t("已存在")} {sessionIndexRepairReport.alreadyPresent} · {t("短暂等待")} {sessionIndexRepairReport.deferredItems ?? 0} · {t("需核查")} {sessionIndexRepairReport.skippedItems}
               </p>
+              {sessionIndexRepairReport.frontendRecovery ? (
+                <p role="status" className="break-all">
+                  <strong>{t("历史轮次补载：")}</strong>
+                  {historyRecoveryStatusLabel(sessionIndexRepairReport.frontendRecovery, t)}
+                  {" · "}{sessionIndexRepairReport.frontendRecovery.status}
+                  {" · "}{t("消息页")} {sessionIndexRepairReport.frontendRecovery.loadedPages}
+                  {" · "}{t("元数据页")} {sessionIndexRepairReport.frontendRecovery.metadataPages}
+                  {sessionIndexRepairReport.frontendRecovery.reason ? (
+                    <small> · {t("原因：")}{sessionIndexRepairReport.frontendRecovery.reason}</small>
+                  ) : null}
+                </p>
+              ) : null}
               <small>{t("仅恢复有本地原文且可确认位置的消息；已打开的会话可能需要重新打开才能显示。")}</small>
               <p><small>{t("自动检查需要从此界面启动 Codex，并保持 Codex++ 运行，且自动修复开关已开启并保存；每次检查完成后间隔 30 分钟复查。此页面每 15 秒刷新报告，不会单独启动修复；再次检查不保证恢复。")}</small></p>
               <p><small>{t("短暂等待最长 30 分钟；原文和记录文件都已超过 24 小时未更新的项目直接转入需核查。缺少对应轮次或结束状态，当前证据不足以安全补回；后续检查仍会核验。")}</small></p>
@@ -10300,6 +10420,10 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
   const active = profile.id === form.activeRelayId;
   // 网关托管的供应商：由「Agent 接入」管理，这里只能「使用」（重新接入）。
   const gatewayManaged = profile.id === CODEX_GATEWAY_RELAY_ID;
+  const billing = useRelayBillingProbe(
+    !gatewayManaged && relayBillingProbeEligible(profile) ? relayBillingCacheKey(profile) : "",
+    () => invoke<CommandResult<RelayBillingProbe>>("probe_relay_billing", { profile }),
+  );
   const style: CSSProperties = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -10347,6 +10471,9 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
             <span className="relay-tag" data-tone="protocol">{relayProtocolShortLabel(profile.protocol)}</span>
           ) : null}
           {active ? <span className="relay-active-badge">{t("使用中")}</span> : null}
+          {!billing.probe && billing.settled ? (
+            <RelayBillingRetry failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} />
+          ) : null}
         </strong>
         <small>
           {gatewayManaged
@@ -10359,6 +10486,9 @@ const SortableRelayProfileCard = memo(function SortableRelayProfileCard({
               : t("使用 Codex 当前登录的 ChatGPT 账号")
             : relayProfileConfigBrief(profile)}
         </small>
+        {billing.probe ? (
+          <RelayBillingLine failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} />
+        ) : null}
       </span>
       <span className="relay-card-actions">
         <Button
@@ -10472,6 +10602,23 @@ function formatMarketUpdatedAt(value: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/// 市场脚本更新时间的相对描述：刚刚 / N 小时前 / N 天前 / N 个月前 / N 年前。
+function formatRelativeAge(time: number, now = Date.now()): string {
+  const age = relativeAge(time, now);
+  switch (age.unit) {
+    case "justNow":
+      return t("刚刚");
+    case "hours":
+      return tf("{0} 小时前", [age.value]);
+    case "days":
+      return tf("{0} 天前", [age.value]);
+    case "months":
+      return tf("{0} 个月前", [age.value]);
+    case "years":
+      return tf("{0} 年前", [age.value]);
+  }
+}
+
 function MarketScriptCard({
   script,
   actions,
@@ -10492,12 +10639,20 @@ function MarketScriptCard({
   const hiddenTags = script.tags.slice(3);
   const isGitHubHomepage = script.homepage ? isGitHubRepositoryHomepage(script.homepage) : false;
   const githubSupportLabel = isGitHubHomepage ? tf("在 GitHub 上支持作者：{0}", [script.name]) : undefined;
+  const updatedTime = parseMarketTime(script.updatedAt);
   return (
     <div className="script-market-card" data-view={view}>
       <div className="script-market-title">
         <div>
           <strong>{script.name}</strong>
-          <span>{script.author || t("未知作者")} · v{script.version}</span>
+          <span>
+            {script.author || t("未知作者")} · v{script.version}
+            {updatedTime !== null ? (
+              <time dateTime={script.updatedAt} title={tf("更新于 {0}", [formatMarketUpdatedAt(script.updatedAt || "")])}>
+                {" · "}{tf("{0}更新", [formatRelativeAge(updatedTime)])}
+              </time>
+            ) : null}
+          </span>
         </div>
         {status ? <UiBadge className="script-market-status" variant={script.updateAvailable ? "default" : "secondary"}>{status}</UiBadge> : null}
       </div>
@@ -13005,6 +13160,10 @@ function AggregateRelayProfileEditor({
   const selectedCandidates = candidates.filter((candidate) => memberIds.has(candidate.id));
   const defaultCandidate = selectedCandidates.find((candidate) => candidate.id === aggregate.defaultRelayId);
   const bareModelCount = defaultCandidate ? memberModelCount(defaultCandidate) : 0;
+  // 官方登录成员一个模型都没填时，后端按 Codex 缓存的官方模型目录发布（#2763），这里给不出确切数量。
+  const defaultUsesOfficialDirectory = !!defaultCandidate
+    && isOfficialLoginMemberProfile(defaultCandidate)
+    && bareModelCount === 0;
   const prefixedModelCount = selectedCandidates
     .filter((candidate) => candidate.id !== defaultCandidate?.id)
     .reduce((sum, candidate) => sum + memberModelCount(candidate), 0);
@@ -13072,7 +13231,9 @@ function AggregateRelayProfileEditor({
             </span>
             {modelMode && selectedCandidates.length ? (
               <span className="aggregate-model-summary">
-                {defaultCandidate
+                {defaultCandidate && defaultUsesOfficialDirectory
+                  ? tf("Codex 将看到 {0} 的官方模型目录（裸名）+ {1} 个 cpx- 前缀模型", [defaultCandidate.name || t("未命名供应商"), prefixedModelCount])
+                  : defaultCandidate
                   ? tf("Codex 将看到 {0} 个裸名模型（来自 {1}）+ {2} 个 cpx- 前缀模型", [bareModelCount, defaultCandidate.name || t("未命名供应商"), prefixedModelCount])
                   : tf("Codex 将看到 {0} 个 cpx- 前缀模型；还没指定默认成员，不带前缀的请求会报错", [prefixedModelCount])}
               </span>
@@ -13123,7 +13284,7 @@ function AggregateRelayProfileEditor({
                         {memberModelNames.length
                           ? tf("{0} 个模型", [memberModelNames.length])
                           : (isOfficialLoginMemberProfile(candidate)
-                            ? t("请填写该官方账号的模型列表")
+                            ? t("未填写：用 Codex 的官方模型目录")
                             : t("未填写模型"))}
                       </span>
                       {checked ? (isDefaultMember ? (
@@ -14327,23 +14488,30 @@ function PendingProviderImportDialog({
   onConfirm: () => void;
   onDismiss: () => void;
 }) {
+  const toPool = request.target === "pool";
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
       <div className="modal-card provider-import-modal">
         <div className="modal-head">
           <div>
             <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
+            <p>{toPool ? t("检测到来自网页的供应商导入请求，确认后会加进网关供应商池，并自动从上游获取模型。") : t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
         <div className="metric-list">
           <Metric label={t("名称")} value={request.name || t("未命名供应商")} />
+          <Metric label={t("导入到")} value={toPool ? t("网关供应商池") : t("直连模式供应商")} />
           <Metric label="Base URL" value={request.baseUrl || t("未填写")} />
           <Metric label={t("协议")} value={providerImportWireApiLabel(request.wireApi)} />
-          <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />
+          {toPool ? null : <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />}
           <Metric label="API Key" value={maskSecret(request.apiKey)} />
         </div>
+        {toPool ? (
+          <div className="hint-line" role="note">
+            {t("导入后供应商默认启用，会按「Agent 接入」里各 Agent 的「添加供应商时自动加入」设置立即承接请求。")}
+          </div>
+        ) : null}
         <div className="hint-line" role="note">
           {t("安全提示：网页链接中的自定义 config.toml 和 auth.json 不会执行；管理工具只会使用上方字段生成受管配置。")}
         </div>
@@ -14441,6 +14609,14 @@ function Panel({ children, fill = false, className = "", id }: { children: React
   );
 }
 
+type ClaudeBashTimeoutSettings = {
+  enabled: boolean;
+  defaultEnabled: boolean;
+  defaultSeconds: number;
+  maxEnabled: boolean;
+  maxSeconds: number;
+};
+
 type ClaudeLocalizationStatus = {
   supported: boolean;
   sourceApp: string;
@@ -14459,6 +14635,9 @@ type ClaudeLocalizationStatus = {
   computerUse: boolean;
   /** 当前平台能否真正应用 Computer Use；Windows 为 false（#2673）。 */
   computerUseSupported: boolean;
+  bashTimeout: ClaudeBashTimeoutSettings;
+  bashTimeoutWarning?: string | null;
+  bashTimeoutPending?: boolean;
 };
 
 /**
@@ -14482,6 +14661,17 @@ function ClaudeLocalizationScreen() {
   const [progress, setProgress] = useState<{ percent: number; message: string } | null>(null);
   const mounted = useRef(true);
   const pending = useRef(false);
+  const statusGeneration = useRef(0);
+  const [bashTimeoutDraft, setBashTimeoutDraft] = useState<ClaudeBashTimeoutSettings | null>(
+    claudeLocalizationMemo.status?.status === "ok"
+      ? claudeLocalizationMemo.status.bashTimeout
+      : null,
+  );
+  // 编辑时保留空字符串，避免清空输入框立刻补 1 后把新数字拼在后面。
+  const [bashTimeoutDefaultText, setBashTimeoutDefaultText] = useState<string | null>(null);
+  const [bashTimeoutMaxText, setBashTimeoutMaxText] = useState<string | null>(null);
+  const bashTimeoutSaving = useRef(false);
+  const bashTimeoutQueued = useRef<ClaudeBashTimeoutSettings | null>(null);
   /**
    * 页头右上角的操作槽：「启动增强版」放在和 Codex 页「启动 Codex」相同的位置。
    * 页头与本页都按路由重建、同一次提交挂载，所以在 layout effect 里取，首帧绘制前就到位。
@@ -14505,12 +14695,18 @@ function ClaudeLocalizationScreen() {
     // 先记下有效结果再判断挂载：检测中切走页面，回来时仍能看到这次的结果。
     if (result.status === "ok") claudeLocalizationMemo.status = result;
     if (!mounted.current) return;
-    if (result.status === "ok") setStatus(result);
+    if (result.status === "ok") {
+      setStatus(result);
+      setBashTimeoutDraft(result.bashTimeout);
+      setBashTimeoutDefaultText(null);
+      setBashTimeoutMaxText(null);
+    }
     else setError(result.message);
   };
   const refresh = async () => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("detect"); setError(null);
     try { accept(await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_status")); }
     catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
@@ -14542,14 +14738,30 @@ function ClaudeLocalizationScreen() {
   const act = async (action: "prepare" | "launch" | "restore" | "check") => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy(action); setError(null);
+    const launching = action === "launch" || action === "restore";
+    const clearLaunchNotice = () => {
+      setStatus((current) => current?.status === "ok"
+        ? { ...current, bashTimeoutWarning: null, bashTimeoutPending: false } : current);
+    };
+    if (launching) {
+      const timeout = bashTimeoutDraft ?? (status?.status === "ok" ? status.bashTimeout : null);
+      const awaitingConfirmation = Boolean(timeout?.enabled && (timeout.defaultEnabled || timeout.maxEnabled));
+      setStatus((current) => current?.status === "ok" ? {
+        ...current,
+        bashTimeoutWarning: awaitingConfirmation ? "已准备，暂未确认。将在增强版启动后自动确认。" : null,
+        bashTimeoutPending: awaitingConfirmation,
+      } : current);
+    }
     if (action === "prepare") setProgress({ percent: 0, message: t("准备开始…") });
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>("claude_localization_action", { action });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
+      if (launching && result.status !== "ok") clearLaunchNotice();
       accept(result);
-    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
+    } catch (cause) { if (mounted.current) { if (launching) clearLaunchNotice(); setError(stringifyError(cause)); } }
     finally {
       pending.current = false;
       if (mounted.current) setBusy(null);
@@ -14559,6 +14771,7 @@ function ClaudeLocalizationScreen() {
   const toggleVoiceInput = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("voiceInput"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -14577,6 +14790,7 @@ function ClaudeLocalizationScreen() {
   const toggleComputerUse = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("computerUse"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -14590,9 +14804,48 @@ function ClaudeLocalizationScreen() {
       if (mounted.current) setBusy(null);
     }
   };
+  const saveBashTimeout = async (next: ClaudeBashTimeoutSettings) => {
+    if (pending.current && !bashTimeoutSaving.current) return;
+    bashTimeoutQueued.current = next;
+    setBashTimeoutDraft(next);
+    if (bashTimeoutSaving.current) return;
+    let confirmed = status?.status === "ok" ? status.bashTimeout : null;
+    pending.current = true;
+    statusGeneration.current++;
+    bashTimeoutSaving.current = true;
+    setBusy("bashTimeout"); setError(null);
+    try {
+      // 失焦保存先于开关点击；串行处理后续草稿，避免吞掉这次点击。
+      while (bashTimeoutQueued.current) {
+        const timeout = bashTimeoutQueued.current;
+        bashTimeoutQueued.current = null;
+        const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+          "claude_localization_set_bash_timeout",
+          { timeout },
+        );
+        if (result.status !== "ok") throw new Error(result.message);
+        confirmed = result.bashTimeout;
+        claudeLocalizationMemo.status = result;
+        if (mounted.current) setStatus(result);
+        if (!bashTimeoutQueued.current) accept(result);
+      }
+    } catch (cause) {
+      bashTimeoutQueued.current = null;
+      if (mounted.current) {
+        setBashTimeoutDraft(confirmed);
+        setError(stringifyError(cause));
+      }
+    }
+    finally {
+      bashTimeoutSaving.current = false;
+      pending.current = false;
+      if (mounted.current) setBusy(null);
+    }
+  };
   const toggleLocalization = async (enabled: boolean) => {
     if (pending.current) return;
     pending.current = true;
+    statusGeneration.current++;
     setBusy("localization"); setError(null);
     try {
       const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
@@ -14609,6 +14862,35 @@ function ClaudeLocalizationScreen() {
     }
   };
   const s = status;
+  const bashTimeout = bashTimeoutDraft ?? s?.bashTimeout;
+  useEffect(() => {
+    if (!s?.bashTimeoutPending || !s.running || busy !== null) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const generation = statusGeneration.current;
+    const poll = async () => {
+      try {
+        const result = await invoke<CommandResult<{ warning: string | null; pending: boolean }>>(
+          "claude_localization_bash_timeout_status",
+        );
+        if (cancelled || !mounted.current || pending.current || statusGeneration.current !== generation) return;
+        if (result.status === "ok") {
+          // 只同步提示，不覆盖正在编辑的秒数或其他设置草稿。
+          const update = { bashTimeoutWarning: result.warning, bashTimeoutPending: result.pending };
+          setStatus((current) => current?.status === "ok" ? { ...current, ...update } : current);
+          if (claudeLocalizationMemo.status?.status === "ok") {
+            claudeLocalizationMemo.status = { ...claudeLocalizationMemo.status, ...update };
+          }
+          if (!result.pending) return;
+        }
+      } catch { /* 临时读取失败保留提示，下一轮继续确认。 */ }
+      if (!cancelled && mounted.current && statusGeneration.current === generation) {
+        timer = setTimeout(() => void poll(), 1000);
+      }
+    };
+    timer = setTimeout(() => void poll(), 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [s?.bashTimeoutPending, s?.running, busy]);
   const canLaunch = Boolean(s?.prepared && !s.needsRebuild && s.nodeAvailable);
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
@@ -14677,6 +14959,9 @@ function ClaudeLocalizationScreen() {
             <p className="claude-l10n-hint">{t("未检测到 Claude，请先安装官方应用。你可以继续使用 Codex++ 的其他功能。")}</p>
           ) : null}
           {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
+          {bashTimeout?.enabled && s?.bashTimeoutWarning ? (
+            <div className="claude-l10n-warning" role="status">{t("Bash时限解锁增强:")} {t(s.bashTimeoutWarning)}</div>
+          ) : null}
           {progress ? (
             <div
               aria-valuemax={100}
@@ -14782,6 +15067,109 @@ function ClaudeLocalizationScreen() {
                   {t("这里的电脑控制和「Computer Use」页给 Claude Desktop 接入的 codex-plus-cu 是两套独立实现，同一个 Claude Desktop 里二选一即可，不要同时开。")}
                 </p>
               )
+            ) : null}
+            <label className="switch-row compact claude-bash-timeout-master">
+              <input
+                aria-label={t("解锁 Bash 时间限制")}
+                checked={Boolean(bashTimeout?.enabled)}
+                disabled={(busy !== null && busy !== "bashTimeout") || !bashTimeout}
+                onChange={(event) => {
+                  if (bashTimeout) void saveBashTimeout({ ...bashTimeout, enabled: event.currentTarget.checked });
+                }}
+                type="checkbox"
+              />
+              <span>
+                <strong>{t("解锁 Bash 时间限制")}</strong>
+                <small>{t("配置 Claude Code Bash 的默认值与最大值；Cowork 还需启动注入成功且模块版本兼容。适配失败时提示并保持该项原生时限，不影响其他增强。重启增强版后应用。")}</small>
+              </span>
+              <ToggleVisual />
+            </label>
+            {bashTimeout?.enabled ? (
+              <div className="claude-bash-timeout-editor">
+                <p>{t("两项可分别启停，单位均为秒。修改数字后离开输入框即保存。")}</p>
+                <label className="switch-row compact claude-bash-timeout-toggle">
+                  <input
+                    aria-label={t("修改默认等待时间")}
+                    checked={bashTimeout.defaultEnabled}
+                    disabled={busy !== null && busy !== "bashTimeout"}
+                    onChange={(event) => void saveBashTimeout({
+                      ...bashTimeout,
+                      defaultEnabled: event.currentTarget.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("修改默认等待时间")}</strong>
+                    <small>{t("未显式传 timeout / timeout_ms 时使用；Claude Code 与本地 Cowork Bash 原生默认 120 秒。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <div className="claude-bash-timeout-value">
+                  <span>{t("默认等待时间")}</span>
+                  <Input
+                    aria-label={t("默认等待时间（秒）")}
+                    disabled={busy !== null || !bashTimeout.defaultEnabled}
+                    max={2147423}
+                    min={1}
+                    onChange={(event) => {
+                      setBashTimeoutDefaultText(event.currentTarget.value);
+                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                      setBashTimeoutDraft((current) => current ? { ...current, defaultSeconds: seconds } : current);
+                    }}
+                    onBlur={() => {
+                      setBashTimeoutDefaultText(null);
+                      void saveBashTimeout(bashTimeout);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    type="number"
+                    value={bashTimeoutDefaultText ?? bashTimeout.defaultSeconds}
+                  />
+                  <span>{t("秒")}</span>
+                </div>
+                <label className="switch-row compact claude-bash-timeout-toggle">
+                  <input
+                    aria-label={t("修改最大等待时间")}
+                    checked={bashTimeout.maxEnabled}
+                    disabled={busy !== null && busy !== "bashTimeout"}
+                    onChange={(event) => void saveBashTimeout({
+                      ...bashTimeout,
+                      maxEnabled: event.currentTarget.checked,
+                    })}
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("修改最大等待时间")}</strong>
+                    <small>{t("显式传 timeout / timeout_ms 时的上限；原生参数上限 600 秒，Cowork 还受外层等待时限约束。")}</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <div className="claude-bash-timeout-value">
+                  <span>{t("最大等待时间")}</span>
+                  <Input
+                    aria-label={t("最大等待时间（秒）")}
+                    disabled={busy !== null || !bashTimeout.maxEnabled}
+                    max={2147423}
+                    min={1}
+                    onChange={(event) => {
+                      setBashTimeoutMaxText(event.currentTarget.value);
+                      const seconds = clampNumber(Number(event.currentTarget.value), 1, 2147423);
+                      setBashTimeoutDraft((current) => current ? { ...current, maxSeconds: seconds } : current);
+                    }}
+                    onBlur={() => {
+                      setBashTimeoutMaxText(null);
+                      void saveBashTimeout(bashTimeout);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") event.currentTarget.blur();
+                    }}
+                    type="number"
+                    value={bashTimeoutMaxText ?? bashTimeout.maxSeconds}
+                  />
+                  <span>{t("秒")}</span>
+                </div>
+              </div>
             ) : null}
             {s?.supported && !s.prepared ? (
               <p className="claude-l10n-hint">
@@ -14938,8 +15326,9 @@ function AppSidebar({
   onOpenUpdate,
   codexRun,
 }: {
-  /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。 */
-  codexRun: { running: boolean; busy: boolean; onStart: () => void; onStop: () => void };
+  /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
+      unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
+  codexRun: { running: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void };
   tools: ToolEntry[];
   activeTool: ToolId;
   route: Route;
@@ -15023,18 +15412,13 @@ function AppSidebar({
       <button className="side-search" data-tour="palette" onClick={onOpenPalette} type="button">
         <Search aria-hidden="true" className="side-item-icon" />
         <span>{t("快速跳转")}</span>
-        <kbd>⌘K</kbd>
+        <kbd>{paletteShortcut}</kbd>
       </button>
 
       <nav aria-label={t("主导航")} className="side-nav">
         <section className={`side-group ${collapsed.includes("gateway") ? "collapsed" : ""}`}>
           {groupLabel("gateway", t("网关"))}
           <div className="side-group-items">{gatewayNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
-        </section>
-
-        <section className={`side-group ${collapsed.includes("management") ? "collapsed" : ""}`} data-tour="management">
-          {groupLabel("management", t("全局管理"))}
-          <div className="side-group-items">{managementNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
         </section>
 
         <section className={`side-group ${collapsed.includes("agents") ? "collapsed" : ""}`} data-tour="agents">
@@ -15061,7 +15445,7 @@ function AppSidebar({
                   ? { tone: "direct", label: t("Codex 的供应商配置由 Codex++ 直接管理") }
                   : { tone: "off", label: t("未接入网关") };
               return (
-                <div className="side-agent-wrap" key={tool.id}>
+                <div className={`side-agent-wrap ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()} key={tool.id}>
                   <button
                     aria-current={current && !onGlobalPage ? "true" : undefined}
                     aria-label={tool.switchable ? `${tool.name} · ${access.label}` : `${tool.name} · ${t("待接入")}`}
@@ -15080,9 +15464,10 @@ function AppSidebar({
                       aria-label={codexRun.running ? t("停止 Codex") : t("启动 Codex")}
                       className="side-agent-run"
                       data-running={codexRun.running}
-                      disabled={codexRun.busy}
+                      data-unavailable={!codexRun.running && Boolean(codexRun.unavailableReason)}
+                      disabled={codexRun.busy || (!codexRun.running && Boolean(codexRun.unavailableReason))}
                       onClick={codexRun.running ? codexRun.onStop : codexRun.onStart}
-                      title={codexRun.busy ? t("处理中…") : codexRun.running ? t("停止 Codex") : t("启动 Codex")}
+                      title={codexRun.busy ? t("处理中…") : codexRun.running ? t("停止 Codex") : codexRun.unavailableReason ?? t("启动 Codex")}
                       type="button"
                     >
                       {codexRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : codexRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}
@@ -15092,6 +15477,11 @@ function AppSidebar({
               );
             })}
           </div>
+        </section>
+
+        <section className={`side-group ${collapsed.includes("management") ? "collapsed" : ""}`} data-tour="management">
+          {groupLabel("management", t("全局管理"))}
+          <div className="side-group-items">{managementNavigationRoutes.map((routeId) => renderItem(routeId))}</div>
         </section>
 
         <section className={`side-group ${collapsed.includes("tools") ? "collapsed" : ""}`}>
@@ -15177,20 +15567,50 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ScriptRow({ script, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; actions: Actions }) {
+/// 本地脚本合并状态的文案与悬停说明。
+function localScriptStateLabel(state: LocalScriptState): { label: string; hint: string } {
+  switch (state) {
+    case "off":
+      return { label: t("已关闭"), hint: t("该脚本已关闭，不会注入 Codex") };
+    case "globalOff":
+      return { label: t("整体已关闭"), hint: t("脚本开着，但「启用本地脚本」整体开关关着，暂不注入") };
+    case "loaded":
+      return { label: t("已加载"), hint: t("已在 Codex 里运行") };
+    case "loading":
+      return { label: t("加载中"), hint: t("正在 Codex 里加载") };
+    case "failed":
+      return { label: t("加载失败"), hint: t("脚本在 Codex 里运行出错") };
+    case "notLoaded":
+      return { label: t("未加载"), hint: t("Codex 未运行或尚未热重载脚本") };
+  }
+}
+
+/// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
+/// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
+/// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
+function ScriptRow({ script, globalEnabled, actions }: { script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
   const source = script.market_id ? tf("市场 · {0}", [script.version || t("未知版本")]) : script.source === "builtin" ? t("内置") : t("用户");
   const canDelete = script.source === "user";
+  const state = localScriptState(script, globalEnabled);
+  const { label, hint } = localScriptStateLabel(state);
+  const stateHint = state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
   return (
-    <div className="table-row">
+    <div className="table-row user-script-row">
       <span>{script.name}</span>
       <span>{source}</span>
-      <span>{script.enabled ? t("启用") : t("关闭")}</span>
-      <span>{script.status}</span>
+      <div className="user-script-state">
+        <label className="relay-bare-switch" title={script.enabled ? t("关闭该脚本") : t("启用该脚本")}>
+          <input
+            aria-label={tf("启用 {0}", [script.name])}
+            checked={script.enabled}
+            onChange={() => void actions.setUserScriptEnabled(script.key, !script.enabled)}
+            type="checkbox"
+          />
+          <ToggleVisual />
+        </label>
+        <span className="user-script-state-label" data-state={state} title={stateHint}>{label}</span>
+      </div>
       <div className="script-row-actions">
-        <Button onClick={() => void actions.setUserScriptEnabled(script.key, !script.enabled)} size="sm" variant="secondary">
-          {script.enabled ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />}
-          {script.enabled ? t("禁用") : t("启用")}
-        </Button>
         {canDelete ? (
           <Button onClick={() => void actions.deleteUserScript(script.key)} size="sm" variant="outline">
             <Trash2 className="h-4 w-4" />
@@ -16304,6 +16724,9 @@ function providerImportWireApiLabel(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (normalized === "chat" || normalized === "chat_completions" || normalized === "chat-completions") {
     return "Chat Completions";
+  }
+  if (normalized === "anthropic" || normalized === "anthropic_messages" || normalized === "anthropic-messages" || normalized === "messages") {
+    return "Anthropic Messages";
   }
   return "Responses";
 }

@@ -57,4 +57,6 @@
 
 模型聚合目录由 `aggregate_catalog.rs` 生成。`aggregate.defaultRelayId` 指定默认成员，其模型使用裸名发布；其他成员使用 `cpx-<供应商ID>/<模型名>`。裸名请求交给默认成员，未知成员前缀报错；单个成员不可用时只隔离该成员。成员目录沿用各自窗口与元数据，补齐 `base_instructions`，并检查公共配置的 `multi_agent_v2` 兼容性。官方登录成员通过 `official_login.rs` 获取凭据，再由 `model_catalog.rs` 拉取官方可见模型。
 
+官方登录成员的模型列表与默认模型都为空时，聚合目录从本机 `models_cache.json` 补入非隐藏模型；有显式模型配置时保持其列表。缓存缺失时不编造模型，仍返回空目录。回归见 `aggregate_catalog::tests::official_member_without_models_publishes_codex_official_directory`。
+
 `model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 在原生模型菜单按供应商折叠；组内继续使用个人版自然排序，折叠偏好按供应商保存。单供应商保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。

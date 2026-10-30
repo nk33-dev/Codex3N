@@ -35,10 +35,12 @@ pub mod dream_skin_market;
 pub mod dream_skin_package;
 pub mod dream_skin_runtime;
 pub mod env_conflicts;
+pub mod foreign_reasoning;
 pub mod gateway;
 pub mod git_maintenance;
 pub mod global_dictation;
 pub mod grok_config;
+pub mod history_turn_recovery;
 pub mod http_client;
 pub mod install;
 pub mod launcher;
@@ -61,12 +63,14 @@ pub mod paths;
 pub mod ports;
 pub mod window_capture;
 // 独立插件市场按需下载安装，不调用原生授权安装流程。
+pub mod newapi;
 pub mod plugin_market;
 pub mod prompt_enhance;
 pub mod protocol_proxy;
 pub mod provider_import;
 pub mod proxy;
 pub mod recovery;
+pub mod relay_billing;
 pub mod relay_config;
 pub mod relay_environment;
 pub mod relay_features;
@@ -100,6 +104,7 @@ pub mod version;
 pub mod vision;
 pub mod watcher;
 pub mod work_view;
+pub mod wsl_network;
 pub(crate) mod xai_responses;
 // 不加 `#[cfg(windows)]`：模块内部各项已各自标注平台门控，在非 Windows 平台上
 // 是一个只含少数无平台依赖项（如 current_process_is_elevated 的桩实现）的空模块。

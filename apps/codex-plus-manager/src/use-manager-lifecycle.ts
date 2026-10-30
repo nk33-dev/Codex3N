@@ -15,6 +15,7 @@ type ManagerLifecycleOptions = {
   refreshWeixin: (isCurrent: () => boolean) => Promise<unknown>;
   refreshMultiLaunch?: (isCurrent: () => boolean) => Promise<unknown>;
   refreshAutoTakeover?: (isCurrent: () => boolean) => Promise<unknown>;
+  refreshCodexRunning?: (isCurrent: () => boolean) => Promise<unknown>;
   onError: (error: unknown) => void;
 };
 
@@ -94,6 +95,16 @@ export function useManagerLifecycle(options: ManagerLifecycleOptions) {
       unlisteners.forEach((unlisten) => unlisten());
     };
   }, [options.ready]);
+
+  useEffect(() => {
+    const codex = createVisibleRefresh({
+      refresh: (isCurrent) => latest.current.refreshCodexRunning?.(isCurrent) ?? Promise.resolve(),
+      intervalMs: 5_000,
+      onError: (error) => latest.current.onError(error),
+    });
+    codex.setVisible(options.ready && visible);
+    return () => codex.dispose();
+  }, [options.ready, visible]);
 
   useEffect(() => {
     const status = createVisibleRefresh({

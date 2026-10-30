@@ -211,6 +211,10 @@ pub struct LaunchOptions {
     pub codex_home: Option<PathBuf>,
     /// Codex SQLite 目录（`CODEX_SQLITE_HOME`），多开实例各自独立。
     pub sqlite_home: Option<PathBuf>,
+    /// 由「重启 Codex」发起（issue #2764 后续）：Windows 商店版主 Codex 已在运行却没带
+    /// 本次调试端口时，结束它再按正常流程启动。普通「启动 Codex」保持 `false`，
+    /// 只提示用户自行退出，不结束用户正在用的 Codex。
+    pub replace_blocking_main_instance: bool,
 }
 
 impl Default for LaunchOptions {
@@ -223,6 +227,7 @@ impl Default for LaunchOptions {
             state_dir: None,
             codex_home: None,
             sqlite_home: None,
+            replace_blocking_main_instance: false,
         }
     }
 }
@@ -240,6 +245,8 @@ pub struct LaunchInstance {
     pub codex_home: Option<PathBuf>,
     /// Codex SQLite 目录（`CODEX_SQLITE_HOME`）。
     pub sqlite_home: Option<PathBuf>,
+    /// 见 [`LaunchOptions::replace_blocking_main_instance`]。
+    pub replace_blocking_main_instance: bool,
 }
 
 impl LaunchInstance {
@@ -248,6 +255,7 @@ impl LaunchInstance {
             state_dir: options.state_dir.clone(),
             codex_home: options.codex_home.clone(),
             sqlite_home: options.sqlite_home.clone(),
+            replace_blocking_main_instance: options.replace_blocking_main_instance,
         }
     }
 }
@@ -1485,6 +1493,54 @@ impl LaunchHooks for DefaultLaunchHooks {
                 else {
                     unreachable!();
                 };
+                // issue #2764：主 Codex 已经开着（开始菜单 / 托盘）但没带本次调试端口时，
+                // 单实例锁在它手里，AUMID 激活和包上下文兜底拉起的进程都会把参数交给它后
+                // 立即退出，端口永远等不到。先识别出来：「重启 Codex」结束它再启动，
+                // 「启动 Codex」直接给出可操作的提示，都不再空跑兜底。
+                #[cfg(windows)]
+                {
+                    let executable = crate::app_paths::build_codex_executable(app_dir);
+                    let blocking = existing_main_instances_blocking_debug_launch(
+                        &executable,
+                        debug_port,
+                        &launch_extra_args,
+                    )
+                    .await;
+                    if !blocking.is_empty() {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.packaged_existing_main_instance_blocks_launch",
+                            serde_json::json!({
+                                "app_user_model_id": app_user_model_id,
+                                "debug_port": debug_port,
+                                "process_ids": blocking,
+                                "replace": instance.replace_blocking_main_instance,
+                            }),
+                        );
+                    }
+                    // 「重启 Codex」：先请它们退出、再只结束主进程本身（不连树），等退出后走下面的正常激活。
+                    if !blocking.is_empty() && instance.replace_blocking_main_instance {
+                        stop_main_instances_blocking_debug_launch(
+                            &executable,
+                            debug_port,
+                            &launch_extra_args,
+                            blocking,
+                        )
+                        .await?;
+                    } else if !blocking.is_empty() {
+                        // 「启动 Codex」：不结束用户正在用的 Codex，只提示怎么退出。
+                        let executable_name = executable
+                            .file_name()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "Codex".to_string());
+                        anyhow::bail!(
+                            crate::packaged_launch::existing_main_instance_blocks_launch_message(
+                                debug_port,
+                                &executable_name,
+                                &blocking,
+                            )
+                        );
+                    }
+                }
                 match activate_packaged_app(app_user_model_id, arguments).await {
                     Ok(process_id) => {
                         #[cfg(windows)]
@@ -1638,6 +1694,11 @@ impl LaunchHooks for DefaultLaunchHooks {
             .args(&command[1..])
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(user_data_dir) = multi_instance_user_data_dir_from_args(&launch_extra_args) {
+            child_command.env("CODEX_ELECTRON_USER_DATA_PATH", user_data_dir);
+        } else if isolated_multi_instance {
+            child_command.env_remove("CODEX_ELECTRON_USER_DATA_PATH");
+        }
         // 实例状态目录要显式传给子进程：多开原先只靠给 worker 换 HOME，
         // 而 Windows 上 `directories` 走 SHGetKnownFolderPath、不读 HOME。
         if let Some(state_dir) = instance.state_dir.as_deref() {
@@ -1994,9 +2055,26 @@ fn remove_dictation_helper_receipt_at_for_port(path: &Path, helper_port: u16) {
     }
 }
 
+/// helper 的连接来自哪个监听。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HelperListener {
+    /// 本机回环（默认，原有行为）。
+    Loopback,
+    /// Windows 上 WSL 虚拟网卡的额外监听（#2773）：只放行网关路径，见 [`crate::wsl_network`]。
+    Wsl,
+}
+
 async fn handle_helper_connection(
+    stream: tokio::net::TcpStream,
+    remote_addr: Option<SocketAddr>,
+) -> anyhow::Result<()> {
+    handle_helper_connection_on(stream, remote_addr, HelperListener::Loopback).await
+}
+
+pub(crate) async fn handle_helper_connection_on(
     mut stream: tokio::net::TcpStream,
     remote_addr: Option<SocketAddr>,
+    listener: HelperListener,
 ) -> anyhow::Result<()> {
     let request = match read_http_request(&mut stream).await {
         Ok(request) => request,
@@ -2049,9 +2127,19 @@ async fn handle_helper_connection(
         }),
     );
 
-    // 入站校验必须在任何路由分发之前完成：helper 没有鉴权，且会用服务端保存的
-    // API Key 代发上游请求，因此来源与非回环对端都必须挡在门外。
-    if !helper_remote_addr_is_allowed(remote_addr, helper_allow_remote()) {
+    // WSL 网卡只开放逐请求校验 token 的网关，其余 helper 接口仍限本机回环。
+    if listener == HelperListener::Wsl && !crate::wsl_network::wsl_listener_allows(path) {
+        return reject_helper_request(
+            &mut stream,
+            "WSL 网卡上只开放 Codex++ 网关接口。",
+            "helper.wsl_forbidden",
+            serde_json::json!({ "method": method, "path": path, "remote_addr": remote_addr_text }),
+        )
+        .await;
+    }
+    if listener == HelperListener::Loopback
+        && !helper_remote_addr_is_allowed(remote_addr, helper_allow_remote())
+    {
         return reject_helper_request(
             &mut stream,
             "helper 只接受本机回环请求",
@@ -2223,6 +2311,9 @@ async fn handle_helper_connection(
                 return Ok(());
             }
         };
+        // 只有转给网关的那一跳才用得上（见 handle_protocol_proxy_connection），这里先取出来（#2783）。
+        let request_client_identity =
+            crate::protocol_proxy::codex_client_identity_headers(&request_headers);
         return handle_protocol_proxy_connection(
             &mut stream,
             &request_body,
@@ -2232,6 +2323,7 @@ async fn handle_helper_connection(
                 session_id: request_session_id.as_deref(),
                 thread_id: request_thread_id.as_deref(),
                 opencode_session: request_opencode_session.as_deref(),
+                client_identity: &request_client_identity,
             },
             method,
             path,
@@ -2886,13 +2978,20 @@ pub(crate) async fn handle_protocol_proxy_connection(
     request_body: &str,
     request_user_agent: Option<&str>,
     request_beta_features: Option<&str>,
-    session_headers: crate::protocol_proxy::ProxySessionHeaders<'_>,
+    mut session_headers: crate::protocol_proxy::ProxySessionHeaders<'_>,
     method: &str,
     path: &str,
     remote_addr_text: Option<String>,
     cors_allow_origin: &str,
     opener: ProxyOpener,
 ) -> anyhow::Result<()> {
+    let hops_through_gateway = matches!(opener, ProxyOpener::Legacy)
+        && crate::gateway::apply::codex_hops_through_gateway();
+    // 直连代理只在「本地代理 → 网关」这一跳带 Codex 的身份头，让网关再转给上游（#2783）；
+    // 直连普通供应商的代理路径保持原样，不额外透传。
+    if matches!(opener, ProxyOpener::Legacy) && !hops_through_gateway {
+        session_headers.client_identity = &[];
+    }
     let request_json = serde_json::from_str::<serde_json::Value>(request_body).ok();
     let request_thread_id = session_headers
         .thread_id
@@ -2900,8 +2999,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    let quiet = matches!(opener, ProxyOpener::Legacy)
-        && crate::gateway::apply::codex_hops_through_gateway();
+    let quiet = hops_through_gateway;
     let mut request_log = ProxyRequestLog::begin_with(
         method,
         path,
@@ -2924,6 +3022,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 Some(live_request_id.as_str()),
             )
             .await
+            .map(|upstream| (upstream, None))
         }
         ProxyOpener::Gateway(agent) => {
             request_log.set_agent(agent);
@@ -2934,12 +3033,14 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 request_user_agent,
                 session_headers,
                 Some(live_request_id.as_str()),
+                Some(&*stream),
             )
             .await
         }
     };
-    let mut upstream = match opened {
-        Ok(upstream) => upstream,
+    // `_key_slot`：网关的限速名额，持有到这个函数返回（响应转发完、出错或客户端断开）才释放。
+    let (mut upstream, _key_slot) = match opened {
+        Ok(opened) => opened,
         Err(error) => {
             let unsupported =
                 error.downcast_ref::<crate::protocol_proxy::UnsupportedEncryptedAgentContent>();
@@ -2948,6 +3049,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
             let file_unsupported =
                 error.downcast_ref::<crate::protocol_proxy::UnsupportedInputFile>();
             let vlm_failure = error.downcast_ref::<crate::vision::VlmPreprocessError>();
+            let local_limited = error.downcast_ref::<crate::gateway::pipeline::LocalRateLimited>();
             let status = if unsupported.is_some()
                 || search_unsupported.is_some()
                 || file_unsupported.is_some()
@@ -2956,6 +3058,9 @@ pub(crate) async fn handle_protocol_proxy_connection(
                     Some(crate::vision::VlmPreprocessError::MissingConfiguration)
                 ) {
                 "400 Bad Request"
+            } else if local_limited.is_some() {
+                // 网关本地限速排队超时：按限流回给客户端，不当成上游故障。
+                "429 Too Many Requests"
             } else {
                 "502 Bad Gateway"
             };
@@ -2976,7 +3081,7 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 status,
                 "application/json; charset=utf-8",
                 &body,
-                &cors_allow_origin,
+                cors_allow_origin,
             )
             .await?;
             log_helper_proxy_failure(
@@ -3186,6 +3291,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
             let mut converter = crate::responses_exec_sse::ExecSseAdapter::for_adaptation(
                 upstream.tool_adaptation(),
             );
+            // exec 兼容链路不经过 ResponsesSseTransformer，阶段标记要在它的输出上单独补（#2761）。
+            let mut phase = (crate::protocol_proxy::message_phase_fill_enabled()
+                && !foreign_client)
+                .then(crate::protocol_proxy::ResponsesSseTransformer::phase_fill_only);
             let mut bytes_stream = upstream.take_response()?.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
                 let converted = match chunk {
@@ -3195,12 +3304,21 @@ pub(crate) async fn handle_protocol_proxy_connection(
                     },
                     Err(_) => converter.fail(),
                 };
+                let converted = match phase.as_mut() {
+                    Some(phase) => phase.push_bytes(&converted),
+                    None => converted,
+                };
                 stream.write_all(&converted).await?;
                 if converter.is_complete() {
                     break;
                 }
             }
-            stream.write_all(&converter.finish()?).await?;
+            let mut tail = converter.finish()?;
+            if let Some(phase) = phase.as_mut() {
+                tail = phase.push_bytes(&tail);
+                tail.extend(phase.flush_pending());
+            }
+            stream.write_all(&tail).await?;
             let exec_succeeded = converter.succeeded();
             if let Some(outcome) = upstream.exec_outcome.as_mut() {
                 outcome.finish(exec_succeeded);
@@ -3550,6 +3668,84 @@ mod dictation_receipt_tests {
         assert!(path.exists(), "非本端口的凭据必须保留");
         remove_dictation_helper_receipt_at_for_port(&path, 57322);
         assert!(!path.exists());
+    }
+}
+
+/// #2773：WSL 网卡上的额外监听只服务网关，网关照常校验 token。
+#[cfg(test)]
+mod wsl_listener_http_tests {
+    use super::*;
+
+    async fn send_on_wsl_listener(request: String) -> String {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            // 传入 WSL 对端地址，覆盖非回环校验与网关 token 校验的衔接。
+            let remote = "172.20.1.2:12345".parse().unwrap();
+            handle_helper_connection_on(stream, Some(remote), HelperListener::Wsl)
+                .await
+                .unwrap();
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(request.replace("{addr}", &addr.to_string()).as_bytes())
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        String::from_utf8_lossy(&response).into_owned()
+    }
+
+    #[tokio::test]
+    async fn wsl_listener_rejects_non_gateway_endpoints() {
+        for request in [
+            "GET /backend/status HTTP/1.1\r\nHost: {addr}\r\n\r\n",
+            "GET /proxy-status HTTP/1.1\r\nHost: {addr}\r\n\r\n",
+            "POST /settings/set HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 2\r\n\r\n{}",
+            "GET /dictation/status HTTP/1.1\r\nHost: {addr}\r\n\r\n",
+            "POST /v1/responses HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 2\r\n\r\n{}",
+            "GET /v1/models HTTP/1.1\r\nHost: {addr}\r\n\r\n",
+            "POST /gw/../v1/responses HTTP/1.1\r\nHost: {addr}\r\nContent-Length: 2\r\n\r\n{}",
+        ] {
+            let response = send_on_wsl_listener(request.to_string()).await;
+            assert!(
+                response.starts_with("HTTP/1.1 403 Forbidden"),
+                "{request}\n{response}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn wsl_listener_rejects_web_origins_on_gateway_paths() {
+        let response = send_on_wsl_listener(
+            "OPTIONS /gw/codex/v1/responses HTTP/1.1\r\nHost: {addr}\r\nOrigin: https://untrusted.example\r\n\r\n".to_string(),
+        ).await;
+        assert!(response.starts_with("HTTP/1.1 403 Forbidden"), "{response}");
+        assert!(!response.contains("Access-Control-Allow-Origin: *"));
+    }
+
+    #[tokio::test]
+    async fn wsl_listener_passes_gateway_paths_to_token_checked_gateway() {
+        // 预检直接放行（与回环一致），说明网关路径确实交给了网关处理。
+        let response = send_on_wsl_listener(
+            "OPTIONS /gw/codex/v1/responses HTTP/1.1\r\nHost: {addr}\r\n\r\n".to_string(),
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 204"), "{response}");
+        // 不带 token 的模型请求：网关没开是 503，开着是 401，绝不会被放行。
+        let response = send_on_wsl_listener(
+            "POST /gw/codex/v1/responses HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+                .to_string(),
+        )
+        .await;
+        assert!(
+            response.starts_with("HTTP/1.1 401") || response.starts_with("HTTP/1.1 503"),
+            "{response}"
+        );
     }
 }
 
@@ -4929,8 +5125,298 @@ async fn verify_packaged_activation(
     }
 }
 
+/// 宿主已经等过端口时，`wait_for_instance_ready` 至少再等这么久（判 CDP 页面是否就绪）。
+#[cfg(windows)]
+const PACKAGED_CONTEXT_READY_MIN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 与 Codex 主程序同名的进程 PID（仅诊断用：判断 Codex 是「没起来 / 起来又退了」
+/// 还是「活着但没开调试端口」，以及回退前 AUMID 激活是否有残留进程）。
+#[cfg(windows)]
+fn codex_process_ids_for_diagnostics(executable: &Path) -> Vec<u32> {
+    let Some(file_name) = executable.file_name().map(|name| name.to_string_lossy()) else {
+        return Vec::new();
+    };
+    crate::windows_integration::enumerate_processes()
+        .into_iter()
+        .filter(|info| info.exe_file.eq_ignore_ascii_case(&file_name))
+        .map(|info| info.process_id)
+        .collect()
+}
+
+/// 找出会挡住本次带调试端口启动的主 Codex 进程（issue #2764）。
+///
+/// 只有「调试端口当前没有 Codex 在应答」且「确有没带本次端口的主进程」时才返回非空；
+/// 归类逻辑见 `packaged_launch::main_instances_blocking_debug_launch`（纯函数，有单测）。
+#[cfg(windows)]
+async fn existing_main_instances_blocking_debug_launch(
+    executable: &Path,
+    debug_port: u16,
+    launch_args: &[String],
+) -> Vec<u32> {
+    let executable = executable.to_path_buf();
+    let launch_args = launch_args.to_vec();
+    tokio::task::spawn_blocking(move || {
+        let candidates = same_package_codex_process_ids(
+            &crate::windows_integration::enumerate_processes(),
+            &executable,
+        );
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        let blocking = crate::packaged_launch::main_instances_blocking_debug_launch(
+            candidates,
+            debug_port,
+            &launch_args,
+            crate::windows_integration::process_command_line,
+        );
+        // 端口上已经有 Codex 在应答时交给原有流程（激活会复用它），不拦。
+        if blocking.is_empty() || crate::cdp::endpoint_available(debug_port) {
+            return Vec::new();
+        }
+        blocking
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// 快照里与 `executable` 同名、且属于同一 MSIX 包族的进程 PID。
+///
+/// 只认同一包族：另装的 ChatGPT 桌面版也叫 ChatGPT.exe，单实例锁互不相干。
+#[cfg(windows)]
+fn same_package_codex_process_ids(
+    processes: &[crate::windows_integration::WindowsProcessInfo],
+    executable: &Path,
+) -> Vec<u32> {
+    let Some(file_name) = executable.file_name().map(|name| name.to_string_lossy()) else {
+        return Vec::new();
+    };
+    let executable_text = executable.to_string_lossy();
+    processes
+        .iter()
+        .filter(|info| info.exe_file.eq_ignore_ascii_case(&file_name))
+        .filter(|info| {
+            info.executable_path.as_deref().is_some_and(|path| {
+                crate::packaged_launch::same_windows_apps_package_family(
+                    &path.to_string_lossy(),
+                    &executable_text,
+                )
+            })
+        })
+        .map(|info| info.process_id)
+        .collect()
+}
+
+/// 向挡路主进程发 `WM_CLOSE` 后，等它自己退出的宽限期。
+///
+/// Codex 关窗口可能只是缩到托盘，此时等满宽限期再强制结束；没有可见窗口（只在托盘）时
+/// 投递不成功，直接跳过等待。
+#[cfg(windows)]
+const BLOCKING_MAIN_INSTANCE_GRACEFUL_TIMEOUT_MS: u64 = 5_000;
+
+/// 强制结束挡路主进程后等它退出的上限。`TerminateProcess` 是立即终止，正常一两秒内就退完。
+#[cfg(windows)]
+const BLOCKING_MAIN_INSTANCE_STOP_TIMEOUT_MS: u64 = 10_000;
+
+/// 主进程退出后，等同包残留进程（Electron 子进程、包内 codex.exe）自行退出的时间。
+#[cfg(windows)]
+const BLOCKING_MAIN_INSTANCE_LEFTOVER_TIMEOUT_MS: u64 = 2_000;
+
+/// 「重启 Codex」路径：结束挡住本次带调试端口启动的主 Codex（issue #2764 后续）。
+///
+/// 只结束 [`existing_main_instances_blocking_debug_launch`] 认定的主进程本身，**不按进程树**：
+/// 从 Codex 里打开的 VS Code、浏览器、Agent 起的 dev server 都挂在它的树下，不能一起杀。
+/// 动手前用新快照再核对一遍（期间进程可能已退出、PID 被复用），然后：
+///
+/// 1. 先发 `WM_CLOSE`（与自动接管的优雅退出同一做法），给 Codex 落盘的机会，等宽限期；
+/// 2. 仍未退出的再 `TerminateProcess`，只结束主进程，Electron 子进程会随它退出；
+/// 3. 主进程退出后若还有残留，只清理 `packaged_launch::blocking_main_instance_leftovers`
+///    认定的同一 MSIX 包内的 Codex 进程（`ChatGPT.exe` 子进程 / 包内 `codex.exe`）。
+#[cfg(windows)]
+async fn stop_main_instances_blocking_debug_launch(
+    executable: &Path,
+    debug_port: u16,
+    launch_args: &[String],
+    targets: Vec<u32>,
+) -> anyhow::Result<()> {
+    let executable = executable.to_path_buf();
+    let launch_args = launch_args.to_vec();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        use crate::windows_integration::{process_birth_id, terminate_process};
+
+        let processes = crate::windows_integration::enumerate_processes();
+        let still_blocking = crate::packaged_launch::main_instances_blocking_debug_launch(
+            same_package_codex_process_ids(&processes, &executable),
+            debug_port,
+            &launch_args,
+            crate::windows_integration::process_command_line,
+        );
+        let self_process_id = std::process::id();
+        let targets = targets
+            .into_iter()
+            .filter(|process_id| *process_id != self_process_id)
+            .filter(|process_id| still_blocking.contains(process_id))
+            .collect::<Vec<_>>();
+        let target_births = targets
+            .iter()
+            .map(|process_id| (*process_id, process_birth_id(*process_id)))
+            .collect::<Vec<_>>();
+        // 残留候选要在主进程退出前记下：Windows 不会给孤儿进程改父 PID，但主进程退出后
+        // 它的创建时间就读不到了，父子边无法再证实。
+        let executable_text = executable.to_string_lossy().into_owned();
+        let by_id = processes
+            .iter()
+            .map(|info| (info.process_id, info))
+            .collect::<std::collections::HashMap<_, _>>();
+        let edges = processes
+            .iter()
+            .map(|info| (info.process_id, info.parent_process_id))
+            .collect::<Vec<_>>();
+        let may_clean = |process_id: u32| -> bool {
+            if process_id == self_process_id {
+                return false;
+            }
+            let Some(info) = by_id.get(&process_id) else {
+                return false;
+            };
+            let executable_path = info
+                .executable_path
+                .as_deref()
+                .map(|path| path.to_string_lossy().into_owned());
+            crate::packaged_launch::may_clean_up_after_blocking_main_instance(
+                &info.exe_file,
+                executable_path.as_deref(),
+                crate::windows_integration::process_command_line(process_id).as_deref(),
+                &executable_text,
+            )
+        };
+        let mut leftover_ids = Vec::new();
+        for process_id in &targets {
+            leftover_ids.extend(crate::packaged_launch::blocking_main_instance_leftovers(
+                *process_id,
+                &edges,
+                process_birth_id,
+                &may_clean,
+            ));
+        }
+        leftover_ids.sort_unstable();
+        leftover_ids.dedup();
+        leftover_ids.retain(|process_id| !targets.contains(process_id));
+        let leftover_births = leftover_ids
+            .iter()
+            .map(|process_id| (*process_id, process_birth_id(*process_id)))
+            .collect::<Vec<_>>();
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.packaged_existing_main_instance_stopping",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "process_ids": targets,
+                "leftover_candidates": leftover_ids,
+            }),
+        );
+
+        // 1. 优雅退出：WM_CLOSE，等宽限期。
+        let close_requested = targets
+            .iter()
+            .copied()
+            .filter(|process_id| crate::windows_integration::request_process_close(*process_id))
+            .collect::<Vec<_>>();
+        if !close_requested.is_empty() {
+            let _ = crate::watcher::wait_for_processes_to_exit(
+                &close_requested,
+                BLOCKING_MAIN_INSTANCE_GRACEFUL_TIMEOUT_MS,
+                crate::watcher::RESTART_STOP_WAIT_INTERVAL_MS,
+            );
+        }
+
+        // 2. 仍在运行（且确认还是同一个进程）的主进程：只结束它本身，不连树。
+        let running = crate::watcher::process_ids_still_running(
+            &targets,
+            crate::windows_integration::enumerate_processes()
+                .into_iter()
+                .map(|process| process.process_id),
+        );
+        let to_force = crate::packaged_launch::processes_still_to_force_stop(
+            &target_births
+                .iter()
+                .copied()
+                .filter(|(process_id, _)| running.contains(process_id))
+                .collect::<Vec<_>>(),
+            process_birth_id,
+        );
+        let forced = to_force
+            .iter()
+            .map(|process_id| {
+                serde_json::json!({
+                    "pid": process_id,
+                    "accepted": terminate_process(*process_id),
+                })
+            })
+            .collect::<Vec<_>>();
+        let remaining = crate::watcher::wait_for_processes_to_exit(
+            &to_force,
+            BLOCKING_MAIN_INSTANCE_STOP_TIMEOUT_MS,
+            crate::watcher::RESTART_STOP_WAIT_INTERVAL_MS,
+        );
+
+        // 3. 主进程都退了：同包残留先等它们自己退，仍在的（同一进程）逐个结束，不连树。
+        let mut cleaned = Vec::new();
+        if remaining.is_empty() && !leftover_ids.is_empty() {
+            let still_running = crate::watcher::wait_for_processes_to_exit(
+                &leftover_ids,
+                BLOCKING_MAIN_INSTANCE_LEFTOVER_TIMEOUT_MS,
+                crate::watcher::RESTART_STOP_WAIT_INTERVAL_MS,
+            );
+            let recorded = leftover_births
+                .iter()
+                .copied()
+                .filter(|(process_id, _)| still_running.contains(process_id))
+                .collect::<Vec<_>>();
+            for process_id in
+                crate::packaged_launch::processes_still_to_force_stop(&recorded, process_birth_id)
+            {
+                cleaned.push(serde_json::json!({
+                    "pid": process_id,
+                    "accepted": terminate_process(process_id),
+                }));
+            }
+        }
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "launcher.packaged_existing_main_instance_stopped",
+            serde_json::json!({
+                "debug_port": debug_port,
+                "process_ids": targets,
+                "close_requested": close_requested,
+                "forced": forced,
+                "leftovers_cleaned": cleaned,
+                "remaining_process_ids": remaining,
+                "exited": remaining.is_empty(),
+            }),
+        );
+        if !remaining.is_empty() {
+            let ids = remaining
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "已尝试结束没有开启调试端口 {debug_port} 的 Codex 主进程，但 PID {ids} 在 {} 秒内\
+                 仍未退出。请在任务管理器里结束所有 Codex 进程后再点「重启 Codex」。",
+                BLOCKING_MAIN_INSTANCE_STOP_TIMEOUT_MS / 1000
+            );
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("结束已运行的 Codex 主进程时后台任务失败：{error}"))?
+}
+
 /// 主实例的包上下文兜底启动（issue #2700）：AUMID 激活后进程秒退时，改用
 /// `Invoke-CommandInDesktopPackage` wrapper 带同一份参数拉起 exe，并等待调试端口就绪。
+///
+/// issue #2764：同一份 wrapper 在用户的交互式 PowerShell 里能拉起 Codex，从 Codex++ 里却
+/// 不行。对照差异做了三处收敛：PowerShell 宿主激活后继续存活到端口可连（不再立刻退出）、
+/// 去掉会经 powershell → cmd 继承给 Codex 的 Electron/Node 运行时开关、按系统路径调用
+/// powershell.exe；并把激活的退出码、输出、命令形状与前后的 Codex 进程写进诊断日志。
 ///
 /// 任一步失败都直接返回 Err，让用户立即看到错误，而不是空等注入预算耗尽。
 #[cfg(windows)]
@@ -4947,14 +5433,67 @@ async fn launch_packaged_main_in_package_context(
         &executable,
         &arguments,
     )?;
-    crate::packaged_launch::activate_in_package_context(app_user_model_id, &wrapper_path)
-        .await
-        .context("Codex 通过 AUMID 激活后立即退出，改用包上下文启动也失败")?;
+    // 只记变量名，不记值。
+    let scrubbed_env =
+        crate::packaged_launch::present_scrubbed_env_vars(|name| std::env::var_os(name).is_some());
+    let elevated = crate::windows_integration::current_process_is_elevated();
+    let codex_pids_before = codex_process_ids_for_diagnostics(&executable);
+    // 宿主等端口期间顺带观察同名进程：区分「Codex 根本没起来」与「起来后又退了」。
+    let watch_process = executable
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned());
+    // wrapper 轨迹只认这之后写下的，避免把上一次的当成这次执行过。
+    let activation_started_at = std::time::SystemTime::now();
+    let activation = match crate::packaged_launch::activate_in_package_context_with_report(
+        app_user_model_id,
+        &wrapper_path,
+        Some(debug_port),
+        watch_process.as_deref(),
+    )
+    .await
+    {
+        Ok(activation) => activation,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.packaged_context_main_launch",
+                serde_json::json!({
+                    "app_user_model_id": app_user_model_id,
+                    "wrapper_path": wrapper_path,
+                    "debug_port": debug_port,
+                    "ready": false,
+                    "error": format!("{error:#}"),
+                    "elevated": elevated,
+                    "scrubbed_env": scrubbed_env,
+                    "codex_pids_before": codex_pids_before,
+                    "wrapper_trace": crate::packaged_launch::read_main_wrapper_trace(
+                        &wrapper_path,
+                        activation_started_at,
+                    ),
+                }),
+            );
+            // 带上完整错误链：issue #2747 只看到外层一句话，根因被吞掉了。
+            anyhow::bail!("Codex 通过 AUMID 激活后立即退出，改用包上下文启动也失败：{error:#}");
+        }
+    };
+    // 宿主已经等过端口时只补一段短等待，总时长与原先的 30 秒上限保持一致。
+    let ready_timeout = PACKAGED_CONTEXT_READY_TIMEOUT
+        .saturating_sub(std::time::Duration::from_millis(activation.elapsed_ms))
+        .max(PACKAGED_CONTEXT_READY_MIN_WAIT);
     let ready = tokio::task::spawn_blocking(move || {
-        crate::packaged_launch::wait_for_instance_ready(debug_port, PACKAGED_CONTEXT_READY_TIMEOUT)
+        crate::packaged_launch::wait_for_instance_ready(debug_port, ready_timeout)
     })
     .await
     .unwrap_or(false);
+    let codex_pids_after = codex_process_ids_for_diagnostics(&executable);
+    // 宿主观察期间新出现过的进程（不在回退前的快照里）。
+    let codex_pids_new_in_host = activation.seen_process_ids.as_ref().map(|seen| {
+        seen.iter()
+            .copied()
+            .filter(|id| !codex_pids_before.contains(id))
+            .collect::<Vec<_>>()
+    });
+    let wrapper_trace =
+        crate::packaged_launch::read_main_wrapper_trace(&wrapper_path, activation_started_at);
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "launcher.packaged_context_main_launch",
         serde_json::json!({
@@ -4962,12 +5501,38 @@ async fn launch_packaged_main_in_package_context(
             "wrapper_path": wrapper_path,
             "debug_port": debug_port,
             "ready": ready,
+            "cmd_pid": (activation.process_id != crate::packaged_launch::UNKNOWN_PROCESS_ID)
+                .then_some(activation.process_id),
+            "port_ready_in_host": activation.port_ready_in_host,
+            "host": activation.host,
+            "exit_code": activation.exit_code,
+            "activation_elapsed_ms": activation.elapsed_ms,
+            "activation_output": activation.output,
+            "command": activation.command,
+            "elevated": elevated,
+            "scrubbed_env": scrubbed_env,
+            "codex_pids_before": codex_pids_before,
+            "codex_pids_after": codex_pids_after,
+            "codex_pids_seen_in_host": activation.seen_process_ids,
+            "codex_pids_new_in_host": codex_pids_new_in_host,
+            "wrapper_trace": wrapper_trace,
         }),
     );
     if !ready {
         anyhow::bail!(
-            "Codex 通过 AUMID 激活后立即退出，改用包上下文启动后 {} 秒内调试端口 {debug_port} 仍未就绪",
-            PACKAGED_CONTEXT_READY_TIMEOUT.as_secs()
+            "Codex 通过 AUMID 激活后立即退出，改用包上下文启动后 {} 秒内调试端口 {debug_port} 仍未就绪\
+             （宿主内端口{}，{}，当前 Codex 进程 {} 个；详见 codex-plus.log 的 launcher.packaged_context_main_launch）",
+            PACKAGED_CONTEXT_READY_TIMEOUT.as_secs(),
+            match activation.port_ready_in_host {
+                Some(true) => "曾可连接",
+                Some(false) => "始终不可连接",
+                None => "状态未知",
+            },
+            crate::packaged_launch::package_context_launch_observation(
+                codex_pids_new_in_host.as_deref(),
+                wrapper_trace.is_some(),
+            ),
+            codex_pids_after.len()
         );
     }
     Ok(())

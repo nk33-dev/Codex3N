@@ -14,10 +14,11 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::gateway::drift::{self, Drift};
+use crate::gateway::key_pool;
 use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
 use crate::gateway::route::{self, binding_default_model};
 use crate::gateway::store::{
@@ -70,7 +71,12 @@ impl ApplyContext {
 
 /// Agent 访问网关的根地址（不含 `/v1`）。
 pub fn gateway_base_url(port: u16, agent: &ToolId) -> String {
-    format!("http://127.0.0.1:{port}/gw/{}", agent.as_str())
+    gateway_base_url_on(crate::wsl_network::LOOPBACK_HOST, port, agent)
+}
+
+/// 指定主机的网关根地址：Codex 在 WSL 里运行时主机是 WSL 虚拟网卡地址（#2773）。
+pub fn gateway_base_url_on(host: &str, port: u16, agent: &ToolId) -> String {
+    format!("http://{host}:{port}/gw/{}", agent.as_str())
 }
 
 /// 开启前检查：池里有这个 Agent 能用的供应商，默认模型能路由。
@@ -160,13 +166,20 @@ pub fn grok_gateway_profile(
     binding: &AgentBinding,
     port: u16,
 ) -> RelayProfile {
-    agent_gateway_profile(gateway, binding, port, &ToolId::Grok)
+    agent_gateway_profile(
+        gateway,
+        binding,
+        crate::wsl_network::LOOPBACK_HOST,
+        port,
+        &ToolId::Grok,
+    )
 }
 
 /// Responses 类 Agent（Grok、Codex）的合成供应商：地址是该 Agent 的网关入口，模型列表是整个池。
 fn agent_gateway_profile(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
+    host: &str,
     port: u16,
     agent: &ToolId,
 ) -> RelayProfile {
@@ -196,7 +209,7 @@ fn agent_gateway_profile(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let base = format!("{}/v1", gateway_base_url(port, agent));
+    let base = format!("{}/v1", gateway_base_url_on(host, port, agent));
     RelayProfile {
         id: "codex-plus-gateway".to_string(),
         name: "Codex++ 网关".to_string(),
@@ -316,7 +329,21 @@ pub fn codex_gateway_profile(
     port: u16,
     signed_in: bool,
 ) -> anyhow::Result<RelayProfile> {
-    let synthetic = agent_gateway_profile(gateway, binding, port, &ToolId::Codex);
+    codex_gateway_profile_on(gateway, binding, port, None, signed_in)
+}
+
+/// 同 [`codex_gateway_profile`]，`wsl_host` 是 Codex 在 WSL 里运行时网关额外监听的 WSL 网卡地址：
+/// 地址写成它，且不带官方会话身份（官方身份那一跳经本地代理，没有网关 token，WSL 监听不放行）。
+pub fn codex_gateway_profile_on(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    port: u16,
+    wsl_host: Option<std::net::Ipv4Addr>,
+    signed_in: bool,
+) -> anyhow::Result<RelayProfile> {
+    let signed_in = crate::wsl_network::codex_gateway_uses_official_identity(signed_in, wsl_host);
+    let host = crate::wsl_network::codex_gateway_host(wsl_host);
+    let synthetic = agent_gateway_profile(gateway, binding, &host, port, &ToolId::Codex);
     let mut profile = crate::provider_import::pool_relay_profile(
         "Codex++ 网关",
         &synthetic.base_url,
@@ -333,7 +360,33 @@ pub fn codex_gateway_profile(
         profile.config_contents = with_openai_session_identity(&profile.config_contents)?;
     }
     crate::relay_config::normalize_relay_profile_for_storage(&mut profile)?;
+    if !signed_in {
+        // 归一化会把导入时的旧版供应商表换成 `custom`，声明要在它之后写上。
+        profile.config_contents = with_local_api_identity(&profile.config_contents)?;
+    }
     Ok(profile)
+}
+
+/// 没登录 ChatGPT 时的托管供应商：显式写 `requires_openai_auth = false`，与直连模式手加的
+/// 纯 API 供应商一致。Codex 这时没有账号身份，原生 Fast 只认这个明确声明的本机 API 配置
+/// （见 [`crate::native_fast`]），缺这一行时 Fast 按钮整个不显示（#2746）。
+fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
+    let mut doc = contents
+        .parse::<toml_edit::DocumentMut>()
+        .context("托管供应商配置不是合法 TOML")?;
+    let provider = doc
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let table = doc
+        .get_mut("model_providers")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|providers| providers.get_mut(&provider))
+        .and_then(toml_edit::Item::as_table_mut)
+        .context("托管供应商配置里没有传输供应商")?;
+    table["requires_openai_auth"] = toml_edit::value(false);
+    Ok(doc.to_string())
 }
 
 /// 「模型名后带供应商」关掉时用的看不见的标记：各家那份追加 N 个零宽空格（N 是这家在池里的位置），
@@ -892,6 +945,121 @@ const CODEX_GATEWAY_KEYS: &[&str] = &[
     "preferred_auth_method",
 ];
 
+/// 用户自己的根级设置里，接入网关时不跟着走的键（#2771）。除了 [`CODEX_GATEWAY_KEYS`] 和供应商专属键
+/// （地址、凭据、`model_catalog_json` 等，见 `relay_config::is_provider_specific_common_root_key`），
+/// 还有会把请求导向别的供应商 / 模型（`profile`、`oss_provider`、`review_model`）、描述直连上游模型能力、
+/// 或强制登录方式的键：这些由网关决定，带进去会改变路由结果或让网关的模型收到不认识的参数。
+///
+/// - `service_tier`：网关下的 Fast 由网关和 Codex 原生 Fast 按钮处理，不从直连配置带入直连上游的服务等级；
+/// - `plan_mode_reasoning_effort`：与网关托管的 `model_reasoning_effort` 同类，是按直连上游模型挑的推理档位，
+///   网关的模型未必支持（档位由网关的模型目录给出）；
+/// - `model_reasoning_summary` 不在此列：它只是推理摘要的详略偏好，模型是否支持摘要由网关的模型目录
+///   （及上面的 `model_supports_reasoning_summaries`）决定，不支持时 Codex 不会发，跟着走不影响路由。
+const CODEX_GATEWAY_ROUTING_KEYS: &[&str] = &[
+    "profile",
+    "oss_provider",
+    "review_model",
+    "model_verbosity",
+    "model_supports_reasoning_summaries",
+    "model_max_output_tokens",
+    "plan_mode_reasoning_effort",
+    "service_tier",
+    "forced_login_method",
+    "forced_chatgpt_workspace_id",
+];
+
+/// 根级键 `key` 是不是用户自己的、与路由无关的设置（`model_instructions_file`、`developer_instructions`、
+/// `notify`、`web_search` 等）。`common_keys` 是通用配置里的根级键：写盘时由通用配置合并，不在这里搬。
+fn codex_user_root_key(key: &str, common_keys: &std::collections::HashSet<String>) -> bool {
+    key != "model_providers"
+        && !CODEX_GATEWAY_KEYS.contains(&key)
+        && !CODEX_GATEWAY_ROUTING_KEYS.contains(&key)
+        && !crate::relay_config::is_provider_specific_common_root_key(key)
+        && !common_keys.contains(key)
+}
+
+/// 通用配置（含上下文段）里的根级键。
+fn codex_common_root_keys(settings: &BackendSettings) -> std::collections::HashSet<String> {
+    [
+        settings.relay_common_config_contents.as_str(),
+        settings.relay_context_config_contents.as_str(),
+    ]
+    .into_iter()
+    .filter_map(|text| text.parse::<toml_edit::DocumentMut>().ok())
+    .flat_map(|doc| {
+        doc.as_table()
+            .iter()
+            .map(|(key, _)| key.to_string())
+            .collect::<Vec<_>>()
+    })
+    .collect()
+}
+
+/// 把 `source`（Codex 的实时 config.toml）里用户自己的根级设置并进 `target`（#2771）。
+///
+/// 托管供应商每次都按网关重新生成、断开时还会删掉，用户写在实时配置里的根级设置
+/// （`model_instructions_file` 等）以前接入 / 重写 / 退出还原后就没了。这里只搬根级的值和
+/// `[projects]` 里缺的条目（与 `preserve_live_nonprovider_settings` 一样不改已有项目的信任级别）；
+/// 其它表（MCP、插件、features 等）由写盘时的保留逻辑负责。网关托管 / 路由相关的键与通用配置里的键不搬。
+///
+/// `overwrite`：`target` 已有同名键时是否以 `source` 为准。没有改动或任一边解析不了时返回 None。
+fn carry_codex_user_root_settings(
+    target: &str,
+    source: &str,
+    common_keys: &std::collections::HashSet<String>,
+    overwrite: bool,
+) -> Option<String> {
+    let mut target = target.parse::<toml_edit::DocumentMut>().ok()?;
+    let source = crate::relay_config::normalize_config_text(source)
+        .parse::<toml_edit::DocumentMut>()
+        .ok()?;
+    let mut changed = false;
+    for (key, item) in source.as_table().iter() {
+        if key == "projects" {
+            let Some(projects) = item.as_table_like() else {
+                continue;
+            };
+            if target
+                .get("projects")
+                .and_then(toml_edit::Item::as_table_like)
+                .is_none()
+            {
+                target["projects"] = toml_edit::table();
+            }
+            let Some(target_projects) = target["projects"].as_table_like_mut() else {
+                continue;
+            };
+            for (path, project) in projects.iter() {
+                if target_projects.get(path).is_none() {
+                    target_projects.insert(path, project.clone());
+                    changed = true;
+                }
+            }
+            if target_projects.is_empty() {
+                target.remove("projects");
+            }
+            continue;
+        }
+        let Some(value) = item.as_value() else {
+            continue;
+        };
+        if !codex_user_root_key(key, common_keys) {
+            continue;
+        }
+        let differs = match target.get(key).and_then(toml_edit::Item::as_value) {
+            None => target.get(key).is_none(),
+            Some(existing) => overwrite && existing.to_string().trim() != value.to_string().trim(),
+        };
+        if differs {
+            let mut value = value.clone();
+            value.decor_mut().clear();
+            target[key] = toml_edit::Item::Value(value);
+            changed = true;
+        }
+    }
+    changed.then(|| target.to_string())
+}
+
 fn legacy_codex_config_paths(before: Option<&str>, current: Option<&str>) -> Vec<KeyPath> {
     let (Ok(before), Ok(current)) = (stash::toml_value(before), stash::toml_value(current)) else {
         return Vec::new();
@@ -973,12 +1141,33 @@ fn write_codex(
     if !settings.relay_profiles_enabled {
         bail!("Codex 的供应商配置总开关已关闭，无法接入网关：先在 Codex 设置里打开");
     }
+    // Codex 在 WSL 里运行：网关额外监听 WSL 网卡，地址写成它（#2773）；拿不到时保持回环。
+    let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port).address();
     // Codex 自己没登录、池里有网关登录的 ChatGPT 账号：借给 Codex，让它以官方身份接入。
+    // WSL 模式下不用官方身份（见 [`codex_gateway_profile_on`]），也就不借。
     let signed_in = codex_signed_in(&ctx.codex_home);
-    let lend = (!signed_in)
+    let lend = (!signed_in && wsl_host.is_none())
         .then(|| lendable_login(gateway).map(|provider| provider.relay.id.clone()))
         .flatten();
-    let profile = codex_gateway_profile(gateway, binding, ctx.port, signed_in || lend.is_some())?;
+    let mut profile = codex_gateway_profile_on(
+        gateway,
+        binding,
+        ctx.port,
+        wsl_host,
+        signed_in || lend.is_some(),
+    )?;
+    // 用户写在实时配置里、与路由无关的根级设置跟着托管供应商走（#2771）：
+    // 刚接入时来自上一个供应商写下的配置，已在网关上时来自用户之后的改动。
+    if let Some(live) = std::fs::read_to_string(ctx.codex_home.join(CODEX_LIVE_FILES[0])).ok()
+        && let Some(carried) = carry_codex_user_root_settings(
+            &profile.config_contents,
+            &live,
+            &codex_common_root_keys(&settings),
+            false,
+        )
+    {
+        profile.config_contents = carried;
+    }
     match settings
         .relay_profiles
         .iter_mut()
@@ -1399,7 +1588,10 @@ fn restore_codex(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<(
                         .iter()
                         .any(|profile| profile.id == id))
         };
-        let target = if exists(previous) {
+        // 切回的就是接入前的供应商时，接入期间的根级设置以切回前的为准覆盖；回退到别的供应商时
+        // 只补它缺的键，不拿原供应商带进网关的值覆盖新供应商自己的设置（#2771）。
+        let restoring_previous = exists(previous);
+        let target = if restoring_previous {
             previous.to_string()
         } else {
             settings
@@ -1412,6 +1604,7 @@ fn restore_codex(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<(
         // 切回前的实时文件：接入时存过副本的话，据此只改回网关改过的键。
         let live = capture_codex_live(ctx);
         let saved = stash::load_stash::<CodexLiveStash>(&codex_stash_path(ctx));
+        let common_keys = codex_common_root_keys(&settings);
         settings.active_relay_id = target;
         // 托管供应商还在列表里时按直连模式的正常流程切（会回填公共配置，接入期间加的 MCP 等不丢）；
         // 不在了（被删、或旧版留下的状态），或实时配置被别的工具改过，就不回填、实时文件先备份再切。
@@ -1448,6 +1641,21 @@ fn restore_codex(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<(
         settings = ctx.settings.load()?;
         if let Some(saved) = saved {
             restore_codex_files(ctx, &saved, &live)?;
+        } else if !discard_live && let Some(before) = live.config_toml.as_deref() {
+            // 正常切回时上一个供应商按它自己的记录重写配置，接入期间用户写的根级设置
+            // （#2771）会跟着托管供应商一起丢掉；以切回前的为准补回去。退出时还原、下次启动再接入
+            // 走的也是这条路，不补的话重启一次就没了。存过副本的那条路只改回网关改过的键，不需要。
+            let path = ctx.codex_home.join(CODEX_LIVE_FILES[0]);
+            if let Some(current) = stash::read_optional(&path)?
+                && let Some(carried) = carry_codex_user_root_settings(
+                    &current,
+                    before,
+                    &common_keys,
+                    restoring_previous,
+                )
+            {
+                stash::write_or_remove(&path, Some(&carried))?;
+            }
         }
         stash::remove_stash(&codex_stash_path(ctx));
     }
@@ -1615,6 +1823,10 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
         );
         return Ok(false);
     }
+    // 在 WSL 里运行时不用官方身份，只核对写进去的网关地址（#2773）。
+    if crate::wsl_network::codex_runs_in_wsl(&ctx.codex_home) {
+        return sync_codex_wsl_endpoint(ctx);
+    }
     let keeps_login =
         settings.active_relay_session_provider() == crate::settings::RelaySessionProvider::Openai;
     let can_sign_in = codex_signed_in(&ctx.codex_home) || lendable_login(&gateway).is_some();
@@ -1622,6 +1834,54 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
         return Ok(false);
     }
     write_codex(ctx, &gateway, &binding.clone())?;
+    Ok(true)
+}
+
+/// Codex 开着网关时，写进托管供应商的网关主机要跟 Codex 的运行位置一致（#2773）：
+/// 在 WSL 里运行时是 WSL 虚拟网卡地址（网卡地址每次开机可能变），否则是 `127.0.0.1`。
+/// 不一致就重写一次，返回是否重写了。只有 WSL 还没启动、暂时拿不到网卡时保持现状；
+/// mirrored 网络、WSL 网卡上绑定失败时 WSL 监听已不在，写过的网卡地址改回回环。
+pub fn sync_codex_wsl_endpoint(ctx: &ApplyContext) -> anyhow::Result<bool> {
+    let gateway = ctx.gateway.load()?;
+    let Some(binding) = gateway.active_binding(&ToolId::Codex).cloned() else {
+        return Ok(false);
+    };
+    let settings = ctx.settings.load()?;
+    if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID {
+        return Ok(false);
+    }
+    let written_host = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == CODEX_GATEWAY_RELAY_ID)
+        .and_then(|profile| crate::wsl_network::url_host(&profile.base_url))
+        .map(str::to_string);
+    let in_wsl = crate::wsl_network::codex_runs_in_wsl(&ctx.codex_home);
+    // 地址对不上才看要不要识别网卡：不在 WSL 里、写的也是回环时（绝大多数情况）不做任何查询。
+    if !in_wsl
+        && !crate::wsl_network::codex_gateway_host_stale(
+            written_host.as_deref(),
+            crate::wsl_network::WslGatewayHost::Loopback(
+                crate::wsl_network::LoopbackReason::CodexNotInWsl,
+            ),
+        )
+    {
+        crate::wsl_network::stop_wsl_listener();
+        return Ok(false);
+    }
+    let wsl_host = crate::wsl_network::codex_gateway_wsl_host(&ctx.codex_home, ctx.port);
+    if !crate::wsl_network::codex_gateway_host_stale(written_host.as_deref(), wsl_host) {
+        return Ok(false);
+    }
+    if let Some(found) = taken_over(ctx, &ToolId::Codex) {
+        log_taken_over(
+            "gateway.wsl_endpoint_sync_skipped_taken_over",
+            &ToolId::Codex,
+            &found,
+        );
+        return Ok(false);
+    }
+    write_codex(ctx, &gateway, &binding)?;
     Ok(true)
 }
 
@@ -2279,6 +2539,9 @@ fn clean_proxy(proxy: &str) -> anyhow::Result<String> {
     if proxy.is_empty() {
         return Ok(String::new());
     }
+    if crate::relay_proxy::is_direct_proxy(proxy) {
+        return Ok(crate::relay_proxy::DIRECT_PROXY.to_string());
+    }
     let ok = ["http://", "https://", "socks5://", "socks5h://"]
         .iter()
         .any(|scheme| proxy.to_ascii_lowercase().starts_with(scheme));
@@ -2372,6 +2635,8 @@ fn add_provider_with(
             model_windows: BTreeMap::new(),
             context_window: None,
             proxy: String::new(),
+            key_rpm: None,
+            key_concurrency: None,
             upstream_new: Vec::new(),
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
@@ -2484,6 +2749,12 @@ fn update_provider_in(
     }
     let mut relay = build_relay(&input)?;
     relay.id = id.to_string();
+    // 沿用原来的 Key 时连标识一起沿用：Key 池按标识记的冷却、会话固定不会错位到别的 Key 上（#2782）。
+    if keep_keys && !provider.relay.api_keys.is_empty() {
+        relay.api_keys = provider.relay.api_keys.clone();
+        relay.active_api_key_id = provider.relay.active_api_key_id.clone();
+        relay.api_key = provider.relay.api_key.clone();
+    }
     // 原来的请求头、User-Agent、Anthropic 鉴权方式这些高级设置保留。
     relay.custom_headers = provider.relay.custom_headers.clone();
     relay.user_agent = provider.relay.user_agent.clone();
@@ -2503,6 +2774,206 @@ fn update_provider_in(
         provider.proxy = clean_proxy(proxy)?;
     }
     Ok(())
+}
+
+/// 供应商详情里列出的一个已保存 Key（#2782）：只有标识和打码后的样子，Key 原文不出后端。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderKeyView {
+    /// 稳定标识：命名 Key 的 id（单 Key 供应商通常是 `default`），删除 / 替换按它找。
+    pub id: String,
+    /// 打码后的 Key，如 `sk-abc…wxyz`。
+    pub masked: String,
+}
+
+/// Key 打码：只露头尾，露出的总长不超过 Key 的三分之一左右。
+/// 长 Key 露前 6 位和后 4 位；短 Key 按长度少露，4 位及以下一个字符都不露。
+pub fn mask_api_key(key: &str) -> String {
+    let chars: Vec<char> = key.trim().chars().collect();
+    let head = (chars.len() / 5).min(6);
+    let tail = (chars.len() / 8).min(4);
+    if head == 0 {
+        return "••••".to_string();
+    }
+    let start: String = chars[..head].iter().collect();
+    let end: String = chars[chars.len() - tail..].iter().collect();
+    format!("{start}…{end}")
+}
+
+/// 能在界面上单独管理 API Key 的供应商。订阅账号（凭据是登录得到的 token）、官方登录、
+/// 聚合、不校验 Key 的本机服务都不列 Key。
+fn manages_api_keys(relay: &RelayProfile) -> bool {
+    !crate::official_login::member_uses_official_login_transport(relay)
+        && crate::gateway::accounts::relay_account_kind(relay).is_none()
+        && (relay.relay_mode != RelayMode::Official || relay.official_mix_api_key)
+        && relay.relay_mode != RelayMode::Aggregate
+        && !relay.uses_no_auth()
+}
+
+/// 单 Key 供应商的 Key 有时只在 `api_key` 里（旧数据）：补成一个命名 Key，后面统一按标识操作。
+const DEFAULT_KEY_ID: &str = "default";
+
+fn ensure_named_keys(relay: &mut RelayProfile) {
+    if relay.api_keys.is_empty() && !relay.api_key.trim().is_empty() {
+        relay.api_keys.push(RelayApiKey {
+            id: DEFAULT_KEY_ID.to_string(),
+            name: "默认".to_string(),
+            api_key: relay.api_key.trim().to_string(),
+        });
+        relay.active_api_key_id = DEFAULT_KEY_ID.to_string();
+    }
+}
+
+/// 供应商已保存的 Key（打码后），按保存顺序。不管 Key 的供应商返回空列表。
+pub fn provider_keys(relay: &RelayProfile) -> Vec<ProviderKeyView> {
+    if !manages_api_keys(relay) {
+        return Vec::new();
+    }
+    let mut relay = relay.clone();
+    ensure_named_keys(&mut relay);
+    relay
+        .api_keys
+        .iter()
+        .filter(|entry| !entry.api_key.trim().is_empty())
+        .map(|entry| ProviderKeyView {
+            id: entry.id.clone(),
+            masked: mask_api_key(&entry.api_key),
+        })
+        .collect()
+}
+
+/// 新填的 Key：去掉首尾空白，不能为空、不能夹空白（多半是一次粘了好几个）。
+fn clean_new_key(key: &str) -> anyhow::Result<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        bail!("API Key 为空");
+    }
+    if key.chars().any(char::is_whitespace) {
+        bail!("Key 里不能有空格或换行，多个 Key 请逐个添加");
+    }
+    Ok(key.to_string())
+}
+
+/// 找到要改 Key 的供应商；订阅账号这类不用 Key 的报错。
+fn keyed_relay_mut<'a>(
+    gateway: &'a mut GatewaySettings,
+    id: &str,
+) -> anyhow::Result<&'a mut RelayProfile> {
+    let Some(provider) = gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == id)
+    else {
+        bail!("供应商不存在：{id}");
+    };
+    if !manages_api_keys(&provider.relay) {
+        bail!("这个供应商不用 API Key（订阅账号请重新登录）");
+    }
+    ensure_named_keys(&mut provider.relay);
+    Ok(&mut provider.relay)
+}
+
+/// 改完 Key 后整理：当前选中的 Key 被删时换成第一个，`api_key` 跟上，导入时带的 auth / config 文本同步。
+fn finish_key_edit(relay: &mut RelayProfile) -> anyhow::Result<()> {
+    crate::relay_config::normalize_relay_profile_for_storage(relay)?;
+    crate::relay_config::sync_stored_api_key(relay)
+}
+
+/// 给供应商再加一个 Key（#2782）。新 Key 的标识不和现有的重复。返回刷新后的网关状态。
+pub fn add_provider_key(
+    store: &GatewayStore,
+    id: &str,
+    key: &str,
+) -> anyhow::Result<GatewaySettings> {
+    let key = clean_new_key(key)?;
+    let (_, key_id) = store.update(|gateway| {
+        let relay = keyed_relay_mut(gateway, id)?;
+        if relay
+            .api_keys
+            .iter()
+            .any(|entry| entry.api_key.trim() == key)
+        {
+            bail!("这个 Key 已经在列表里了");
+        }
+        let number = (relay.api_keys.len() + 1..)
+            .find(|number| {
+                let candidate = format!("key-{number}");
+                !relay.api_keys.iter().any(|entry| entry.id == candidate)
+            })
+            .unwrap_or_default();
+        let key_id = format!("key-{number}");
+        relay.api_keys.push(RelayApiKey {
+            id: key_id.clone(),
+            name: format!("Key {number}"),
+            api_key: key,
+        });
+        finish_key_edit(relay)?;
+        Ok(key_id)
+    })?;
+    // 新标识按理没有旧状态；万一和早先删掉的 Key 同名，也不继承它的冷却。
+    key_pool::forget_key(id, &key_id);
+    store.load()
+}
+
+/// 把某个 Key 换成新值（#2782），标识不变。这个 Key 的冷却、停用、限速计数和会话固定一并清掉。
+pub fn replace_provider_key(
+    store: &GatewayStore,
+    id: &str,
+    key_id: &str,
+    key: &str,
+) -> anyhow::Result<GatewaySettings> {
+    let key = clean_new_key(key)?;
+    store.update(|gateway| {
+        let relay = keyed_relay_mut(gateway, id)?;
+        if relay
+            .api_keys
+            .iter()
+            .any(|entry| entry.id != key_id && entry.api_key.trim() == key)
+        {
+            bail!("这个 Key 已经在列表里了");
+        }
+        let Some(entry) = relay.api_keys.iter_mut().find(|entry| entry.id == key_id) else {
+            bail!("这个 Key 已经不在了，刷新后再试");
+        };
+        entry.api_key = key;
+        finish_key_edit(relay)
+    })?;
+    forget_key_state(id, key_id);
+    store.load()
+}
+
+/// 删掉某个 Key（#2782）。至少要留一个：最后一个只能替换，不能删。
+/// 删的是当前选中的 Key 时改选第一个；固定到它的会话下次重新选 Key。
+pub fn delete_provider_key(
+    store: &GatewayStore,
+    id: &str,
+    key_id: &str,
+) -> anyhow::Result<GatewaySettings> {
+    store.update(|gateway| {
+        let relay = keyed_relay_mut(gateway, id)?;
+        let Some(position) = relay.api_keys.iter().position(|entry| entry.id == key_id) else {
+            bail!("这个 Key 已经不在了，刷新后再试");
+        };
+        let remaining = relay
+            .api_keys
+            .iter()
+            .filter(|entry| entry.id != key_id && !entry.api_key.trim().is_empty())
+            .count();
+        if remaining == 0 {
+            bail!("至少要保留一个 Key；要换掉它请用「替换」");
+        }
+        relay.api_keys.remove(position);
+        finish_key_edit(relay)
+    })?;
+    forget_key_state(id, key_id);
+    store.load()
+}
+
+/// 清掉 Key 池里与这个 Key 相关的状态。只剩一个 Key 时 Key 池按 `primary` 记，一并清掉，
+/// 免得剩下的 Key 继承早先单 Key 时的冷却。
+fn forget_key_state(relay_id: &str, key_id: &str) {
+    key_pool::forget_key(relay_id, key_id);
+    key_pool::forget_key(relay_id, key_pool::PRIMARY_KEY_ID);
 }
 
 /// 只改供应商的价格与独立代理（订阅账号也能改；地址、Key、模型不动）。
@@ -2528,6 +2999,29 @@ pub fn set_provider_extras(
             provider.model_prices = clean_model_prices(prices);
         }
         provider.proxy = proxy;
+        Ok(())
+    })?;
+    store.load()
+}
+
+/// 供应商的主动限速（#1130 / #2726）：每个 Key 每分钟最多请求数、同时进行的最多请求数。
+/// None 或 0 表示不限。只影响网关发请求时怎么选 Key，不用重写 Agent 配置。
+pub fn set_provider_limits(
+    store: &GatewayStore,
+    id: &str,
+    rpm: Option<u32>,
+    concurrency: Option<u32>,
+) -> anyhow::Result<GatewaySettings> {
+    store.update(|gateway| {
+        let Some(provider) = gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == id)
+        else {
+            bail!("供应商不存在：{id}");
+        };
+        provider.key_rpm = rpm.filter(|value| *value > 0);
+        provider.key_concurrency = concurrency.filter(|value| *value > 0);
         Ok(())
     })?;
     store.load()
@@ -2851,6 +3345,108 @@ mod tests {
         );
         assert_eq!(fields["additional_speed_tiers"][0], "fast");
         assert!(!fields.contains_key("base_instructions"));
+    }
+
+    /// #2746：没登录时的托管供应商要被原生 Fast 认成本机 API 配置；登录后是 openai 身份，
+    /// 交给原生的账号门控。
+    #[test]
+    fn unsigned_gateway_profile_counts_as_local_api_for_native_fast() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        create_provider(
+            &store,
+            &ProviderInput {
+                name: "Relay".into(),
+                base_url: "https://relay.test/v1".into(),
+                protocol: RelayProtocol::Responses,
+                keys: vec!["sk-relay".into()],
+                model: "gpt-6-astra".into(),
+                model_list: "gpt-6-astra".into(),
+                price: None,
+                model_prices: None,
+                proxy: None,
+                strip_image_generation_tool: None,
+            },
+            "",
+            None,
+        )
+        .unwrap();
+        let gateway = store.load().unwrap();
+        let binding = AgentBinding {
+            model: "gpt-6-astra".into(),
+            token: crate::gateway::store::new_client_token(&ToolId::Codex),
+            ..AgentBinding::default()
+        };
+        for (signed_in, expected) in [(false, true), (true, false)] {
+            let profile = codex_gateway_profile(&gateway, &binding, 57390, signed_in).unwrap();
+            let home = temp.path().join(format!("codex-{signed_in}"));
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("config.toml"), &profile.config_contents).unwrap();
+            assert_eq!(
+                crate::native_fast::local_api_configured_from_home(&home),
+                expected,
+                "signed_in={signed_in}：{}",
+                profile.config_contents
+            );
+        }
+    }
+
+    /// #2773：Codex 在 WSL 里运行时，托管供应商直连 WSL 网卡上的网关入口（带网关 token），
+    /// 即使 Codex 登录着 ChatGPT 也不走官方身份那一跳（本地代理 `/v1` 没有网关 token）。
+    #[test]
+    fn wsl_gateway_profile_points_at_wsl_adapter_with_gateway_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        create_provider(
+            &store,
+            &ProviderInput {
+                name: "Relay".into(),
+                base_url: "https://relay.test/v1".into(),
+                protocol: RelayProtocol::Responses,
+                keys: vec!["sk-relay".into()],
+                model: "gpt-6-astra".into(),
+                model_list: "gpt-6-astra".into(),
+                price: None,
+                model_prices: None,
+                proxy: None,
+                strip_image_generation_tool: None,
+            },
+            "",
+            None,
+        )
+        .unwrap();
+        let gateway = store.load().unwrap();
+        let binding = AgentBinding {
+            model: "gpt-6-astra".into(),
+            token: crate::gateway::store::new_client_token(&ToolId::Codex),
+            ..AgentBinding::default()
+        };
+        let wsl = std::net::Ipv4Addr::new(172, 29, 16, 1);
+        for signed_in in [false, true] {
+            let profile =
+                codex_gateway_profile_on(&gateway, &binding, 57390, Some(wsl), signed_in).unwrap();
+            assert_eq!(
+                profile.base_url, "http://172.29.16.1:57390/gw/codex/v1",
+                "signed_in={signed_in}"
+            );
+            let config = &profile.config_contents;
+            assert!(
+                config.contains("http://172.29.16.1:57390/gw/codex/v1"),
+                "{config}"
+            );
+            assert!(!config.contains("127.0.0.1"), "{config}");
+            assert!(!config.contains("openai_base_url"), "{config}");
+            assert!(config.contains(&binding.token), "{config}");
+        }
+        // 没在 WSL 里：与原来完全一样。
+        for signed_in in [false, true] {
+            assert_eq!(
+                codex_gateway_profile_on(&gateway, &binding, 57390, None, signed_in).unwrap(),
+                codex_gateway_profile(&gateway, &binding, 57390, signed_in).unwrap()
+            );
+        }
+        let loopback = codex_gateway_profile(&gateway, &binding, 57390, false).unwrap();
+        assert_eq!(loopback.base_url, "http://127.0.0.1:57390/gw/codex/v1");
     }
 
     fn direct_relay(id: &str, base_url: &str, model: &str) -> RelayProfile {
