@@ -12,10 +12,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Listener, Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow};
+use tauri::{
+    AppHandle, Emitter, Listener, Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindow,
+};
 
 /// 主窗口前端注册好托盘请求监听后发出：快捷面板的请求可以发过去了。
 pub const MAIN_WINDOW_READY_EVENT: &str = "codex-plus-main-window-ready";
+pub const MODE_CHANGED_EVENT: &str = "codex-plus-lightweight-mode-changed";
 /// 隐藏后留出短暂恢复窗口的时间。
 const RELEASE_DELAY: Duration = Duration::from_secs(3);
 /// 快捷面板等重建的主窗口前端加载好的上限。
@@ -214,7 +217,10 @@ pub fn lightweight_mode_enabled() -> bool {
 
 /// 整体设置里切换开关：写回 gateway.json 的 `lightweightOnClose`，更新缓存。返回保存后的值。
 #[tauri::command]
-pub fn set_lightweight_mode_enabled(enabled: bool) -> Result<bool, String> {
+pub fn set_lightweight_mode_enabled<R: Runtime>(
+    app: AppHandle<R>,
+    enabled: bool,
+) -> Result<bool, String> {
     codex_plus_core::gateway::store::GatewayStore::default()
         .update(|settings| {
             settings.lightweight_on_close = enabled;
@@ -225,11 +231,87 @@ pub fn set_lightweight_mode_enabled(enabled: bool) -> Result<bool, String> {
     if !enabled {
         cancel_pending_release();
     }
+    crate::sync_lightweight_tray(&app);
+    let _ = app.emit(MODE_CHANGED_EVENT, enabled);
     crate::gateway_commands::notify_settings_changed();
     Ok(enabled)
 }
 
 /// 重新从 gateway.json 读开关（例如导入了设置）。
-pub fn refresh_from_disk() {
+pub fn refresh_from_disk<R: Runtime>(app: &AppHandle<R>) {
     cache().store(read_enabled_from_disk(), Ordering::Relaxed);
+    crate::sync_lightweight_tray(app);
+    let _ = app.emit(MODE_CHANGED_EVENT, enabled());
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use tauri::menu::CheckMenuItem;
+
+    #[test]
+    fn lightweight_menu_updates_persist_and_failed_writes_keep_state() {
+        // 单独进程隔离状态目录与全局缓存，测试不接触用户网关。
+        if std::env::var_os("CODEX_LIGHTWEIGHT_PROBE").is_none() {
+            let temp = tempfile::tempdir().unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "lightweight::tests::lightweight_menu_updates_persist_and_failed_writes_keep_state", "--nocapture"])
+                .env("CODEX_LIGHTWEIGHT_PROBE", "1")
+                .env("CODEX_PLUS_STATE_DIR", temp.path())
+                .output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let item = CheckMenuItem::with_id(
+            &app,
+            crate::TRAY_MENU_LIGHTWEIGHT,
+            "轻量模式",
+            true,
+            false,
+            None::<&str>,
+        )
+        .unwrap();
+        let _menu = tauri::menu::Menu::with_items(&app, &[&item]).unwrap();
+        app.manage(item.clone());
+        let events = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        app.listen_any(MODE_CHANGED_EVENT, move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+        set_lightweight_mode_enabled(app.handle().clone(), true).unwrap();
+        assert!(item.is_checked().unwrap());
+        assert!(read_enabled_from_disk());
+        assert_eq!(*events.lock().unwrap(), ["true"]);
+        item.set_text("Lightweight mode").unwrap();
+        let _translated_menu = tauri::menu::Menu::with_items(&app, &[&item]).unwrap();
+        assert!(item.is_checked().unwrap());
+        set_lightweight_mode_enabled(app.handle().clone(), false).unwrap();
+        assert!(!item.is_checked().unwrap());
+        assert!(!read_enabled_from_disk());
+        set_lightweight_mode_enabled(app.handle().clone(), true).unwrap();
+        let store = codex_plus_core::gateway::store::GatewayStore::default();
+        store
+            .update(|settings| {
+                settings.lightweight_on_close = false;
+                Ok(())
+            })
+            .unwrap();
+        refresh_from_disk(app.handle());
+        assert!(!item.is_checked().unwrap());
+        assert!(!enabled());
+        let path = codex_plus_core::paths::default_app_state_dir().join("gateway.json");
+        std::fs::write(&path, "invalid json").unwrap();
+        assert!(set_lightweight_mode_enabled(app.handle().clone(), true).is_err());
+        assert!(!enabled());
+        assert!(!item.is_checked().unwrap());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "invalid json");
+    }
 }

@@ -5,9 +5,8 @@ import { readFile } from "node:fs/promises";
 /**
  * 模型选择器分组折叠（聚合供应商场景）的契约测试。
  *
- * 这层跑不了真 DOM（仓库的注入层测试都是"读取分片源码 + 断言结构"这种风格，
- * 浏览器行为由 renderer-inject.test.ts 里的静态契约 + 人工/CDP 实测覆盖）。
- * 所以这里钉死三件事：
+ * 字段与生命周期约束用源码断言；分组和折叠运行真实函数，浏览器行为由
+ * scripts/model-picker-ui-smoke.mjs 验证。覆盖三类约束：
  *   1. 与后端约定的字段名不能漂（`codex_plus_group` / `codex_plus_group_id`）；
  *   2. 影响别人的行为约束：不搬动 React 管理的行、隐藏原生标签要退出无障碍树、
  *      单供应商不接管、聚合目录里"默认成员"那一组要能看懂；
@@ -86,8 +85,112 @@ it("默认成员的裸名模型归到默认供应商分组，不产生空标题"
   // 分组名解析：优先 codex_plus_group，其次 description 的 "上游 · 供应商"。
   assert.match(source, /const separator = description\.lastIndexOf\(" · "\)/);
   assert.match(source, /codexPlusModelPickerDefaultProviderName/);
-  // 空名兜底成固定 id，避免折叠状态串组。
-  assert.match(source, /group\.id = "__ungrouped__"/);
+  assert.doesNotMatch(source, /group\.id = "__ungrouped__"/);
+});
+
+async function pickerRuntime(catalog: Record<string, unknown> = {}, saved: unknown = null) {
+  let stored = saved ? JSON.stringify(saved) : null;
+  return new Function("catalog", "storage", `
+    const codexModelCatalog = catalog;
+    const window = { localStorage: storage };
+    const document = { documentElement: { lang: "zh" }, getElementById: () => ({}) };
+    const navigator = { language: "zh" };
+    const registerCodexPlusExtensionSelector = () => {};
+    const setTimeout = () => 0, clearTimeout = () => {};
+    ${await readShard()}
+    codexPlusModelPickerStore();
+    return {
+      rows: codexPlusModelPickerRows,
+      groups: (rows) => codexPlusModelPickerUniqueGroupIds(codexPlusModelPickerGroups(rows)),
+      toggle: (group) => {
+        codexPlusModelPickerToggleGroup({ querySelector: () => null }, group);
+      },
+      expanded: codexPlusModelPickerGroupExpanded,
+      state: codexPlusModelPickerGroupsState,
+    };
+  `)(catalog, { getItem: () => stored, setItem: (_key: string, value: string) => { stored = value; } });
+}
+
+function modelRow(text: string) {
+  const label = { textContent: text, classList: { contains: () => false }, getAttribute: () => null };
+  const outer = { firstElementChild: { children: [label], firstElementChild: label } };
+  const content = { querySelector: (selector: string) => selector.startsWith("span.") ? outer : null };
+  return {
+    querySelector: () => content,
+    getAttribute: () => null,
+    setAttribute() {},
+    classList: { toggle() {} },
+  };
+}
+
+it("系统默认合并原生与补充模型，其他供应商和自动入口独立归组", async () => {
+  const runtime = await pickerRuntime({
+    codex_plus_default_group_id: "default-id",
+    modelMetadata: {
+      "gpt-6.1-sol": { displayName: "GPT-6.1-Sol", codex_plus_group: "系统默认", codex_plus_group_id: "default-id", codex_plus_default: true },
+      "default-id/deepseek": { displayName: "DeepSeek（系统默认）", codex_plus_group: "系统默认", codex_plus_group_id: "default-id" },
+      opus: { displayName: "Claude-Opus-5-5", codex_plus_group: "分组1", codex_plus_group_id: "vendor-id" },
+      "vendor-id/deepseek": { displayName: "DeepSeek（分组1）", codex_plus_group: "分组1", codex_plus_group_id: "vendor-id" },
+      deepseek: { displayName: "DeepSeek（自动）", codex_plus_group: "自动组", codex_plus_group_id: "auto-id" },
+    },
+  });
+  const rows = runtime.rows({ querySelectorAll: () => [
+    modelRow("6.1 Sol"), modelRow("DeepSeek（系统默认）"), modelRow("Claude-Opus-5-5"),
+    modelRow("DeepSeek（分组1）"), modelRow("DeepSeek（自动）"), modelRow("5.6 Sol"),
+  ] });
+  const groups = runtime.groups(rows);
+  assert.deepEqual(groups.map((group: any) => [group.id, group.name, group.entries.length]), [
+    ["default-id", "系统默认", 3], ["vendor-id", "分组1", 2], ["auto-id", "自动组", 1],
+  ]);
+  runtime.toggle(groups[1]);
+  assert.equal(runtime.expanded(groups[0]), true);
+  assert.equal(runtime.expanded(groups[1]), false);
+  assert.equal(runtime.expanded(groups[2]), true);
+});
+
+it("缺少标题的不同身份仍有可见标题，折叠状态不串组", async () => {
+  const runtime = await pickerRuntime();
+  const groups = runtime.groups([
+    { groupId: "a", provider: "", label: "A", row: modelRow("A") },
+    { groupId: "b", provider: "", label: "B", row: modelRow("B") },
+  ]);
+  assert.deepEqual(groups.map((group: any) => group.id), ["a", "b"]);
+  assert.ok(groups.every((group: any) => group.name.length > 0));
+  runtime.toggle(groups[0]);
+  assert.equal(runtime.expanded(groups[1]), true);
+});
+
+it("切换供应商目录后清理旧归属，恢复时读取当前默认身份", async () => {
+  const catalog: Record<string, any> = {
+    model_provider: "first",
+    codex_plus_default_group_id: "a",
+    modelMetadata: { custom: { displayName: "Custom", codex_plus_group: "分组1", codex_plus_group_id: "a" } },
+  };
+  const runtime = await pickerRuntime(catalog);
+  const list = { querySelectorAll: () => [modelRow("Custom")] };
+  assert.equal(runtime.rows(list)[0].groupId, "a");
+  catalog.model_provider = "second";
+  catalog.codex_plus_default_group_id = "b";
+  catalog.modelMetadata = { custom: { displayName: "Custom", codex_plus_group: "分组2", codex_plus_group_id: "b" } };
+  const groups = runtime.groups(runtime.rows(list));
+  assert.equal(groups[0].id, "b");
+  assert.equal(groups[0].name, "分组2");
+});
+
+it("记住的默认身份不会阻止目录首次加载", async () => {
+  const source = await readShard();
+  const start = source.indexOf("  function codexPlusModelPickerEnsureCatalog()");
+  const end = source.indexOf("\n  /**", start);
+  let loads = 0;
+  const ensure = new Function("loadCodexModelCatalog", `
+    const codexModelCatalog = { status: "loading" };
+    const codexPlusModelPickerGroupsState = { defaultGroupId: "saved", catalogRetryAt: 0 };
+    ${source.slice(start, end)}
+    return codexPlusModelPickerEnsureCatalog;
+  `)(async () => { loads++; });
+  ensure();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(loads, 1);
 });
 
 it("扫描器自己插的节点都带归属标记，避免自喂扫描循环", async () => {

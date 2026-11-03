@@ -11788,6 +11788,7 @@
         }
         codexModelCatalogLoadedAt = Date.now();
         if (JSON.stringify(codexModelCatalog) !== previous) {
+          if (typeof window !== "undefined") window.__codexPlusModelPickerGroupsRuntime?.sync?.();
           renderCodexPlusMenu();
           scheduleCodexModelWhitelistRefresh();
           refreshCodexModelQueries();
@@ -11875,6 +11876,20 @@
   }
 
   function sortModelChoices(models, nameOf) {
+    const catalogOrder = typeof codexModelCatalog !== "undefined" ? codexModelCatalog.model_order : null;
+    if (Array.isArray(catalogOrder) && catalogOrder.length) {
+      const ranks = new Map(catalogOrder.map((name, index) => [name, index]));
+      const metadata = codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata || {};
+      const defaultId = codexModelCatalog.codex_plus_default_group_id;
+      const firstOther = defaultId ? catalogOrder.findIndex((name) =>
+        metadata[name]?.codex_plus_group_id && metadata[name].codex_plus_group_id !== defaultId) : -1;
+      const nativeRank = firstOther < 0 ? Infinity : firstOther - 0.5;
+      const ordered = [...models].sort((left, right) =>
+        (ranks.get(nameOf(left)) ?? nativeRank) - (ranks.get(nameOf(right)) ?? nativeRank));
+      const changed = ordered.some((model, index) => model !== models[index]);
+      if (changed) models.splice(0, models.length, ...ordered);
+      return changed;
+    }
     const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
     const entries = models.map((model) => ({ model, parts: nameOf(model).trim().replace(/[._\s]+/g, "-").match(/\d+|\D+/g) || [] }));
     entries.sort((left, right) => {
@@ -12052,6 +12067,9 @@
           changed = true;
         }
         if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
+      } else if (codexPlusModelMetadata(item.model)?.hidden === true && item.hidden !== true) {
+        item.hidden = true;
+        changed = true;
       }
     });
     customModels.forEach((modelName) => {
@@ -12956,6 +12974,7 @@
     collapsed: new Set(),
     /** 会话内累积的"归一化模型名 -> 供应商"。目录快照会被整体替换，这里做加法不丢已知归属。 */
     providerNames: new Map(),
+    catalogProviderId: "",
     /** 默认成员的分组 id（聚合的"默认供应商"），用于打「默认」标志。 */
     defaultGroupId: "",
     /** 目录快照的单飞标记与冷却时间。 */
@@ -12972,6 +12991,7 @@
           defaultTitle: "默认供应商：未指定模型时走这一家",
           expandAll: "全部展开",
           collapseAll: "全部折叠",
+          fallbackGroup: "其他模型",
           groupAria: (name, count, expanded, isDefault) => `${name}${isDefault ? "（默认供应商）" : ""}，${count} 个模型，${expanded ? "已展开" : "已折叠"}`,
           groupTitle: (name, count) => `${name} · ${count}`,
           favorite: "已收藏（在 Codex++ 里收藏的模型）",
@@ -12981,6 +13001,7 @@
           defaultTitle: "Default provider: used when no model is pinned",
           expandAll: "Expand all",
           collapseAll: "Collapse all",
+          fallbackGroup: "Other models",
           groupAria: (name, count, expanded, isDefault) => `${name}${isDefault ? " (default provider)" : ""}, ${count} models, ${expanded ? "expanded" : "collapsed"}`,
           groupTitle: (name, count) => `${name} · ${count}`,
           favorite: "Favorite (starred in Codex++)",
@@ -13004,7 +13025,7 @@
       }
       if (parsed?.providers && typeof parsed.providers === "object") {
         for (const [key, value] of Object.entries(parsed.providers)) {
-          if (typeof key === "string" && typeof value === "string" && key && value) {
+          if (key && value && typeof value.provider === "string" && typeof value.groupId === "string") {
             codexPlusModelPickerGroupsState.providerNames.set(key, value);
           }
         }
@@ -13036,13 +13057,13 @@
    * `parsed` 表示这条是从行末尾 `（供应商）` 猜出来的；权威来源（目录侧
    * `codex_plus_group` / `description`）可以覆盖它，反过来不行。
    */
-  function codexPlusModelPickerRememberProvider(displayName, provider, parsed) {
+  function codexPlusModelPickerRememberProvider(displayName, provider, parsed, groupId = "") {
     const key = codexPlusModelPickerNormalize(displayName);
     if (!key || !provider) return;
     const existing = codexPlusModelPickerGroupsState.providerNames.get(key);
     if (existing && !existing.parsed && parsed) return;
-    if (existing && existing.name === provider && existing.parsed === !!parsed) return;
-    codexPlusModelPickerGroupsState.providerNames.set(key, { name: provider, parsed: !!parsed });
+    if (existing && existing.provider === provider && existing.groupId === groupId && existing.parsed === !!parsed) return;
+    codexPlusModelPickerGroupsState.providerNames.set(key, { provider, groupId, parsed: !!parsed });
     codexPlusModelPickerGroupsState.providerDirty = true;
   }
 
@@ -13055,7 +13076,6 @@
    */
   function codexPlusModelPickerEnsureCatalog() {
     const state = codexPlusModelPickerGroupsState;
-    if (state.defaultGroupId) return;
     if (state.catalogPending) return;
     if (Date.now() < state.catalogRetryAt) return;
     const loaded = !!(codexModelCatalog?.models?.length || codexModelCatalog?.modelMetadata);
@@ -13082,6 +13102,12 @@
    */
   function codexPlusModelPickerDefaultGroupId() {
     const state = codexPlusModelPickerGroupsState;
+    const providerId = codexModelCatalog?.model_provider || "";
+    if (providerId && providerId !== state.catalogProviderId) {
+      state.providerNames.clear();
+      state.defaultGroupId = "";
+      state.catalogProviderId = providerId;
+    }
     const direct = codexModelCatalog?.codex_plus_default_group_id;
     if (typeof direct === "string" && direct.trim()) {
       if (state.defaultGroupId !== direct.trim()) {
@@ -13098,7 +13124,7 @@
         const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
         if (!groupId) continue;
         const displayName = entry.displayName || entry.display_name || "";
-        codexPlusModelPickerRememberProvider(displayName, providerNameOf(entry), false);
+        codexPlusModelPickerRememberProvider(displayName, providerNameOf(entry), false, groupId);
         if (state.defaultGroupId !== groupId) {
           state.defaultGroupId = groupId;
           state.providerDirty = true;
@@ -13231,6 +13257,7 @@
     // `models` 是权威切片：优先按它逐个取元数据（键能对上就用真实 slug 做别名）。
     // 取不到（切片缺失 / 键不一致）时退回遍历全部元数据，保证不漏分组。
     const seenEntries = new Set();
+    const currentAliases = new Set();
     const registerEntry = (entry, slug) => {
       if (!entry || typeof entry !== "object" || seenEntries.has(entry)) return;
       seenEntries.add(entry);
@@ -13240,11 +13267,13 @@
       const groupId = typeof entry.codex_plus_group_id === "string" ? entry.codex_plus_group_id.trim() : "";
       if (!provider || !groupId) return;
       for (const key of codexPlusModelPickerCatalogAliases(displayName, entry, slug)) {
-        const remembered = map.get(key);
-        // 权威来源可以覆盖行文本猜出来的；已经有权威值就不动。
-        if (!remembered || remembered.parsed) map.set(key, { provider, groupId, parsed: false });
+        // 当前目录覆盖旧快照；同一目录里重复裸名仍由首个权威条目认领。
+        if (!currentAliases.has(key)) {
+          map.set(key, { provider, groupId, parsed: false });
+          currentAliases.add(key);
+        }
       }
-      codexPlusModelPickerRememberProvider(displayName, provider, false);
+      codexPlusModelPickerRememberProvider(displayName, provider, false, groupId);
     };
     const bySlug = new Map(entries);
     for (const slug of slugList) registerEntry(bySlug.get(slug), slug);
@@ -13341,9 +13370,9 @@
    * 已打过补丁的行直接读我们留下的标记，避免反复解析。
    */
   function codexPlusModelPickerRows(list) {
+    const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
-    const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     const rows = [];
     const items = list.querySelectorAll('[role="menuitemradio"]');
     items.forEach((row) => {
@@ -13388,6 +13417,9 @@
   function codexPlusModelPickerDefaultProviderName() {
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
     if (!modelMetadata || typeof modelMetadata !== "object") return "";
+    const defaultId = codexPlusModelPickerDefaultGroupId();
+    const defaultEntry = Object.values(modelMetadata).find((entry) => entry?.codex_plus_group_id === defaultId);
+    if (defaultEntry && providerNameOf(defaultEntry)) return providerNameOf(defaultEntry);
     // 取"裸名模型里出现最多的那个分组"：聚合的默认成员可能有几百个模型，
     // 偶尔混进一两个别的成员的裸名条目也不该把整组改姓。
     const counts = new Map();
@@ -13405,7 +13437,7 @@
       }
       if (!provider) continue;
       counts.set(provider, (counts.get(provider) || 0) + 1);
-      codexPlusModelPickerRememberProvider(displayName, provider, false);
+      codexPlusModelPickerRememberProvider(displayName, provider, false, entry.codex_plus_group_id || "");
     }
     let best = "";
     let bestCount = 0;
@@ -13460,10 +13492,7 @@
       // 所以按"组内任意一行命中默认分组"判定，而不是只看组首那一行。
       group.isDefault = !!defaultGroupId
         && group.entries.some((entry) => entry.groupId === defaultGroupId || entry.provider === defaultGroupId);
-      if (!group.name) {
-        group.id = "__ungrouped__";
-        continue;
-      }
+      if (!group.name) group.name = codexPlusModelPickerText().fallbackGroup;
       const base = group.id || group.name;
       const count = (seen.get(base) || 0) + 1;
       seen.set(base, count);
@@ -13474,7 +13503,7 @@
 
   function codexPlusModelPickerFingerprint(groups) {
     return groups
-      .map((group) => `${group.id}:${group.entries.map((entry) => entry.label).join("|")}`)
+      .map((group) => `${group.id}:${group.name}:${group.entries.map((entry) => entry.label).join("|")}`)
       .join("||");
   }
 
@@ -13497,9 +13526,7 @@
     let keep = "";
     const selected = list.querySelector("[data-model-selected]");
     if (selected) {
-      const split = codexPlusModelPickerSplitLabel(codexPlusModelPickerRowLabel(selected));
-      const desired = split.provider || "";
-      const found = groups.find((group) => (group.name || "") === desired);
+      const found = groups.find((group) => group.entries.some((entry) => entry.row === selected));
       if (found) keep = found.id;
     }
     // 没有选中模型（或定位不到所属分组）时展开默认供应商：目录里裸名发布的那些

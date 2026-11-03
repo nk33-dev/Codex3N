@@ -223,3 +223,19 @@ test("托盘事件先按类型筛掉鼠标移动，开关读内存缓存而不�
   assert.match(rust, /const WIDTH: f64 = 380\.0;/);
   assert.match(rust, /const HEIGHT: f64 = 540\.0;/);
 });
+
+test("托盘轻量模式复用保存入口，语言更新后仍保留同一个勾选项", () => {
+  const rust = read("../src-tauri/src/lib.rs");
+  assert.match(rust, /CheckMenuItem::with_id\(/);
+  assert.match(rust, /TRAY_MENU_LIGHTWEIGHT[\s\S]*lightweight::set_lightweight_mode_enabled\(app\.clone\(\), !lightweight::enabled\(\)\)/);
+  assert.match(rust, /Menu::with_items\(app, &\[&show_item, &lightweight_item, &quit_item\]\)/);
+  assert.match(rust, /lightweight\.set_text\(&lightweight_label\)/);
+  assert.match(rust, /Menu::with_items\(&app, &\[&show, &\*lightweight, &quit\]\)/);
+  const lightweight = read("../src-tauri/src/lightweight.rs");
+  assert.match(lightweight, /crate::sync_lightweight_tray\(&app\)/);
+  assert.match(lightweight, /app\.emit\(MODE_CHANGED_EVENT, enabled\)/);
+  const app = read("./App.tsx");
+  assert.match(app, /listen<boolean>\("codex-plus-lightweight-mode-changed"/);
+  assert.match(app, /revision === requestedAt/);
+  assert.match(app, /return subscribeLanguage\(update\)/);
+});

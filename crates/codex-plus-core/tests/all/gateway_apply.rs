@@ -75,6 +75,69 @@ fn binding() -> AgentBinding {
     }
 }
 
+#[test]
+fn codex_default_group_combines_native_models_and_keeps_other_provider_entries() {
+    let fixture = fixture(57399);
+    let ctx = &fixture.ctx;
+    let mut input = deepseek_input();
+    input.name = "系统默认".into();
+    input.model = "gpt-6.1-sol".into();
+    input.model_list = "gpt-6.1-sol\ndeepseek-v4-pro".into();
+    create_provider(&ctx.gateway, &input, "", None).unwrap();
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let default_id = profile_id_of(ctx, "系统默认");
+    let catalog = codex_catalog(ctx);
+    let models = catalog["models"].as_array().unwrap();
+    let model = |slug: &str| models.iter().find(|model| model["slug"] == slug).unwrap();
+    assert_eq!(catalog["codex_plus_default_group_id"], default_id);
+    for slug in ["gpt-6.1-sol", "gpt-5.6-sol", "gpt-5.4"] {
+        assert_eq!(model(slug)["codex_plus_group_id"], default_id);
+        assert_eq!(model(slug)["codex_plus_group"], "系统默认");
+    }
+    assert_eq!(model("gpt-reserve")["visibility"], "hide");
+    let other_id = profile_id_of(ctx, "DeepSeek");
+    assert_eq!(
+        model(&format!("{other_id}/deepseek-v4-pro"))["codex_plus_group_id"],
+        other_id
+    );
+    assert_eq!(
+        model(&format!("{default_id}/deepseek-v4-pro"))["codex_plus_group_id"],
+        default_id
+    );
+    let max_default = models
+        .iter()
+        .filter(|model| model["codex_plus_group_id"] == default_id)
+        .map(|model| model["priority"].as_u64().unwrap())
+        .max()
+        .unwrap();
+    let min_other = models
+        .iter()
+        .filter(|model| model["codex_plus_group_id"] != default_id)
+        .map(|model| model["priority"].as_u64().unwrap())
+        .min()
+        .unwrap();
+    assert!(max_default < min_other);
+    let mut configured_binding = binding();
+    configured_binding.model = format!("{other_id}/deepseek-v4-flash");
+    enable_binding(ctx, &ToolId::Codex, configured_binding).unwrap();
+    let refreshed = codex_catalog(ctx);
+    let mut entries: Vec<_> = refreshed["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|model| model["codex_plus_group_id"] == other_id)
+        .collect();
+    entries.sort_by_key(|model| model["priority"].as_u64().unwrap());
+    assert_eq!(
+        entries[0]["slug"],
+        format!("{other_id}/deepseek-v4-pro"),
+        "当前模型改变后，组内仍保留供应商配置的顺序"
+    );
+}
+
 fn read_settings_json(ctx: &ApplyContext) -> Value {
     serde_json::from_str(
         &std::fs::read_to_string(ctx.claude.claude_home.join("settings.json")).unwrap(),

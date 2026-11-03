@@ -286,7 +286,7 @@ pub fn set_tray_panel_enabled<R: Runtime>(
 pub fn refresh_tray_mode<R: Runtime>(app: AppHandle<R>) {
     set_cached(read_enabled_from_disk());
     // 关窗进入轻量模式的开关也存在 gateway.json，一并重读。
-    crate::lightweight::refresh_from_disk();
+    crate::lightweight::refresh_from_disk(&app);
     apply_tray_mode(&app, crate::TRAY_ID);
     if !enabled() {
         hide(&app);

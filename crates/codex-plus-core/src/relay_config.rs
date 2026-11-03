@@ -4353,6 +4353,13 @@ fn apply_model_catalog_to_config_with_live_policy(
         provider_multi_agent,
     );
     let catalog_json = apply_model_metadata_overrides(&catalog_json, &model_metadata)?;
+    let catalog_json = if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+        let mut catalog: Value = serde_json::from_str(&catalog_json)?;
+        crate::model_suffix::order_gateway_model_catalog(&mut catalog);
+        serde_json::to_string_pretty(&catalog)?
+    } else {
+        catalog_json
+    };
     let catalog_json = if upstream_rejects_tool_search(profile) {
         disable_search_tool_in_catalog(&catalog_json)?
     } else {

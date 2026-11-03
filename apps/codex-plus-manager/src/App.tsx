@@ -3769,13 +3769,17 @@ export function App() {
   }, [pendingEnhancementSection, route]);
 
   useEffect(() => {
-    if (getLanguage() === "en") {
+    const update = () => {
+      const english = getLanguage() === "en";
       void invoke("update_tray_labels", {
-        showLabel: "Show window",
-        quitLabel: "Quit",
+        showLabel: english ? "Show window" : "显示主窗口",
+        quitLabel: english ? "Quit" : "退出程序",
+        lightweightLabel: english ? "Lightweight mode" : "轻量模式",
         windowTitle: "Codex++",
-      });
-    }
+      }).catch(console.error);
+    };
+    update();
+    return subscribeLanguage(update);
   }, []);
 
   useEffect(() => {
@@ -10141,10 +10145,20 @@ function useLightweightModeSetting() {
   const [error, setError] = useState("");
   useEffect(() => {
     let cancelled = false;
-    void invoke<boolean>("lightweight_mode_enabled")
-      .then((value) => { if (!cancelled) setEnabled(value !== false); })
-      .catch(() => { if (!cancelled) setEnabled(true); });
-    return () => { cancelled = true; };
+    let stop: (() => void) | undefined;
+    let revision = 0;
+    void listen<boolean>("codex-plus-lightweight-mode-changed", ({ payload }) => {
+      revision++;
+      if (!cancelled) { setEnabled(payload); setError(""); }
+    }).then(unlisten => {
+      if (cancelled) { unlisten(); return; }
+      stop = unlisten;
+      const requestedAt = revision;
+      void invoke<boolean>("lightweight_mode_enabled")
+        .then(value => { if (!cancelled && revision === requestedAt) setEnabled(value); })
+        .catch(failure => { if (!cancelled) setError(stringifyError(failure)); });
+    }).catch(failure => { if (!cancelled) setError(stringifyError(failure)); });
+    return () => { cancelled = true; stop?.(); };
   }, []);
   const toggle = async () => {
     if (enabled === null || saving) return;

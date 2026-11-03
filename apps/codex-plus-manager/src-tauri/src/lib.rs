@@ -18,7 +18,7 @@ mod tray_panel;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
@@ -34,6 +34,7 @@ static SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
 /// 整个退出流程的等待上限，包含清理完成后的最终框架退出。
 const SHUTDOWN_WATCHDOG: u64 = 10;
 const TRAY_MENU_SHOW: &str = "tray_show_main";
+const TRAY_MENU_LIGHTWEIGHT: &str = "tray_lightweight_mode";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
 const MANAGER_VISIBILITY_EVENT: &str = "manager-visibility-changed";
@@ -757,8 +758,17 @@ pub fn handle_dream_skin_url(url: &str) -> bool {
 
 fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, TRAY_MENU_SHOW, "显示主窗口", true, None::<&str>)?;
+    let lightweight_item = CheckMenuItem::with_id(
+        app,
+        TRAY_MENU_LIGHTWEIGHT,
+        "轻量模式",
+        true,
+        lightweight::enabled(),
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, TRAY_MENU_QUIT, "退出程序", true, None::<&str>)?;
-    let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+    let tray_menu = Menu::with_items(app, &[&show_item, &lightweight_item, &quit_item])?;
+    app.manage(lightweight_item);
 
     let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&tray_menu)
@@ -766,6 +776,15 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_MENU_SHOW => {
                 show_main_window(app);
+            }
+            TRAY_MENU_LIGHTWEIGHT => {
+                if let Err(error) =
+                    lightweight::set_lightweight_mode_enabled(app.clone(), !lightweight::enabled())
+                {
+                    sync_lightweight_tray(app);
+                    use tauri_plugin_dialog::DialogExt;
+                    app.dialog().message(error).title("Codex++").show(|_| {});
+                }
             }
             TRAY_MENU_QUIT => {
                 record_shutdown_entry("app.tray_quit", shutdown_entry_snapshot(None));
@@ -810,6 +829,12 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     let _ = tray_builder.build(app)?;
     tray_panel::apply_tray_mode(app.handle(), TRAY_ID);
     Ok(())
+}
+
+pub(crate) fn sync_lightweight_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(item) = app.try_state::<CheckMenuItem<R>>() {
+        let _ = item.set_checked(lightweight::enabled());
+    }
 }
 
 // 托盘图标事件是否唤起主窗口（issue #2676）。Windows 遵循「左键单击唤窗、
@@ -1085,13 +1110,17 @@ fn update_tray_labels<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     show_label: String,
     quit_label: String,
+    lightweight_label: String,
     window_title: String,
 ) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let show_item = MenuItem::with_id(&app, TRAY_MENU_SHOW, &show_label, true, None::<&str>);
         let quit_item = MenuItem::with_id(&app, TRAY_MENU_QUIT, &quit_label, true, None::<&str>);
-        if let (Ok(show), Ok(quit)) = (show_item, quit_item) {
-            if let Ok(menu) = Menu::with_items(&app, &[&show, &quit]) {
+        if let (Ok(show), Ok(quit), Some(lightweight)) =
+            (show_item, quit_item, app.try_state::<CheckMenuItem<R>>())
+        {
+            let _ = lightweight.set_text(&lightweight_label);
+            if let Ok(menu) = Menu::with_items(&app, &[&show, &*lightweight, &quit]) {
                 let _ = tray.set_menu(Some(menu));
             }
         }

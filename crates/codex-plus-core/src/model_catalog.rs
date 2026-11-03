@@ -269,7 +269,68 @@ async fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) 
     } else {
         models.first().cloned().unwrap_or_default()
     };
-    let model_metadata = relay_profile_model_ui_metadata_map(profile, &models);
+    let mut model_metadata = relay_profile_model_ui_metadata_map(profile, &models);
+    let mut model_order = Vec::<String>::new();
+    // 与落盘目录共用分组和优先级，避免 RPC 合并后再次打散供应商。
+    if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+        let entries = crate::model_suffix::collect_catalog_entries(
+            &models.join("\n"),
+            &HashMap::new(),
+            &HashMap::new(),
+            &model,
+        );
+        let raw = crate::model_suffix::build_model_catalog_json(&entries, None);
+        let overrides = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)
+            .unwrap_or_default();
+        if let Ok(raw) = crate::relay_config::apply_model_metadata_overrides(&raw, &overrides)
+            && let Ok(mut catalog) = serde_json::from_str::<Value>(&raw)
+        {
+            crate::model_suffix::order_gateway_model_catalog(&mut catalog);
+            if let Some(entries) = catalog["models"].as_array() {
+                let mut ordered: Vec<_> = entries.iter().collect();
+                ordered.sort_by_key(|entry| entry["priority"].as_u64().unwrap_or(u64::MAX));
+                model_order = ordered
+                    .iter()
+                    .filter_map(|entry| entry["slug"].as_str().map(str::to_string))
+                    .collect();
+                for entry in entries {
+                    let Some(slug) = entry["slug"].as_str() else {
+                        continue;
+                    };
+                    let ui =
+                        crate::model_suffix::model_ui_metadata_with_override(slug, Some(entry));
+                    if let Some(ui) = ui {
+                        let target = model_metadata
+                            .as_object_mut()
+                            .unwrap()
+                            .entry(slug.to_string())
+                            .or_insert_with(|| ui.clone());
+                        for key in [
+                            "codex_plus_group",
+                            "codex_plus_group_id",
+                            "codex_plus_default",
+                        ] {
+                            if let Some(value) = ui.get(key) {
+                                target[key] = value.clone();
+                            }
+                        }
+                        if entry["codex_plus_native"] == true {
+                            target["hidden"] = json!(entry["visibility"] == "hide");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let default_group_id = model_metadata
+        .as_object()
+        .and_then(|entries| {
+            entries
+                .values()
+                .find(|entry| entry["codex_plus_default"] == true)
+                .and_then(|entry| entry["codex_plus_group_id"].as_str())
+        })
+        .unwrap_or("");
     json!({
         "status": if models.is_empty() { "not_configured" } else { "ok" },
         "path": home.join("config.toml").to_string_lossy(),
@@ -281,6 +342,8 @@ async fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) 
         "default_model": default_model,
         "models": models,
         "modelMetadata": model_metadata,
+        "codex_plus_default_group_id": default_group_id,
+        "model_order": model_order,
         "sources": sources,
         "responses_api": responses_api_status("unknown", "", "")
     })
@@ -1599,6 +1662,46 @@ mod model_fetch_tests {
         // 两者都没有时不编造窗口：内置元数据没有窗口的模型保持原样。
         let neither = relay_profile_model_ui_metadata_map(&relay_profile("{}", ""), &models);
         assert_eq!(model_window(&neither, "vendor-only-model"), None);
+    }
+
+    #[tokio::test]
+    async fn gateway_picker_catalog_merges_native_group_without_publishing_hidden_models() {
+        let profile = RelayProfile {
+            id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into(),
+            model: "gpt-6.1-sol".into(),
+            model_list: "gpt-6.1-sol\nvendor/deepseek\nopus".into(),
+            model_metadata: json!({
+                "gpt-6.1-sol": {"codex_plus_group_id":"default","codex_plus_group":"系统默认","codex_plus_default":true},
+                "vendor/deepseek": {"codex_plus_group_id":"vendor","codex_plus_group":"分组1"},
+                "opus": {"codex_plus_group_id":"vendor","codex_plus_group":"分组1"}
+            }).to_string(),
+            ..RelayProfile::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile).await;
+        assert_eq!(catalog["codex_plus_default_group_id"], "default");
+        assert_eq!(
+            catalog["modelMetadata"]["gpt-5.4"]["codex_plus_group_id"],
+            "default"
+        );
+        assert_eq!(
+            catalog["modelMetadata"]["opus"]["codex_plus_group_id"],
+            "vendor"
+        );
+        assert_eq!(catalog["modelMetadata"]["gpt-reserve"]["hidden"], true);
+        assert_eq!(catalog["model_order"][0], "gpt-6.1-sol");
+        assert!(
+            !catalog["models"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("gpt-reserve"))
+        );
+        assert!(
+            !catalog["models"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("gpt-5.4"))
+        );
     }
 
     #[tokio::test]

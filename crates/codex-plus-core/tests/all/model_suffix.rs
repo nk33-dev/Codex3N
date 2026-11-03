@@ -13,6 +13,40 @@ fn runtime_cache_env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
+fn appended_native_models_keep_visibility_and_priority() {
+    let _lock = runtime_cache_env_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+    let entries = collect_catalog_entries("custom-model", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    let model = |slug: &str| {
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .unwrap()
+    };
+    assert_eq!(model("gpt-reserve")["visibility"], "hide");
+    assert_eq!(model("codex-auto-review")["visibility"], "hide");
+    assert_eq!(model("custom-model")["visibility"], "list");
+    assert!(
+        model("gpt-6-astra")["priority"].as_u64().unwrap()
+            < model("gpt-5.5")["priority"].as_u64().unwrap()
+    );
+}
+
+#[test]
+fn explicitly_configured_hidden_slug_remains_selectable() {
+    let entries = collect_catalog_entries("gpt-reserve", &HashMap::new(), &HashMap::new(), "");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    assert_eq!(catalog["models"][0]["slug"], "gpt-reserve");
+    assert_eq!(catalog["models"][0]["visibility"], "list");
+}
+
+#[test]
 fn priority_only_unknown_metadata_never_fabricates_native_descriptor_defaults() {
     let mode = serde_json::json!({"codex_plus_fast_support":"supported"});
     let ui = model_ui_metadata_with_override("custom-2443-priority-only", Some(&mode)).unwrap();

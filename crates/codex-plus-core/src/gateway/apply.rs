@@ -531,6 +531,9 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
         fields.insert("description".into(), json!(format!("{upstream} · {group}")));
         fields.insert("codex_plus_group".into(), json!(group));
         fields.insert("codex_plus_group_id".into(), json!(relay.id));
+        if matches!(relay.name.trim(), "系统默认" | "系统默认配置") {
+            fields.insert("codex_plus_default".into(), json!(true));
+        }
         if codex_favorite(gateway, &relays, &model) {
             fields.insert("codex_plus_favorite".into(), json!(true));
         }
@@ -538,6 +541,14 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
     }
     if metadata.is_empty() {
         return String::new();
+    }
+    for (index, model) in route::codex_pool_models(gateway, binding)
+        .iter()
+        .enumerate()
+    {
+        if let Some(fields) = metadata.get_mut(model) {
+            fields["codex_plus_order"] = json!(index);
+        }
     }
     serde_json::to_string(&Value::Object(metadata)).unwrap_or_default()
 }

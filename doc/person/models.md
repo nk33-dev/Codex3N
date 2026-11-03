@@ -16,23 +16,23 @@
 - 每模型 Fast 可显式声明支持、禁用或继承。私有字段 `codex_plus_fast_support` 保存在供应商元数据中，生成原生目录时转换为 `service_tiers` 与 `additional_speed_tiers`，保留其它档位；注入响应通过 `prioritySupportOverride` 统一界面和请求判断，窗口覆盖仍按原优先级应用。
 - 外部目录路径含未展开变量或指向不存在的文件时，`relay_config.rs` 移除失效指针并走托管目录生成；相对路径按 `CODEX_HOME` 解析，存在的外部目录继续保留。
 - 托管目录生成与兼容复制后写入绝对 `model_catalog_json` 路径。启动器在供应商总开关开启时，仅迁移已有 `model-catalogs/<id>.json` 相对指针；缺失文件、软链与用户外部目录保持原样。`model_catalog_paths.rs` 用临时副本覆盖重复迁移、损坏配置和路径边界。
-- 官方响应和个人版补入的模型使用同一显示排序，新增高版本不会被旧官方条目整体压到后面。
-- 生成每个供应商的托管目录时保留原生模型条目；供应商模型排在前面，切换供应商会重建当前目录，不沿用上一份目录。用户显式指定的上下文窗口同时约束实际窗口和能力上限。
+- 网关菜单按分组展示：系统默认合并原生可见条目和系统默认供应商补充的模型，其他供应商及自动路由保留各自入口。原生隐藏条目保留隐藏标记；手工配置的模型按配置展示，审批内部模型仍隐藏。
+- 生成每个供应商的托管目录时保留原生模型条目及其目录优先级，切换供应商会重建当前目录，不沿用上一份目录。用户显式指定的上下文窗口同时约束实际窗口和能力上限。
 - 原生菜单保留选择能力，不重新插入个人版已去掉的模型管理面板或未测试提示。
 
 ## 排序规则
 
-1. 合并官方目录和个人版补入的模型后，整份列表按实际模型 ID 排序，不按来源分层。
-2. 比较时忽略大小写，将点、下划线和空白规范为分隔符，拆成文字与数字片段；只用于比较，不改写原始 ID。斜杠命名空间保留。
-3. 文字片段自然升序，让相同名称前缀的系列相邻；对应数字片段降序，使较大的版本数字排前。完全相同的前缀下，完整名称排在简写前。
-4. 没有数字的别名也按名称正常展示；比较结果相同的条目保持原相对顺序，重复刷新不抖动。
-5. 不修改默认模型、当前选择或供应商配置的持久化顺序；只更新菜单的显示顺序和与之对应的 priority。
+1. 网关目录先按稳定分组 ID 排列：系统默认置顶，其他分组保留配置顺序；同名但路由 ID 不同的模型分别保留。系统默认的原生条目保留目录优先级，补充型号按系列和数字版本插入，其他组保留配置中的模型顺序。
+2. `/codex-model-catalog` 通过 `model_order` 下发与落盘目录相同的显示顺序；注入端合并原生 RPC 列表时沿用它。目录补齐的原生条目只补 UI 元数据，不加入自定义模型名单，避免重新解开隐藏条目或干扰关闭原生混入的行为。
+3. 其他目录沿用自然排序：忽略大小写，将点、下划线和空白规范为分隔符，文字升序、对应数字降序；完整名称排在相同前缀的简写前。斜杠命名空间保留。
+4. 比较结果相同的条目保持原相对顺序，重复刷新不抖动。
+5. 排序不修改默认模型、当前选择或供应商配置的持久化顺序；只更新菜单显示顺序和对应的 priority。
 
 这是一套名称整理规则，不是模型能力排行榜。数字可能表示版本、日期或规模，不能据此宣称模型更强；也不能仅凭未知型号名称可靠判断它是图像、语音还是对话模型，因此不硬编码用途分组。不同供应商新增模型无需更新名单。
 
 ## 代码入口与配置
 
-- 网关目录由 `gateway/apply.rs`、`gateway/model_sync.rs` 生成，供应商池与模型组独立于直连目录。接入 Codex 后仍经过 `70-model-catalog.js` 与 `71-model-picker-groups.js` 的本机隔离和自然排序；目录中的收藏、Fast 及审批模型能力沿用上游声明。直连目录的手工窗口、当前命名 Key 和原生模型混入规则保持原契约。
+- 网关目录由 `gateway/apply.rs`、`gateway/model_sync.rs` 生成，供应商池与模型组独立于直连目录。`model_suffix::order_gateway_model_catalog` 共用在落盘与 UI 目录生成两条链路；`70-model-catalog.js` 与 `71-model-picker-groups.js` 保持本机隔离并读取同一组身份和顺序。目录中的收藏、Fast 及审批模型能力沿用上游声明。直连目录的手工窗口、当前命名 Key 和原生模型混入规则保持原契约。
 
 - `assets/inject/renderer-inject/70-model-catalog.js`：模型目录状态、加载、`sortModelChoices`、`patchModelNameArray`、`patchModelArray` 及 RPC 适配。新版宿主在导出对象不可写时，通过 `installCodexAppServerClientCapture` 定位客户端，桥接捕获后由 `installCodexAppServerClientPrototypePatch` 接管原型。
 - 客户端定位在已加载资产中按类定义内容查找，前缀只用于排序，候选最多 24 个；覆盖 `app-initial-*` 和 `app-shared-*`。`60-plugin-marketplace.js::codexStateApi` 对新版 `app-shared-*` 按函数中的全局状态操作识别接口，保留旧版导出名兼容。
@@ -48,6 +48,7 @@
 - 前端 `model-order.test.ts`：混合供应商、未知家族、别名、命名空间、大小写、数字版本、完整名称和简写、动态新增、对象元数据与稳定性。
 - 前端 `model-rpc-compat.test.ts` / `renderer-model-runtime.test.ts`：实际 RPC 合并链路、默认模型保留与远程隔离。
 - Rust `crates/codex-plus-core/tests/model_catalog.rs` / `cdp_bridge.rs`：目录与注入兼容。
+- `scripts/model-picker-ui-smoke.mjs`：隔离浏览器中的默认组合并、鼠标与键盘独立折叠、长标题和窄菜单；夹具不代替真实 App 注入验收。
 
 ## 主机范围与目录恢复
 
@@ -59,4 +60,4 @@
 
 官方登录成员的模型列表与默认模型都为空时，聚合目录从本机 `models_cache.json` 补入非隐藏模型；有显式模型配置时保持其列表。缓存缺失时不编造模型，仍返回空目录。回归见 `aggregate_catalog::tests::official_member_without_models_publishes_codex_official_directory`。
 
-`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 在原生模型菜单按供应商折叠；组内继续使用个人版自然排序，折叠偏好按供应商保存。单供应商保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。
+`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 按稳定 ID 合组并独立保存折叠偏好。网关的系统默认供应商以导入配置名称「系统默认／系统默认配置」识别，下发后按其稳定 ID 合并原生模型；没有该供应商时使用独立的系统默认组承接原生条目。缺少名称时显示「其他模型」，不同 ID 保持独立；目录加载不依赖历史默认身份，切换供应商时清理上一份归属缓存。单组保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。

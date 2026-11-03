@@ -804,7 +804,9 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
         .iter()
         .enumerate()
         .map(|(index, entry)| {
-            let (mut model, has_model_metadata) = if deepseek_metadata {
+            let (mut model, has_model_metadata) = if index >= entries.len() {
+                model_template_entry(&entry.slug)
+            } else if deepseek_metadata {
                 deepseek_model_template_entry(&entry.slug)
                     .unwrap_or_else(|| model_template_entry(&entry.slug))
             } else {
@@ -854,8 +856,31 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
             } else {
                 model["auto_compact_token_limit"] = Value::Null;
             }
-            model["priority"] = json!(1000 + index);
-            model["visibility"] = json!(crate::aggregate_catalog::catalog_visibility(&entry.slug));
+            if index < entries.len() {
+                model["priority"] = json!(1000 + index);
+                model["visibility"] =
+                    json!(crate::aggregate_catalog::catalog_visibility(&entry.slug));
+            } else {
+                // 可见性和排序来自原生目录；能力兼容模板可能借用了其他型号的条目。
+                let native =
+                    with_runtime_models(|models| find_catalog_entry(models, &entry.slug).cloned())
+                        .flatten();
+                let bundled = bundled_template_entry(&entry.slug);
+                for key in ["priority", "visibility"] {
+                    if let Some(value) = native
+                        .as_ref()
+                        .and_then(|model| model.get(key))
+                        .or_else(|| bundled.as_ref().and_then(|model| model.get(key)))
+                    {
+                        model[key] = value.clone();
+                    }
+                }
+                model["codex_plus_native"] = json!(true);
+                model["codex_plus_native_priority"] = model
+                    .get("priority")
+                    .cloned()
+                    .unwrap_or(json!(1000 + index));
+            }
             // Custom Responses relay catalogs must advertise the v2 multi-agent
             // contract so Codex exposes the sub-agent tools.
             // 供应商级显式选择（#2683）优先：链路能否承载 v2 加密载荷对整家供应商
@@ -894,6 +919,155 @@ pub(crate) fn build_model_catalog_json_with_capabilities(
         })
         .collect();
     serde_json::to_string_pretty(&json!({ "models": models })).unwrap_or_default()
+}
+
+/// 网关菜单按稳定分组排序；系统默认合并原生条目，原生之间保留目录优先级。
+pub(crate) fn order_gateway_model_catalog(catalog: &mut Value) {
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return;
+    };
+    let default = models
+        .iter()
+        .find(|model| model["codex_plus_default"] == true)
+        .map(|model| {
+            (
+                model["codex_plus_group_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string(),
+                model["codex_plus_group"]
+                    .as_str()
+                    .unwrap_or("系统默认")
+                    .to_string(),
+            )
+        })
+        .filter(|(id, _)| !id.is_empty())
+        .unwrap_or_else(|| ("codex-plus-system-default".into(), "系统默认".into()));
+    let mut group_ids = vec![default.0.clone()];
+    for model in models.iter_mut() {
+        if model["codex_plus_native"] == true {
+            model["codex_plus_group_id"] = json!(default.0);
+            model["codex_plus_group"] = json!(default.1);
+            model["codex_plus_default"] = json!(true);
+        }
+    }
+    let mut configured: Vec<_> = (0..models.len()).collect();
+    configured.sort_by_key(|&index| {
+        models[index]["codex_plus_order"]
+            .as_u64()
+            .unwrap_or(index as u64)
+    });
+    for &index in &configured {
+        let id = models[index]["codex_plus_group_id"]
+            .as_str()
+            .unwrap_or(&default.0)
+            .to_string();
+        if !group_ids.contains(&id) {
+            group_ids.push(id);
+        }
+    }
+    let mut ordered = Vec::new();
+    for group_id in &group_ids {
+        let members: Vec<_> = configured
+            .iter()
+            .copied()
+            .filter(|&index| {
+                models[index]["codex_plus_group_id"]
+                    .as_str()
+                    .unwrap_or(&default.0)
+                    == group_id
+            })
+            .collect();
+        if group_id != &default.0 {
+            ordered.extend(members);
+            continue;
+        }
+        let (mut native, supplemental): (Vec<_>, Vec<_>) = members
+            .into_iter()
+            .partition(|&index| models[index]["codex_plus_native"] == true);
+        native.sort_by_key(|&index| {
+            models[index]["codex_plus_native_priority"]
+                .as_u64()
+                .or_else(|| models[index]["priority"].as_u64())
+                .unwrap_or(u64::MAX)
+        });
+        for index in supplemental {
+            let version = model_series_version(models[index]["slug"].as_str().unwrap_or(""));
+            let insertion = version
+                .as_ref()
+                .and_then(|(series, version)| {
+                    native.iter().position(|&candidate| {
+                        model_series_version(models[candidate]["slug"].as_str().unwrap_or(""))
+                            .is_some_and(|(other_series, other_version)| {
+                                &other_series == series && &other_version < version
+                            })
+                    })
+                })
+                .unwrap_or(native.len());
+            native.insert(insertion, index);
+        }
+        ordered.extend(native);
+    }
+    for (priority, index) in ordered.into_iter().enumerate() {
+        models[index]["priority"] = json!(priority);
+    }
+    catalog["codex_plus_default_group_id"] = json!(default.0);
+}
+
+fn model_series_version(slug: &str) -> Option<(String, Vec<u64>)> {
+    let slug = slug.rsplit('/').next()?.to_lowercase();
+    let start = slug.find(|character: char| character.is_ascii_digit())?;
+    let series = slug[..start].to_string();
+    let version = slug[start..]
+        .split(|character: char| !character.is_ascii_digit() && character != '.')
+        .next()?
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<Vec<u64>, _>>()
+        .ok()?;
+    Some((series, version))
+}
+
+#[cfg(test)]
+mod picker_order_tests {
+    use super::*;
+
+    #[test]
+    fn gateway_order_keeps_native_order_and_provider_routes() {
+        let mut catalog = json!({"models": [
+            {"slug":"gpt-6.1-sol","codex_plus_group_id":"default","codex_plus_group":"系统默认","codex_plus_default":true},
+            {"slug":"other/gpt-6.1-sol","codex_plus_group_id":"other","codex_plus_group":"分组1"},
+            {"slug":"other/opus","codex_plus_group_id":"other","codex_plus_group":"分组1"},
+            {"slug":"gpt-5.5","priority":12,"codex_plus_native_priority":12,"codex_plus_native":true},
+            {"slug":"gpt-6-astra","priority":1,"codex_plus_native_priority":1,"codex_plus_native":true},
+            {"slug":"gpt-5.4","priority":2,"codex_plus_native_priority":2,"codex_plus_native":true}
+        ]});
+        order_gateway_model_catalog(&mut catalog);
+        let first = catalog.clone();
+        order_gateway_model_catalog(&mut catalog);
+        assert_eq!(catalog, first, "重复刷新保持相同顺序");
+        let mut models: Vec<_> = catalog["models"].as_array().unwrap().iter().collect();
+        models.sort_by_key(|model| model["priority"].as_u64().unwrap());
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model["slug"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "gpt-6.1-sol",
+                "gpt-6-astra",
+                "gpt-5.4",
+                "gpt-5.5",
+                "other/gpt-6.1-sol",
+                "other/opus"
+            ]
+        );
+        assert!(
+            models[..4]
+                .iter()
+                .all(|model| model["codex_plus_group_id"] == "default")
+        );
+    }
 }
 
 fn deepseek_model_template_entry(slug: &str) -> Option<(Value, bool)> {

@@ -134,6 +134,7 @@
         }
         codexModelCatalogLoadedAt = Date.now();
         if (JSON.stringify(codexModelCatalog) !== previous) {
+          if (typeof window !== "undefined") window.__codexPlusModelPickerGroupsRuntime?.sync?.();
           renderCodexPlusMenu();
           scheduleCodexModelWhitelistRefresh();
           refreshCodexModelQueries();
@@ -221,6 +222,20 @@
   }
 
   function sortModelChoices(models, nameOf) {
+    const catalogOrder = typeof codexModelCatalog !== "undefined" ? codexModelCatalog.model_order : null;
+    if (Array.isArray(catalogOrder) && catalogOrder.length) {
+      const ranks = new Map(catalogOrder.map((name, index) => [name, index]));
+      const metadata = codexModelCatalog.modelMetadata || codexModelCatalog.model_metadata || {};
+      const defaultId = codexModelCatalog.codex_plus_default_group_id;
+      const firstOther = defaultId ? catalogOrder.findIndex((name) =>
+        metadata[name]?.codex_plus_group_id && metadata[name].codex_plus_group_id !== defaultId) : -1;
+      const nativeRank = firstOther < 0 ? Infinity : firstOther - 0.5;
+      const ordered = [...models].sort((left, right) =>
+        (ranks.get(nameOf(left)) ?? nativeRank) - (ranks.get(nameOf(right)) ?? nativeRank));
+      const changed = ordered.some((model, index) => model !== models[index]);
+      if (changed) models.splice(0, models.length, ...ordered);
+      return changed;
+    }
     const compare = new Intl.Collator("en", { numeric: true, sensitivity: "base" }).compare;
     const entries = models.map((model) => ({ model, parts: nameOf(model).trim().replace(/[._\s]+/g, "-").match(/\d+|\D+/g) || [] }));
     entries.sort((left, right) => {
@@ -398,6 +413,9 @@
           changed = true;
         }
         if (applyCodexPlusModelMetadata(item, item.model)) changed = true;
+      } else if (codexPlusModelMetadata(item.model)?.hidden === true && item.hidden !== true) {
+        item.hidden = true;
+        changed = true;
       }
     });
     customModels.forEach((modelName) => {

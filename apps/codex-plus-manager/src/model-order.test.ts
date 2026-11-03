@@ -74,3 +74,48 @@ test("空数组和无需排序的单个别名不会报告变化", () => {
   assert.equal(sort([], nameOf), false);
   assert.equal(sort(["auto"], nameOf), false);
 });
+
+test("网关目录顺序优先，默认组保留原生顺序，其他组不按名字重排", () => {
+  const order = ["gpt-6.1-sol", "gpt-6-astra", "gpt-5.4", "gpt-5.6-sol", "vendor/opus", "vendor/deepseek", "deepseek"];
+  const sortCatalog = new Function("codexModelCatalog", source + "; return sortModelChoices;")({ model_order: order });
+  const models = ["vendor/opus", "gpt-5.6-sol", "deepseek", "vendor/deepseek", "gpt-6.1-sol", "gpt-6-astra", "gpt-5.4"];
+  assert.equal(sortCatalog(models, nameOf), true);
+  assert.deepEqual(models, order);
+  assert.equal(sortCatalog(models, nameOf), false);
+});
+
+test("目录快照以外的新原生模型也留在默认组，保持原生之间的次序", () => {
+  const sortCatalog = new Function("codexModelCatalog", source + "; return sortModelChoices;")({
+    model_order: ["gpt-6-astra", "vendor/opus"],
+    codex_plus_default_group_id: "default",
+    modelMetadata: {
+      "gpt-6-astra": { codex_plus_group_id: "default" },
+      "vendor/opus": { codex_plus_group_id: "vendor" },
+    },
+  });
+  const models = ["gpt-6-astra", "vendor/opus", "new-native-a", "new-native-b"];
+  sortCatalog(models, nameOf);
+  assert.deepEqual(models, ["gpt-6-astra", "new-native-a", "new-native-b", "vendor/opus"]);
+});
+
+test("原生隐藏标记可修正旧列表，显式配置同一型号时仍可选择", () => {
+  const custom = ["custom"];
+  const start = renderer.indexOf("  function patchModelArray(");
+  const end = renderer.indexOf("  function patchModelContainer(", start);
+  const patch = new Function("custom", `
+    const codexPureApiAllowedModelSet=()=>null, prepareModelCollection=()=>false, finishModelCollection=()=>{};
+    const modelArrayLooksPatchable=Array.isArray;
+    const codexPlusModelNames=()=>custom, codexPlusModelMetadata=()=>({hidden:true});
+    const applyCodexPlusModelMetadata=()=>false, sortModelChoices=()=>false;
+    const codexPlusModelDescriptor=model=>({model,hidden:false});
+    const codexModelCatalog={status:"ok"};
+    ${renderer.slice(start, end)}
+    return patchModelArray;
+  `)(custom);
+  const models = [{ model: "gpt-reserve", hidden: false }, { model: "custom", hidden: false }];
+  patch(models, false, "local");
+  assert.equal(models[0].hidden, true);
+  custom.push("gpt-reserve");
+  patch(models, false, "local");
+  assert.equal(models[0].hidden, false);
+});
