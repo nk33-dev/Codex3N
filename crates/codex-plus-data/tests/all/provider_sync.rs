@@ -993,7 +993,7 @@ fn provider_sync_reports_stream_progress() {
     );
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
 #[test]
 fn provider_sync_reports_rollback_when_rewrite_write_fails() {
     let tmp = tempdir().unwrap();
@@ -1001,16 +1001,17 @@ fn provider_sync_reports_rollback_when_rewrite_write_fails() {
     fs::create_dir(&home).unwrap();
     write_provider_config(&home, "apigather");
     let first_rollout = home.join("sessions/rollout-a.jsonl");
-    let blocked_rollout = home.join("sessions/rollout-b.jsonl");
+    let blocked_rollout = home.join("sessions/blocked/rollout-b.jsonl");
     write_rollout(&first_rollout, "openai", "thread-a", "C:/workspace");
     write_rollout(&blocked_rollout, "openai", "thread-b", "C:/workspace");
     let original_first_rollout = fs::read(&first_rollout).unwrap();
-    fs::create_dir(blocked_rollout.with_extension("jsonl.tmp")).unwrap();
+    let blocked = block_directory_writes(blocked_rollout.parent().unwrap());
     let mut progress = Vec::new();
 
     let result = run_provider_sync_with_target_and_progress(Some(&home), None, |event| {
         progress.push(event);
     });
+    drop(blocked);
 
     assert_eq!(result.status, ProviderSyncStatus::Failed);
     assert_eq!(fs::read(&first_rollout).unwrap(), original_first_rollout);
@@ -4249,7 +4250,7 @@ fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
     let original = format!("{}\n", session_index_line(stale_id, "stale"));
     fs::write(home.join("session_index.jsonl"), &original).unwrap();
     let preview = preview_session_index_cleanup(Some(&home)).unwrap();
-    force_session_index_write_failure(&home);
+    let blocked = force_session_index_write_failure(&home);
 
     let error = apply_session_index_cleanup(
         Some(&home),
@@ -4257,6 +4258,7 @@ fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
         &[stale_id.to_string()],
     )
     .unwrap_err();
+    drop(blocked);
 
     assert!(error.message.contains("原子写入"));
     let backup = error.backup_dir.expect("failure must expose backup");
@@ -4270,22 +4272,49 @@ fn session_index_cleanup_write_failure_reports_backup_and_preserves_original() {
     );
 }
 
-/// 制造一次真实的写入失败。
-///
-/// 早先这个测试是在 `<名字>.tmp` 上预先建一个**目录**来和原子写的固定临时名
-/// 撞车，但固定临时名本身就是要修的缺陷（两个写入方会互相覆盖），改成唯一名字
-/// 之后这条路就撞不上了。这里改成从文件系统层面挡住替换：Windows 上目标是只读
-/// 文件、Unix 上目录不可写 —— 都能让原子写在"读得到原文件"的前提下失败。
+struct WriteFailureGuard {
+    path: std::path::PathBuf,
+    permissions: fs::Permissions,
+}
+
+impl Drop for WriteFailureGuard {
+    fn drop(&mut self) {
+        fs::set_permissions(&self.path, self.permissions.clone()).unwrap();
+    }
+}
+
+// 只阻止目标替换，备份和事务锁仍可写。
 #[cfg(windows)]
-fn force_session_index_write_failure(home: &Path) {
+fn force_session_index_write_failure(home: &Path) -> WriteFailureGuard {
     let path = home.join("session_index.jsonl");
     let mut permissions = fs::metadata(&path).unwrap().permissions();
+    let original = permissions.clone();
     permissions.set_readonly(true);
     fs::set_permissions(&path, permissions).unwrap();
+    WriteFailureGuard {
+        path,
+        permissions: original,
+    }
 }
 
 #[cfg(unix)]
-fn force_session_index_write_failure(home: &Path) {
+fn block_directory_writes(path: &Path) -> WriteFailureGuard {
     use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(home, fs::Permissions::from_mode(0o555)).unwrap();
+    let permissions = fs::metadata(path).unwrap().permissions();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap();
+    WriteFailureGuard {
+        path: path.to_path_buf(),
+        permissions,
+    }
+}
+
+#[cfg(unix)]
+fn force_session_index_write_failure(home: &Path) -> WriteFailureGuard {
+    let directory = home.join("readonly-index");
+    fs::create_dir(&directory).unwrap();
+    let target = directory.join("session_index.jsonl");
+    let index = home.join("session_index.jsonl");
+    fs::rename(&index, &target).unwrap();
+    std::os::unix::fs::symlink(&target, index).unwrap();
+    block_directory_writes(&directory)
 }

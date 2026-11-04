@@ -217,3 +217,5 @@ Windows 隔离 workspace 全量测试 4,493 通过、38 忽略，退出码 0；�
 最终 Node 22.23.3 前端 1,814 通过、2 跳过，TypeScript、Vite、格式与 `cargo local-check` 通过；面板协议专项、relay Clippy、两套注入一致性及语音缓存 10 项通过。npm 审计无漏洞，Rust 审计无阻断漏洞，保留 9 项允许告警。最终提交由保留上游父节点的同步合并产生，push CI 必须验证该提交而不是之前的 `main` 或旧发布结果。
 
 首次 push CI `41785552682` 的 Linux Rust 测试在 `launcher_process_filter_skips_instances_from_another_installation` 失败：Windows 路径夹具在 Unix 上没有目录分隔语义。用例改为当前平台路径，并在 Windows 保留长路径前缀分支；不改变生产过滤逻辑。后续提交重新执行全部 CI。
+
+第二轮 `41787495358` 的 Linux 核心测试通过，数据层两条原子写失败夹具未命中预期阶段。失败注入改为目标文件所在目录不可写，备份与锁目录保持可写；Unix 索引通过链接指向独立只读目录，Windows 沿用只读目标文件，测试完成后恢复权限。生产原子写与备份逻辑保持不变。
