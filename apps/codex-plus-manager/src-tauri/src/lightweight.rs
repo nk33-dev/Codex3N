@@ -1,9 +1,9 @@
-//! 轻量模式（#2677）：关闭管理器主窗口时销毁主窗口（连同 WebView 渲染进程）释放内存，
+//! 轻量模式：开启后收起并释放管理器主窗口，后续按需重建界面。
 //! 后端进程、2.0 网关、托盘、托盘快捷面板、guard 端口等照常运行；
 //! 托盘、Dock、二次启动等入口再打开时按原配置重建主窗口（见 `crate::show_main_window`）。
 //!
-//! 开关在整体设置里（默认关闭），值存在 gateway.json 的 `lightweightOnClose`，
-//! 与「点击托盘图标弹出快捷面板」同处、同样由专用命令读写。关掉时回到只隐藏窗口的旧行为。
+//! 开关默认关闭，沿用 gateway.json 的 `lightweightOnClose` 键；开启后下次启动不建主窗口。
+//! 设置页和托盘共用保存入口，托盘开启前由主界面确认未保存的草稿。
 //!
 //! 关窗时先隐藏，稍等再销毁；等待期间重新打开或聚焦窗口会取消销毁。
 //! 未保存草稿只在当前 WebView 内存中，销毁前需由用户保存。
@@ -19,6 +19,8 @@ use tauri::{
 /// 主窗口前端注册好托盘请求监听后发出：快捷面板的请求可以发过去了。
 pub const MAIN_WINDOW_READY_EVENT: &str = "codex-plus-main-window-ready";
 pub const MODE_CHANGED_EVENT: &str = "codex-plus-lightweight-mode-changed";
+pub const MODE_REQUESTED_EVENT: &str = "codex-plus-lightweight-mode-requested";
+static MODE_UPDATE_LOCK: Mutex<()> = Mutex::new(());
 /// 隐藏后留出短暂恢复窗口的时间。
 const RELEASE_DELAY: Duration = Duration::from_secs(3);
 /// 快捷面板等重建的主窗口前端加载好的上限。
@@ -221,6 +223,10 @@ pub fn set_lightweight_mode_enabled<R: Runtime>(
     app: AppHandle<R>,
     enabled: bool,
 ) -> Result<bool, String> {
+    // 写盘、缓存和通知必须同序，否则并发重读会把新值的事件发在旧值之前。
+    let _guard = MODE_UPDATE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     codex_plus_core::gateway::store::GatewayStore::default()
         .update(|settings| {
             settings.lightweight_on_close = enabled;
@@ -231,17 +237,67 @@ pub fn set_lightweight_mode_enabled<R: Runtime>(
     if !enabled {
         cancel_pending_release();
     }
-    crate::sync_lightweight_tray(&app);
     let _ = app.emit(MODE_CHANGED_EVENT, enabled);
+    drop(_guard);
     crate::gateway_commands::notify_settings_changed();
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.lightweight_mode",
+        serde_json::json!({ "enabled": enabled, "source": "set" }),
+    );
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::sync_lightweight_tray(&handle);
+        if enabled && self::enabled() {
+            crate::hide_main_window(&handle);
+        }
+    });
     Ok(enabled)
+}
+
+pub fn request_from_tray<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    if !enabled()
+        && let Some(window) = app.get_webview_window(crate::MAIN_WINDOW_LABEL)
+    {
+        // 确认草稿由主界面完成；没有就绪监听时保留原状态，避免直接丢弃草稿。
+        crate::sync_lightweight_tray(app);
+        if !MAIN_WINDOW_READY.load(Ordering::SeqCst) {
+            return Err("界面仍在加载，请稍后重试".into());
+        }
+        window
+            .emit(MODE_REQUESTED_EVENT, ())
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+    set_lightweight_mode_enabled(app.clone(), !enabled()).map(|_| ())
 }
 
 /// 重新从 gateway.json 读开关（例如导入了设置）。
 pub fn refresh_from_disk<R: Runtime>(app: &AppHandle<R>) {
-    cache().store(read_enabled_from_disk(), Ordering::Relaxed);
-    crate::sync_lightweight_tray(app);
+    let _guard = MODE_UPDATE_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let saved = match codex_plus_core::gateway::store::GatewayStore::default().load() {
+        Ok(settings) => settings.lightweight_on_close,
+        Err(error) => {
+            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                "manager.lightweight_read_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+            return;
+        }
+    };
+    cache().store(saved, Ordering::Relaxed);
+    let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+        "manager.lightweight_mode",
+        serde_json::json!({ "enabled": saved, "source": "refresh" }),
+    );
+    if !saved {
+        cancel_pending_release();
+    }
     let _ = app.emit(MODE_CHANGED_EVENT, enabled());
+    drop(_guard);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || crate::sync_lightweight_tray(&handle));
 }
 
 #[cfg(all(test, windows))]
@@ -309,11 +365,37 @@ mod tests {
         refresh_from_disk(app.handle());
         assert!(!item.is_checked().unwrap());
         assert!(!enabled());
+        // mock 会在调用线程直接执行主线程任务，并发用例不挂载原生菜单。
+        let concurrent_app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let captured = events.clone();
+        concurrent_app.listen_any(MODE_CHANGED_EVENT, move |event| {
+            captured.lock().unwrap().push(event.payload().to_string());
+        });
+        std::thread::scope(|scope| {
+            for index in 0..20 {
+                let app = concurrent_app.handle().clone();
+                scope.spawn(move || {
+                    set_lightweight_mode_enabled(app, index % 2 == 0).unwrap();
+                });
+            }
+        });
+        assert_eq!(enabled(), read_enabled_from_disk());
+        // 原生菜单只在测试线程核对最终状态。
+        crate::sync_lightweight_tray(app.handle());
+        assert_eq!(item.is_checked().unwrap(), enabled());
+        assert_eq!(
+            events.lock().unwrap().last().unwrap(),
+            &enabled().to_string()
+        );
+        set_lightweight_mode_enabled(app.handle().clone(), true).unwrap();
         let path = codex_plus_core::paths::default_app_state_dir().join("gateway.json");
         std::fs::write(&path, "invalid json").unwrap();
-        assert!(set_lightweight_mode_enabled(app.handle().clone(), true).is_err());
-        assert!(!enabled());
-        assert!(!item.is_checked().unwrap());
+        refresh_from_disk(app.handle());
+        assert!(set_lightweight_mode_enabled(app.handle().clone(), false).is_err());
+        assert!(enabled());
+        assert!(item.is_checked().unwrap());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "invalid json");
     }
 }

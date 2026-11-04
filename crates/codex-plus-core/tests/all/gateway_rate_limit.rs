@@ -146,6 +146,7 @@ fn provider(id: &str, base_url: &str, keys: &[&str]) -> GatewayProvider {
         price: None,
         model_prices: Default::default(),
         model_windows: Default::default(),
+        compaction: None,
         context_window: None,
         proxy: String::new(),
         key_rpm: None,

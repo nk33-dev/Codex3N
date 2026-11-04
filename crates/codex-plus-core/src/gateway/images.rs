@@ -338,6 +338,7 @@ mod tests {
             newapi_access: None,
             upstream_meta: Default::default(),
             model_windows: Default::default(),
+            compaction: None,
             context_window: None,
             relay: RelayProfile {
                 id: id.to_string(),

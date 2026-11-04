@@ -374,6 +374,7 @@ mod tests {
             price: None,
             model_prices: Default::default(),
             model_windows: Default::default(),
+            compaction: None,
             context_window: None,
             proxy: String::new(),
             key_rpm: None,

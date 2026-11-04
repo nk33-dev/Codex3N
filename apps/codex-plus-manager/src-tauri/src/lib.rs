@@ -285,7 +285,9 @@ pub fn run() {
                 MAIN_WINDOW_URL
             };
             lightweight::install_ready_listener(app.handle());
-            build_main_window(app.handle(), url, !start_minimized)?;
+            if !lightweight::enabled() {
+                build_main_window(app.handle(), url, !start_minimized)?;
+            }
             install_tray(app)?;
             gateway_commands::set_app_handle(app.handle().clone());
             // Codex 钩子的分发条目里写的是程序绝对路径：程序换了位置（更新、换安装目录）后
@@ -298,7 +300,7 @@ pub fn run() {
             codex_plus_core::settings::set_external_settings_change_listener(
                 gateway_commands::notify_settings_changed,
             );
-            if start_minimized {
+            if start_minimized || lightweight::enabled() {
                 set_manager_activation_policy(app.handle(), false);
             }
             let navigation_app = app.handle().clone();
@@ -845,9 +847,7 @@ fn install_tray<R: tauri::Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
                 show_main_window(app);
             }
             TRAY_MENU_LIGHTWEIGHT => {
-                if let Err(error) =
-                    lightweight::set_lightweight_mode_enabled(app.clone(), !lightweight::enabled())
-                {
+                if let Err(error) = lightweight::request_from_tray(app) {
                     sync_lightweight_tray(app);
                     use tauri_plugin_dialog::DialogExt;
                     app.dialog().message(error).title("Codex++").show(|_| {});
@@ -1052,6 +1052,17 @@ fn build_main_window<R: tauri::Runtime>(
     .min_inner_size(960.0, 720.0);
     if let Some(state_dir) = codex_plus_core::paths::state_dir_override() {
         main_window_builder = main_window_builder.data_directory(state_dir.join("webview"));
+        // 只给隔离 debug 实例开放验收端口，正式构建不读取此变量。
+        #[cfg(all(windows, debug_assertions))]
+        if let Some(port) = std::env::var("CODEX_PLUS_MANAGER_TEST_DEBUG_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|port| *port > 0)
+        {
+            main_window_builder = main_window_builder.additional_browser_args(&format!(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-address=127.0.0.1 --remote-debugging-port={port}"
+            ));
+        }
     }
     let window_preferences = preferences::read().map_err(|error| tauri::Error::Anyhow(error))?;
     if let (Some(width), Some(height)) = (window_preferences.width, window_preferences.height) {
@@ -1186,10 +1197,18 @@ fn manager_hide_to_tray<R: tauri::Runtime>(window: tauri::WebviewWindow<R>) {
     if APP_EXITING.load(Ordering::SeqCst) {
         return;
     }
-    let app_handle = window.app_handle();
+    hide_main_window(window.app_handle());
+}
+
+pub(crate) fn hide_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
+    let Some(window) = app_handle.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return;
+    };
     lightweight::remember_geometry(&window);
+    #[cfg(windows)]
+    let _ = window.show();
     let _ = window.hide();
-    set_manager_activation_policy(&app_handle, false);
+    set_manager_activation_policy(app_handle, false);
     emit_manager_visibility(&window);
     lightweight::schedule_release(app_handle);
 }

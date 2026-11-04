@@ -928,7 +928,7 @@ pub(crate) fn order_gateway_model_catalog(catalog: &mut Value) {
     };
     let default = models
         .iter()
-        .find(|model| model["codex_plus_default"] == true)
+        .find(|model| model["codex_plus_default"] == true && model["codex_plus_native"] != true)
         .map(|model| {
             (
                 model["codex_plus_group_id"]
@@ -945,6 +945,12 @@ pub(crate) fn order_gateway_model_catalog(catalog: &mut Value) {
         .unwrap_or_else(|| ("codex-plus-system-default".into(), "系统默认".into()));
     let mut group_ids = vec![default.0.clone()];
     for model in models.iter_mut() {
+        if let Some(limit) = model
+            .as_object_mut()
+            .and_then(|entry| entry.remove("codex_plus_auto_compact_token_limit"))
+        {
+            model["auto_compact_token_limit"] = limit;
+        }
         if model["codex_plus_native"] == true {
             model["codex_plus_group_id"] = json!(default.0);
             model["codex_plus_group"] = json!(default.1);

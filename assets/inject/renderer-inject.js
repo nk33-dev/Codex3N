@@ -13120,6 +13120,18 @@
     return codexPlusModelPickerRowIdentity(row)?.text || "";
   }
 
+  function codexPlusModelPickerProviderIdentity(name) {
+    if (!name) return null;
+    const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata || {};
+    const identities = new Map();
+    for (const entry of Object.values(metadata)) {
+      if (providerNameOf(entry) !== name || !entry.codex_plus_group_id) continue;
+      identities.set(entry.codex_plus_group_id, { provider: name, groupId: entry.codex_plus_group_id });
+    }
+    // 名称只在目录中唯一时可用于找 ID，同名的多个配置仍需精确匹配模型。
+    return identities.size === 1 ? identities.values().next().value : null;
+  }
+
   /**
    * 把行切成 `{ row, label, name, provider, groupId }`。
    * 已打过补丁的行直接读我们留下的标记，避免反复解析。
@@ -13146,6 +13158,7 @@
         || exact.get(codexPlusModelPickerNormalizeLoose(identity.text))
         || (pairKey ? exact.get(pairKey) : null);
       const known = exactKnown
+        || codexPlusModelPickerProviderIdentity(split.provider)
         || (!split.provider
           ? providers.get(codexPlusModelPickerNormalizeStrict(split.name))
             || providers.get(codexPlusModelPickerNormalize(split.name))

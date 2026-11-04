@@ -88,6 +88,7 @@ fn provider(id: &str, base_url: &str, keys: &[&str], limits: KeyLimits) -> Gatew
         price: None,
         model_prices: Default::default(),
         model_windows: Default::default(),
+        compaction: None,
         context_window: None,
         proxy: String::new(),
         key_rpm: limits.rpm,

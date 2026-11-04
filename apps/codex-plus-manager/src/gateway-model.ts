@@ -58,6 +58,13 @@ export type GatewaySettings = {
   hideOwnModels?: string[];
 };
 
+export type ProviderCompaction = {
+  percent: string;
+  tokenLimit?: number | null;
+  modelOverridesEnabled: boolean;
+  modelPercents: Record<string, string>;
+};
+
 export type GatewayPoolEntry = {
   id: string;
   name: string;
@@ -81,6 +88,7 @@ export type GatewayPoolEntry = {
   modelWindows?: Record<string, number>;
   /** 没单独写窗口的模型用的窗口；都没有就用模型自带资料。 */
   contextWindow?: number | null;
+  compaction?: ProviderCompaction;
   /** 网关供应商单独走的 HTTP 代理，空串表示不单独走代理。 */
   proxy?: string;
   /** 主动限速：每个 Key 每分钟最多请求数；没有或 null 表示不限。旧版后端没有。 */

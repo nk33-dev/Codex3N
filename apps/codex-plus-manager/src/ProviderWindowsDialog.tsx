@@ -2,11 +2,13 @@
  * 窗口写进 Agent 的模型资料（Agent 按它压缩上下文），路由时请求比窗口还长的成员排到最后。 */
 import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Check, RefreshCw, X } from "lucide-react";
+import { Check, RefreshCw, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
-import { formatTokens, maskAccountName, parseContextWindow, type GatewayPoolEntry } from "./gateway-model";
+import { formatTokens, maskAccountName, parseContextWindow, type GatewayPoolEntry, type ProviderCompaction } from "./gateway-model";
+import { AUTO_COMPACT_PRESETS, isValidAutoCompactPercent, normalizeAutoCompactPercent } from "./auto-compact";
+import { lookupModelMapEntry, modelMapKeyFromRowName } from "./model-windows";
 import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import { Avatar } from "./gateway-ui";
 import { useEscapeLayer } from "./use-escape-layer";
@@ -48,6 +50,20 @@ function windowText(value: number | null | undefined): string {
   return value ? formatTokens(value) : "";
 }
 
+export function compactionSummary(entry: GatewayPoolEntry): string {
+  const compact = entry.compaction;
+  const percent = compact?.percent ? normalizeAutoCompactPercent(compact.percent) : compact?.tokenLimit ? tf("{0} Token", [formatTokens(compact.tokenLimit)]) : t("Codex 默认");
+  const count = compact?.modelOverridesEnabled ? Object.values(compact.modelPercents).filter(value => value.trim()).length : 0;
+  return count ? tf("{0} · {1} 个模型单独设置", [percent, count]) : percent;
+}
+
+function modelCompactValue(compact: ProviderCompaction, model: string): string {
+  return lookupModelMapEntry(compact.modelPercents, model)
+    ?? Object.entries(compact.modelPercents).find(([key]) =>
+      modelMapKeyFromRowName(key).toLowerCase() === modelMapKeyFromRowName(model).toLowerCase())?.[1]
+    ?? "";
+}
+
 export function ProviderWindowsDialog({
   entry,
   busy,
@@ -56,7 +72,7 @@ export function ProviderWindowsDialog({
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
-  onSave: (windows: Record<string, number>, fallback: number | null) => void;
+  onSave: (windows: Record<string, number>, fallback: number | null, compaction: ProviderCompaction) => void;
   onCancel: () => void;
 }) {
   const [rows, setRows] = useState<Record<string, string>>(() => {
@@ -65,6 +81,14 @@ export function ProviderWindowsDialog({
     return initial;
   });
   const [lookup, setLookup] = useState<LookupState>({ state: "idle" });
+  const [compact, setCompact] = useState<ProviderCompaction>(() => ({
+    percent: entry.compaction?.percent ?? "",
+    ...(entry.compaction?.tokenLimit ? { tokenLimit: entry.compaction.tokenLimit } : {}),
+    modelOverridesEnabled: entry.compaction?.modelOverridesEnabled ?? false,
+    modelPercents: { ...entry.compaction?.modelPercents },
+  }));
+  const invalidCompact = !isValidAutoCompactPercent(compact.percent)
+    || Object.values(compact.modelPercents).some(value => !isValidAutoCompactPercent(value));
   useEscapeLayer(true, onCancel);
 
   // 写错的（不是 128k / 1M / 纯数字，或小于 1000）在保存前标出来。
@@ -88,7 +112,7 @@ export function ProviderWindowsDialog({
   };
 
   const row = (model: string, label: ReactNode) => (
-    <div className="pf-price-row pf-window-row" data-invalid={invalid.includes(model)} key={model || "*"}>
+    <div className="pf-price-row pf-window-row" data-compact={compact.modelOverridesEnabled} data-invalid={invalid.includes(model)} key={model || "*"}>
       {label}
       <Input
         aria-label={t("上下文窗口")}
@@ -100,6 +124,28 @@ export function ProviderWindowsDialog({
         spellCheck={false}
         value={rows[model] ?? ""}
       />
+      {compact.modelOverridesEnabled ? (
+        model === FALLBACK ? <span className="pf-price-fallback">{compact.percent || (compact.tokenLimit ? formatTokens(compact.tokenLimit) : t("Codex 默认"))}</span> : (
+          <Input
+            aria-label={tf("{0} 的自动压缩比例", [model])}
+            aria-invalid={!isValidAutoCompactPercent(modelCompactValue(compact, model))}
+            disabled={busy}
+            list="provider-compact-presets"
+            onChange={event => {
+              const value = event.currentTarget.value;
+              setCompact(previous => ({
+                ...previous,
+                modelPercents: {
+                  ...Object.fromEntries(Object.entries(previous.modelPercents).filter(([key]) => modelMapKeyFromRowName(key).toLowerCase() !== modelMapKeyFromRowName(model).toLowerCase())),
+                  [model]: value,
+                },
+              }));
+            }}
+            placeholder={compact.percent || (compact.tokenLimit ? formatTokens(compact.tokenLimit) : t("继承供应商"))}
+            value={modelCompactValue(compact, model)}
+          />
+        )
+      ) : null}
     </div>
   );
 
@@ -109,13 +155,17 @@ export function ProviderWindowsDialog({
         className="pf-modal pf-extras-modal"
         onSubmit={(event) => {
           event.preventDefault();
-          if (invalid.length) return;
+          if (invalid.length || invalidCompact || busy) return;
           const windows: Record<string, number> = {};
           for (const model of entry.models) {
             const value = parseContextWindow(rows[model] ?? "");
             if (value) windows[model] = value;
           }
-          onSave(windows, parseContextWindow(rows[FALLBACK] ?? "") || null);
+          onSave(windows, parseContextWindow(rows[FALLBACK] ?? "") || null, {
+            ...compact,
+            percent: normalizeAutoCompactPercent(compact.percent),
+            modelPercents: Object.fromEntries(Object.entries(compact.modelPercents).map(([model, value]) => [model, normalizeAutoCompactPercent(value)])),
+          });
         }}
       >
         <header className="pf-head">
@@ -128,6 +178,38 @@ export function ProviderWindowsDialog({
         </header>
 
         <div className="pf-body">
+          <section className="pf-section">
+            <label className="pf-compact-default">
+              <span>{t("供应商自动压缩比例")}</span>
+              <Input
+                aria-invalid={!isValidAutoCompactPercent(compact.percent)}
+                disabled={busy}
+                list="provider-compact-presets"
+                onChange={event => {
+                  const percent = event.currentTarget.value;
+                  setCompact(previous => ({ ...previous, percent, tokenLimit: null }));
+                }}
+                placeholder={t("Codex 默认")}
+                value={compact.percent}
+              />
+            </label>
+            {compact.tokenLimit && !compact.percent ? (
+              <div className="pf-note">
+                {tf("压缩阈值：{0} Token", [formatTokens(compact.tokenLimit)])}
+                <button aria-label={t("使用 Codex 默认压缩")} className="pf-icon" disabled={busy} onClick={() => setCompact(previous => ({ ...previous, tokenLimit: null }))} title={t("使用 Codex 默认压缩")} type="button"><RotateCcw /></button>
+              </div>
+            ) : null}
+            <datalist id="provider-compact-presets">
+              {AUTO_COMPACT_PRESETS.map(value => <option key={value} value={value} />)}
+            </datalist>
+            <label className="pf-compact-toggle">
+              <input checked={compact.modelOverridesEnabled} disabled={busy} onChange={event => {
+                const modelOverridesEnabled = event.currentTarget.checked;
+                setCompact(previous => ({ ...previous, modelOverridesEnabled }));
+              }} type="checkbox" />
+              {t("按模型设置")}
+            </label>
+          </section>
           <section className="pf-section">
             <h4>
               {t("上下文窗口")}<small>{t("按模型填，如 128k、1M")}</small>
@@ -146,9 +228,10 @@ export function ProviderWindowsDialog({
               <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就用模型自带的资料。")}</p>
             )}
             <div className="pf-price-table">
-              <div className="pf-price-row pf-window-row pf-price-head">
+              <div className="pf-price-row pf-window-row pf-price-head" data-compact={compact.modelOverridesEnabled}>
                 <span>{t("模型")}</span>
                 <span>{t("上下文窗口")}</span>
+                {compact.modelOverridesEnabled ? <span>{t("自动压缩")}</span> : null}
               </div>
               <div className="pf-price-rows">
                 {entry.models.map((model) => row(model, <code title={model}>{model}</code>))}
@@ -159,9 +242,9 @@ export function ProviderWindowsDialog({
         </div>
 
         <footer className="pf-foot">
-          <span className="pf-error">{invalid.length ? t("窗口要写成 128k、1M 或至少 1000 的数字") : ""}</span>
+          <span className="pf-error">{invalidCompact ? t("自动压缩比例需大于 0%、不超过 100%，最多 6 位小数") : invalid.length ? t("窗口要写成 128k、1M 或至少 1000 的数字") : ""}</span>
           <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
-          <Button disabled={busy || invalid.length > 0} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
+          <Button disabled={busy || invalid.length > 0 || invalidCompact} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>
     </div>,

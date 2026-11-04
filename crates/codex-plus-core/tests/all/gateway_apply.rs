@@ -77,6 +77,187 @@ fn binding() -> AgentBinding {
 }
 
 #[test]
+fn gateway_compaction_inherits_and_recalculates_after_window_changes() {
+    use codex_plus_core::gateway::apply::set_provider_context_settings;
+    use codex_plus_core::gateway::store::ProviderCompaction;
+    let fixture = fixture(57399);
+    let ctx = &fixture.ctx;
+    let id = profile_id_of(ctx, "DeepSeek");
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+    let mut compact = ProviderCompaction {
+        percent: "80%".into(),
+        token_limit: None,
+        model_overrides_enabled: true,
+        model_percents: [("DEEPSEEK-V4-PRO".into(), "75.123456%".into())].into(),
+    };
+    for (window, enabled, expected) in [
+        (1_000_000, true, 751_235),
+        (2_000_000, true, 1_502_469),
+        (2_000_000, false, 1_600_000),
+        (2_000_000, true, 1_502_469),
+    ] {
+        compact.model_overrides_enabled = enabled;
+        set_provider_context_settings(
+            &ctx.gateway,
+            &id,
+            Default::default(),
+            Some(window),
+            Some(compact.clone()),
+        )
+        .unwrap();
+        enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+        let catalog = codex_catalog(ctx);
+        let entry = |slug: &str| {
+            catalog["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["slug"] == slug)
+                .unwrap()
+        };
+        assert_eq!(
+            entry("deepseek-v4-pro")["auto_compact_token_limit"],
+            expected
+        );
+        assert_eq!(
+            entry("deepseek-v4-flash")["auto_compact_token_limit"],
+            window * 80 / 100
+        );
+        assert_eq!(
+            ctx.gateway.load().unwrap().providers[0]
+                .compaction
+                .as_ref()
+                .unwrap()
+                .model_percents
+                .len(),
+            1
+        );
+    }
+    compact.percent.clear();
+    compact.model_percents.clear();
+    set_provider_context_settings(
+        &ctx.gateway,
+        &id,
+        Default::default(),
+        None,
+        Some(compact.clone()),
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    let entry = catalog["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["slug"] == "deepseek-v4-pro")
+        .unwrap();
+    assert!(entry["auto_compact_token_limit"].is_null());
+    let before = ctx.gateway.load().unwrap();
+    compact.percent = "100.000001%".into();
+    assert!(
+        set_provider_context_settings(&ctx.gateway, &id, Default::default(), None, Some(compact))
+            .is_err()
+    );
+    assert_eq!(ctx.gateway.load().unwrap(), before);
+}
+
+#[test]
+fn gateway_compaction_preserves_imported_model_percentages() {
+    let fixture = fixture(57399);
+    let store = &fixture.ctx.gateway;
+    store
+        .update(|gateway| {
+            gateway.providers[0].relay.model_auto_compact = r#"{"deepseek-v4-pro":"62.5%"}"#.into();
+            Ok(())
+        })
+        .unwrap();
+    let gateway = store.load().unwrap();
+    let provider = &gateway.providers[0];
+    assert!(provider.compaction_settings().model_overrides_enabled);
+    assert_eq!(
+        provider
+            .compact_percent_for("DEEPSEEK-V4-PRO[1M]")
+            .as_deref(),
+        Some("62.5%")
+    );
+    assert_eq!(provider.compact_percent_for("deepseek-v4-flash"), None);
+}
+
+#[test]
+fn gateway_compaction_preserves_legacy_absolute_limits_until_edited() {
+    let fixture = fixture(57399);
+    let ctx = &fixture.ctx;
+    ctx.gateway
+        .update(|gateway| {
+            gateway.providers[0].relay.auto_compact_limit = "123456".into();
+            Ok(())
+        })
+        .unwrap();
+    let mut settings = BackendSettings::default();
+    settings.relay_profiles_enabled = true;
+    ctx.settings.save(&settings).unwrap();
+    enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
+    let catalog = codex_catalog(ctx);
+    let models = catalog["models"].as_array().unwrap();
+    let entry = models
+        .iter()
+        .find(|m| m["slug"] == "deepseek-v4-pro")
+        .unwrap();
+    assert_eq!(entry["auto_compact_token_limit"], 123456);
+    let provider = ctx.gateway.load().unwrap().providers[0].clone();
+    codex_plus_core::gateway::apply::set_provider_context_settings(
+        &ctx.gateway,
+        &provider.relay.id,
+        Default::default(),
+        Some(2_000_000),
+        Some(provider.compaction_settings()),
+    )
+    .unwrap();
+    refresh_enabled(ctx).unwrap();
+    let catalog = codex_catalog(ctx);
+    assert_eq!(
+        catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["slug"] == "deepseek-v4-pro")
+            .unwrap()["auto_compact_token_limit"],
+        123456
+    );
+}
+
+#[test]
+fn gateway_default_identity_is_unique_even_when_provider_names_match() {
+    let fixture = fixture(57399);
+    let ctx = &fixture.ctx;
+    let mut input = deepseek_input();
+    input.name = "系统默认".into();
+    create_provider(&ctx.gateway, &input, "", None).unwrap();
+    create_provider(&ctx.gateway, &input, "", None).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let ids: Vec<_> = gateway
+        .providers
+        .iter()
+        .filter(|p| p.relay.name == "系统默认")
+        .map(|p| p.relay.id.as_str())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let mut binding = binding();
+    binding.token = "cpx-gw-test".into();
+    let profile =
+        codex_plus_core::gateway::apply::codex_gateway_profile(&gateway, &binding, 57399, false)
+            .unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    for id in &ids {
+        let entry = &metadata[format!("{id}/deepseek-v4-pro")];
+        assert_eq!(entry["codex_plus_group_id"], *id);
+        assert_eq!(entry["codex_plus_default"] == true, *id == ids[0]);
+    }
+}
+
+#[test]
 fn codex_default_group_combines_native_models_and_keeps_other_provider_entries() {
     let fixture = fixture(57399);
     let ctx = &fixture.ctx;

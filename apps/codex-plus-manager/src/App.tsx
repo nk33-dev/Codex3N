@@ -3870,6 +3870,27 @@ export function App() {
   // 正在处理的快捷面板请求数。轻量模式下主窗口可能是为请求在后台重建的，
   // 请求没做完时不能释放窗口，否则结果回不去（#2677）。
   const trayRequestsInFlight = useRef(0);
+  const lightweightDrafts = useRef(false);
+  lightweightDrafts.current = settingsDirty || dreamSkinDraftDirty;
+  const lightweightRequestInFlight = useRef(false);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen("codex-plus-lightweight-mode-requested", () => {
+      if (disposed || lightweightRequestInFlight.current) return;
+      lightweightRequestInFlight.current = true;
+      void (async () => {
+        const dirty = lightweightDrafts.current || Boolean(document.querySelector(".pf-modal, .gw-modal form, .relay-profile-editor, [role=dialog] input, [role=dialog] textarea"));
+        if (dirty) await invoke("tray_panel_action", { action: "open" });
+        if (await confirmLightweightMode(dirty) && !disposed) {
+          await invoke<boolean>("set_lightweight_mode_enabled", { enabled: true });
+        }
+      })().catch(error => {
+        if (!disposed) void appAlert(stringifyError(error), { title: t("轻量模式") });
+      }).finally(() => { lightweightRequestInFlight.current = false; });
+    }).then(stop => { if (disposed) stop(); else unlisten = stop; });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
   // 主窗口仍隐藏时按轻量模式释放（窗口可见、开关关掉时后端不做任何事）。
   const releaseMainWindowWhenHidden = () => {
     if (trayRequestsInFlight.current === 0) void invoke("main_window_release_when_hidden").catch(() => {});
@@ -11021,39 +11042,55 @@ function useTrayPanelSetting() {
   return { enabled, saving, error, toggle };
 }
 
-/// 关闭窗口时进入轻量模式（#2677）。值存在 gateway.json 的 `lightweightOnClose`，由后端命令读写，
-/// 后端同时更新内存缓存，下次关窗即生效。
-function useLightweightModeSetting() {
+async function confirmLightweightMode(dirty: boolean): Promise<boolean> {
+  return !dirty || appConfirm(t("进入轻量模式会关闭界面，未保存的修改将丢失"), {
+    title: t("进入轻量模式"),
+    confirmText: t("放弃修改并进入"),
+    danger: true,
+  });
+}
+
+function useLightweightModeSetting(dirty: boolean) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const revision = useRef(0);
+  const busy = useRef(false);
+  const alive = useRef(true);
   useEffect(() => {
+    alive.current = true;
     let cancelled = false;
     let stop: (() => void) | undefined;
-    let revision = 0;
     void listen<boolean>("codex-plus-lightweight-mode-changed", ({ payload }) => {
-      revision++;
+      revision.current++;
       if (!cancelled) { setEnabled(payload); setError(""); }
     }).then(unlisten => {
       if (cancelled) { unlisten(); return; }
       stop = unlisten;
-      const requestedAt = revision;
+      const requestedAt = revision.current;
       void invoke<boolean>("lightweight_mode_enabled")
-        .then(value => { if (!cancelled && revision === requestedAt) setEnabled(value); })
-        .catch(failure => { if (!cancelled) setError(stringifyError(failure)); });
+        .then(value => { if (!cancelled && revision.current === requestedAt) setEnabled(value); })
+        .catch(failure => { if (!cancelled && revision.current === requestedAt) setError(stringifyError(failure)); });
     }).catch(failure => { if (!cancelled) setError(stringifyError(failure)); });
-    return () => { cancelled = true; stop?.(); };
+    return () => { cancelled = true; alive.current = false; stop?.(); };
   }, []);
   const toggle = async () => {
-    if (enabled === null || saving) return;
+    if (enabled === null || busy.current) return;
+    busy.current = true;
     setSaving(true);
     setError("");
+    let requestedAt = revision.current;
     try {
-      setEnabled(await invoke<boolean>("set_lightweight_mode_enabled", { enabled: !enabled }));
+      if (!enabled && !(await confirmLightweightMode(dirty))) return;
+      if (!alive.current) return;
+      requestedAt = revision.current;
+      const saved = await invoke<boolean>("set_lightweight_mode_enabled", { enabled: !enabled });
+      if (alive.current && revision.current === requestedAt) setEnabled(saved);
     } catch (failure) {
-      setError(stringifyError(failure));
+      if (alive.current && revision.current === requestedAt) setError(stringifyError(failure));
     } finally {
-      setSaving(false);
+      busy.current = false;
+      if (alive.current) setSaving(false);
     }
   };
   return { enabled, saving, error, toggle };
@@ -11087,7 +11124,7 @@ function GlobalSettingsScreen({
 }) {
   const settingsPath = settings?.settings_path ?? "";
   const trayPanel = useTrayPanelSetting();
-  const lightweight = useLightweightModeSetting();
+  const lightweight = useLightweightModeSetting(dirty);
   const themeOptions: AppSelectOption<ThemePreference>[] = [
     { value: "system", label: t("跟随系统") },
     { value: "light", label: t("浅色") },
@@ -11122,10 +11159,10 @@ function GlobalSettingsScreen({
             </CxRow>
             <CxRow
               detail={lightweight.error || t("后台服务照常运行，再次打开时重新加载界面")}
-              title={t("关闭窗口后释放界面内存")}
-              tooltip={t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}
+              title={t("轻量模式")}
+              tooltip={t("开启后关闭界面并在后台运行，下次启动也保持后台运行；从托盘打开管理器，关窗后再次释放界面")}
             >
-              <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
+              <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("轻量模式")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
             </CxRow>
           </CxCard>
         </CxSection>

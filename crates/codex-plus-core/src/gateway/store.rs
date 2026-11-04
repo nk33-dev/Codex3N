@@ -50,6 +50,9 @@ pub struct GatewayProvider {
     /// 没单独写窗口的模型用的窗口；都不填就交给模型自带的资料。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    /// None 时沿用导入的直连压缩配置；首次编辑后以网关设置为准。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<ProviderCompaction>,
     /// 这个供应商单独走的 HTTP 代理；空串表示不单独走代理（沿用系统代理）。
     /// 与直连模式的「供应商独立代理」互不相干。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -97,6 +100,44 @@ pub struct UpstreamMetaRecord {
     pub windows: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reasoning: BTreeMap<String, SyncedReasoning>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderCompaction {
+    pub percent: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_limit: Option<u64>,
+    pub model_overrides_enabled: bool,
+    pub model_percents: BTreeMap<String, String>,
+}
+
+impl GatewayProvider {
+    pub fn compaction_settings(&self) -> ProviderCompaction {
+        self.compaction.clone().unwrap_or_else(|| {
+            let model_percents =
+                serde_json::from_str(&self.relay.model_auto_compact).unwrap_or_default();
+            ProviderCompaction {
+                token_limit: crate::model_suffix::parse_window_token(
+                    &self.relay.auto_compact_limit,
+                ),
+                model_overrides_enabled: !BTreeMap::is_empty(&model_percents),
+                model_percents,
+                ..Default::default()
+            }
+        })
+    }
+
+    pub fn compact_percent_for(&self, model: &str) -> Option<String> {
+        let settings = self.compaction_settings();
+        let own = settings
+            .model_overrides_enabled
+            .then(|| crate::model_suffix::lookup_model_map(&settings.model_percents, model))
+            .flatten()
+            .filter(|value| !value.trim().is_empty());
+        own.or_else(|| (!settings.percent.trim().is_empty()).then_some(&settings.percent))
+            .cloned()
+    }
 }
 
 impl UpstreamMetaRecord {
@@ -752,6 +793,7 @@ impl GatewaySettings {
                 price: None,
                 model_prices: BTreeMap::new(),
                 model_windows: BTreeMap::new(),
+                compaction: None,
                 context_window: None,
                 proxy: String::new(),
                 key_rpm: None,
@@ -1193,6 +1235,7 @@ mod tests {
             price: None,
             model_prices: Default::default(),
             model_windows: Default::default(),
+            compaction: None,
             context_window: None,
             proxy: String::new(),
             key_rpm: None,

@@ -10,9 +10,15 @@
 
 网关总览为启动页；管理器沿用上游分节行式布局。网关和拓展页面由各组件读取自己的状态，个人版 `manager-loading.ts` 仍是原有页面任务的唯一编排入口。设置与关于合并到整体设置，安装维护并入 Codex 设置；旧路由通过同一 `navigate` 归一化。托盘快捷面板和 Computer Use 预览通过 `main.tsx` 的 hash 分流，不运行第二个主 App。
 
-轻量模式默认关闭，整体设置和托盘右键的「轻量模式」勾选项共用 `set_lightweight_mode_enabled`，保存到 `gateway.json::lightweightOnClose`。两处状态通过 `codex-plus-lightweight-mode-changed` 同步；保存失败保留原状态并提示，语言切换保留勾选项。开启后关窗会销毁 WebView，重新打开经 `build_main_window` 恢复窗口尺寸、最大化和隔离数据目录；未保存草稿随窗口销毁，设置页已有说明。托盘、helper 与网关继续运行，聚焦或唤起取消待执行的销毁。「退出程序」仍停止后台服务。个人设置仍手动保存，外部设置事件按已保存基线合并草稿，不自动重试旧修订号。
+轻量模式默认关闭，整体设置和托盘右键共用 `set_lightweight_mode_enabled`，沿用 `gateway.json::lightweightOnClose`。开启并保存成功后立即收起主窗口，3 秒后释放 WebView；下次启动不创建主窗口，托盘、helper 与网关继续运行。托盘开启经 `codex-plus-lightweight-mode-requested` 交给已有界面确认草稿，取消不改开关；关闭开关取消待释放任务。托盘打开、Dock 和外部唤起共用 `build_main_window`，恢复尺寸、最大化和隔离数据目录，模式保持开启，关窗后再次释放。快捷面板处理请求时可在后台临时重建界面，完成后释放。「退出程序」仍停止后台服务。
 
-轻量模式开关回归见 `tray-panel-model.test.ts` 与 Windows 下 `lightweight::tests`：后者在独立进程和临时状态目录验证菜单勾选、持久化、事件通知、语言切换和损坏配置的保存失败；未运行真实托盘点击或跨平台窗口释放验收。
+开关的写盘、缓存和事件通知由 `MODE_UPDATE_LOCK` 串行化，前端按事件修订隔离迟到的初读和保存响应，连续点击不重复提交。保存失败保留原状态，损坏配置的重读不覆盖缓存，语言切换保留勾选项；`manager.lightweight_mode` 只记录开关值及 `set`／`refresh` 来源。个人设置仍手动保存，外部设置事件按已保存基线合并草稿，不自动重试旧修订号。
+
+轻量模式回归见 `lightweight-mode.test.ts`、`tray-panel-model.test.ts` 与 Windows 下 `lightweight::tests`，覆盖草稿取消、迟到响应、重复点击、并发保存、菜单勾选及损坏配置。`scripts/lightweight-live-probe.mjs <debug 管理器 exe>` 使用临时状态目录、独立端口与假网关凭据验证后台启动、窗口释放和唤起、网关存活及重启持久化；不操作真实会话和凭据，不代替真实托盘点击与 macOS、Linux 验收。`CODEX_PLUS_MANAGER_TEST_DEBUG_PORT` 仅在 Windows debug 构建且显式设置隔离状态目录时生效，正式包不读取。
+
+2026-11-04 Windows 隔离探针通过后台启动、立即收起并释放窗口、唤起重建、网关持续返回 200 和完整重启后的开关持久化。成功记录位于系统临时目录 `codex3n-lightweight-live-yZhZmf`，测试进程已退出；早期使用 WebView2 环境调试参数的探针超时，未计为通过。上下文与压缩弹窗在 400/1280px、模型菜单在 310/400px 的隔离浏览器验证通过，包含深浅主题、键盘导航及保存载荷。真实托盘鼠标点击与 macOS、Linux 窗口行为未实测。
+
+同轮低并发 workspace 全量测试通过（4,497 项成功、38 项忽略），管理器前端全量测试通过（1,828 项成功、2 项跳过）；Rust 格式、workspace 编译、管理器类型、生产构建和注入拼装检查通过。原始日志保存在系统临时目录 `codex3n-context-workspace-complete.log`、`codex3n-context-manager-final.log`；此前夹具失败与 WebView2 调试入口超时的日志保留，不计入成功结果。仅本地验证，未发布或替换安装版。
 
 - `apps/codex-plus-manager/src/manager-loading.ts` 是启动和页面加载任务的唯一编排入口。公共初始化并行发起；设置首次加载可能导入本机供应商，所以工具摘要等设置完成后再读。会话、供应商扫描和环境检查进入对应页面才加载。
 - 页面内独立请求并行；会话供应商默认选择等待设置完成，脚本市场保留“设置 → 市场 → 库存”顺序，皮肤本地状态不等待远端市场。快速切页后不再发起旧页面的后续批次，启动和页面读取的旧设置响应不能覆盖已编辑的草稿。

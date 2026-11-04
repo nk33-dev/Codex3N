@@ -58,6 +58,8 @@ for(const [slug,name] of entries){
 ${groupsSource}
 window.fixture={scan:()=>window.__codexPlusModelPickerGroupsRuntime.scan(),
 groups:()=>window.__codexPlusModelPickerGroupsRuntime.groupsFor(document),
+refresh:()=>{codexModelCatalog.modelMetadata["default/deepseek"].displayName="DeepSeek";
+window.fixture.scan()},
 rename:()=>{for(const entry of Object.values(codexModelCatalog.modelMetadata)){
 if(entry.codex_plus_group_id==="vendor")entry.codex_plus_group="分组1 · "+ "供应商名称".repeat(15);
 }window.fixture.scan()}};
@@ -112,6 +114,8 @@ try {
   assert.deepEqual(groups.map(group => [group.id, group.name, group.count]), [
     ["default", "系统默认", 5], ["vendor", "分组1", 4], ["auto", "自动组", 1],
   ]);
+  await evaluate("window.fixture.refresh()");
+  assert.deepEqual(await evaluate("window.fixture.groups().map(group=>[group.id,group.count])"), [["default", 5], ["vendor", 4], ["auto", 1]]);
   await evaluate(`document.querySelector('[data-codex-plus-model-group-id="vendor"]').click();window.fixture.scan()`);
   assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-groups]').getAttribute("data-codex-plus-model-provider-view")`), "models");
   await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });

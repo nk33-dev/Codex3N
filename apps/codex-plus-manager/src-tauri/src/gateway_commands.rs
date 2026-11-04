@@ -51,6 +51,7 @@ pub struct GatewayPoolEntry {
     pub model_windows: std::collections::BTreeMap<String, u64>,
     /// 没单独写窗口的模型用的窗口。
     pub context_window: Option<u64>,
+    pub compaction: codex_plus_core::gateway::store::ProviderCompaction,
     /// 登录得到的账号：`chatgpt` / `copilot` / `grok`；普通供应商为空。
     pub account: String,
     /// 订阅账号的套餐（如「ChatGPT Pro」「Copilot Pro+」）；普通供应商为空。
@@ -217,6 +218,7 @@ fn pool_entry(
         model_prices,
         model_windows: Default::default(),
         context_window: None,
+        compaction: Default::default(),
         model_metadata: relay.model_metadata.clone(),
         image_models: codex_plus_core::gateway::images::provider_image_models(relay),
         account: account_kind(relay),
@@ -259,6 +261,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
             newapi_access: apply::provider_newapi_access(provider),
             model_windows: provider.model_windows.clone(),
             context_window: provider.context_window,
+            compaction: provider.compaction_settings(),
             key_rpm: provider.key_rpm,
             key_concurrency: provider.key_concurrency,
             ..pool_entry(
@@ -1210,15 +1213,17 @@ pub fn save_gateway_provider_windows(
     id: String,
     windows: std::collections::BTreeMap<String, u64>,
     fallback: Option<u64>,
+    compaction: Option<codex_plus_core::gateway::store::ProviderCompaction>,
 ) -> CommandResult<Option<GatewayPayload>> {
     respond(
         "上下文窗口已保存。",
         "保存上下文窗口失败",
-        refresh_agents(apply::set_provider_windows(
+        refresh_agents(apply::set_provider_context_settings(
             &GatewayStore::default(),
             &id,
             windows,
             fallback,
+            compaction,
         )),
     )
 }

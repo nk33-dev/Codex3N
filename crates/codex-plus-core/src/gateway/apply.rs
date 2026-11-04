@@ -364,6 +364,17 @@ pub fn codex_gateway_profile_on(
     profile.id = CODEX_GATEWAY_RELAY_ID.to_string();
     profile.relay_mode = RelayMode::PureApi;
     profile.model_metadata = codex_model_metadata(gateway, binding);
+    let mut compact = BTreeMap::new();
+    for model in route::codex_pool_models(gateway, binding) {
+        if let Some((relay, upstream)) =
+            route::model_entry_members(gateway, binding, &model).first()
+            && let Some(provider) = gateway.providers.iter().find(|p| p.relay.id == relay.id)
+            && let Some(percent) = provider.compact_percent_for(upstream)
+        {
+            compact.insert(model, percent);
+        }
+    }
+    profile.model_auto_compact = serde_json::to_string(&compact)?;
     if signed_in {
         profile.config_contents = with_openai_session_identity(&profile.config_contents)?;
     }
@@ -420,6 +431,10 @@ const CODEX_GROUPS_GROUP_ID: &str = "codex-plus-gateway-groups";
 /// 注入层读的 `/codex-model-catalog` 也按它给出推理档位与分组。
 fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> String {
     let relays = route::binding_pool_relays(gateway, binding);
+    let default_id = relays
+        .iter()
+        .find(|relay| matches!(relay.name.trim(), "系统默认" | "系统默认配置"))
+        .map(|relay| relay.id.as_str());
     let mut member_catalogs: Vec<Option<Vec<Value>>> = vec![None; relays.len()];
     let mut metadata = Map::new();
     for model in route::codex_pool_models(gateway, binding) {
@@ -539,7 +554,7 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
         fields.insert("description".into(), json!(format!("{upstream} · {group}")));
         fields.insert("codex_plus_group".into(), json!(group));
         fields.insert("codex_plus_group_id".into(), json!(relay.id));
-        if matches!(relay.name.trim(), "系统默认" | "系统默认配置") {
+        if default_id == Some(relay.id.as_str()) {
             fields.insert("codex_plus_default".into(), json!(true));
         }
         if codex_favorite(gateway, &relays, &model) {
@@ -556,6 +571,15 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
     {
         if let Some(fields) = metadata.get_mut(model) {
             fields["codex_plus_order"] = json!(index);
+            // 导入的绝对阈值按成员保留，编辑供应商比例后由界面清除兼容值。
+            if let Some((relay, upstream)) =
+                route::model_entry_members(gateway, binding, model).first()
+                && let Some(provider) = gateway.provider(&relay.id)
+                && provider.compact_percent_for(upstream).is_none()
+                && let Some(limit) = provider.compaction_settings().token_limit
+            {
+                fields["codex_plus_auto_compact_token_limit"] = json!(limit);
+            }
         }
     }
     serde_json::to_string(&Value::Object(metadata)).unwrap_or_default()
@@ -2731,6 +2755,7 @@ fn add_provider_with(
             price: None,
             model_prices: BTreeMap::new(),
             model_windows: BTreeMap::new(),
+            compaction: None,
             context_window: None,
             proxy: String::new(),
             key_rpm: None,
@@ -3219,6 +3244,25 @@ pub fn set_provider_windows(
     windows: BTreeMap<String, u64>,
     fallback: Option<u64>,
 ) -> anyhow::Result<GatewaySettings> {
+    set_provider_context_settings(store, id, windows, fallback, None)
+}
+
+pub fn set_provider_context_settings(
+    store: &GatewayStore,
+    id: &str,
+    windows: BTreeMap<String, u64>,
+    fallback: Option<u64>,
+    compaction: Option<super::store::ProviderCompaction>,
+) -> anyhow::Result<GatewaySettings> {
+    if let Some(compact) = &compaction {
+        for value in std::iter::once(&compact.percent).chain(compact.model_percents.values()) {
+            if !value.trim().is_empty()
+                && crate::model_suffix::parse_compact_percent(value).is_none()
+            {
+                bail!("自动压缩比例需大于 0%、不超过 100%，最多 6 位小数");
+            }
+        }
+    }
     store.update(|gateway| {
         let Some(provider) = gateway
             .providers
@@ -3233,6 +3277,9 @@ pub fn set_provider_windows(
             .filter(|(model, window)| !model.is_empty() && *window > 0)
             .collect();
         provider.context_window = fallback.filter(|window| *window > 0);
+        if let Some(compaction) = compaction {
+            provider.compaction = Some(compaction);
+        }
         Ok(())
     })?;
     store.load()

@@ -11,6 +11,8 @@
 - 管理器模型行支持拖拽和键盘排序；排序同时移动行的原模型名，并关闭按行索引定位的元数据导入面板。上下文窗口和自动压缩输入的 K/M 单位通过 `model-metadata.ts` 的 `normalizeTokenCountInput` 展开。
 - 自动压缩比例是「留空 = 不写」：空值表示沿用 Codex 自身的默认压缩行为，不写 `auto_compact_token_limit`，也不由导入回填或失焦补 90%。窗口列是同语义（空 = 用 Codex 默认长度）。只有用户显式填了百分比才落盘。
 - 自动压缩下拉保留空值、预设比例及旧配置中的自定义比例。模型行新增思考等级与默认档，`model-reasoning.ts` 写入同一份 `modelMetadata`；清空档位恢复内置声明，不影响 Fast、窗口或其他元数据。
+- 网关供应商在上下文窗口弹窗中保存 `compaction`：`percent` 为供应商比例，`modelOverridesEnabled` 控制按模型覆盖，`modelPercents` 按上游模型名保存比例。开启时按模型值 → 供应商值 → Codex 默认回退；关闭保留模型值但暂停应用。`apply.rs::codex_gateway_profile_on` 将有效比例写入托管供应商的 `modelAutoCompact`，与最终窗口共用原有阈值计算。自动路由和模型组按原元数据规则取首个成员；供应商详情同时显示压缩摘要。
+- 网关 `compaction` 缺失时读取导入供应商的旧 `modelAutoCompact`，绝对 `autoCompactLimit` 收入兼容字段 `tokenLimit` 按成员保留；只改窗口或模型开关不会丢失绝对阈值，编辑供应商比例时清除该兼容值。比例校验复用原有 0% < 比例 ≤ 100%、最多 6 位小数的规则；留空不会补 90%。回归见 `provider-compaction.test.ts` 与 `gateway_apply::gateway_compaction_*`，浏览器入口为 `scripts/provider-compaction-ui-smoke.mjs`。
 - 用户外部 `model_catalog_json` 与每模型覆盖冲突时，保留外部目录并应用顶层上下文、自动压缩兜底值；每模型覆盖在该目录下不可用。
 - Kimi 官方 Responses 目录在应用用户元数据后强制关闭 `supports_search_tool`，聚合成员同样处理；其它来源与 Chat Completions 沿用自身能力声明。入口为 `relay_config.rs::upstream_rejects_tool_search`，覆盖普通目录及 `aggregate_catalog.rs`。
 - 每模型 Fast 可显式声明支持、禁用或继承。私有字段 `codex_plus_fast_support` 保存在供应商元数据中，生成原生目录时转换为 `service_tiers` 与 `additional_speed_tiers`，保留其它档位；注入响应通过 `prioritySupportOverride` 统一界面和请求判断，窗口覆盖仍按原优先级应用。
@@ -60,4 +62,4 @@
 
 官方登录成员的模型列表与默认模型都为空时，聚合目录从本机 `models_cache.json` 补入非隐藏模型；有显式模型配置时保持其列表。缓存缺失时不编造模型，仍返回空目录。回归见 `aggregate_catalog::tests::official_member_without_models_publishes_codex_official_directory`。
 
-`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 按稳定 ID 合组。入口先列供应商，选择后显示该组模型，可用返回键或 Escape 回到供应商列表；每次打开从供应商入口开始，不持久化导航或旧折叠状态。网关的系统默认供应商以导入配置名称「系统默认／系统默认配置」识别，下发后按其稳定 ID 合并原生模型；没有该供应商时使用独立的系统默认组承接原生条目。缺少名称时显示「其他模型」，不同 ID 保持独立；目录加载不依赖历史默认身份，切换供应商时清理上一份归属缓存。单组保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。
+`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 按稳定 ID 合组。入口先列供应商，选择后显示该组模型，可用返回键或 Escape 回到供应商列表；每次打开从供应商入口开始，不持久化导航或旧折叠状态。网关取配置顺序中首个名为「系统默认／系统默认配置」的可用供应商，将原生模型并入其稳定 ID；没有时使用独立的系统默认组。其他供应商、自动路由和模型组各自独立。菜单标签未精确匹配时，只有目录中唯一的供应商名可用于回查稳定 ID；同名不同 ID 不合并。缺少名称时显示「其他模型」，切换供应商时清理上一份归属缓存。单组保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。

@@ -5,6 +5,18 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "供应商自动压缩比例": "Provider compaction ratio",
+  "按模型设置": "Set per model",
+  "继承供应商": "Inherit provider",
+  "Codex 默认": "Codex default",
+  "编辑自动压缩": "Edit compaction",
+  "使用 Codex 默认压缩": "Use Codex default compaction",
+  "自动压缩比例需大于 0%、不超过 100%，最多 6 位小数": "Compaction ratios must be above 0% and at most 100%, with up to 6 decimal places",
+  "进入轻量模式会关闭界面，未保存的修改将丢失": "Lightweight mode closes the UI. Unsaved changes will be lost",
+  "进入轻量模式": "Enter lightweight mode",
+  "轻量模式": "Lightweight mode",
+  "放弃修改并进入": "Discard changes and enter",
+  "开启后关闭界面并在后台运行，下次启动也保持后台运行；从托盘打开管理器，关窗后再次释放界面": "Close the UI and keep running in the background, including on next startup. Open the manager from the tray; closing it unloads the UI again",
   "当前 provider": "current provider",
   "配置": "Config",
   "会话": "Session",
@@ -1000,8 +1012,6 @@ export const EN_PLAIN: Record<string, string> = {
   "点击托盘图标弹出快捷面板": "Click the tray icon to open the quick panel",
   "面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。": "The panel shows Codex's status, starts or restarts it, switches providers and shows usage; gateway users can also switch each agent's model. Right-click still opens the menu and double-click opens the main window; turn off to restore the original click behavior.",
   "后台服务照常运行，再次打开时重新加载界面": "Background services keep running; the UI reloads when reopened",
-  "关闭窗口后释放界面内存": "Free UI memory when the window is closed",
-  "关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。": "Closing the main window also unloads its UI; background services, the gateway and the tray keep running, and the UI reloads when you open it again from the tray. Unsaved edits are lost; turn off to only hide the window on close.",
   "入门": "Getting started",
   "只管理 Codex": "Codex only",
   "只用增强功能": "Enhancements only",
@@ -2928,6 +2938,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} Token": "{0} tokens",
+  "压缩阈值：{0} Token": "Compaction threshold: {0} tokens",
+  "{0} · {1} 个模型单独设置": "{0} · {1} model overrides",
+  "{0} 的自动压缩比例": "{0} compaction ratio",
   "模型名称重复：{0}": "Duplicate model name: {0}",
   "模型 {0} 的上下文窗口无效；请输入正整数，或使用 K/M 整数后缀。": "Invalid context window for model {0}. Enter a positive integer or an integer with a K/M suffix.",
   "模型 {0} 的自动压缩百分比无效；请输入 0 到 100 之间、最多 6 位小数的十进制数。": "Invalid automatic compaction percentage for model {0}. Enter a decimal between 0 and 100 with at most 6 decimal places.",

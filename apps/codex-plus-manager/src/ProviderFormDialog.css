@@ -480,6 +480,30 @@
   grid-template-columns: minmax(0, 1fr) 140px;
 }
 
+.gw-portal .pf-window-row[data-compact="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(90px, 140px) minmax(90px, 140px);
+}
+
+.pf-compact-default {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 160px;
+  gap: 16px;
+  align-items: center;
+}
+
+.pf-compact-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+@media (max-width: 480px) {
+  .gw-portal .pf-window-row[data-compact="true"] {
+    grid-template-columns: minmax(0, 1fr) 86px 100px;
+  }
+}
+
 .gw-portal .pf-window-row[data-invalid="true"] input {
   border-color: hsl(var(--status-error));
 }

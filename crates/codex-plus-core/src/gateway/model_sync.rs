@@ -265,8 +265,13 @@ fn apply_model_changes(
     let gone = |name: &str| has_model(&removed, name) && !has_model(&list, name);
     provider.model_prices.retain(|name, _| !gone(name));
     provider.model_windows.retain(|name, _| !gone(name));
+    if let Some(compact) = provider.compaction.as_mut() {
+        compact.model_percents.retain(|name, _| !gone(name));
+    }
     provider.upstream_meta.retain_models(|name| !gone(name));
     provider.relay.model_metadata = prune_model_metadata(&provider.relay.model_metadata, &gone);
+    provider.relay.model_auto_compact =
+        prune_model_metadata(&provider.relay.model_auto_compact, &gone);
     provider.upstream_new.clear();
     provider.upstream_gone.clear();
     Ok(ModelChanges { added, removed })
@@ -582,6 +587,7 @@ mod tests {
             price: None,
             model_prices: Default::default(),
             model_windows: Default::default(),
+            compaction: None,
             context_window: None,
             proxy: String::new(),
             key_rpm: None,
@@ -631,6 +637,7 @@ mod tests {
             price: None,
             model_prices: Default::default(),
             model_windows: Default::default(),
+            compaction: None,
             context_window: None,
             proxy: String::new(),
             key_rpm: None,
@@ -674,6 +681,11 @@ mod tests {
         provider.model_prices.insert("A".into(), price(2.0));
         provider.model_windows.insert("old[1M]".into(), 1_000_000);
         provider.model_windows.insert("long".into(), 1_000_000);
+        provider.relay.model_auto_compact = r#"{"old":"60%","long":"75%"}"#.into();
+        provider.compaction = Some(crate::gateway::store::ProviderCompaction {
+            model_percents: [("old".into(), "60%".into()), ("long".into(), "75%".into())].into(),
+            ..Default::default()
+        });
         gateway.providers.push(provider);
         store.save(&gateway).unwrap();
 
@@ -705,6 +717,17 @@ mod tests {
             provider.model_windows.keys().collect::<Vec<_>>(),
             vec!["long"]
         );
+        assert_eq!(
+            provider
+                .compaction
+                .as_ref()
+                .unwrap()
+                .model_percents
+                .keys()
+                .collect::<Vec<_>>(),
+            vec!["long"]
+        );
+        assert!(!provider.relay.model_auto_compact.contains("old"));
         assert!(
             !provider.relay.model_metadata.contains("old"),
             "{}",

@@ -149,6 +149,35 @@ it("系统默认合并原生与补充模型，其他供应商和自动入口独�
   assert.equal(groups[2].isDefault, false);
 });
 
+it("菜单后缀未精确命中时仍使用目录的唯一稳定身份", async () => {
+  const runtime = await pickerRuntime({
+    model_provider: "gateway",
+    codex_plus_default_group_id: "default-id",
+    modelMetadata: {
+      "default-id/gpt": { displayName: "GPT-6.1-Sol", codex_plus_group: "系统默认", codex_plus_group_id: "default-id", codex_plus_default: true },
+      vendor: { displayName: "Vendor", codex_plus_group: "其他供应商", codex_plus_group_id: "vendor-id" },
+    },
+  });
+  const rows = runtime.rows({ querySelectorAll: () => [
+    modelRow("5.4"), modelRow("6.1 Sol（系统默认）"), modelRow("Vendor"),
+  ] });
+  assert.deepEqual(runtime.groups(rows).map((group: any) => [group.id, group.entries.length]), [
+    ["default-id", 2], ["vendor-id", 1],
+  ]);
+});
+
+it("同名不同 ID 的供应商不通过名称推断合并", async () => {
+  const runtime = await pickerRuntime({
+    codex_plus_default_group_id: "native",
+    modelMetadata: {
+      a: { displayName: "Alpha", codex_plus_group: "自定义供应商", codex_plus_group_id: "a" },
+      b: { displayName: "Beta", codex_plus_group: "自定义供应商", codex_plus_group_id: "b" },
+    },
+  });
+  const rows = runtime.rows({ querySelectorAll: () => [modelRow("Alpha"), modelRow("Beta")] });
+  assert.deepEqual(runtime.groups(rows).map((group: any) => group.id), ["a", "b"]);
+});
+
 it("缺少标题的不同身份仍有可见标题，折叠状态不串组", async () => {
   const runtime = await pickerRuntime();
   const groups = runtime.groups([

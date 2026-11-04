@@ -204,7 +204,7 @@ test("轻量模式（#2677）：面板发请求前先让后端按需重建主窗
   assert.match(app, /if \(trayRequestsInFlight\.current === 0\) void invoke\("main_window_release_when_hidden"\)/);
   const start = app.indexOf("function GlobalSettingsScreen(");
   const globalSettings = app.slice(start, app.indexOf("\nfunction ", start + 10));
-  assert.match(globalSettings, /关闭窗口后释放界面内存/);
+  assert.match(globalSettings, /轻量模式/);
   assert.match(app, /invoke<boolean>\("set_lightweight_mode_enabled"/);
   const lib = read("../src-tauri/src/lib.rs");
   assert.match(lib, /lightweight::main_window_prepare,/);
@@ -228,15 +228,15 @@ test("托盘事件先按类型筛掉鼠标移动，开关读内存缓存而不�
 test("托盘轻量模式复用保存入口，语言更新后仍保留同一个勾选项", () => {
   const rust = read("../src-tauri/src/lib.rs");
   assert.match(rust, /CheckMenuItem::with_id\(/);
-  assert.match(rust, /TRAY_MENU_LIGHTWEIGHT[\s\S]*lightweight::set_lightweight_mode_enabled\(app\.clone\(\), !lightweight::enabled\(\)\)/);
+  assert.match(rust, /TRAY_MENU_LIGHTWEIGHT[\s\S]*lightweight::request_from_tray\(app\)/);
   assert.match(rust, /Menu::with_items\(app, &\[&show_item, &lightweight_item, &quit_item\]\)/);
   assert.match(rust, /lightweight\.set_text\(&lightweight_label\)/);
   assert.match(rust, /Menu::with_items\(&app, &\[&show, &\*lightweight, &quit\]\)/);
   const lightweight = read("../src-tauri/src/lightweight.rs");
-  assert.match(lightweight, /crate::sync_lightweight_tray\(&app\)/);
+  assert.match(lightweight, /crate::sync_lightweight_tray\(&handle\)/);
   assert.match(lightweight, /app\.emit\(MODE_CHANGED_EVENT, enabled\)/);
   const app = read("./App.tsx");
   assert.match(app, /listen<boolean>\("codex-plus-lightweight-mode-changed"/);
-  assert.match(app, /revision === requestedAt/);
+  assert.match(app, /revision\.current === requestedAt/);
   assert.match(app, /return subscribeLanguage\(update\)/);
 });
