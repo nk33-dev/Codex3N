@@ -1001,20 +1001,24 @@ fn provider_sync_reports_rollback_when_rewrite_write_fails() {
     fs::create_dir(&home).unwrap();
     write_provider_config(&home, "apigather");
     let first_rollout = home.join("sessions/rollout-a.jsonl");
-    let blocked_rollout = home.join("sessions/blocked/rollout-b.jsonl");
+    // 源文件名有效，追加唯一临时后缀时超过 Unix 单文件名上限，产生非锁定写入错误。
+    let blocked_rollout = home.join(format!("sessions/rollout-z-{}.jsonl", "x".repeat(220)));
     write_rollout(&first_rollout, "openai", "thread-a", "C:/workspace");
     write_rollout(&blocked_rollout, "openai", "thread-b", "C:/workspace");
     let original_first_rollout = fs::read(&first_rollout).unwrap();
-    let blocked = block_directory_writes(blocked_rollout.parent().unwrap());
+    let original_blocked_rollout = fs::read(&blocked_rollout).unwrap();
     let mut progress = Vec::new();
 
     let result = run_provider_sync_with_target_and_progress(Some(&home), None, |event| {
         progress.push(event);
     });
-    drop(blocked);
 
     assert_eq!(result.status, ProviderSyncStatus::Failed);
     assert_eq!(fs::read(&first_rollout).unwrap(), original_first_rollout);
+    assert_eq!(
+        fs::read(&blocked_rollout).unwrap(),
+        original_blocked_rollout
+    );
     assert!(
         progress
             .iter()
