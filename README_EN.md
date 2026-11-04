@@ -11,7 +11,7 @@ Download from [Releases](https://github.com/nk33-dev/Codex3N/releases/latest):
 - Windows: `Codex3N-<version>-windows-x64-setup.exe`
 - macOS: `Codex3N-<version>-macos-universal.dmg` (Intel and Apple Silicon)
 
-Open **Codex++**, confirm the official app path, configure providers and enhancements, then start the official app from Overview. The interface and background services share one application; closing the window keeps it in the tray. Check for updates on the About page.
+Open **Codex++**, confirm the official app path, configure providers and enhancements, then start the official app from Overview. The interface and background services share one application; closing the window keeps it in the tray. Check for updates under Settings → Version & updates.
 
 The macOS package uses ad-hoc signing and is not notarized by Apple. If macOS blocks it, verify the download source, then run:
 
@@ -28,7 +28,7 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
 **Sessions**
 - Full-library session search and pagination, invalid-session checks and hiding, backup before deletion, and project association recovery.
 
-**Prompt tools** (off by default; enable in the manager under Codex enhancements → Prompt enhancement)
+**Prompt tools** (off by default; enable under Codex → Built-in extensions → Prompt enhancement)
 - **Enhance prompt**: turns a draft into a prompt that is ready to send. Decisions that can be made are written out; facts only you know become blanks such as 【list page URL】.
 - **Clarify needs**: asks about gaps in the draft, with a recommended choice and rationale for single-choice questions, and generates as soon as the direction is clear.
 - **Saved prompts**: save, search and filter by tag, then append or replace into the composer.
@@ -42,6 +42,8 @@ sudo xattr -rd com.apple.quarantine "/Applications/Codex++.app"
 Upstream features remain available, including providers, plugins, WeChat, skins, user scripts, dictation, cache cleaning, the usage status line and automatic takeover of the official app. In official-login + API mode, model requests always use the configured API; test the connection in the manager first.
 
 The fork also includes upstream's resident protocol proxy, request retries and logs, Claude Code providers, side-chat saving, and turn rewind. Computer Use requires the supported macOS runtime. See the [runtime documentation](doc/person/runtime.md) for platform limits and data protection.
+
+Extension packages can provide settings, tools, pages and gateway middleware, with DSH plugin import and community distribution. Bundled packages manage the desktop pet, wallpaper, typing effects and status bars; main settings still require an explicit save.
 
 See the [personal documentation](doc/person/README.md) for behavior and code entry points.
 

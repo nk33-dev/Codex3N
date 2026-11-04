@@ -1,4 +1,4 @@
-import { defaultAgentPetSettings } from "../agent-pet-settings";
+import { defaultWhaleBalanceSettings } from "../whale-settings";
 import { defaultDictationSettings } from "../dictation-settings";
 import { defaultPromptEnhanceSettings } from "../prompt-enhance-settings";
 import { t } from "@/i18n";
@@ -13,7 +13,7 @@ export const emptyContextSelection = (): RelayContextSelection => ({
 });
 
 export const defaultSettings: BackendSettings = {
-  agentPet: defaultAgentPetSettings(),
+  ...defaultWhaleBalanceSettings(),
   updateAutoCheck: true,
   updateSkippedVersion: "",
   codexAppSessionDeleteSkipConfirm: false,
@@ -44,7 +44,6 @@ export const defaultSettings: BackendSettings = {
   codexAppUsageStatusLine: true,
   claudeAppVoiceInput: true,
   claudeAppLocalization: true,
-  codexAppSessionShare: true,
   codexAppTypingEffect: "off",
   codexAppPasteFix: false,
   codexAppForceChineseLocale: false,
@@ -154,4 +153,9 @@ export const defaultSettings: BackendSettings = {
   protocolProxyMapUnlistedModels: false,
   helperMaxRequestBodyMib: 128,
   codexAppTurnRewind: false,
+  updateAutoDownload: true,
+  codexAppProxyRequestStatus: true,
+  weixinConnectAllowOutboundAttachments: false,
+  weixinConnectReasoningEffort: "",
+  weixinConnectProjectId: "",
 };

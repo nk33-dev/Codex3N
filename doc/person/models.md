@@ -48,7 +48,7 @@
 - 前端 `model-order.test.ts`：混合供应商、未知家族、别名、命名空间、大小写、数字版本、完整名称和简写、动态新增、对象元数据与稳定性。
 - 前端 `model-rpc-compat.test.ts` / `renderer-model-runtime.test.ts`：实际 RPC 合并链路、默认模型保留与远程隔离。
 - Rust `crates/codex-plus-core/tests/model_catalog.rs` / `cdp_bridge.rs`：目录与注入兼容。
-- `scripts/model-picker-ui-smoke.mjs`：隔离浏览器中的默认组合并、鼠标与键盘独立折叠、长标题和窄菜单；夹具不代替真实 App 注入验收。
+- `scripts/model-picker-ui-smoke.mjs`：隔离浏览器中的默认组合并、供应商导航、鼠标选择与键盘返回、长标题和窄菜单；夹具不代替真实 App 注入验收。
 
 ## 主机范围与目录恢复
 
@@ -60,4 +60,4 @@
 
 官方登录成员的模型列表与默认模型都为空时，聚合目录从本机 `models_cache.json` 补入非隐藏模型；有显式模型配置时保持其列表。缓存缺失时不编造模型，仍返回空目录。回归见 `aggregate_catalog::tests::official_member_without_models_publishes_codex_official_directory`。
 
-`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 按稳定 ID 合组并独立保存折叠偏好。网关的系统默认供应商以导入配置名称「系统默认／系统默认配置」识别，下发后按其稳定 ID 合并原生模型；没有该供应商时使用独立的系统默认组承接原生条目。缺少名称时显示「其他模型」，不同 ID 保持独立；目录加载不依赖历史默认身份，切换供应商时清理上一份归属缓存。单组保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。
+`model_suffix.rs` 将分组名称、稳定 ID 与默认成员标记下发给注入端，`71-model-picker-groups.js` 按稳定 ID 合组。入口先列供应商，选择后显示该组模型，可用返回键或 Escape 回到供应商列表；每次打开从供应商入口开始，不持久化导航或旧折叠状态。网关的系统默认供应商以导入配置名称「系统默认／系统默认配置」识别，下发后按其稳定 ID 合并原生模型；没有该供应商时使用独立的系统默认组承接原生条目。缺少名称时显示「其他模型」，不同 ID 保持独立；目录加载不依赖历史默认身份，切换供应商时清理上一份归属缓存。单组保持原生列表。切换目录时由 `codex_app_state.rs` 清理最近模型中已失效的 ID，保留其余状态并留备份。验证见 `model-picker-groups.test.ts`、`model_group_identity.rs`、`aggregate_catalog` 单测及协议代理聚合回归。

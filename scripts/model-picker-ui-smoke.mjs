@@ -113,13 +113,14 @@ try {
     ["default", "系统默认", 5], ["vendor", "分组1", 4], ["auto", "自动组", 1],
   ]);
   await evaluate(`document.querySelector('[data-codex-plus-model-group-id="vendor"]').click();window.fixture.scan()`);
-  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-group-id="default"]').getAttribute("aria-expanded")`), "true");
-  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-group-id="vendor"]').getAttribute("aria-expanded")`), "true");
+  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-groups]').getAttribute("data-codex-plus-model-provider-view")`), "models");
+  await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-groups]').getAttribute("data-codex-plus-model-provider-view")`), "providers");
   await evaluate(`document.querySelector('[data-codex-plus-model-group-id="vendor"]').focus()`);
   await call("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", text: "\r", windowsVirtualKeyCode: 13 });
   await call("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-group-id="vendor"]').getAttribute("aria-expanded")`), "false");
-  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-group-id="default"]').getAttribute("aria-expanded")`), "true");
+  assert.equal(await evaluate(`document.querySelector('[data-codex-plus-model-groups]').getAttribute("data-codex-plus-model-provider-view")`), "models");
   await evaluate(`document.querySelector('[data-codex-plus-model-group-id="vendor"]').click();window.fixture.rename();window.fixture.scan()`);
   for (const [width, light] of [[310, false], [400, true]]) {
     await call("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false });
@@ -130,7 +131,7 @@ try {
     const screenshot = await call("Page.captureScreenshot", { format: "png" });
     await writeFile(path.join(output, `models-${width}.png`), Buffer.from(screenshot.data, "base64"));
   }
-  console.log(JSON.stringify({ status: "ok", output, groups: groups.length, keyboard: true, independentCollapse: true, viewports: [310, 400] }));
+  console.log(JSON.stringify({ status: "ok", output, groups: groups.length, keyboard: true, providerNavigation: true, viewports: [310, 400] }));
 } finally {
   if (socket?.readyState === WebSocket.OPEN) {
     try { await call("Browser.close"); } catch {}

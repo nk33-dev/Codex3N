@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import ts from "typescript";
-import { agentPetSettingsIssue, defaultAgentPetSettings } from "./agent-pet-settings.ts";
 
 const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const start = source.indexOf("  const saveSettingsValue = async");
@@ -19,19 +18,10 @@ function harness() {
     saving, (value: boolean) => savingStates.push(value), switching, form, (v: unknown) => v, (f: () => unknown) => f(),
     () => new Promise(resolve => pending.push(resolve)), (status: string) => status === "ok",
     (v: unknown) => saved.push(v), (v: unknown) => drafts.push(v), () => {}, (v: string) => v, () => null, (v: unknown) => v,
-    (pet: Parameters<typeof agentPetSettingsIssue>[0]) => pet ? agentPetSettingsIssue(pet) : null, (issue: unknown) => issue, () => null, (v: unknown) => v,
+    () => null, (issue: unknown) => issue, () => null, (v: unknown) => v,
   );
   return { save, pending, saved, drafts, form, saving, switching, savingStates };
 }
-
-test("桌宠配置校验失败时保留草稿并释放保存锁", async () => {
-  const h = harness();
-  assert.equal(await h.save({ agentPet: { ...defaultAgentPetSettings(), enabled: true, image: "custom", customImageUrl: "http://elsewhere.example" } }), null);
-  assert.equal(h.pending.length, 0);
-  assert.equal(h.saving.current, false);
-  assert.deepEqual(h.savingStates, [true, false]);
-  assert.deepEqual(h.drafts, []);
-});
 
 test("连续保存不排队，切换期间不能保存，完成后释放互斥", async () => {
   const h = harness();

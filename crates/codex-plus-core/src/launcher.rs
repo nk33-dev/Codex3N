@@ -270,6 +270,9 @@ pub struct LaunchHandle {
     status_started_at_ms: u64,
     helper_started: bool,
     isolated_quota_gate: Option<Arc<IsolatedQuotaGateRuntime>>,
+    /// 启用中拓展的启动前后声明：Codex 退出后跑 `launch.after`。
+    extension_launches: Vec<(String, Value, crate::extension_launch::ExtensionLaunch)>,
+    extension_launch_context: crate::extension_launch::LaunchContext,
     hooks: Arc<dyn LaunchHooks>,
 }
 
@@ -343,6 +346,12 @@ impl LaunchHandle {
             self.hooks.shutdown_helper(self.helper_port).await;
         }
         self.hooks.stop_native_browser_compatibility().await;
+        crate::extension_launch::run_scripts(
+            "after",
+            &self.extension_launch_context,
+            &self.extension_launches,
+        )
+        .await;
         let (status, message) = match &result {
             Ok(()) => (
                 "stopped",
@@ -407,9 +416,22 @@ pub trait LaunchHooks: Send + Sync {
     fn select_debug_port(&self, requested: u16) -> u16;
     fn select_helper_port(&self, requested: u16) -> u16;
     async fn load_settings(&self) -> anyhow::Result<BackendSettings>;
+    fn codex_home_dir(&self) -> PathBuf {
+        crate::relay_config::default_codex_home_dir()
+    }
+    fn state_dir(&self) -> PathBuf {
+        crate::paths::default_app_state_dir()
+    }
+    fn select_protocol_proxy_port(&self) -> u16 {
+        crate::protocol_proxy::ensure_protocol_proxy_port_available()
+    }
+    async fn sanitize_local_storage_model_suffixes(&self, debug_port: u16) {
+        crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(debug_port)
+            .await;
+    }
     async fn start_native_browser_compatibility(&self, _settings: &BackendSettings) {}
     async fn stop_native_browser_compatibility(&self) {}
-    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
+    fn cleanup_unsupported_config(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
     }
     async fn run_provider_sync(&self) -> anyhow::Result<()>;
@@ -447,6 +469,18 @@ pub trait LaunchHooks: Send + Sync {
     }
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()>;
     /// 原生模块补丁（Fast、输入预测）需要在启动时重载一次页面才能生效。
+    /// 被拓展顶替的内置拓展按「关」处理后的设置（见 [`crate::builtin_takeover`]）。测试用的钩子原样返回。
+    fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
+        settings
+    }
+    /// 启用中拓展的启动前后声明（codexpp.json 的 `launch`）。测试用的钩子没有。
+    fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
+        Vec::new()
+    }
+    /// 有拓展的页面最早期脚本要求启动后重载一次时，整页重载并等页面就绪。
+    async fn reload_for_extension_preloads(&self, _debug_port: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn apply_native_module_patches_on_launch(&self, _debug_port: u16) -> anyhow::Result<()> {
         Ok(())
     }
@@ -838,7 +872,8 @@ where
     let hooks = hooks.into_launch_hooks();
     let mut debug_port = hooks.select_debug_port(options.debug_port);
     let mut helper_port = hooks.select_helper_port(options.helper_port);
-    let settings = hooks.load_settings().await?;
+    // 被拓展顶替的内置拓展（原生 Fast、强制中文、Work 视图、原生浏览器兼容……）在这次启动里按「关」处理。
+    let settings = hooks.effective_settings(hooks.load_settings().await?);
     // 请求体上限必须在 helper 绑定端口、开始接收请求前生效；环境变量优先级更高，
     // 由 configured_http_body_bytes 统一处理。
     set_http_body_limit_bytes(settings.helper_max_request_body_bytes());
@@ -856,9 +891,9 @@ where
         let timeline = LaunchTimeline::new(options.status_store.clone());
         timeline.mark("start_native_browser_compatibility", 5);
         hooks.start_native_browser_compatibility(&settings).await;
-        let home = crate::relay_config::default_codex_home_dir();
+        let home = hooks.codex_home_dir();
         timeline.mark("cleanup_unsupported_config", 10);
-        hooks.cleanup_unsupported_config()?;
+        hooks.cleanup_unsupported_config(&settings)?;
         crate::relay_config::ensure_windows_sandbox_usable_for_current_user(&home)?;
         if settings.provider_sync_enabled {
             timeline.mark("provider_sync", 15);
@@ -881,7 +916,10 @@ where
             );
         }
         timeline.mark("dream_skin_theme", 30);
-        crate::dream_skin::sync_default_dream_skin_base_theme(
+        #[cfg(windows)]
+        crate::dream_skin::sync_dream_skin_base_theme_in_home(
+            &home,
+            &hooks.state_dir(),
             settings.enhancements_enabled
                 && settings.codex_app_dream_skin_enabled
                 && !settings.codex_app_dream_skin_paused,
@@ -980,7 +1018,7 @@ where
             timeline.mark("protocol_proxy_config", 55);
             // 端口落在 Windows 排除区间（10013）时永久不可绑，先迁移并持久化，
             // 再写 config.toml，保证 base_url、helper 与路由使用同一个端口（#1163）。
-            helper_port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
+            helper_port = hooks.select_protocol_proxy_port();
             hooks.ensure_active_protocol_proxy_config(&settings).await?;
         }
         if settings.enhancements_enabled || protocol_proxy_enabled {
@@ -1007,6 +1045,26 @@ where
             timeline.mark("helper_listening", 65);
         }
 
+        // 拓展的启动前脚本与追加的启动参数（codexpp.json 的 `launch`）。
+        let extension_launches = hooks.extension_launches();
+        let extension_launch_context = crate::extension_launch::LaunchContext {
+            codex_home: home.clone(),
+            state_dir: hooks.state_dir(),
+            app_dir: app_dir.clone(),
+        };
+        if !extension_launches.is_empty() {
+            timeline.mark("extension_launch_before", 68);
+            crate::extension_launch::run_scripts(
+                "before",
+                &extension_launch_context,
+                &extension_launches,
+            )
+            .await;
+        }
+        let launch_args = crate::extension_launch::merged_launch_args(
+            &settings.codex_extra_args,
+            &extension_launches,
+        );
         timeline.mark("launch_codex", 70);
         // 启动 Codex 之前清一遍选择器残留：换过模型目录之后，
         // 「最近使用」里会留着上一个目录的模型 ID，用户点到就是必然 400 的模型。
@@ -1020,7 +1078,7 @@ where
                 &app_dir,
                 debug_port,
                 &settings,
-                &settings.codex_extra_args,
+                &launch_args,
                 &LaunchInstance::from_options(&options),
             )
             .await?;
@@ -1048,12 +1106,17 @@ where
                         serde_json::json!({ "message": error.to_string() }),
                     );
                 }
+                if let Err(error) = hooks.reload_for_extension_preloads(debug_port).await {
+                    let _ = crate::diagnostic_log::append_diagnostic_log(
+                        "launcher.extension_preload_reload_failed",
+                        serde_json::json!({ "message": error.to_string() }),
+                    );
+                }
                 // 注入成功后页面已加载，此时可以通过 CDP 清理 Electron Local Storage
                 // 中残留的带后缀模型名，避免模型选择器继续显示废弃项。
-                crate::codex_local_storage::sanitize_local_storage_model_suffixes_nonfatal(
-                    debug_port,
-                )
-                .await;
+                hooks
+                    .sanitize_local_storage_model_suffixes(debug_port)
+                    .await;
             } else {
                 let degraded = launch_status(
                     "running_degraded",
@@ -1101,6 +1164,8 @@ where
             status_started_at_ms,
             helper_started,
             isolated_quota_gate,
+            extension_launches,
+            extension_launch_context,
             hooks: Arc::clone(&hooks),
         })
     }
@@ -1358,9 +1423,17 @@ impl LaunchHooks for DefaultLaunchHooks {
         SettingsStore::default().load()
     }
 
-    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
+    fn cleanup_unsupported_config(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         let home = crate::relay_config::default_codex_home_dir();
         crate::relay_config::cleanup_unsupported_approval_policies_in_home(&home)?;
+        if let Err(error) =
+            crate::relay_config::ensure_managed_session_provider_in_home(&home, settings)
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.managed_session_provider_repair_failed",
+                serde_json::json!({ "message": error.to_string() }),
+            );
+        }
         Ok(())
     }
 
@@ -1477,6 +1550,12 @@ impl LaunchHooks for DefaultLaunchHooks {
             }
         }
         if cfg!(windows) && !isolated_multi_instance {
+            // issue #2789：Codex++ 以管理员身份运行时，Codex 会被 Chromium 经 explorer 降权
+            // 重启而脱离包上下文，这里补上豁免开关（见 `packaged_launch::DO_NOT_DE_ELEVATE_SWITCH`）。
+            // 只影响打包版主实例这条分支；未提权时参数原样不变。
+            let elevated = crate::windows_integration::current_process_is_elevated();
+            let launch_extra_args =
+                crate::packaged_launch::packaged_launch_extra_args(&launch_extra_args, elevated);
             // AUMID 解析留在调用点：它要查系统里的 Store 注册表（#2140），是有副作用
             // 的一步；下面的构造函数只做纯拼接。解析不出来（目录名像包、但系统里没
             // 这个包）就不再走打包激活，继续往下按路径启动——与既有回退路径一致。
@@ -1541,6 +1620,16 @@ impl LaunchHooks for DefaultLaunchHooks {
                         );
                     }
                 }
+                // 激活前留一条记录：日志停在这里就说明卡在激活调用本身（#2795）。
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.packaged_activation_begin",
+                    serde_json::json!({
+                        "app_user_model_id": app_user_model_id,
+                        "debug_port": debug_port,
+                        "elevated": elevated,
+                        "arguments": arguments,
+                    }),
+                );
                 match activate_packaged_app(app_user_model_id, arguments).await {
                     Ok(process_id) => {
                         #[cfg(windows)]
@@ -1629,6 +1718,24 @@ impl LaunchHooks for DefaultLaunchHooks {
                                 "error": error.to_string()
                             }),
                         );
+                        // 激活调用超时（#2795）：按路径启动同样拿不到包身份，回退没有意义，
+                        // 直接给出可操作的提示。
+                        if error
+                            .downcast_ref::<crate::packaged_launch::AumidActivationTimedOut>()
+                            .is_some()
+                        {
+                            let executable = crate::app_paths::build_codex_executable(app_dir);
+                            let executable_name = executable
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "Codex".to_string());
+                            anyhow::bail!(
+                                crate::packaged_launch::aumid_activation_timed_out_message(
+                                    crate::packaged_launch::AUMID_ACTIVATION_CALL_TIMEOUT.as_secs(),
+                                    &executable_name,
+                                )
+                            );
+                        }
                         // 提权进程激活打包应用必然失败，按路径启动的进程会因缺少
                         // 包身份立即退出、注入也必然失败；此时必须如实失败并给出
                         // 指引，而不是静默回退导致 latest-status.json 误报 running
@@ -1723,6 +1830,24 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
         apply_native_module_patches_on_launch(debug_port).await
+    }
+
+    fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
+        crate::builtin_takeover::mask_settings(settings)
+    }
+
+    fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
+        crate::user_scripts::default_user_script_manager()
+            .enabled_launches()
+            .unwrap_or_default()
+    }
+
+    async fn reload_for_extension_preloads(&self, debug_port: u16) -> anyhow::Result<()> {
+        let (_, reload) = crate::user_scripts::default_user_script_manager().enabled_preloads()?;
+        if reload {
+            reload_page_for_extension_preloads(debug_port).await?;
+        }
+        Ok(())
     }
 
     async fn capture_injected_launch_identity(&self, debug_port: u16) {
@@ -2192,16 +2317,67 @@ pub(crate) async fn handle_helper_connection_on(
         stream.shutdown().await?;
         return Ok(());
     }
-    if crate::gateway::is_gateway_path(path) {
-        return crate::gateway::server::handle(
+    // 拓展挂的 HTTP 路由（webhook）：/ext/<拓展 id>/…，交给声明了 backend.http 的拓展后台处理。
+    if path.starts_with("/ext/") {
+        // WebSocket 升级（dsh 的 webServer.registerUpgrade）：交给拓展后台给出的本机 socket，之后字节对拷到连接结束。
+        if crate::extension_backend::is_websocket_upgrade(&request_headers) {
+            return crate::extension_backend::route_upgrade(
+                &mut stream,
+                raw_path,
+                &request_headers,
+                &request.headers,
+            )
+            .await;
+        }
+        let (status, content_type, body) =
+            crate::extension_backend::route_http(method, raw_path, &request_headers, &request.body)
+                .await;
+        let status_line = format!(
+            "{status} {}",
+            if (200..300).contains(&status) {
+                "OK"
+            } else {
+                "Error"
+            }
+        );
+        write_http_response(
+            &mut stream,
+            &status_line,
+            &content_type,
+            &body,
+            &cors_allow_origin,
+        )
+        .await?;
+        stream.shutdown().await?;
+        return Ok(());
+    }
+    if crate::gateway::subscriptions::server::is_subscription_path(path) {
+        return crate::gateway::subscriptions::server::handle(
             &mut stream,
             method,
             path,
             &request_headers,
             &request.body,
-            remote_addr_text,
         )
         .await;
+    }
+    if crate::gateway::is_gateway_path(path) {
+        // 本机启动器转来的请求已经跑过拓展的网关中间件：网关这一层不再跑（见 EXTENSIONS_APPLIED_HEADER）。
+        let applied = crate::extension_gateway::headers_mark_applied(&request_headers);
+        // 带上查询串：Gemini 客户端把 Key 放在 `?key=` 里；网关取出后自己去掉，不进日志。
+        return crate::extension_gateway::EXTENSIONS_ALREADY_APPLIED
+            .scope(
+                applied,
+                crate::gateway::server::handle(
+                    &mut stream,
+                    method,
+                    raw_path,
+                    &request_headers,
+                    &request.body,
+                    remote_addr_text,
+                ),
+            )
+            .await;
     }
     if matches!(path, "/dictation/transcribe" | "/dictation/status") {
         return handle_dictation_connection(
@@ -2432,17 +2608,6 @@ pub(crate) async fn handle_helper_connection_on(
             "application/json; charset=utf-8".to_string(),
             "helper.diagnostics_log_ok",
         )
-    } else if path == "/overlay/image" && matches!(method, "GET" | "OPTIONS") {
-        if method == "OPTIONS" {
-            (
-                "200 OK".to_string(),
-                Vec::new(),
-                "application/octet-stream".to_string(),
-                "helper.overlay_image_options",
-            )
-        } else {
-            overlay_image_response()
-        }
     } else if path == "/dream-skin/image" && matches!(method, "GET" | "OPTIONS") {
         if method == "OPTIONS" {
             (
@@ -2517,41 +2682,6 @@ pub(crate) fn decode_protocol_proxy_request_body(
         .map_err(|error| anyhow::anyhow!("Responses 请求体不是 UTF-8：{error}"))
 }
 
-fn overlay_image_response() -> (String, Vec<u8>, String, &'static str) {
-    let not_found = || {
-        (
-            "404 Not Found".to_string(),
-            serde_json::to_vec(&serde_json::json!({
-                "status": "failed",
-                "message": "图片覆盖层未启用或图片不可用"
-            }))
-            .unwrap_or_default(),
-            "application/json; charset=utf-8".to_string(),
-            "helper.overlay_image_not_found",
-        )
-    };
-    let settings = SettingsStore::default().load_cached();
-    if !settings.codex_app_image_overlay_enabled {
-        return not_found();
-    }
-    let image_path = PathBuf::from(settings.codex_app_image_overlay_path.trim());
-    if image_path.as_os_str().is_empty() || !image_path.is_file() {
-        return not_found();
-    }
-    let Some(content_type) = overlay_image_content_type(&image_path) else {
-        return not_found();
-    };
-    match std::fs::read(&image_path) {
-        Ok(bytes) => (
-            "200 OK".to_string(),
-            bytes,
-            content_type.to_string(),
-            "helper.overlay_image_ok",
-        ),
-        Err(_) => not_found(),
-    }
-}
-
 fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {
     let not_found = || {
         (
@@ -2591,6 +2721,12 @@ fn dream_skin_image_response() -> (String, Vec<u8>, String, &'static str) {
         ),
         Err(_) => not_found(),
     }
+}
+
+/// 系统鼠标的逻辑坐标（与 Electron 的 window.screenX/screenY 同一坐标系）。拓展经 `/system/cursor-position` 读，
+/// 用来写出与「桌宠跟随鼠标」等价的功能。只支持 Windows 与 macOS。
+pub fn cursor_position() -> anyhow::Result<(i32, i32)> {
+    logical_cursor_position()
 }
 
 fn logical_cursor_position() -> anyhow::Result<(i32, i32)> {
@@ -2780,6 +2916,8 @@ impl ProxyRequestLog {
         thread_id: Option<String>,
         silent: bool,
     ) -> Self {
+        // 拓展用 gateway.replaces 关掉 builtin:request-log：这次请求不进请求日志与用量统计，由拓展自己记。
+        let silent = silent || crate::extension_gateway::builtin_replaced("builtin:request-log");
         let started_at_ms = current_time_ms();
         let model = request
             .and_then(|request| request.get("model"))
@@ -3296,6 +3434,9 @@ pub(crate) async fn handle_protocol_proxy_connection(
                 && !foreign_client)
                 .then(crate::protocol_proxy::ResponsesSseTransformer::phase_fill_only);
             let mut bytes_stream = upstream.take_response()?.bytes_stream();
+            // exec 兼容链路同样过拓展的网关响应流中间件。
+            let mut extension_filter =
+                crate::extension_gateway::ResponseFilter::start(path, request_json.as_ref()).await;
             while let Some(chunk) = bytes_stream.next().await {
                 let converted = match chunk {
                     Ok(bytes) => match converter.push_bytes(&bytes) {
@@ -3308,6 +3449,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
                     Some(phase) => phase.push_bytes(&converted),
                     None => converted,
                 };
+                let converted = match extension_filter.as_mut() {
+                    Some(filter) => filter.push(&converted).await,
+                    None => converted,
+                };
                 stream.write_all(&converted).await?;
                 if converter.is_complete() {
                     break;
@@ -3317,6 +3462,10 @@ pub(crate) async fn handle_protocol_proxy_connection(
             if let Some(phase) = phase.as_mut() {
                 tail = phase.push_bytes(&tail);
                 tail.extend(phase.flush_pending());
+            }
+            if let Some(filter) = extension_filter.as_mut() {
+                tail = filter.push(&tail).await;
+                tail.extend(filter.finish().await);
             }
             stream.write_all(&tail).await?;
             let exec_succeeded = converter.succeeded();
@@ -3332,17 +3481,21 @@ pub(crate) async fn handle_protocol_proxy_connection(
             return Ok(());
         }
         let stream_prefix = std::mem::take(&mut upstream.stream_prefix);
+        // 拓展的网关响应流中间件：在 Codex++ 自己的转换之后、写给 Codex 之前改写事件。
+        let mut sink = ExtensionResponseSink::new(stream, path, request_json.as_ref()).await;
         let (failure, usage, failure_detail, first_output_at_ms) =
-            forward_protocol_proxy_stream_for_client(
-                stream,
+            forward_protocol_proxy_stream_for_client_with_live_request(
+                &mut sink,
                 &stream_prefix,
                 upstream.take_response()?,
                 upstream.wire_api,
                 request_json.as_ref(),
                 session_headers.thread_id,
                 foreign_client,
+                Some(live_request_id.as_str()),
             )
             .await?;
+        sink.finish().await?;
         if let Some(first_output_at_ms) = first_output_at_ms {
             request_log.mark_first_token_at(first_output_at_ms);
         }
@@ -4140,6 +4293,45 @@ impl SseSink for tokio::net::TcpStream {
     }
 }
 
+/// 在任意 SseSink 外面套上拓展的网关响应流中间件；没有中间件时直通。
+pub(crate) struct ExtensionResponseSink<'a, S> {
+    pub(crate) inner: &'a mut S,
+    filter: Option<crate::extension_gateway::ResponseFilter>,
+}
+
+impl<'a, S: SseSink> ExtensionResponseSink<'a, S> {
+    pub(crate) async fn new(inner: &'a mut S, request_path: &str, request: Option<&Value>) -> Self {
+        let filter = crate::extension_gateway::ResponseFilter::start(request_path, request).await;
+        Self { inner, filter }
+    }
+
+    /// 上游结束后调用：交出残余字节与中间件在流尾追加的事件。
+    pub(crate) async fn finish(&mut self) -> std::io::Result<()> {
+        if let Some(filter) = self.filter.as_mut() {
+            let tail = filter.finish().await;
+            if !tail.is_empty() {
+                self.inner.send(&tail).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<S: SseSink> SseSink for ExtensionResponseSink<'_, S> {
+    async fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        match self.filter.as_mut() {
+            Some(filter) => {
+                let out = filter.push(bytes).await;
+                if out.is_empty() {
+                    return Ok(());
+                }
+                self.inner.send(&out).await
+            }
+            None => self.inner.send(bytes).await,
+        }
+    }
+}
+
 // 返回流失败原因与（可选的）usage；HTTP 响应头已经发送，不能再把失败伪装成第二个 HTTP 502。
 pub(crate) async fn forward_protocol_proxy_stream<S: SseSink>(
     stream: &mut S,
@@ -4176,6 +4368,35 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
     Option<String>,
     Option<u64>,
 )> {
+    forward_protocol_proxy_stream_for_client_with_live_request(
+        stream,
+        prefix,
+        response,
+        wire_api,
+        request,
+        thread_id,
+        foreign_client,
+        None,
+    )
+    .await
+}
+
+// 保持网关等现有调用者的接口；Codex 代理额外传入进行中日志 id。
+async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
+    stream: &mut S,
+    prefix: &[u8],
+    response: reqwest::Response,
+    wire_api: crate::protocol_proxy::UpstreamWireApi,
+    request: Option<&Value>,
+    thread_id: Option<&str>,
+    foreign_client: bool,
+    live_request_id: Option<&str>,
+) -> anyhow::Result<(
+    Option<String>,
+    Option<crate::request_log::RequestUsage>,
+    Option<String>,
+    Option<u64>,
+)> {
     let mut chunks = response.bytes_stream();
     let mut first_output_at_ms = None;
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
@@ -4195,9 +4416,7 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
         while let Some(chunk) = chunks.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if !bytes.is_empty() && first_output_at_ms.is_none() {
-                        first_output_at_ms = Some(current_time_ms());
-                    }
+                    observe_protocol_proxy_output(&bytes, &mut first_output_at_ms, live_request_id);
                     let out = transformer.push_bytes(&bytes);
                     stream.send(&out).await?;
                     // 超限等终态失败要立即结束流，不能等上游 EOF；
@@ -4241,9 +4460,7 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
         while let Some(chunk) = chunks.next().await {
             match chunk {
                 Ok(bytes) => {
-                    if !bytes.is_empty() && first_output_at_ms.is_none() {
-                        first_output_at_ms = Some(current_time_ms());
-                    }
+                    observe_protocol_proxy_output(&bytes, &mut first_output_at_ms, live_request_id);
                     let converted = converter.push_bytes(&bytes);
                     if !converted.is_empty() {
                         stream.send(&converted).await?;
@@ -4251,7 +4468,7 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
                     if converter.has_failed() {
                         return Ok((
                             Some("上游返回了流式错误事件".to_string()),
-                            None,
+                            converter.request_usage(),
                             None,
                             first_output_at_ms,
                         ));
@@ -4265,7 +4482,7 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
                     stream.send(&failed).await?;
                     return Ok((
                         Some(error.without_url().to_string()),
-                        None,
+                        converter.request_usage(),
                         None,
                         first_output_at_ms,
                     ));
@@ -4282,13 +4499,13 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
             stream.send(&failed).await?;
             return Ok((
                 Some("上游缺少完成事件".to_string()),
-                None,
+                converter.request_usage(),
                 None,
                 first_output_at_ms,
             ));
         }
         stream.send(&converter.finish()).await?;
-        return Ok((None, None, None, first_output_at_ms));
+        return Ok((None, converter.request_usage(), None, first_output_at_ms));
     }
     let mut converter = request
         .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
@@ -4296,15 +4513,13 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
     while let Some(chunk) = chunks.next().await {
         match chunk {
             Ok(bytes) => {
-                if !bytes.is_empty() && first_output_at_ms.is_none() {
-                    first_output_at_ms = Some(current_time_ms());
-                }
+                observe_protocol_proxy_output(&bytes, &mut first_output_at_ms, live_request_id);
                 let converted = converter.push_bytes(&bytes);
                 stream.send(&converted).await?;
                 if converter.has_failed() {
                     return Ok((
                         Some("上游返回了流式错误事件".to_string()),
-                        None,
+                        converter.request_usage(),
                         None,
                         first_output_at_ms,
                     ));
@@ -4318,7 +4533,7 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
                 stream.send(&failed).await?;
                 return Ok((
                     Some(error.without_url().to_string()),
-                    None,
+                    converter.request_usage(),
                     None,
                     first_output_at_ms,
                 ));
@@ -4334,14 +4549,30 @@ pub(crate) async fn forward_protocol_proxy_stream_for_client<S: SseSink>(
         stream.send(&failed).await?;
         return Ok((
             Some("上游缺少完成事件".to_string()),
-            None,
+            converter.request_usage(),
             None,
             first_output_at_ms,
         ));
     }
     stream.send(&converter.finish()).await?;
     record_chat_converter_usage(thread_id, &converter);
-    Ok((None, None, None, first_output_at_ms))
+    // 流式 Chat 上游的用量也要进请求日志和网关用量统计（#2803）。
+    Ok((None, converter.request_usage(), None, first_output_at_ms))
+}
+
+// 沿用普通转发的首字口径：第一段非空上游 body；HTTP 头和空块不算。
+// 在写给下游之前发布，避免下游背压或长流让实时状态一直停在等待。
+fn observe_protocol_proxy_output(
+    bytes: &[u8],
+    first_output_at_ms: &mut Option<u64>,
+    live_request_id: Option<&str>,
+) {
+    if !bytes.is_empty() && first_output_at_ms.is_none() {
+        *first_output_at_ms = Some(current_time_ms());
+        if let Some(id) = live_request_id {
+            crate::request_log::update_running_first_token(id);
+        }
+    }
 }
 
 fn record_chat_converter_usage(
@@ -5555,11 +5786,18 @@ async fn retry_injection(debug_port: u16, helper_port: u16) -> anyhow::Result<()
     // 注入脚本是几百 KB 的字符串（皮肤图 base64 + 整份 renderer 脚本）。整个重试
     // 循环只有几秒，中途不需要跟着设置变，所以构建一次就够了——以前每次尝试都
     // 重建一遍，最坏情况要重复几百次。
-    let script = crate::assets::injection_script_with_settings(
+    let settings = crate::builtin_takeover::load_effective_settings()?;
+    let mut scripts = vec![crate::assets::injection_script_with_settings(
         helper_port,
-        &SettingsStore::default().load_cached(),
-    );
-    let scripts = [script];
+        &settings,
+    )];
+    if settings.enhancements_enabled
+        && let Ok((entries, _)) =
+            crate::user_scripts::default_user_script_manager().enabled_preloads()
+        && let Some(preload) = crate::extension_launch::preload_document_script(&entries)
+    {
+        scripts.push(preload);
+    }
     let mut last_error = None;
     for _ in 0..20 {
         match try_inject(debug_port, helper_port, &scripts).await {
@@ -5816,7 +6054,18 @@ fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
     ) && !crate::watcher::find_macos_codex_processes_for_debug_port(debug_port).is_empty()
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn launcher_owned_process_alive(launch: &CodexLaunch, debug_port: u16) -> bool {
+    matches!(
+        launch,
+        CodexLaunch::Process {
+            wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+            ..
+        }
+    ) && !crate::watcher::find_codex_processes_for_debug_port(debug_port).is_empty()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn launcher_owned_process_alive(_launch: &CodexLaunch, _debug_port: u16) -> bool {
     false
 }
@@ -6006,6 +6255,35 @@ async fn try_inject(
     .await
 }
 
+/// 拓展的页面最早期脚本要赶在第一份文档的 Codex 脚本之前：启动后整页重载一次，等页面就绪。
+async fn reload_page_for_extension_preloads(debug_port: u16) -> anyhow::Result<()> {
+    let targets = crate::cdp::list_targets(debug_port).await?;
+    let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
+    let websocket_url = target
+        .web_socket_debugger_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
+    crate::bridge::send_cdp_command(websocket_url, "Page.reload", serde_json::json!({})).await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        if let Ok(result) =
+            crate::bridge::evaluate_script(websocket_url, "document.readyState").await
+            && result
+                .pointer("/result/result/value")
+                .and_then(Value::as_str)
+                == Some("complete")
+        {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.extension_preload_reloaded",
+                serde_json::json!({ "debug_port": debug_port }),
+            );
+            return Ok(());
+        }
+    }
+    anyhow::bail!("拓展 preload 重载后页面 30 秒内没有就绪")
+}
+
 // 仅在用户启动 Codex 的流程里重载一次；心跳重注入不重载正在使用的页面。
 async fn apply_native_module_patches_on_launch(debug_port: u16) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
@@ -6097,9 +6375,17 @@ async fn pet_overlay_has_screen_point_hook(websocket_url: &str) -> anyhow::Resul
     Ok(runtime_evaluate_result_is_true(&result))
 }
 
-async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+/// 桌宠跟随鼠标：增强总开关、功能开关、内置拓展「pet-real-mouse」三者都开着才驱动。
+/// 设置关着时短路，不去扫拓展目录。
+fn pet_real_mouse_enabled() -> bool {
     let settings = SettingsStore::default().load_cached();
-    let enabled = settings.enhancements_enabled && settings.codex_app_pet_real_mouse_look;
+    settings.enhancements_enabled
+        && settings.codex_app_pet_real_mouse_look
+        && !crate::builtin_takeover::replaced("pet-real-mouse")
+}
+
+async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyhow::Result<()> {
+    let enabled = pet_real_mouse_enabled();
     let targets = crate::cdp::list_targets(debug_port).await?;
     for target in targets
         .iter()
@@ -6139,8 +6425,7 @@ async fn sync_pet_real_mouse_overlay(debug_port: u16, _helper_port: u16) -> anyh
 #[cfg(any(windows, target_os = "macos"))]
 async fn run_pet_real_mouse_cursor_driver(debug_port: u16) {
     loop {
-        let settings = SettingsStore::default().load_cached();
-        if !settings.enhancements_enabled || !settings.codex_app_pet_real_mouse_look {
+        if !pet_real_mouse_enabled() {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             continue;
         }
@@ -6564,11 +6849,20 @@ pub async fn activate_packaged_app(
 ) -> anyhow::Result<u32> {
     let app_user_model_id = app_user_model_id.to_string();
     let arguments = arguments.to_string();
-    tokio::task::spawn_blocking(move || {
+    let activation = tokio::task::spawn_blocking(move || {
         activate_packaged_app_blocking(&app_user_model_id, &arguments)
-    })
-    .await
-    .context("packaged app activation task failed")?
+    });
+    // issue #2795：ActivateApplication 可能一直不返回，必须有上限；超时后阻塞线程留给系统，
+    // 启动流程如实报错，不再无声地停在「启动 Codex」。
+    let timeout = crate::packaged_launch::AUMID_ACTIVATION_CALL_TIMEOUT;
+    match tokio::time::timeout(timeout, activation).await {
+        Ok(result) => result.context("packaged app activation task failed")?,
+        Err(_) => Err(anyhow::Error::new(
+            crate::packaged_launch::AumidActivationTimedOut {
+                seconds: timeout.as_secs(),
+            },
+        )),
+    }
 }
 
 #[cfg(windows)]
@@ -7831,6 +8125,16 @@ mod tests {
                     break;
                 }
             }
+            // open 还在等待响应头时，实际选中的路由就必须已经可见。
+            let running = crate::request_log::running_requests()
+                .into_iter()
+                .find(|entry| entry.relay_id == "request-log-relay")
+                .expect("不能等 record_upstream 才发布真实路由");
+            assert_eq!(running.relay_name, "请求日志供应商");
+            assert_eq!(running.upstream_model, "gpt-6.1-sol");
+            assert_eq!(running.wire_api, "responses");
+            assert_eq!(running.state.as_deref(), Some("running"));
+            assert!(running.first_token_ms.is_none());
             let response_body = br#"{"id":"resp_logged","object":"response","usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":100}}}"#;
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -8643,7 +8947,7 @@ mod proxy_stream_tests {
         truncated: bool,
         wire: UpstreamWireApi,
     ) -> (Option<String>, String) {
-        let (failure, output, _) =
+        let (failure, output, _, _) =
             forward_fixture_with_prefix_and_delay(&[], body, truncated, wire, Duration::ZERO).await;
         (failure, output)
     }
@@ -8654,7 +8958,7 @@ mod proxy_stream_tests {
         truncated: bool,
         wire: UpstreamWireApi,
     ) -> (Option<String>, String) {
-        let (failure, output, _) =
+        let (failure, output, _, _) =
             forward_fixture_with_prefix_and_delay(prefix, body, truncated, wire, Duration::ZERO)
                 .await;
         (failure, output)
@@ -8666,7 +8970,12 @@ mod proxy_stream_tests {
         truncated: bool,
         wire: UpstreamWireApi,
         initial_delay: Duration,
-    ) -> (Option<String>, String, Option<u64>) {
+    ) -> (
+        Option<String>,
+        String,
+        Option<u64>,
+        Option<crate::request_log::RequestUsage>,
+    ) {
         let upstream = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = upstream.local_addr().unwrap();
         let body = body.to_owned();
@@ -8706,22 +9015,74 @@ mod proxy_stream_tests {
             .unwrap();
         let (mut writer, _) = downstream.accept().await.unwrap();
         let forwarded = tokio::spawn(async move {
-            let (result, _usage, _detail, first_output_at_ms) =
+            let (result, usage, _detail, first_output_at_ms) =
                 forward_protocol_proxy_stream(&mut writer, &prefix, response, wire, None, None)
                     .await
                     .unwrap();
             writer.shutdown().await.unwrap();
-            (result, first_output_at_ms)
+            (result, first_output_at_ms, usage)
         });
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await.unwrap();
-        let (result, first_output_at_ms) = forwarded.await.unwrap();
+        let (result, first_output_at_ms, usage) = forwarded.await.unwrap();
         upstream_task.await.unwrap();
         (
             result,
             String::from_utf8(bytes).unwrap(),
             first_output_at_ms,
+            usage,
         )
+    }
+
+    #[tokio::test]
+    async fn chat_stream_usage_is_returned_for_request_log() {
+        // #2803：流式 Chat 上游的用量要进请求日志，口径与非流式一致（输入含缓存）。
+        let (failure, _, _, usage) = forward_fixture_with_prefix_and_delay(
+            &[],
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":30,",
+                "\"prompt_tokens_details\":{\"cached_tokens\":100},",
+                "\"completion_tokens_details\":{\"reasoning_tokens\":8}}}\n\n",
+                "data: [DONE]\n\n"
+            ),
+            false,
+            UpstreamWireApi::ChatCompletions,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(failure, None);
+        let usage = usage.expect("流式 Chat 上游应返回用量");
+        assert_eq!(usage.input_tokens, 120);
+        assert_eq!(usage.output_tokens, 30);
+        assert_eq!(usage.cached_tokens, 100);
+        assert_eq!(usage.reasoning_tokens, 8);
+    }
+
+    #[tokio::test]
+    async fn anthropic_stream_usage_merges_start_and_delta() {
+        // Anthropic 的输入在 message_start、输出在 message_delta，两边都要记上。
+        let (failure, _, _, usage) = forward_fixture_with_prefix_and_delay(
+            &[],
+            concat!(
+                "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-sonnet-5\",",
+                "\"usage\":{\"input_tokens\":7,\"cache_read_input_tokens\":50,\"output_tokens\":1}}}\n\n",
+                "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+                "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+            ),
+            false,
+            UpstreamWireApi::AnthropicMessages,
+            Duration::ZERO,
+        )
+        .await;
+        assert_eq!(failure, None);
+        let usage = usage.expect("流式 Anthropic 上游应返回用量");
+        assert_eq!(usage.input_tokens, 7);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.cached_tokens, 50);
     }
 
     #[tokio::test]
@@ -8730,7 +9091,7 @@ mod proxy_stream_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
-        let (_, _, first_output_at_ms) = forward_fixture_with_prefix_and_delay(
+        let (_, _, first_output_at_ms, _) = forward_fixture_with_prefix_and_delay(
             &[],
             "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n",
             false,
@@ -8743,6 +9104,110 @@ mod proxy_stream_tests {
             first_output_at_ms >= started_at_ms + 50,
             "首字时间不应在上游发送数据前记录: started={started_at_ms}, first={first_output_at_ms}"
         );
+    }
+
+    #[tokio::test]
+    async fn live_first_output_is_published_before_stream_finishes() {
+        let _guard = crate::request_log::request_log_test_guard();
+        for (wire, body) in [
+            (
+                UpstreamWireApi::Responses,
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            ),
+            (
+                UpstreamWireApi::ChatCompletions,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+            ),
+            (
+                UpstreamWireApi::AnthropicMessages,
+                "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+            ),
+        ] {
+            let log = super::ProxyRequestLog::begin("POST", "/responses", None, None);
+            let snapshot = || {
+                crate::request_log::running_requests()
+                    .into_iter()
+                    .find(|row| row.id == log.entry.id)
+                    .unwrap()
+            };
+            let mut first = None;
+            super::observe_protocol_proxy_output(&[], &mut first, Some(&log.entry.id));
+            assert!(first.is_none());
+            assert!(snapshot().first_token_ms.is_none(), "空块不算输出");
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (send_body, body_ready) = tokio::sync::oneshot::channel::<()>();
+            let (finish_stream, stream_finished) = tokio::sync::oneshot::channel::<()>();
+            let upstream = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                }
+                socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+                body_ready.await.unwrap();
+                socket
+                    .write_all(format!("{:X}\r\n{body}\r\n", body.len()).as_bytes())
+                    .await
+                    .unwrap();
+                stream_finished.await.unwrap();
+                socket.write_all(b"0\r\n\r\n").await.unwrap();
+            });
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/stream"))
+                .send()
+                .await
+                .unwrap();
+            assert!(snapshot().first_token_ms.is_none(), "只有响应头时仍在等待");
+
+            struct NotifyingSink(Option<tokio::sync::oneshot::Sender<()>>);
+            impl super::SseSink for NotifyingSink {
+                async fn send(&mut self, _bytes: &[u8]) -> std::io::Result<()> {
+                    if let Some(notify) = self.0.take() {
+                        let _ = notify.send(());
+                    }
+                    Ok(())
+                }
+            }
+            let (sent, observed) = tokio::sync::oneshot::channel();
+            let mut sink = NotifyingSink(Some(sent));
+            let forward = super::forward_protocol_proxy_stream_for_client_with_live_request(
+                &mut sink,
+                &[],
+                response,
+                wire,
+                None,
+                None,
+                false,
+                Some(&log.entry.id),
+            );
+            tokio::pin!(forward);
+            send_body.send(()).unwrap();
+            tokio::select! {
+                result = &mut forward => panic!("上游尚未结束，转发不应返回: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(2), observed) => result.unwrap().unwrap(),
+            }
+            let generating = snapshot();
+            assert!(
+                generating.first_token_ms.is_some(),
+                "不能等转发返回才发布首字"
+            );
+            assert_eq!(generating.phase.as_deref(), Some("generating"));
+            crate::request_log::update_running_first_token(&log.entry.id);
+            assert_eq!(snapshot().first_token_ms, generating.first_token_ms);
+            finish_stream.send(()).unwrap();
+            let (_, _, _, first_output_at_ms) =
+                tokio::time::timeout(Duration::from_secs(2), forward)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(first_output_at_ms.is_some());
+            upstream.await.unwrap();
+        }
     }
 
     #[tokio::test]

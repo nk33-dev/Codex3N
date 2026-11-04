@@ -1,8 +1,11 @@
 import { t } from "@/i18n";
 import type { ManagerRoute } from "./manager-loading";
 
-export function routeSubtitle(route: ManagerRoute): string {
+export function routeSubtitle(route: ManagerRoute, _soloAgent: string | null = null): string {
   const subtitles: Record<ManagerRoute, string> = {
+    extension: t("拓展"),
+    home: t("网关总览"),
+    recommendations: t("网关总览"),
     hub: t("网关总览"),
     gateway: t("Agent 接入"),
     gatewayProviders: t("供应商池"),

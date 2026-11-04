@@ -119,7 +119,8 @@
         if (loaded) codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
         return;
       }
-      const cleanup = patchCodexPlusGitWorkerPerformance(factory("git"), () => codexPlusBackendSettings.codexAppLowPower === true);
+      const cleanup = patchCodexPlusGitWorkerPerformance(factory("git"), () => codexPlusBackendSettings.codexAppLowPower === true
+        && !globalThis.__codexPlusBuiltinInactive?.has("low-power"));
       codexPlusGitPerformanceRetryAt = Number.POSITIVE_INFINITY;
       if (cleanup) window.__codexPlusGitPerformanceCleanup = () => {
         cleanup();
@@ -211,5 +212,7 @@
 
   function syncCodexPlusLowPower() {
     window.__codexPlusLowPowerAnimations ||= createCodexPlusLowPowerAnimations();
-    window.__codexPlusLowPowerAnimations.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false && codexPlusBackendSettings.codexAppLowPower === true);
+    window.__codexPlusLowPowerAnimations.setEnabled(codexPlusBackendSettings.enhancementsEnabled !== false
+      && codexPlusBackendSettings.codexAppLowPower === true
+      && !globalThis.__codexPlusBuiltinInactive?.has("low-power"));
   }

@@ -4,6 +4,7 @@
 
 - 本地网关通过 `gateway.json` 独立保存供应商池、模型组、Agent 接入及凭据；直连供应商导入为副本，两边后续互不覆盖。Codex 接入和断开复用原配置切换、修订号与备份链路。完整网关契约见 [本地网关](../../docs/local-gateway.md)。
 - 网关供应商支持按 Key 增删、替换、测试及 RPM/并发限制；管理器只接收打码 Key 和稳定标识。模型同步先只读预览，再按勾选项增删，移除模型时同步清理其元数据并处理默认模型。供应商测试沿用网关请求路径，支持取消，不占正常请求的限速名额或路由统计。
+- `/models` 元数据同步先预览上下文窗口和思考等级差异，手工覆盖默认不选；确认后才写入目标模型。直连与网关复用 `upstream_model_meta.rs`，模型拉取继续通过个人版按目标 URL 选择的连接池，环回显式直连。网关通用 Agent、Chat/Gemini 入站、自带模型与订阅接入沿用上游模块；切换到自带模型时仍保留用户其他配置。
 - 导入链接可用 `target=pool` 指向网关池。弹窗读取的指纹随确认、取消回传，期间出现新链接时保留新请求并重新确认；失败不覆盖设置草稿。入口为 `commands/provider_import.rs`，网关导入后由 `gateway_commands::after_url_pool_import` 补模型和价格。
 - Claude Code / Grok 的供应商配置随上游转到网关；已有直连档案保留在设置文件，可经网关导入。未接入的 Agent 继续使用自身配置。旧 Claude 独立供应商页面已撤下，Claude 会话管理继续独立维护。
 
@@ -51,7 +52,7 @@
 
 上游渠道保护已移除：旧 `rateLimitCooldownEnabled`、`channelQueueEnabled`、`channelRequestsPerMinute`、`cooldownErrorStatuses` 不再参与排队、冷却或重试。协议代理保留个人版环回直连与请求体复用；官方 OAuth 测试端点也按实际 URL 判定直连，公网端点仍使用系统代理。
 
-协议代理的请求避震由 `protocolProxyAutoRetry*` 控制，覆盖可重试的流内容量错误，以及用户选定的 HTTP 错误码；默认 HTTP 列表为空，已交付给客户端的输出不自动重放。`streaming`、`streaming-legacy` 与 `buffered` 沿用上游模式，`request_log.rs` 和 `84-proxy-request-status.js` 共用请求日志及状态入口。目录外模型映射默认关闭；供应商的 `autoReviewModel` 对 `codex-auto-review` 优先，官方纯 OAuth 和聚合不应用目录外映射。
+协议代理的请求避震由 `protocolProxyAutoRetry*` 控制，覆盖可重试的流内容量错误，以及用户选定的 HTTP 错误码；默认 HTTP 列表为空，已交付给客户端的输出不自动重放。`streaming`、`streaming-legacy` 与 `buffered` 沿用上游模式，`request_log.rs` 和 `assets/extensions/proxy-request-status/status.js` 共用请求日志及状态入口。目录外模型映射默认关闭；供应商的 `autoReviewModel` 对 `codex-auto-review` 优先，官方纯 OAuth 和聚合不应用目录外映射。
 
 供应商代理保存为状态目录的 `relay-proxies.json`，可用 `CODEX_PLUS_PROXY_<ID>` 和进程级 `CODEX_PLUS_PROXY` 覆盖。`http_client.rs::client_for_profile_url` 同时核对目标 URL、供应商代理及系统 PAC，所有环回目标显式直连；连接池按运行时、UA、代理与超时隔离，CA 配置沿用 `CODEX_CA_CERTIFICATE`。提示前缀稳定器由 `relay-features.json` 按供应商显式启用。上述两个旁路文件与日志不随自选设置文件路径迁移。
 

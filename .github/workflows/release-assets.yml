@@ -278,7 +278,11 @@ jobs:
     if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform != 'windows')
     needs: [verify-release, verify-tests]
     name: macOS DMG (universal)
+    # macos-14 镜像 2026-11-02 退役，期间还有计划性停机（任务分配 runner 前就被取消）。
     runs-on: macos-15
+    env:
+      # 与 Info.plist 的 LSMinimumSystemVersion 一致，不随 runner 的 SDK 抬高 C 依赖的最低系统版本。
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v7

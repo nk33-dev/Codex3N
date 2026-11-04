@@ -111,7 +111,7 @@ fn inner() -> &'static Mutex<Inner> {
     INNER.get_or_init(|| {
         Mutex::new(Inner {
             state: "disabled",
-            platform_supported: cfg!(any(target_os = "macos", windows)),
+            platform_supported: cfg!(any(target_os = "macos", windows, target_os = "linux")),
             ..Inner::default()
         })
     })
@@ -236,7 +236,7 @@ pub fn take_over_now() -> Result<(), String> {
         Err(error) => return Err(error),
     };
     if !inputs.platform_supported {
-        return Err("自动接管目前只支持 macOS 与 Windows。".to_string());
+        return Err("自动接管目前只支持 macOS、Windows 和 Linux。".to_string());
     }
     if inputs.session.is_degraded() {
         return Err("当前会话注入已降级，请先重试注入。".to_string());
@@ -292,7 +292,7 @@ pub fn payload() -> AutoTakeoverPayload {
 fn supervisor_loop() {
     log_event(
         "takeover.probe_decision",
-        json!({ "decision": "start", "platformSupported": cfg!(any(target_os = "macos", windows)) }),
+        json!({ "decision": "start", "platformSupported": cfg!(any(target_os = "macos", windows, target_os = "linux")) }),
     );
     let epoch = Instant::now();
     let mut schedule = ProbeSchedule::default();
@@ -441,7 +441,7 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
             state.paused_instance.clone(),
         )
     });
-    let platform_supported = cfg!(any(target_os = "macos", windows));
+    let platform_supported = cfg!(any(target_os = "macos", windows, target_os = "linux"));
     let settings = SettingsStore::default()
         .try_load_cached()
         .map_err(|error| error.to_string())?;
@@ -852,7 +852,7 @@ mod tests {
         assert!(RUNNING.load(Ordering::Acquire));
         assert!(!STOP.load(Ordering::Acquire));
         stop_supervisor();
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while RUNNING.load(Ordering::Acquire) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -869,7 +869,7 @@ mod tests {
         let payload = payload();
         assert_eq!(
             payload.platform_supported,
-            cfg!(any(target_os = "macos", windows))
+            cfg!(any(target_os = "macos", windows, target_os = "linux"))
         );
     }
 

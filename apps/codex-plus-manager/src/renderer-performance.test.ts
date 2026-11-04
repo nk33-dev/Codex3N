@@ -163,6 +163,7 @@ function scanRuntime() {
   assert.ok(start > 0 && end > start);
   const api = compile(source("runScheduledScan", "pruneRemovedSessionActions", "pruneSessionMoreMenus", "disposeSessionMoreMenu", "closeSessionMoreMenu") + renderer.slice(start, end) + source("scan"), {
     window, document, ...time, clearInterval: time.clearTimeout, conversationViewState: state,
+    pruneRemovedCodexPlusUiSlots: () => false,
     selectors: { sidebarThread: "[data-app-action-sidebar-thread-id]", conversationViewScrollContainer: ".thread-scroll-container", conversationViewFooter: "[data-thread-scroll-footer]", appHeader: "header" },
     shouldScheduleScan: (records: any[]) => records.some((record) => !record.ignore),
     isExtensionUiNode: (node: any) => !!node?.extension,
@@ -332,10 +333,10 @@ test("稳定对齐在三帧停止，持续变化最多16帧，隐藏不调度", 
     codexPlusSettings: () => ({ conversationView: true }),
     conversationViewAlignNow: () => { frames++; return moving ? String(frames) : "stable"; },
   }, "scheduleConversationViewAlign");
-  schedule(); schedule();
+  schedule(16); schedule(16);
   for (let i = 0; i < 20; i++) time.tick();
   assert.equal(frames, 3);
-  frames = 0; moving = true; schedule();
+  frames = 0; moving = true; schedule(16);
   for (let i = 0; i < 16; i++) { schedule(); time.tick(); }
   assert.equal(frames, 16);
   assert.equal(time.frames.size, 0);

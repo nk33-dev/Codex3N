@@ -46,15 +46,76 @@ pub fn agent_pet_sounds() -> Value {
     Value::Object(values)
 }
 
-fn agent_pet_sounds_json() -> String {
-    agent_pet_sounds().to_string()
+/// 大肥鱼（旧版 DeepSeek 鲸鱼挂件）的角色图、音效与动图，来自上游原样素材，
+/// 许可范围见 `assets/inject/upstream/whale-widget/PROVENANCE.md`。引擎随 Agent 桌宠拓展包发布
+/// （见 [`crate::bundled_extensions`]），素材经路由 `/whale/media` 交给它（`bubble-money1.gif` 超过拓展包单个资源的上限）。
+const WHALE_DEFAULT_IMAGE: &[u8] =
+    include_bytes!("../../../assets/inject/upstream/whale-widget/DSniang1.png");
+const WHALE_MEDIA: &[(&str, &str, &[u8])] = &[
+    ("DSniang1.png", "image/png", WHALE_DEFAULT_IMAGE),
+    (
+        "Ya1.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya1.mp3"),
+    ),
+    (
+        "Ya2.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/Ya2.mp3"),
+    ),
+    (
+        "D1.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/D1.mp3"),
+    ),
+    (
+        "D2.mp3",
+        "audio/mpeg",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/D2.mp3"),
+    ),
+    (
+        "minecraft-exp-orb.wav",
+        "audio/wav",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/minecraft-exp-orb.wav"),
+    ),
+    (
+        "task-end-a.wav",
+        "audio/wav",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/task-end-a.wav"),
+    ),
+    (
+        "bubble-petpet.gif",
+        "image/gif",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-petpet.gif"),
+    ),
+    (
+        "bubble-money1.gif",
+        "image/gif",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/bubble-money1.gif"),
+    ),
+    (
+        "rua.gif",
+        "image/gif",
+        include_bytes!("../../../assets/inject/upstream/whale-widget/rua.gif"),
+    ),
+];
+
+/// 大肥鱼的默认角色图（data URI），供管理器「Agent 桌宠」页预览。
+pub fn whale_default_image_data_uri() -> String {
+    image_data_uri("image/png", WHALE_DEFAULT_IMAGE)
 }
 
-fn agent_pet_sounds_script() -> String {
-    format!(
-        "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = {};",
-        agent_pet_sounds_json()
-    )
+/// 大肥鱼的内嵌素材：`{ status, image, assets: { 文件名: data URI } }`，路由 `/whale/media` 原样返回。
+pub fn whale_media() -> Value {
+    let assets: serde_json::Map<String, Value> = WHALE_MEDIA
+        .iter()
+        .map(|(name, mime, bytes)| ((*name).to_string(), json!(image_data_uri(mime, bytes))))
+        .collect();
+    json!({
+        "status": "ok",
+        "image": image_data_uri("image/png", WHALE_DEFAULT_IMAGE),
+        "assets": assets,
+    })
 }
 
 #[cfg(windows)]
@@ -554,7 +615,6 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     );
     let instance_identity =
         format!("{instance_identity}window.__CODEX_PLUS_PERF_DIAGNOSTICS__ = {perf_enabled};\n");
-    let image_overlay = image_overlay_config(helper_port, settings);
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
     let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
@@ -575,12 +635,11 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
             ""
         };
     format!(
-        "{}window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_IMAGE_OVERLAY__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
+        "{}window.__CODEX_SESSION_DELETE_HELPER__ = {};\nwindow.__CODEX_PLUS_VERSION__ = {};\nwindow.__CODEX_PLUS_BUILD__ = {};\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_PASTE_FIX__ = {};\nwindow.__CODEX_PLUS_FORCE_CHINESE_LOCALE__ = {};\nwindow.__CODEX_PLUS_HIDE_OFFICIAL_USAGE_ALERT__ = {};\n{}\n{}\n{}",
         instance_identity,
         serde_json::to_string(&helper_url).expect("helper URL should serialize"),
         serde_json::to_string(crate::version::VERSION).expect("version should serialize"),
         serde_json::to_string(DIAGNOSTIC_BUILD_ID).expect("build id should serialize"),
-        serde_json::to_string(&image_overlay).expect("image overlay config should serialize"),
         serde_json::to_string(dream_skin_platform()).expect("dream skin platform should serialize"),
         serde_json::to_string(DREAM_SKIN_RENDERER_REVISION)
             .expect("dream skin renderer revision should serialize"),
@@ -594,9 +653,8 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&hide_official_usage_alert)
             .expect("usage alert config should serialize"),
         format!(
-            "window.__CODEX_PLUS_PERFORMANCE_ENABLED__ = {};\n{}\n{}\n{}\n{}\n{}",
+            "window.__CODEX_PLUS_PERFORMANCE_ENABLED__ = {};\n{}\n{}\n{}\n{}",
             settings.enhancements_enabled,
-            agent_pet_sounds_script(),
             include_str!("../../../assets/inject/conversation-performance.js"),
             include_str!("../../../assets/inject/composer-readiness.js"),
             format!(
@@ -654,28 +712,6 @@ fn dream_skin_content_signature(value: &[u8]) -> String {
     format!("{}-{hash:x}", value.len())
 }
 
-pub fn image_overlay_config(helper_port: u16, settings: &BackendSettings) -> Value {
-    let has_path = !settings.codex_app_image_overlay_path.trim().is_empty();
-    let enabled = settings.codex_app_image_overlay_enabled && has_path;
-    let data_url = if enabled {
-        image_file_data_uri(Path::new(settings.codex_app_image_overlay_path.trim()))
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    json!({
-        "enabled": enabled && !data_url.is_empty(),
-        "opacity": f64::from(settings.codex_app_image_overlay_opacity.clamp(1, 100)) / 100.0,
-        "fitMode": settings.codex_app_image_overlay_fit_mode.as_str(),
-        "dataUrl": data_url,
-        "imageUrl": if enabled && !data_url.is_empty() {
-            format!("http://127.0.0.1:{helper_port}/overlay/image")
-        } else {
-            String::new()
-        },
-    })
-}
-
 pub fn paste_fix_enabled_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_paste_fix })
 }
@@ -687,7 +723,7 @@ fn image_data_uri(mime_type: &str, bytes: &[u8]) -> String {
     )
 }
 
-fn image_file_data_uri(path: &Path) -> Option<String> {
+pub(crate) fn image_file_data_uri(path: &Path) -> Option<String> {
     let mime_type = image_content_type(path)?;
     let bytes = std::fs::read(path).ok()?;
     Some(image_data_uri(mime_type, &bytes))
@@ -874,39 +910,42 @@ mod tests {
     }
 
     #[test]
-    fn agent_pet_sounds_are_embedded_byte_for_byte() {
+    fn pet_media_is_not_embedded_in_the_injection_script() {
+        // 桌宠与大肥鱼改成了 Agent 桌宠拓展：引擎随拓展包发布，素材经 /whale/media 取，注入脚本不再带它们。
         let script = injection_script(57321);
-        let prefix = "window.__CODEX_PLUS_AGENT_PET_SOUNDS__ = ";
-        let value = script.split_once(prefix).unwrap().1.lines().next().unwrap();
-        let sounds: Value = serde_json::from_str(value.trim_end_matches(';')).unwrap();
-        assert_eq!(sounds.as_object().unwrap().len(), 2);
-        let decode = |uri: &Value| {
-            base64::engine::general_purpose::STANDARD
-                .decode(
-                    uri.as_str()
-                        .unwrap()
-                        .strip_prefix("data:audio/mpeg;base64,")
-                        .unwrap(),
-                )
-                .unwrap()
-        };
-        let expected: [(&str, &[u8], &[u8]); 2] = [
-            (
-                "duck",
-                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya1.mp3"),
-                include_bytes!("../../../assets/inject/agent-pet/sounds/Ya2.mp3"),
-            ),
-            (
-                "fx1",
-                include_bytes!("../../../assets/inject/agent-pet/sounds/D1.mp3"),
-                include_bytes!("../../../assets/inject/agent-pet/sounds/D2.mp3"),
-            ),
-        ];
-        for (name, press, release) in expected {
-            assert!(!press.is_empty() && !release.is_empty());
-            assert_eq!(decode(&sounds[name]["press"]), press, "{name} press");
-            assert_eq!(decode(&sounds[name]["release"]), release, "{name} release");
+        assert!(!script.contains("__CODEX_PLUS_WHALE_ENGINE__"));
+        assert!(!script.contains("__CODEX_PLUS_WHALE_ASSETS__"));
+        assert!(!script.contains("__CODEX_PLUS_AGENT_PET_SOUNDS__"));
+    }
+
+    #[test]
+    fn whale_media_preserves_original_audio_and_animation_bytes() {
+        let media = whale_media();
+        assert_eq!(media["status"], "ok");
+        let values = &media["assets"];
+        assert_eq!(values.as_object().unwrap().len(), 10);
+        for (name, mime, expected) in WHALE_MEDIA {
+            let uri = values[*name].as_str().unwrap();
+            let prefix = format!("data:{mime};base64,");
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(uri.strip_prefix(&prefix).unwrap())
+                .unwrap();
+            assert_eq!(&decoded, expected);
         }
+        let image = base64::engine::general_purpose::STANDARD
+            .decode(
+                media["image"]
+                    .as_str()
+                    .unwrap()
+                    .strip_prefix("data:image/png;base64,")
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(image, WHALE_DEFAULT_IMAGE);
+        // 桌宠按压音与大肥鱼内置音效是同一份原样素材。
+        let sounds = agent_pet_sounds();
+        assert_eq!(sounds["duck"]["press"], values["Ya1.mp3"]);
+        assert_eq!(sounds["fx1"]["release"], values["D2.mp3"]);
     }
 
     #[test]
@@ -968,9 +1007,10 @@ mod tests {
             codex_app_image_overlay_fit_mode: "fill".to_string(),
             ..BackendSettings::default()
         };
-        let config = image_overlay_config(57321, &settings);
+        let (config, enabled) = crate::bundled_extensions::image_overlay_migration(&settings);
 
         assert_eq!(config["fitMode"].as_str(), Some("fill"));
+        assert!(!enabled);
     }
     /// 每个标记都必须真的在脚本里，防止单文件被误删或整块漏掉。
     #[test]
@@ -978,7 +1018,6 @@ mod tests {
         let script = renderer_script();
         for marker in [
             "const codexPlusMenuFloatingClass = \"codex-plus-menu-floating\";",
-            "function installCodexPlusImageOverlay()",
             "function installStyle()",
             "function defaultCodexPlusSettings()",
             "function installDreamSkin(settings)",
@@ -992,15 +1031,14 @@ mod tests {
             "function releaseThreadScrollControl()",
             "function downloadMarkdownFallback(filename, markdown)",
             "function patchAppServerModelResult(method, result, hostId)",
-            "function installSessionShareButton()",
             "function openDeleteConfirmForRow(row, button, ref, event)",
             "function conversationViewFindComposerEl()",
             "function removeLegacyCodexServiceTierBadges()",
-            "function scheduleConversationViewAlign(frames = 16)",
+            "function scheduleConversationViewAlign(frames = 2)",
             "function scanLightweight(work = codexPlusAllScanWork)",
-            "function syncCodexPlusAgentPet()",
+            "function syncCodexPlusBuiltinExtensions()",
             "function scheduleSidebarNavStartupRetry()",
-            "'[PasteFix]'",
+            "function codexPlusPasteFixExtension(ctx)",
         ] {
             assert!(
                 script.contains(marker),
@@ -1009,31 +1047,25 @@ mod tests {
         }
     }
 
-    /// 粘贴修复块在 IIFE 之外：放进 IIFE 会随早返回守卫一起被跳过。
     #[test]
-    fn renderer_script_keeps_paste_fix_outside_the_iife() {
+    fn renderer_script_registers_paste_fix_through_builtin_extension() {
         let script = renderer_script();
         assert!(script.starts_with("(() => {\n"));
         let iife_end = script
             .find("\n})();\n")
             .expect("renderer script should close its iife");
-        assert!(
-            script[iife_end..].contains("__CODEX_PLUS_PASTE_FIX__"),
-            "paste fix must stay outside the renderer iife"
-        );
+        assert!(script[..iife_end].contains("function codexPlusPasteFixExtension(ctx)"));
+        assert!(script[..iife_end].contains("apply: codexPlusPasteFixExtension"));
     }
 
     #[test]
-    fn image_overlay_config_clears_endpoint_when_asset_is_unavailable() {
+    fn injection_leaves_image_loading_to_bundled_extension() {
         let settings = BackendSettings {
             codex_app_image_overlay_enabled: true,
             codex_app_image_overlay_path: "C:\\missing\\overlay.png".to_string(),
             ..BackendSettings::default()
         };
-        let config = image_overlay_config(57321, &settings);
-
-        assert_eq!(config["enabled"], false);
-        assert_eq!(config["dataUrl"], "");
-        assert_eq!(config["imageUrl"], "");
+        let script = injection_script_with_settings(57321, &settings);
+        assert!(!script.contains("window.__CODEX_PLUS_IMAGE_OVERLAY__ ="));
     }
 }

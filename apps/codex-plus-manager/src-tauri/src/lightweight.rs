@@ -247,6 +247,7 @@ pub fn refresh_from_disk<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::os::windows::process::CommandExt;
     use tauri::menu::CheckMenuItem;
 
     #[test]
@@ -255,6 +256,7 @@ mod tests {
         if std::env::var_os("CODEX_LIGHTWEIGHT_PROBE").is_none() {
             let temp = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .creation_flags(codex_plus_core::windows_create_no_window())
                 .args(["--exact", "lightweight::tests::lightweight_menu_updates_persist_and_failed_writes_keep_state", "--nocapture"])
                 .env("CODEX_LIGHTWEIGHT_PROBE", "1")
                 .env("CODEX_PLUS_STATE_DIR", temp.path())

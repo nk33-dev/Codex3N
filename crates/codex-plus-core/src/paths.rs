@@ -11,7 +11,6 @@ const SETTINGS_PATH_POINTER_FILE: &str = "settings.path";
 const LATEST_STATUS_FILE: &str = "latest-status.json";
 const DIAGNOSTIC_LOG_FILE: &str = "codex-plus.log";
 const PENDING_PROVIDER_IMPORT_FILE: &str = "pending-provider-import.json";
-const PENDING_SESSION_SHARE_FILE: &str = "pending-session-share.txt";
 const PENDING_REMOTE_CONTROL_RECOVERY_FILE: &str = "pending-remote-control-recovery.json";
 const SKILLS_STATE_FILE: &str = "skills.json";
 const SKILLS_DIR: &str = "skills";
@@ -125,10 +124,6 @@ pub fn default_pending_provider_import_path() -> PathBuf {
     default_app_state_dir().join(PENDING_PROVIDER_IMPORT_FILE)
 }
 
-pub fn default_pending_session_share_path() -> PathBuf {
-    default_app_state_dir().join(PENDING_SESSION_SHARE_FILE)
-}
-
 pub fn default_pending_remote_control_recovery_path() -> PathBuf {
     default_app_state_dir().join(PENDING_REMOTE_CONTROL_RECOVERY_FILE)
 }
@@ -170,7 +165,7 @@ pub(crate) fn settings_path_test_guard() -> std::sync::MutexGuard<'static, ()> {
     SETTINGS_PATH_TEST_GUARD
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub fn set_settings_path_for_tests(path: Option<PathBuf>) -> Option<PathBuf> {
@@ -185,12 +180,20 @@ pub fn set_settings_path_for_tests(path: Option<PathBuf>) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn assert_state_path(path: &Path, name: &str) {
+        if let Some(root) = state_dir_override() {
+            assert_eq!(path, root.join(name));
+        } else {
+            assert!(path.ends_with(Path::new("Codex3N").join(name)));
+        }
+    }
+
     #[test]
     fn default_settings_path_uses_app_state_directory() {
         let _guard = settings_path_test_guard();
         let path = default_settings_path();
 
-        assert!(path.ends_with("Codex3N/settings.json"));
+        assert_state_path(&path, "settings.json");
     }
 
     #[test]
@@ -212,7 +215,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_latest_status_path();
 
-        assert!(path.ends_with("Codex3N/latest-status.json"));
+        assert_state_path(&path, "latest-status.json");
     }
 
     #[test]
@@ -220,7 +223,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_diagnostic_log_path();
 
-        assert!(path.ends_with("Codex3N/codex-plus.log"));
+        assert_state_path(&path, "codex-plus.log");
     }
 
     #[test]
@@ -228,15 +231,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_pending_provider_import_path();
 
-        assert!(path.ends_with("Codex3N/pending-provider-import.json"));
-    }
-
-    #[test]
-    fn default_pending_session_share_path_uses_app_state_directory() {
-        let _guard = settings_path_test_guard();
-        let path = default_pending_session_share_path();
-
-        assert!(path.ends_with("Codex3N/pending-session-share.txt"));
+        assert_state_path(&path, "pending-provider-import.json");
     }
 
     #[test]
@@ -244,7 +239,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_pending_remote_control_recovery_path();
 
-        assert!(path.ends_with("Codex3N/pending-remote-control-recovery.json"));
+        assert_state_path(&path, "pending-remote-control-recovery.json");
     }
 
     #[test]
@@ -252,7 +247,7 @@ mod tests {
         let _guard = settings_path_test_guard();
         let path = default_pending_manager_navigation_path();
 
-        assert!(path.ends_with("Codex3N/pending-manager-navigation.json"));
+        assert_state_path(&path, "pending-manager-navigation.json");
     }
 
     // 显式状态目录覆盖是 Windows 多开隔离的前提：平台无关的环境变量，
@@ -282,6 +277,7 @@ mod tests {
     fn default_app_state_dir_honours_explicit_override() {
         // `CODEX_PLUS_STATE_DIR` 是进程级环境变量，用作用域守卫保证并行测试看不到它。
         let _guard = settings_path_test_guard();
+        let original = default_app_state_dir();
         let scope = StateDirEnvScope::set("/tmp/codex-plus-instance-state");
 
         assert_eq!(
@@ -290,7 +286,7 @@ mod tests {
         );
 
         drop(scope);
-        assert!(default_app_state_dir().ends_with("Codex3N"));
+        assert_eq!(default_app_state_dir(), original);
     }
 
     /// 测试用：临时设置 `CODEX_PLUS_STATE_DIR`，Drop 时恢复原值。

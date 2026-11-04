@@ -5,7 +5,15 @@ import { createRoot } from "react-dom/client";
 import { initializePreferences } from "./preferences";
 import { CuPipWindow } from "./CuPipWindow";
 import { TrayPanel } from "./TrayPanel";
+import { applyMacTitlebarClass } from "./mac-titlebar";
 import "./styles.css";
+// Cursor 风格层必须最后加载，压过前面的组件样式。
+import "./cursor-ui.css";
+import "./cx-pages-gateway.css";
+import "./cx-pages-resources.css";
+import "./cx-pages-agents.css";
+import "./cx-pages-settings.css";
+import "./cx-tray.css";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.
@@ -55,6 +63,7 @@ const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
   void initializePreferences().then(async () => {
+    if (window.location.hash !== "#tray-panel" && window.location.hash !== "#cu-pip") applyMacTitlebarClass();
     const { App } = await import("./App");
     createRoot(app).render(
       <StartupErrorBoundary>

@@ -48,13 +48,13 @@ describe("注入脚本结构", () => {
     assert.match(concatBlock("STEPWISE_SCRIPT"), /concat!\(\s*"\(\(\) => \{\\n",/);
   });
 
-  it("renderer 脚本仍是单一 IIFE，粘贴修复留在 IIFE 之外", async () => {
+  it("renderer 脚本保持单一 IIFE，粘贴修复由内置拓展注册", async () => {
     const source = await readRendererInjectSource();
     assert.ok(source.startsWith("(() => {\n"));
-    assert.ok(source.endsWith("}\n"));
+    assert.ok(source.includes("\n})();\n"));
     const closeAt = source.indexOf("\n})();\n");
     assert.ok(closeAt > 0, "renderer 脚本必须先收尾 IIFE");
-    assert.match(source.slice(closeAt), /__CODEX_PLUS_PASTE_FIX__/);
+    assert.match(source.slice(0, closeAt), /function codexPlusPasteFixExtension\(ctx\)/);
     assert.doesNotMatch(source, /^\s*(?:import|export)\s/m);
   });
 

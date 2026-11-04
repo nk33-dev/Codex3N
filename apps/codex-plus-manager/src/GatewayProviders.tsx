@@ -2,15 +2,20 @@
  *
  * 与直连模式完全独立：这里的增删改只动 gateway.json；「导入…」是把直连模式的供应商复制一份过来。
  */
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS as DndCSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { appConfirm } from "./app-dialog";
 import { Check, ChevronRight, Copy, GripVertical, Pencil, Plus, RefreshCw, Search, X, Zap } from "lucide-react";
 import { t, tf } from "./i18n";
-import { RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
+import { providerPoolSections, reorderProviderSlots } from "./provider-pool-layout";
+import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
 import {
+  glanceAgents,
   defaultProviderAgents,
   failureLabel,
   formatRemaining,
@@ -38,28 +43,52 @@ import {
   keyLabel,
   type ImportCandidate,
   type ImportSource,
+  type LocalLogin,
+  type SubscriptionLoginMethod,
+  type SubscriptionLoginStart,
+  type SubscriptionView,
 } from "./gateway-model";
 import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaBadge, QuotaWindows, Switch, type Notify, type Run } from "./gateway-ui";
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
-import { ProviderExtrasDialog, ProviderLimitsDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
+import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
 import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./ProviderWindowsDialog";
 import { ProviderReasoningDialog, reasoningSummary } from "./ProviderReasoningDialog";
 import { ProviderModelsDialog } from "./ProviderModelsDialog";
 import { ProviderSyncDialog } from "./ProviderSyncDialog";
+import { ProviderMetaSyncDialog } from "./ProviderMetaSyncDialog";
+import type { MetaSyncKind } from "./provider-meta-sync-model";
 import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
 import { gatewayJump } from "./gateway-store";
-import { ModelMatrix } from "./GatewayModelMatrix";
 import { useEscapeLayer } from "./use-escape-layer";
+import { singleAgent, visibleAgents } from "./agent-focus-model";
+import { useAgentFocus } from "./agent-focus-store";
 
 /** 能在网关里直接登录的订阅。 */
-type AccountKind = "chatgpt" | "chatgpt-api" | "copilot" | "grok";
-type DeviceCode = { deviceCode: string; userCode: string; verificationUri: string; interval: number; expiresIn: number };
+type AccountKind = "chatgpt" | "chatgpt-api" | "copilot" | "grok" | `sub:${string}`;
+type DeviceCode = { deviceCode: string; userCode: string; verificationUri: string; interval: number; expiresIn: number; title?: string; hint?: string };
 
-const ACCOUNT_LABELS: Record<AccountKind, string> = { chatgpt: "ChatGPT", "chatgpt-api": "ChatGPT API", copilot: "GitHub Copilot", grok: "SuperGrok" };
+const ACCOUNT_LABELS: Record<string, string> = { chatgpt: "ChatGPT", "chatgpt-api": "ChatGPT API", copilot: "GitHub Copilot", grok: "SuperGrok" };
+
+/** 私有接口订阅（`sub:<id>`）的信息；内置的四种为 null。 */
+function subscriptionOf(payload: GatewayPayload | null, kind: AccountKind): SubscriptionView | null {
+  if (!kind.startsWith("sub:")) return null;
+  return payload?.subscriptions?.find((item) => item.id === kind.slice(4)) ?? null;
+}
+
+function accountLabel(payload: GatewayPayload | null, kind: AccountKind): string {
+  return ACCOUNT_LABELS[kind] ?? subscriptionOf(payload, kind)?.name ?? kind;
+}
+
+const LOGIN_METHOD_LABELS: Record<SubscriptionLoginMethod, string> = {
+  browser: "浏览器登录",
+  deviceCode: "验证码登录",
+  importLocal: "导入本机客户端的登录",
+  paste: "粘贴凭据",
+};
 
 /** 浏览器登录的订阅各自的命令。 */
-const BROWSER_LOGIN_COMMANDS: Record<Exclude<AccountKind, "copilot">, string> = {
+const BROWSER_LOGIN_COMMANDS: Record<string, string> = {
   chatgpt: "login_gateway_chatgpt",
   "chatgpt-api": "login_gateway_chatgpt_api",
   grok: "login_gateway_grok",
@@ -69,11 +98,10 @@ const BROWSER_LOGIN_COMMANDS: Record<Exclude<AccountKind, "copilot">, string> = 
 type FormState = ProviderFormState;
 
 /** 详情里模型超过 MODEL_CHIP_COLLAPSE 个时先只列前 MODEL_CHIP_PREVIEW 个，其余点开再看。 */
-const MODEL_CHIP_PREVIEW = 12;
-const MODEL_CHIP_COLLAPSE = 16;
+const MODEL_CHIP_PREVIEW = 6;
+const MODEL_CHIP_COLLAPSE = 8;
 
 /** 供应商池上次用的视图（切页再回来保持）。 */
-const providersViewMemo: { view: "list" | "models" } = { view: "list" };
 
 export function ProvidersView({
   payload,
@@ -102,13 +130,16 @@ export function ProvidersView({
   }, []);
   const [adding, setAdding] = useState<false | "catalog" | "import">(false);
   const pendingImports = pendingImportCount(payload);
-  // 「按供应商」是原来的列表；「按模型」是供应商 × 模型矩阵，看每个模型由哪几家提供。
-  const [view, setViewState] = useState<"list" | "models">(providersViewMemo.view);
-  const setView = (next: "list" | "models") => {
-    providersViewMemo.view = next;
-    setViewState(next);
-  };
   const [dragging, setDragging] = useState<string | null>(null);
+  // 拖动用 dnd-kit：行跟手移动、松手时有位移动画；按住把手稍微一动（4px）才算拖，单击照样展开。
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  useEffect(() => {
+    document.body.classList.toggle("gw-sorting", dragging !== null);
+    return () => document.body.classList.remove("gw-sorting");
+  }, [dragging]);
   // 编辑已有供应商的表单；新添加走 ProviderAdder。
   const [form, setForm] = useState<FormState | null>(null);
   const openCatalog = () => setAdding("catalog");
@@ -117,54 +148,61 @@ export function ProvidersView({
   const listRef = useRef<HTMLDivElement>(null);
   const needle = query.trim().toLowerCase();
   const ordered = order ? order.map((id) => pool.find((entry) => entry.id === id)).filter((entry): entry is GatewayPoolEntry => Boolean(entry)) : pool;
-  const visible = ordered.filter((entry) => !needle || entry.name.toLowerCase().includes(needle) || entry.models.some((model) => model.toLowerCase().includes(needle)));
+  // 开启 / 关闭两组只是展示上的分组，不改池里的调度顺序（搜索也匹配地址和模型）。
+  const { active: onList, inactive: offList } = providerPoolSections(ordered, query);
+  const visible = ordered.filter((entry) => onList.includes(entry) || offList.includes(entry));
+  // 关掉的供应商默认折叠在「已关闭」里；搜索时、或者一家都没开时照常全列出来。从别的页跳到某家时先展开，免得它正好藏在折叠里。
+  const [offOpen, setOffOpen] = useState(Boolean(expanded));
+  const collapseOff = onList.length > 0 && offList.length > 0 && !needle;
+  const renderRow = (entry: GatewayPoolEntry) => (
+    <PoolRow
+      busy={busy}
+      dragging={dragging === entry.id}
+      entry={entry}
+      expanded={expanded === entry.id}
+      key={entry.id}
+      onEdit={() => setForm({ mode: "edit", entry })}
+      loggingIn={Boolean(entry.account) && loginPending === entry.account}
+      onRelogin={() => void login(entry.account as AccountKind)}
+      onToggleExpand={() => setExpanded(expanded === entry.id ? null : entry.id)}
+      payload={payload}
+      run={run}
+    />
+  );
 
-  /** 按住把手上下拖动排序。用指针事件实现：桌面端 webview 会拦截 HTML5 拖放，原生 draggable 拖不动。 */
-  const startDrag = (id: string, event: ReactPointerEvent) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
+  /** 组内排序回填到原来的槽位：开启 / 关闭两组交错时，另一组的位置不变，折叠着也不会被挤到队尾。 */
+  const finishDrag = (event: DragEndEvent, group: GatewayPoolEntry[]) => {
+    setDragging(null);
+    const ids = group.map((entry) => entry.id);
+    const from = ids.indexOf(String(event.active.id));
+    const to = ids.indexOf(String(event.over?.id ?? ""));
+    if (from < 0 || to < 0 || from === to) return;
     const initial = pool.map((entry) => entry.id);
-    let current = initial;
-    setExpanded(null);
-    setDragging(id);
-    setOrder(initial);
-    // 落点按其它行的中线算：指针越过哪几行的中线，就排在它们后面。行高不同、列表正在重排时也不会来回跳。
-    const move = (moveEvent: PointerEvent) => {
-      const others = [...(listRef.current?.querySelectorAll<HTMLElement>("[data-pool-id]") ?? [])]
-        .filter((row) => row.dataset.poolId !== id)
-        .map((row) => {
-          const rect = row.getBoundingClientRect();
-          return { id: row.dataset.poolId ?? "", middle: rect.top + rect.height / 2 };
-        })
-        .sort((left, right) => left.middle - right.middle);
-      if (!others.length) return;
-      const above = others.filter((row) => row.middle < moveEvent.clientY);
-      const next = current.filter((item) => item !== id);
-      const index = above.length ? next.indexOf(above[above.length - 1].id) + 1 : next.indexOf(others[0].id);
-      next.splice(Math.max(index, 0), 0, id);
-      if (next.join("\n") === current.join("\n")) return;
-      current = next;
-      setOrder(next);
-    };
-    const finish = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", finish);
-      window.removeEventListener("pointercancel", finish);
-      document.body.classList.remove("gw-sorting");
-      setDragging(null);
-      if (current.join("\n") === initial.join("\n")) {
-        setOrder(null);
-        return;
-      }
-      void run("reorder", "reorder_gateway_providers", { ids: current }, t("调整顺序"), true).finally(() => setOrder(null));
-    };
-    document.body.classList.add("gw-sorting");
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", finish);
-    window.addEventListener("pointercancel", finish);
+    const groupOrder = ids.slice();
+    groupOrder.splice(from, 1);
+    groupOrder.splice(to, 0, ids[from]);
+    const next = reorderProviderSlots(initial, groupOrder);
+    if (next.join("\n") === initial.join("\n")) return;
+    setOrder(next);
+    void run("reorder", "reorder_gateway_providers", { ids: next }, t("调整顺序"), true).finally(() => setOrder(null));
   };
+  /** 一组可拖动排序的行：两组各自一个拖动区，只在组内换位置。 */
+  const sortableList = (group: GatewayPoolEntry[], className: string, extra?: ReactNode) => (
+    <DndContext collisionDetection={closestCenter} onDragCancel={() => setDragging(null)} onDragEnd={(event) => finishDrag(event, group)} onDragStart={(event) => { setExpanded(null); setDragging(String(event.active.id)); }} sensors={sensors}>
+      <SortableContext items={group.map((entry) => entry.id)} strategy={verticalListSortingStrategy}>
+        <div className={className} data-sorting={dragging !== null || order !== null}>
+          {group.map(renderRow)}
+          {extra}
+        </div>
+      </SortableContext>
+    </DndContext>
+  );
 
-  const { login, pending: loginPending, dialog: loginDialog } = useAccountLogin(run, notify);
+  const { login, importLocal, pending: loginPending, dialog: loginDialog } = useAccountLogin(payload, run, notify);
+  const localLogins = useLocalLogins(payload?.gateway.localLoginDiscovery === true, pool.map((entry) => entry.id).join("\n"));
+  // 本次打开页面里点过关闭就不再显示（下次进来、或池子变了扫出新的还会提示）。
+  const [localDismissed, setLocalDismissed] = useState("");
+  const localKey = localLogins.map((item) => `${item.id}:${item.account}`).join("\n");
   // 编辑弹窗里打开的上下文窗口弹窗：按编辑中的模型列表列出（null 表示没打开）。
   const [formWindows, setFormWindows] = useState<string[] | null>(null);
   // 编辑中的供应商取最新数据（窗口刚保存过，弹窗里要显示新的）。
@@ -186,18 +224,11 @@ export function ProvidersView({
   return (
     <>
       <div className="gw-provider-search-row">
-        {pool.length ? (
-          <div className="gw-models-tabs" role="tablist" aria-label={t("视图")}>
-            <button aria-selected={view === "list"} data-active={view === "list"} onClick={() => setView("list")} role="tab" type="button">{t("按供应商")}</button>
-            <button aria-selected={view === "models"} data-active={view === "models"} onClick={() => setView("models")} role="tab" type="button">{t("按模型")}</button>
-          </div>
-        ) : null}
-        {view === "list" ? (
-          <label className="gw-sheet-search">
-            <Search className="h-4 w-4" />
-            <input onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商")} value={query} />
-          </label>
-        ) : <span className="gw-provider-search-gap" />}
+        {/* 只有按供应商的列表：每个模型由哪几家提供，在「路由」的自动组里看。 */}
+        <label className="gw-sheet-search">
+          <Search className="h-4 w-4" />
+          <input onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商")} value={query} />
+        </label>
         {pool.length ? (
           <button className="gw-primary-button" onClick={openCatalog} type="button">
             <Plus className="h-4 w-4" />
@@ -205,37 +236,24 @@ export function ProvidersView({
           </button>
         ) : null}
       </div>
-      {pool.length && view === "models" ? (
-        <ModelMatrix
-          onOpenProvider={(id) => {
-            // 点列头：回到按供应商的列表，展开并滚到那一家。
-            setView("list");
-            setExpanded(id);
-            window.requestAnimationFrame(() => document.querySelector(`[data-pool-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: "center" }));
-          }}
-          payload={payload}
-        />
-      ) : null}
-      {pool.length && view === "list" ? (
-        <div className="gw-card gw-pool-card" ref={listRef}>
-          {visible.map((entry) => (
-            <PoolRow
-              busy={busy}
-              dragging={dragging === entry.id}
-              entry={entry}
-              expanded={expanded === entry.id}
-              key={entry.id}
-              onGripDown={(event) => startDrag(entry.id, event)}
-              onEdit={() => setForm({ mode: "edit", entry })}
-              loggingIn={Boolean(entry.account) && loginPending === entry.account}
-              onRelogin={() => void login(entry.account as AccountKind)}
-              onToggleExpand={() => setExpanded(expanded === entry.id ? null : entry.id)}
-              payload={payload}
-              run={run}
-            />
-          ))}
-          {visible.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null}
+      {pool.length ? (
+        // 开启的一组在上面；关掉的收进「已关闭」，两组各自拖动排序。
+        <div className="gw-pool-lists" ref={listRef}>
+          {sortableList(collapseOff ? onList : visible, "gw-card gw-pool-card", visible.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null)}
+          {collapseOff ? (
+            <>
+              <button aria-expanded={offOpen} className="gw-pool-off-toggle" onClick={() => setOffOpen(!offOpen)} type="button">
+                <ChevronRight className="h-3.5 w-3.5" />
+                {t("已关闭")}
+                <span className="cx-section-count">{offList.length}</span>
+              </button>
+              {offOpen ? sortableList(offList, "gw-card gw-pool-card gw-pool-off-card") : null}
+            </>
+          ) : null}
         </div>
+      ) : null}
+      {localLogins.length && localDismissed !== localKey ? (
+        <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
       ) : null}
       {payload !== null && pool.length === 0 ? (
         <div className="gw-card gw-pool-empty">
@@ -290,23 +308,75 @@ export function ProvidersView({
  * 只用自己的 `pending`。关掉 Copilot 验证码弹窗、按 Esc 或点「取消登录」都会让后端中止这次登录
  * （释放回调端口、停止轮询）；开始新的登录时后端也会中止上一次。
  */
-function useAccountLogin(run: Run, notify: Notify) {
+function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notify) {
   const [pending, setPending] = useState<AccountKind | null>(null);
   const [deviceCode, setDeviceCode] = useState<DeviceCode | null>(null);
+  // 私有接口订阅：先选登录方式（或粘贴凭据），确认后才开始。
+  const [choosing, setChoosing] = useState<{ item: SubscriptionView; skip?: GatewayAgentId[] } | null>(null);
   // 当前这次登录的序号：取消或开始新的登录后，旧登录的收尾不再改界面。
   const attempt = useRef(0);
   const cancel = () => {
     attempt.current += 1;
     setPending(null);
     setDeviceCode(null);
+    setChoosing(null);
     void invoke("cancel_gateway_login").catch(() => undefined);
+  };
+  /** 私有接口订阅的登录：开始 → （验证码弹窗 / 浏览器）→ 等完成后加进池里。 */
+  const loginSubscription = async (item: SubscriptionView, method: SubscriptionLoginMethod, input: string, skip?: GatewayAgentId[]) => {
+    const kind: AccountKind = `sub:${item.id}`;
+    const id = ++attempt.current;
+    const current = () => attempt.current === id;
+    const title = tf("登录 {0}", [item.name]);
+    setChoosing(null);
+    setPending(kind);
+    setDeviceCode(null);
+    try {
+      let start: SubscriptionLoginStart;
+      try {
+        const result = await invoke<{ status: string; message: string; start?: SubscriptionLoginStart | null }>("start_gateway_subscription_login", { kind: item.id, method, input });
+        if (result.status !== "ok") {
+          await notify(tf("{0}失败", [title]), result.message, "failed");
+          return;
+        }
+        if (!result.start) {
+          await notify(tf("{0}失败", [title]), t("登录响应缺少必要状态，请重试。"), "failed");
+          return;
+        }
+        start = result.start;
+      } catch (error) {
+        await notify(t("调用失败"), String(error), "failed");
+        return;
+      }
+      if (!current()) return;
+      if (start.userCode) {
+        setDeviceCode({ deviceCode: "", userCode: start.userCode, verificationUri: start.openUrl ?? "", interval: 5, expiresIn: 300, title, hint: start.message });
+      } else if (start.openUrl) {
+        void notify(title, start.message || t("已在浏览器打开登录页，登录完成后回到这里。5 分钟内有效。"), "info");
+      }
+      await run(`login:${kind}`, "finish_gateway_subscription_login", { kind: item.id, start, skipAgents: skip }, title, false, { background: true });
+    } finally {
+      if (current()) {
+        setPending(null);
+        setDeviceCode(null);
+      }
+    }
   };
   /** 登录订阅账号：ChatGPT / ChatGPT API / SuperGrok 走浏览器登录；Copilot 先显示验证码，再等你在 GitHub 上授权。
    * `skip` 是新添加时取消勾选的 Agent；重新登录已有账号时不传。 */
   const login = async (kind: AccountKind, skip?: GatewayAgentId[]) => {
+    const subscription = subscriptionOf(payload, kind);
+    if (kind.startsWith("sub:")) {
+      if (!subscription) {
+        await notify(t("登录失败"), t("当前版本不支持这个订阅"), "failed");
+        return;
+      }
+      setChoosing({ item: subscription, skip });
+      return;
+    }
     const id = ++attempt.current;
     const current = () => attempt.current === id;
-    const title = tf("登录 {0}", [ACCOUNT_LABELS[kind]]);
+    const title = tf("登录 {0}", [accountLabel(payload, kind)]);
     setPending(kind);
     setDeviceCode(null);
     try {
@@ -339,12 +409,77 @@ function useAccountLogin(run: Run, notify: Notify) {
     }
   };
 
-  const dialog = deviceCode ? (
+  const dialog = choosing ? (
+    <SubscriptionLoginDialog
+      item={choosing.item}
+      onCancel={() => setChoosing(null)}
+      onStart={(method, input) => void loginSubscription(choosing.item, method, input, choosing.skip)}
+    />
+  ) : deviceCode ? (
     <DeviceCodeDialog code={deviceCode} notify={notify} onCancel={cancel} />
   ) : pending ? (
-    <LoginPendingBar label={ACCOUNT_LABELS[pending]} onCancel={cancel} />
+    <LoginPendingBar label={accountLabel(payload, pending)} onCancel={cancel} />
   ) : null;
-  return { login, pending, dialog };
+  /** 直接导入本机已登录的订阅（供应商页的「发现本机登录」提示用），不再弹登录方式选择。 */
+  const importLocal = (id: string) => {
+    const item = payload?.subscriptions?.find((entry) => entry.id === id);
+    if (item) void loginSubscription(item, "importLocal", "");
+  };
+  return { login, importLocal, pending, dialog };
+}
+
+/** 本机已登录、还没进池的订阅账号：开关开着时扫描一次，池子变了再扫。 */
+function useLocalLogins(enabled: boolean, poolKey: string) {
+  const [found, setFound] = useState<LocalLogin[]>([]);
+  useEffect(() => {
+    if (!enabled) {
+      setFound([]);
+      return;
+    }
+    let alive = true;
+    invoke<{ status: string; logins?: LocalLogin[] }>("scan_gateway_local_logins")
+      .then((result) => { if (alive) setFound(result.status === "ok" ? result.logins ?? [] : []); })
+      .catch(() => { if (alive) setFound([]); });
+    return () => { alive = false; };
+  }, [enabled, poolKey]);
+  return found;
+}
+
+/**
+ * 发现本机已登录的订阅账号：列表下面一行小字（「发现 2 个本机已登录的订阅账号：Cursor、Kiro · 导入」），
+ * 点开才列出账号逐个导入；不再整块卡片压在供应商列表上面。× 关掉这次的提示，长期不想看到在「网关」页关掉。
+ */
+function LocalLoginsCard({ found, busy, pending, onImport, onDismiss }: { found: LocalLogin[]; busy: boolean; pending: string | null; onImport: (id: string) => void; onDismiss: () => void }) {
+  const [open, setOpen] = useState(false);
+  const names = found.map((item) => maskAccountName(item.name)).join("、");
+  return (
+    <div className="gw-local-logins">
+      <div className="gw-local-logins-line">
+        <button aria-expanded={open} className="gw-pool-off-toggle gw-local-logins-toggle" onClick={() => setOpen(!open)} title={t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关」页关掉「发现本机已登录的订阅账号」。")} type="button">
+          <ChevronRight className="h-3.5 w-3.5" />
+          {tf("发现 {0} 个本机已登录的订阅账号：{1}", [found.length, names])}
+          <span className="gw-local-logins-action">{t("导入")}</span>
+        </button>
+        <button aria-label={t("关闭")} className="gw-icon-button gw-local-logins-dismiss" onClick={onDismiss} title={t("这次不再提示")} type="button"><X className="h-3.5 w-3.5" /></button>
+      </div>
+      {open ? (
+        <div className="gw-card gw-local-logins-card">
+          {found.map((item) => (
+            <div className="gw-setting-row" key={`${item.id}:${item.account}`}>
+              <div>
+                <strong>{maskAccountName(item.name)}</strong>
+                <small>{item.account ? maskAccountName(item.account) : t("本机官方客户端已登录")}</small>
+              </div>
+              <span />
+              <button className="gw-text-button strong" disabled={busy || pending !== null} onClick={() => onImport(item.id)} type="button">
+                {pending === `sub:${item.id}` ? t("导入中…") : t("导入")}
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /** 「添加供应商」整套流程：目录弹窗 → 填写表单或订阅登录，顶部可选给哪些 Agent 用。
@@ -372,7 +507,7 @@ export function ProviderAdder({
   const [importOnly, setImportOnly] = useState(startWith === "import");
   const [form, setForm] = useState<FormState | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
-  const { login, dialog } = useAccountLogin(run, notify);
+  const { login, dialog } = useAccountLogin(payload, run, notify);
   const agentPicks = <AgentPicks onChange={setPicked} payload={payload} picked={picked} />;
   const submit = async (draft: ProviderDraft) => {
     if (!form || form.mode === "edit") return;
@@ -428,7 +563,6 @@ function PoolRow({
   expanded,
   dragging,
   onToggleExpand,
-  onGripDown,
   onEdit,
   onRelogin,
   loggingIn,
@@ -440,13 +574,14 @@ function PoolRow({
   expanded: boolean;
   dragging: boolean;
   onToggleExpand: () => void;
-  onGripDown: (event: ReactPointerEvent) => void;
   onEdit: () => void;
   onRelogin: () => void;
   /** 这个账号类型正在登录（浏览器 / 设备码），按钮显示进行中。 */
   loggingIn: boolean;
 }) {
   const enabled = providerEnabled(entry);
+  // 拖动中跟手移动，松手时 200ms 滑到新位置；拖着的那一行本身不加过渡，免得跟不上指针。
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: entry.id });
   const status = memberStatus(payload, entry.id);
   const failures = (payload?.health.keys ?? []).filter((key) => key.relayId === entry.id && key.state !== "ok");
   const breaker = payload?.health.providers.some((item) => item.relayId === entry.id && item.breakerOpen);
@@ -455,6 +590,15 @@ function PoolRow({
     relayBillingGatewayCacheKey(entry),
     () => invoke<Partial<RelayBillingProbe> & { status: string }>("probe_gateway_provider_billing", { id: entry.id }),
   );
+  // DeepSeek、Kimi 等有余额接口的厂商：卡片余额和「用量」页、托盘面板同一来源（#2793）。
+  const vendorBalance = useProviderBalance(entry.id, enabled && Boolean(entry.balanceApi));
+  // new-api 的访问令牌（#2793）：识别成 new-api 或已经配过时，详情里才有这一行。
+  const [accessOpen, setAccessOpen] = useState(false);
+  const showAccess = !entry.account && (billing.probe?.platform === "newapi" || Boolean(entry.newapiAccess));
+  const saveAccess = async (token: string | null, userId: string, clear: boolean) => {
+    const title = clear ? t("清除访问令牌") : t("保存访问令牌");
+    if (await run(`newapi-access:${entry.id}`, "save_gateway_provider_newapi_access", { id: entry.id, token, userId, clear }, title)) setAccessOpen(false);
+  };
   const sub = (entry.account
     ? [t("订阅登录"), entry.lentToCodex ? t("Codex 正用它登录") : "", tf("{0} 个模型", [entry.models.length])]
     : [protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])]
@@ -481,6 +625,15 @@ function PoolRow({
   const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null) => {
     if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback }, t("保存上下文窗口"))) setWindowsOpen(false);
   };
+  // 从上游同步上下文窗口 / 思考等级（#2807）：先列差异，勾选后才写入。订阅账号的模型接口不带这些资料。
+  const [metaSync, setMetaSync] = useState<MetaSyncKind | null>(null);
+  const metaSyncable = !entry.account && entry.models.length > 0;
+  const applyWindowsSync = async (picks: Array<{ model: string; window: number }>) => {
+    if (await run(`windows-sync:${entry.id}`, "apply_gateway_provider_windows_sync", { id: entry.id, picks }, t("从上游同步上下文窗口"))) setMetaSync(null);
+  };
+  const applyReasoningSync = async (picks: Array<{ model: string; levels: string[]; defaultLevel: string | null }>) => {
+    if (await run(`reasoning-sync:${entry.id}`, "apply_gateway_provider_reasoning_sync", { id: entry.id, picks }, t("从上游同步思考等级"))) setMetaSync(null);
+  };
   const newModels = entry.upstreamNew?.length ?? 0;
   const [syncOpen, setSyncOpen] = useState(false);
   const applySync = async (remove: string[], add: string[]) => {
@@ -505,7 +658,7 @@ function PoolRow({
     if (ok) await run(`remove:${entry.id}`, "delete_gateway_provider", { id: entry.id }, t("删除供应商"));
   };
   return (
-    <div className="gw-pool-item" data-dragging={dragging} data-off={!enabled} data-pool-id={entry.id}>
+    <div className="gw-pool-item" data-dragging={dragging || isDragging} data-expanded={expanded} data-off={!enabled} data-pool-id={entry.id} ref={setNodeRef} style={{ transform: DndCSS.Translate.toString(transform), transition: isDragging ? "none" : transition ?? "transform 200ms ease" }}>
       {/* 整行点击展开；把手、开关、按钮各管各的。 */}
       <div
         className="gw-pool-row"
@@ -515,9 +668,10 @@ function PoolRow({
         }}
       >
         <span
+          {...attributes}
+          {...listeners}
           aria-label={t("拖动排序")}
           className="gw-grip"
-          onPointerDown={onGripDown}
           title={t("拖动排序：同一个模型有多家时按这个顺序尝试")}
         >
           <GripVertical className="h-4 w-4" />
@@ -536,9 +690,12 @@ function PoolRow({
           <i className="gw-dot" data-tone={tone} />
           {/* 订阅账号空闲时显示套餐（和剩余额度），中转站（sub2api / new-api）显示倍率（和余额），其它供应商显示 Key 数。 */}
           {!enabled ? t("已关闭") : status.state === "idle" && entry.account && entry.plan ? entry.plan
-            : status.state === "idle" && billing.probe?.rate ? <RelayBillingPoolLabel probe={billing.probe} /> : <MemberStatusLabel status={status} />}
+            : status.state === "idle" && billing.probe?.rate ? <RelayBillingPoolLabel probe={billing.probe} />
+            // 只有一个 Key（订阅登录就是一个账号）时「🔑 1」没信息量，写「可用」。
+            : status.text === "{0} 个 Key" && Number(status.args[0]) <= 1 ? t("可用") : <MemberStatusLabel status={status} />}
           {enabled && entry.quota ? <QuotaBadge quota={entry.quota} /> : null}
           {enabled && billing.probe ? <RelayBillingPoolBadge failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} /> : null}
+          {vendorBalance.balance ? <ProviderBalancePoolBadge balance={vendorBalance.balance} loading={vendorBalance.loading} onRefresh={vendorBalance.refresh} /> : null}
           {enabled && !billing.probe && billing.settled ? (
             <RelayBillingRetry failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} />
           ) : null}
@@ -571,16 +728,19 @@ function PoolRow({
       </div>
       {expanded ? (
         <div className="gw-agent-detail gw-pool-detail">
-          <div className="gw-detail-row">
-            <span className="gw-detail-label">{t("模型")}</span>
+          {/* 模型单独一块：标题行带数量和操作，下面是模型名标签（Agent 里的完整名「供应商/模型」在悬停提示里）。 */}
+          <div className="gw-detail-row gw-detail-models">
+            <span className="gw-detail-label">{t("模型")}<span className="gw-detail-count">{chatModels.length}</span></span>
             <div className="gw-detail-value gw-chip-row">
-              {shownModels.map((model) => <code className="gw-chip" key={model}>{`${entry.id}/${model}`}</code>)}
+              {shownModels.map((model) => <code className="gw-chip" key={model} title={`${entry.id}/${model}`}>{model}</code>)}
               {chatModels.length === 0 ? <span className="gw-muted">{t("未配置模型")}</span> : null}
               {modelsCollapsible ? (
                 <button className="gw-text-button" onClick={() => setAllModels(!allModels)} type="button">
                   {allModels ? t("收起") : tf("显示全部 {0} 个模型", [chatModels.length])}
                 </button>
               ) : null}
+            </div>
+            <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null} label={t("编辑模型列表")} onClick={() => setModelsOpen(true)} />
               {/* 从上游同步（#2785）：先拉上游列出差异，勾选要删、要加的再写入；拉取失败不改列表。 */}
               <button
@@ -593,15 +753,17 @@ function PoolRow({
                 <RefreshCw className={busy === `sync-models:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                 {t("从上游同步")}
               </button>
-            </div>
+            </span>
           </div>
           {imageModels.length ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("生图模型")}</span>
               <div className="gw-detail-value gw-chip-row">
                 {imageModels.map((model) => <code className="gw-chip" key={model}>{model}</code>)}
-                <span className="gw-muted">{entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}</span>
               </div>
+              <span className="gw-detail-actions gw-detail-hint" title={entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}>
+                {t("在「Agent 接入」里选用")}
+              </span>
             </div>
           ) : null}
           <div className="gw-detail-row">
@@ -613,18 +775,38 @@ function PoolRow({
                   {`${keyLabel(entry.keys, key.keyId)}${t("：")}${[t(failureLabel(key.lastFailure)) || t(key.state === "disabled" ? "已停用" : "冷却中"), formatRemaining(key.remainingMs)].filter(Boolean).join(" · ")}`}
                 </span>
               ))}
+            </div>
+            <span className="gw-detail-actions">
               {failures.length || breaker ? (
                 <button className="gw-text-button" disabled={busy !== null} onClick={() => void run(`reset:${entry.id}`, "reset_gateway_key_health", { relayId: entry.id }, t("重置 Key 状态"), true)} type="button">
                   {t("重置")}
                 </button>
               ) : null}
-            </div>
+            </span>
           </div>
+          {showAccess ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("访问令牌")}</span>
+              <div className="gw-detail-value gw-chip-row">
+                {entry.newapiAccess ? (
+                  <code className="gw-chip">{entry.newapiAccess.masked}</code>
+                ) : (
+                  <span className="gw-muted">{t("未填写：Key 不限额度时查不到账户余额")}</span>
+                )}
+                {entry.newapiAccess?.userId ? <span className="gw-muted">{tf("用户 ID {0}", [entry.newapiAccess.userId])}</span> : null}
+              </div>
+              <span className="gw-detail-actions">
+                <EditIcon disabled={busy !== null} label={t("编辑访问令牌")} onClick={() => setAccessOpen(true)} />
+              </span>
+            </div>
+          ) : null}
           {quotaSupported ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
                 {entry.quota ? <QuotaWindows quota={entry.quota} /> : <span className="gw-muted">{t("还没查到，每 10 分钟查一次，用过一次也会更新")}</span>}
+              </div>
+              <span className="gw-detail-actions">
                 <button
                   className="gw-text-button gw-sync-button"
                   disabled={busy !== null}
@@ -634,13 +816,22 @@ function PoolRow({
                   <RefreshCw className={busy === `quota:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                   {t("刷新")}
                 </button>
-              </div>
+              </span>
             </div>
           ) : null}
+          {/* 价格、窗口、思考等级、代理、限速不常改：收进「更多设置」，展开详情先看到模型、Key、额度。 */}
+          <details className="gw-detail-advanced gw-pool-more">
+            <summary>
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("更多设置")}
+              <span className="gw-pool-more-hint">{t("价格、上下文窗口、思考等级、代理、限速")}</span>
+            </summary>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("价格")}</span>
             <div className="gw-detail-value gw-chip-row">
               <span className={price ? undefined : "gw-muted"}>{price || t("未填写，不估算费用")}</span>
+            </div>
+            <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null} label={t("编辑价格")} onClick={() => setExtrasOpen("price")} />
               {/* 一键按公开价格表更新所有模型的价格，不用打开弹窗。 */}
               <button
@@ -653,28 +844,50 @@ function PoolRow({
                 <RefreshCw className={busy === `prices:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                 {t("同步")}
               </button>
-            </div>
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("上下文窗口")}</span>
             <div className="gw-detail-value gw-chip-row">
               <span className={windows ? undefined : "gw-muted"}>{windows || t("未填写，用模型自带资料")}</span>
-              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen(true)} />
             </div>
+            <span className="gw-detail-actions">
+              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen(true)} />
+              {metaSyncable ? (
+                <MetaSyncButton
+                  busy={busy}
+                  busyKey={`windows-sync:${entry.id}`}
+                  onClick={() => setMetaSync("windows")}
+                  title={t("读取上游 /models 返回的上下文窗口，先列出差异，勾选后再写入")}
+                />
+              ) : null}
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("思考等级")}</span>
             <div className="gw-detail-value gw-chip-row">
               <span className={reasoning ? undefined : "gw-muted"}>{reasoning || t("按内置资料")}</span>
-              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen(true)} />
             </div>
+            <span className="gw-detail-actions">
+              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen(true)} />
+              {metaSyncable ? (
+                <MetaSyncButton
+                  busy={busy}
+                  busyKey={`reasoning-sync:${entry.id}`}
+                  onClick={() => setMetaSync("reasoning")}
+                  title={t("读取上游 /models 返回的思考等级，先列出差异，勾选后再写入")}
+                />
+              ) : null}
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("代理")}</span>
             <div className="gw-detail-value gw-chip-row">
               {isDirectProxy(entry.proxy) ? <span>{t("不使用代理（直连）")}</span> : entry.proxy ? <code className="gw-chip">{entry.proxy}</code> : <span className="gw-muted">{t("沿用系统代理")}</span>}
-              <EditIcon disabled={busy !== null} label={t("编辑代理")} onClick={() => setExtrasOpen("proxy")} />
             </div>
+            <span className="gw-detail-actions">
+              <EditIcon disabled={busy !== null} label={t("编辑代理")} onClick={() => setExtrasOpen("proxy")} />
+            </span>
           </div>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("限速")}</span>
@@ -682,9 +895,12 @@ function PoolRow({
               <span className={keyLimits ? undefined : "gw-muted"} title={t("按每个 Key 计；达到上限时先换别的 Key 或下一家，都满了就排队等待（最多 2 分钟）。")}>
                 {keyLimits || t("不限")}
               </span>
-              <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
             </div>
+            <span className="gw-detail-actions">
+              <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
+            </span>
           </div>
+          </details>
           <div className="gw-detail-row gw-detail-foot">
             <span className="gw-detail-label" />
             <div className="gw-detail-value">
@@ -715,6 +931,16 @@ function PoolRow({
         </div>
       ) : null}
       {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onClose={() => setTestKey(undefined)} /> : null}
+      {metaSync ? (
+        <ProviderMetaSyncDialog
+          busy={busy !== null}
+          entry={entry}
+          kind={metaSync}
+          onApplyReasoning={(picks) => void applyReasoningSync(picks)}
+          onApplyWindows={(picks) => void applyWindowsSync(picks)}
+          onCancel={() => setMetaSync(null)}
+        />
+      ) : null}
       {syncOpen ? (
         <ProviderSyncDialog busy={busy !== null} entry={entry} onApply={(remove, add) => void applySync(remove, add)} onCancel={() => setSyncOpen(false)} />
       ) : null}
@@ -726,6 +952,15 @@ function PoolRow({
       ) : null}
       {windowsOpen ? (
         <ProviderWindowsDialog busy={busy !== null} entry={entry} onCancel={() => setWindowsOpen(false)} onSave={(modelWindows, fallback) => void saveWindows(modelWindows, fallback)} />
+      ) : null}
+      {accessOpen ? (
+        <ProviderNewApiAccessDialog
+          busy={busy !== null}
+          entry={entry}
+          onCancel={() => setAccessOpen(false)}
+          onClear={() => void saveAccess(null, "", true)}
+          onSave={(token, userId) => void saveAccess(token, userId, false)}
+        />
       ) : null}
       {limitsOpen ? (
         <ProviderLimitsDialog busy={busy !== null} entry={entry} onCancel={() => setLimitsOpen(false)} onSave={(rpm, concurrency) => void saveLimits(rpm, concurrency)} />
@@ -743,6 +978,16 @@ function PoolRow({
   );
 }
 
+/** 详情里「上下文窗口」「思考等级」的「从上游同步」（#2807）。 */
+function MetaSyncButton({ busy, busyKey, title, onClick }: { busy: string | null; busyKey: string; title: string; onClick: () => void }) {
+  return (
+    <button className="gw-text-button gw-sync-button" disabled={busy !== null} onClick={onClick} title={title} type="button">
+      <RefreshCw className={busy === busyKey ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+      {t("从上游同步")}
+    </button>
+  );
+}
+
 /** 详情里各项的「编辑」：铅笔图标按钮，文案放在无障碍名和悬停提示里（#2782）。 */
 function EditIcon({ label, disabled, onClick }: { label: string; disabled: boolean; onClick: () => void }) {
   return (
@@ -754,8 +999,11 @@ function EditIcon({ label, disabled, onClick }: { label: string; disabled: boole
 
 /** 添加时给哪些 Agent 用：一排可切换的 Agent，默认按各自的「添加供应商时自动加入」。 */
 function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | null; picked: GatewayAgentId[]; onChange: (next: GatewayAgentId[]) => void }) {
-  const agents = payload?.agents ?? [];
-  if (!agents.length) return null;
+  // 只列内置的三个和已接入的通用 Agent；装了但没接入的不在这里出现。
+  // 没勾选的 Agent 不列（保持各自的默认）；单 Agent 模式下只有一个可选，整行不显示。
+  const focus = useAgentFocus();
+  const agents = visibleAgents(focus, glanceAgents(payload?.agents));
+  if (!agents.length || singleAgent(focus)) return null;
   return (
     <div className="gw-agent-picks">
       <span>{t("添加后给这些 Agent 用")}</span>
@@ -821,6 +1069,7 @@ function ProviderCatalog({
       { kind: "chatgpt-api", name: "ChatGPT API", icon: "openai" },
       { kind: "copilot", name: "GitHub Copilot", icon: "githubcopilot" },
       { kind: "grok", name: "SuperGrok", icon: "grok" },
+      ...(payload?.subscriptions ?? []).map((item) => ({ kind: `sub:${item.id}` as AccountKind, name: item.name, icon: item.id })),
     ] as Array<{ kind: AccountKind; name: string; icon: string }>
   )
     .filter((item) => hit(item.name, t("订阅")))
@@ -1045,7 +1294,7 @@ function DeviceCodeDialog({ code, notify, onCancel }: { code: DeviceCode; notify
     <div className="gw-modal-backdrop gw-portal">
       <div className="gw-modal gw-device-modal">
         <header>
-          <strong>{t("登录 GitHub Copilot")}</strong>
+          <strong>{code.title ?? t("登录 GitHub Copilot")}</strong>
           <button aria-label={t("取消登录")} className="gw-icon-button" onClick={onCancel} title={t("取消登录")} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">
@@ -1054,11 +1303,60 @@ function DeviceCodeDialog({ code, notify, onCancel }: { code: DeviceCode; notify
             <span>{code.userCode}</span>
             <Copy className="h-4 w-4" />
           </button>
-          <p className="gw-muted">{tf("验证码 {0} 分钟内有效。需要这个 GitHub 账号有 Copilot 订阅。", [Math.round(code.expiresIn / 60)])}</p>
+          <p className="gw-muted">{code.hint ?? tf("验证码 {0} 分钟内有效。需要这个 GitHub 账号有 Copilot 订阅。", [Math.round(code.expiresIn / 60)])}</p>
         </div>
         <footer>
           <span className="gw-error" />
           <button className="gw-soft-button" onClick={onCancel} type="button">{t("取消登录")}</button>
+        </footer>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+/** 私有接口订阅登录前的弹窗：选登录方式，粘贴凭据时填内容；附带订阅的说明与风险提示。 */
+function SubscriptionLoginDialog({
+  item,
+  onCancel,
+  onStart,
+}: {
+  item: SubscriptionView;
+  onCancel: () => void;
+  onStart: (method: SubscriptionLoginMethod, input: string) => void;
+}) {
+  useEscapeLayer(true, onCancel);
+  const [method, setMethod] = useState<SubscriptionLoginMethod>(item.methods[0] ?? "browser");
+  const [input, setInput] = useState("");
+  const ready = method !== "paste" || input.trim().length > 0;
+  return createPortal(
+    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <div className="gw-modal gw-device-modal" role="dialog" aria-label={tf("登录 {0}", [item.name])}>
+        <header>
+          <strong>{tf("登录 {0}", [item.name])}</strong>
+          <button aria-label={t("关闭")} className="gw-icon-button" onClick={onCancel} type="button"><X className="h-4 w-4" /></button>
+        </header>
+        <div className="gw-modal-body">
+          {item.note ? <p className="gw-muted">{t(item.note)}</p> : null}
+          <p className="gw-muted">{t("通过模拟官方客户端调用未公开的接口，可能随时失效，也有账号被限制的风险。")}</p>
+          {item.methods.length > 1 ? (
+            <div className="gw-chip-row" role="radiogroup">
+              {item.methods.map((value) => (
+                <label className="gw-inline-field gw-inline-check" key={value}>
+                  <input checked={method === value} name="sub-login-method" onChange={() => setMethod(value)} type="radio" />
+                  <span>{t(LOGIN_METHOD_LABELS[value])}</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+          {method === "paste" ? (
+            <textarea autoFocus className="gw-textarea" onChange={(event) => setInput(event.currentTarget.value)} placeholder={t("粘贴 token、Cookie 或导出的登录文件内容")} rows={4} value={input} />
+          ) : null}
+        </div>
+        <footer>
+          <span className="gw-error" />
+          <button className="gw-soft-button" onClick={onCancel} type="button">{t("取消")}</button>
+          <button className="gw-primary-button" disabled={!ready} onClick={() => onStart(method, input.trim())} type="button">{t("开始登录")}</button>
         </footer>
       </div>
     </div>,

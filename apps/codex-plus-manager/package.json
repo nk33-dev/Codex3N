@@ -1,6 +1,6 @@
 {
   "name": "codex-plus-manager",
-  "version": "2.1.3-3n.1",
+  "version": "2.2.0-3n.1",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -9,8 +9,8 @@
     "build": "tauri build",
     "check": "tsc --noEmit -p tsconfig.json",
     "i18n": "node ../../tools/i18n-verify.mjs",
-    "test": "node --test \"src/*.test.ts\" && node ../../tools/i18n-verify.mjs",
-    "test:local": "node --test --test-concurrency=2 \"src/*.test.ts\" && node ../../tools/i18n-verify.mjs",
+    "test": "node --test \"src/*.test.ts\" ../../scripts/tests/weixin-desktop-sync.test.cjs && node ../../tools/i18n-verify.mjs",
+    "test:local": "node --test --test-concurrency=2 \"src/*.test.ts\" ../../scripts/tests/weixin-desktop-sync.test.cjs && node ../../tools/i18n-verify.mjs",
     "vite:dev": "vite --host 127.0.0.1 --port 1420",
     "vite:build": "vite build"
   },

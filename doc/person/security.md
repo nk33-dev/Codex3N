@@ -30,6 +30,12 @@ Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限�
 
 换 Key 的运行时认证更新走独立的 CDP 调用：后端将密钥作为临时参数交给本机 RPC 的 `account/login/start`，不写入页面全局状态、列表响应或诊断日志。页面只回传是否更新成功，CDP 与 RPC 的原始错误不向页面回显。入口固定为认证更新，不提供读取密钥的桥接路由，也不向远端 host 发送。
 
+## 拓展与附件
+
+拓展后台 HTTP 与 WebSocket 路由沿用 helper 来源检查，并核对本机 Host，防止 DNS 重绑定。管理器拓展页在无同源权限的 iframe 中运行，CSP 前缀位于所有包内容之前；只开放清单声明的数据、配置与后台调用。拓展具有用户授予的本机代码能力，沙箱不等于不可信代码隔离。微信工作区附件默认禁止回传，启用后每次发送核对已提交配置的授权版本；权限撤销使旧许可失效，自选设置路径与主设置写入使用同一把锁。
+
+管理器拓展 HTML 经 `extension_panel.rs` 注册随机令牌，由 `codex3n-panel:` 独立协议返回，Windows 对应 `http://codex3n-panel.localhost`。主窗口只为这个协议开放 frame，脚本仍限制为自身来源；面板响应禁止网络、表单外发和外部资源，仅允许包内联脚本与样式及 data/blob 媒体。iframe 保持 `allow-scripts allow-forms`，没有同源权限或 Tauri 初始化；桥接按 `event.source` 匹配。每页上限 8 MiB，最多 16 页，卸载、主窗口销毁时撤销令牌。独立 HTTP 响应避免 `srcdoc` 继承主窗口脚本策略，不能靠在子页添加 CSP 放宽父策略。
+
 ## ZIP 依赖
 
 运行时 ZIP 与语音构建依赖统一使用 `zip 9.0.4`，覆盖 Unix 权限及链接解压公告
@@ -46,7 +52,7 @@ TLS 根证书与校验依赖在锁文件中使用 `rustls-webpki 0.103.16`、`we
 
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。
 
-push CI 分四个并行 job：Windows 上的 `rust-lint` 只跑格式化、`cargo check` 与 relay clippy，作为快速失败面；`windows-artifacts` 执行完整前端、Rust 与安全门禁并构建 NSIS 安装包；Ubuntu 与 macOS 各跑一遍共享前端回归；macOS x64/arm64 各自构建原生 DMG。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外——发布脚本要求当前 SHA 最新一次 push CI 已全部成功，取消会让那个提交永远等不到结果。`-SkipChecks` 只复用该结果。缺少结果、运行中、失败、查询异常或检查产生未提交改动时，脚本在创建标签前停止。行为回归见 `apps/codex-plus-manager/src/release.test.ts`；环境与日志检查见 [maintenance.md](maintenance.md)。
+push CI 包含 Windows lint/产包、Ubuntu/macOS 前端以及 macOS universal、Linux DEB 产包 job：Windows 上的 `rust-lint` 只跑格式化、`cargo check` 与 relay clippy，作为快速失败面；`windows-artifacts` 执行完整前端、Rust 与安全门禁并构建 NSIS 安装包；Ubuntu 与 macOS 各跑一遍共享前端回归；macOS x64/arm64 各自构建原生 DMG。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外——发布脚本要求当前 SHA 最新一次 push CI 已全部成功，取消会让那个提交永远等不到结果。`-SkipChecks` 只复用该结果。缺少结果、运行中、失败、查询异常或检查产生未提交改动时，脚本在创建标签前停止。行为回归见 `apps/codex-plus-manager/src/release.test.ts`；环境与日志检查见 [maintenance.md](maintenance.md)。
 
 ## 语音服务边界
 

@@ -8,7 +8,7 @@
 
 ## 管理器加载和后台刷新
 
-网关总览为启动页；新网关页面由上游各组件读取自己的状态，个人版 `manager-loading.ts` 仍是原有页面任务的唯一编排入口。设置与关于合并到整体设置，安装维护并入 Codex 设置；旧路由通过同一 `navigate` 归一化。托盘快捷面板和 Computer Use 预览通过 `main.tsx` 的 hash 分流，不运行第二个主 App。
+网关总览为启动页；管理器沿用上游分节行式布局。网关和拓展页面由各组件读取自己的状态，个人版 `manager-loading.ts` 仍是原有页面任务的唯一编排入口。设置与关于合并到整体设置，安装维护并入 Codex 设置；旧路由通过同一 `navigate` 归一化。托盘快捷面板和 Computer Use 预览通过 `main.tsx` 的 hash 分流，不运行第二个主 App。
 
 轻量模式默认关闭，整体设置和托盘右键的「轻量模式」勾选项共用 `set_lightweight_mode_enabled`，保存到 `gateway.json::lightweightOnClose`。两处状态通过 `codex-plus-lightweight-mode-changed` 同步；保存失败保留原状态并提示，语言切换保留勾选项。开启后关窗会销毁 WebView，重新打开经 `build_main_window` 恢复窗口尺寸、最大化和隔离数据目录；未保存草稿随窗口销毁，设置页已有说明。托盘、helper 与网关继续运行，聚焦或唤起取消待执行的销毁。「退出程序」仍停止后台服务。个人设置仍手动保存，外部设置事件按已保存基线合并草稿，不自动重试旧修订号。
 
@@ -68,6 +68,12 @@
 | `SessionRepairPanel`、旧 `SessionPage` | `App.tsx::SessionMaintenance`、`ProjectSessionPage.tsx` | 全库搜索、整项目选择、归档、删除保护与折叠维护区；会话和维护回归 |
 | `commands.rs` 中待确认供应商导入 | `commands/provider_import.rs` | 读取、确认和取消共用指纹校验，支持网关供应商池；导入链接回归 |
 | `scan()` 全量刷新 | `95-conversation-view.js`、`98-scan-schedule.js` | 旁支保存、回退及菜单清理接入原调度，保留输入法和隐藏门控；注入与性能回归 |
+
+上游扩展内核的 `ctx.onScan` 注册表接入同一轻量/延迟扫描，卸载时撤销扫描项；菜单和 UI 插槽在隐藏或任务已排队时仍回收脱离节点。`codex/exchange` 请求链同时承载旁支保存与第三方中间件，个人性能计时包在同一发送入口外。`/backend/status` 的 `settingsRevision` 未变化时不再拉取设置；版本变化后成功读取才接受新修订号，恢复仍要求业务桥接和设置均可用。
+
+`builtin_takeover.rs` 管理 Rust 侧内置拓展替换，读取继续复用设置缓存。扩展调度器在 `launcher/backend_services.rs::start_bridge_watchdog_runtime` 启动；核心与带数据服务的启动器都将扩展 preload 加入已有新文档脚本集合，恢复服务沿用原 browser 身份检查，不另建注入入口。
+
+管理器拓展面板通过 `ExtensionManagerPanel.tsx` 与 `extension_panel.rs` 的随机令牌协议加载；面板拥有独立 CSP，主窗口仍拒绝内联脚本。协议只返回已注册 HTML，不接受文件路径。边界和清理见[安全文档](security.md#拓展与附件)。
 
 `ComputerUsePage.tsx`、`computer_use_commands.rs` 提供上游 MCP 接入，独立于受管 Codex 会话；`cu_pip.rs` 与 `CuPipWindow.tsx` 负责单个悬浮预览窗口。设置更新事件只合并对应 Computer Use 字段和修订号，不覆盖其他表单草稿；翻译扫描包含接入页和预览组件。当前运行时定位依赖 macOS `.app` 内的原生 CU 与 Node，Windows/Linux 不会因编译成功获得同等能力。宿主授权、桌面控制与原生取流仍需在支持的平台实测。
 

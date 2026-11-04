@@ -19,7 +19,7 @@ function runtime(name: string, extras: Record<string, unknown> = {}) {
     ts.forEachChild(node, collect);
   };
   collect(fn);
-  const context = vm.createContext({ ...components, exports: {}, require: () => jsxRuntime,
+  const context = vm.createContext({ AgentCx: { running: true }, ...components, exports: {}, require: () => jsxRuntime,
     useState: (initial: unknown) => [initial, () => {}], useRef: () => ({ current: null }),
     t: (value: string) => value, tf: (value: string, args: string[]) => value.replace("{0}", args[0]),
     isWindowsPlatform: true, defaultDreamSkinColors, defaultDreamSkinTheme,
@@ -41,10 +41,10 @@ test("关闭、暂停及总开关关闭时显示原生外观，保存的主题�
     const tree = render({ form: { enhancementsEnabled: state !== "masterOff", codexAppDreamSkinEnabled: state !== "disabled", codexAppDreamSkinPaused: state === "paused" },
       library: { themes: [theme] }, draft: { config: defaultDreamSkinTheme(), imagePath: "", builtin: true },
       selectedTheme: theme.key, status: { state: "pass", liveApplied: false, paused: false, checks: [] }, actions: {}, dirty: false });
-    const current = find(tree, "dream-skin-current-copy")[0];
-    assert.equal(current.props.children[1].props.children, state === "enabled" ? theme.name : "Codex 原生外观");
+    const current = find(tree, "dream-skin-selected-row")[0];
+    assert.ok(current.props.detail.props.children.includes(state === "enabled" ? theme.name : "Codex 原生外观"));
     assert.equal(find(tree, "is-current").length, state === "enabled" ? 1 : 0);
-    assert.equal(find(tree, "dream-skin-selected-copy").length, 1);
+    assert.equal(find(tree, "dream-skin-selected-row").length, 1);
   }
 });
 

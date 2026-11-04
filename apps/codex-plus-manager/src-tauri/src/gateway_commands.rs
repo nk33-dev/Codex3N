@@ -3,11 +3,16 @@
 //! 网关模式与直连模式完全独立：供应商池、路由组只存在 `gateway.json`；
 //! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
 
+use anyhow::Context;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
 use codex_plus_core::gateway::key_pool::{self, PoolSnapshot};
+use codex_plus_core::gateway::meta_sync;
 use codex_plus_core::gateway::model_sync;
 use codex_plus_core::gateway::store::{
     AgentBinding, GatewayGroup, GatewaySettings, GatewayStore, KeyRotationMode, new_client_token,
@@ -66,6 +71,10 @@ pub struct GatewayPoolEntry {
     pub upstream_gone: Vec<String>,
     /// 订阅账号的额度（ChatGPT 5 小时 / 每周、Copilot 本月高级请求）；查不到或普通供应商为空。
     pub quota: Option<codex_plus_core::gateway::quota::ProviderQuota>,
+    /// 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额，不当中转站识别。
+    pub balance_api: bool,
+    /// new-api 访问令牌（打码，#2793）；没配置为空。令牌原文不传给界面。
+    pub newapi_access: Option<apply::NewApiAccessView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,12 +86,20 @@ pub struct GatewayAgentView {
     pub version: Option<String>,
     /// 开启网关时改写的配置文件，界面上展示给用户。
     pub config_path: String,
+    /// 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。
+    pub hint: String,
     pub enabled: bool,
+    /// 绑定记录可能已关闭，但原生配置仍由网关管理；直连前仍须确认还原。
+    pub requires_disconnect_preview: bool,
     pub base_url: String,
     pub default_model: String,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
+    /// 配置证据与真实网关流量合并后的诊断。
+    pub diagnostics: Option<codex_plus_core::gateway::diagnostics::AgentDiagnostics>,
+    /// Agent 自带的模型（用它自己的登录或 Key 直连厂商，不经 Codex++）；没有时为 None。
+    pub own_models: Option<codex_plus_core::gateway::own_models::OwnModels>,
 }
 
 /// 界面上的自动组：组本身 + 是否隐藏 + 有没有改过设置。
@@ -109,6 +126,8 @@ pub struct GatewayPayload {
     pub gateway: GatewaySettings,
     pub port: u16,
     pub helper_running: bool,
+    /// Codex 旧版供应商配置总开关；网关接入 Codex 时也受此保护。
+    pub relay_profiles_enabled: bool,
     pub pool: Vec<GatewayPoolEntry>,
     pub groups: Vec<GatewayGroup>,
     /// 自动组：池里多家都有的模型各一个（含已隐藏的）。
@@ -121,6 +140,8 @@ pub struct GatewayPayload {
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
     /// 可复制进网关的直连模式供应商。
     pub codex_providers: Vec<GatewayPoolEntry>,
+    /// 能在网关里登录的私有接口订阅（Cursor、Kiro 等）。
+    pub subscriptions: Vec<codex_plus_core::gateway::subscriptions::SubscriptionView>,
     pub claude_providers: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
@@ -137,6 +158,22 @@ pub struct GatewayPayload {
 
 const GATEWAY_AGENTS: &[ToolId] = &[ToolId::Codex, ToolId::Claude, ToolId::Grok];
 
+/// 界面上列出的 Agent：三个内置的，加上本机装了（或已经接入过）的通用 Agent。
+fn listed_agents(gateway: &GatewaySettings) -> Vec<ToolId> {
+    let env = codex_plus_core::gateway::agents::AgentEnv::current();
+    let mut agents = GATEWAY_AGENTS.to_vec();
+    for spec in codex_plus_core::gateway::agents::all() {
+        let connected = gateway
+            .bindings
+            .get(spec.id)
+            .is_some_and(|binding| binding.enabled);
+        if connected || codex_plus_core::gateway::agents::installed(spec, &env) {
+            agents.push(ToolId::Unknown(spec.id.to_string()));
+        }
+    }
+    agents
+}
+
 fn port() -> u16 {
     codex_plus_core::resident_helper::resident_helper_port()
         .unwrap_or_else(codex_plus_core::protocol_proxy::protocol_proxy_port)
@@ -148,7 +185,7 @@ fn context() -> ApplyContext {
 
 fn parse_agent(agent: &str) -> anyhow::Result<ToolId> {
     let agent = ToolId::parse(agent);
-    if !GATEWAY_AGENTS.contains(&agent) {
+    if !GATEWAY_AGENTS.contains(&agent) && !codex_plus_core::gateway::agents::is_generic(&agent) {
         anyhow::bail!("{} 不支持网关模式", agent.as_str());
     }
     Ok(agent)
@@ -192,6 +229,8 @@ fn pool_entry(
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
         quota: codex_plus_core::gateway::quota::get(&relay.id),
+        balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
+        newapi_access: None,
     }
 }
 
@@ -217,6 +256,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         .iter()
         .map(|provider| GatewayPoolEntry {
             keys: apply::provider_keys(&provider.relay),
+            newapi_access: apply::provider_newapi_access(provider),
             model_windows: provider.model_windows.clone(),
             context_window: provider.context_window,
             key_rpm: provider.key_rpm,
@@ -256,16 +296,29 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         })
         .collect();
     let drift_ctx = ApplyContext::default_paths(port);
-    let agents = GATEWAY_AGENTS
+    let helper_running = codex_plus_core::resident_helper::resident_helper_port().is_some();
+    let activity = activity::snapshot();
+    let agents = listed_agents(&gateway)
         .iter()
         .map(|agent| {
             let binding = gateway.binding(agent);
+            let enabled = binding.is_some_and(|binding| binding.enabled);
             GatewayAgentView {
                 agent: agent.as_str().to_string(),
                 name: codex_plus_core::tools::tool_display_name(agent).to_string(),
                 version: agent_version(agent),
-                config_path: agent_config_path(agent).to_string(),
-                enabled: binding.is_some_and(|binding| binding.enabled),
+                config_path: agent_config_path(agent),
+                hint: codex_plus_core::gateway::agents::spec(agent.as_str())
+                    .map(|spec| spec.hint.to_string())
+                    .unwrap_or_default(),
+                enabled,
+                requires_disconnect_preview: enabled
+                    || match agent {
+                        ToolId::Codex => settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID,
+                        ToolId::Claude => claude::current_provider_id(&drift_ctx.claude)
+                            .is_ok_and(|id| id == GATEWAY_PROVIDER_ID),
+                        _ => false,
+                    },
                 base_url: apply::gateway_base_url(port, agent),
                 default_model: binding
                     .map(|binding| apply::resolved_default_model(&gateway, binding))
@@ -273,7 +326,23 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 models: codex_plus_core::gateway::server::exposed_models(&gateway, agent),
                 drift: binding
                     .filter(|binding| binding.enabled)
-                    .and_then(|_| codex_plus_core::gateway::drift::check(&drift_ctx, agent)),
+                    .and_then(|_| codex_plus_core::gateway::drift::check(&drift_ctx, agent))
+                    .map(|mut found| {
+                        found.endpoint =
+                            codex_plus_core::gateway::diagnostics::safe_endpoint(&found.endpoint)
+                                .unwrap_or_default();
+                        found
+                    }),
+                diagnostics: Some(codex_plus_core::gateway::diagnostics::inspect(
+                    &drift_ctx,
+                    agent,
+                    &gateway,
+                    helper_running,
+                    &activity,
+                )),
+                own_models: codex_plus_core::gateway::own_models::own_models(
+                    &drift_ctx, agent, binding,
+                ),
             }
         })
         .collect();
@@ -329,15 +398,17 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         image_auto,
         gateway,
         port,
-        helper_running: codex_plus_core::resident_helper::resident_helper_port().is_some(),
+        helper_running,
+        relay_profiles_enabled: settings.relay_profiles_enabled,
         pool,
         groups,
         auto_groups,
         agents,
         health: key_pool::snapshot(std::time::Instant::now()),
-        activity: activity::snapshot(),
+        activity,
         speeds: codex_plus_core::gateway::speed::snapshot(),
         codex_providers,
+        subscriptions: codex_plus_core::gateway::subscriptions::views(),
         claude_providers,
         grok_profiles,
         opencode_keys: codex_plus_core::gateway::opencode::load_stored_keys()
@@ -419,6 +490,172 @@ fn load_gateway_blocking() -> CommandResult<Option<GatewayPayload>> {
     }
 }
 
+#[derive(Clone)]
+struct DisconnectPreviewGrant {
+    agent: String,
+    fingerprint: String,
+    expires_at: Instant,
+    /// 这份预览没法逐项列出改动，只能「完整切换并断开」（见 `DisconnectPreview::full_switch`）。
+    full_switch: bool,
+}
+
+static DISCONNECT_PREVIEWS: OnceLock<Mutex<HashMap<String, DisconnectPreviewGrant>>> =
+    OnceLock::new();
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GatewayDisconnectPreviewPayload {
+    pub preview: Option<codex_plus_core::gateway::disconnect_preview::DisconnectPreview>,
+}
+
+fn disconnect_previews() -> &'static Mutex<HashMap<String, DisconnectPreviewGrant>> {
+    DISCONNECT_PREVIEWS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 取得断开预览。token 仅进程内有效，且五分钟后过期。
+#[tauri::command]
+pub async fn preview_gateway_disconnect(
+    agent: String,
+) -> CommandResult<GatewayDisconnectPreviewPayload> {
+    match tauri::async_runtime::spawn_blocking(move || preview_gateway_disconnect_blocking(&agent))
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => failed(
+            "生成断开预览失败，请重新获取。",
+            GatewayDisconnectPreviewPayload { preview: None },
+        ),
+    }
+}
+
+fn preview_gateway_disconnect_blocking(
+    agent: &str,
+) -> CommandResult<GatewayDisconnectPreviewPayload> {
+    let result: anyhow::Result<_> = (|| {
+        let agent = parse_agent(agent)?;
+        let settings = SettingsStore::default().load()?;
+        let mut preview =
+            codex_plus_core::gateway::disconnect_preview::preview(&context(), &settings, &agent)?;
+        if preview.can_disconnect || preview.full_switch.is_some() {
+            let token = new_client_token(&agent);
+            preview.preview_token = token.clone();
+            let mut grants = disconnect_previews()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("断开预览状态不可用"))?;
+            grants.retain(|_, grant| grant.expires_at > Instant::now());
+            if grants.len() >= 128
+                && let Some(oldest) = grants
+                    .iter()
+                    .min_by_key(|(_, grant)| grant.expires_at)
+                    .map(|(token, _)| token.clone())
+            {
+                grants.remove(&oldest);
+            }
+            grants.insert(
+                token,
+                DisconnectPreviewGrant {
+                    agent: agent.as_str().to_string(),
+                    fingerprint: preview.fingerprint.clone(),
+                    expires_at: Instant::now() + Duration::from_secs(300),
+                    full_switch: !preview.can_disconnect,
+                },
+            );
+        }
+        Ok(preview)
+    })();
+    match result {
+        Ok(preview) => ok(
+            "断开预览已生成。",
+            GatewayDisconnectPreviewPayload {
+                preview: Some(preview),
+            },
+        ),
+        Err(error) => failed(
+            &format!("生成断开预览失败：{error:#}"),
+            GatewayDisconnectPreviewPayload { preview: None },
+        ),
+    }
+}
+
+fn take_disconnect_preview(
+    grants: &mut HashMap<String, DisconnectPreviewGrant>,
+    agent: &ToolId,
+    token: Option<&str>,
+    now: Instant,
+) -> anyhow::Result<DisconnectPreviewGrant> {
+    let token = token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .context("请先查看并确认最新的断开预览")?;
+    let grant = grants.remove(token).context("断开预览已失效，请重新获取")?;
+    anyhow::ensure!(
+        grant.agent == agent.as_str() && grant.expires_at > now,
+        "断开预览已失效，请重新获取"
+    );
+    Ok(grant)
+}
+
+fn validate_disconnect_preview(
+    agent: &ToolId,
+    token: Option<&str>,
+) -> anyhow::Result<(ApplyContext, BackendSettings)> {
+    let grant = {
+        let mut grants = disconnect_previews()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("断开预览状态不可用"))?;
+        take_disconnect_preview(&mut grants, agent, token, Instant::now())?
+    };
+    let settings = SettingsStore::default().load()?;
+    let ctx = context();
+    let current = codex_plus_core::gateway::disconnect_preview::preview(&ctx, &settings, agent)?;
+    anyhow::ensure!(
+        !grant.full_switch && current.can_disconnect && current.fingerprint == grant.fingerprint,
+        "配置在预览后发生变化，请重新获取预览"
+    );
+    // 还原复用同一份已校验设置和路径，避免校验后再次读取引入不同的恢复目标。
+    Ok((ctx, settings))
+}
+
+/// 没法逐项预览时的断开（Codex 接入前没留下实时存档，或要切回的是聚合供应商）：用户在预览里确认过
+/// 要完整切换到哪个直连供应商后调用。和普通断开走同一个 `disable_binding`（收回借出的登录、按直连模式
+/// 的正常流程切换并先备份），只是不要求逐项预览；同样要拿预览发的 token，配置在预览后变过就拒绝。
+#[tauri::command]
+pub fn disable_gateway_binding_full_switch(
+    agent: String,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = parse_agent(&agent)?;
+        let grant = {
+            let mut grants = disconnect_previews()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("断开预览状态不可用"))?;
+            take_disconnect_preview(
+                &mut grants,
+                &agent,
+                preview_token.as_deref(),
+                Instant::now(),
+            )?
+        };
+        let settings = SettingsStore::default().load()?;
+        let ctx = context();
+        let current =
+            codex_plus_core::gateway::disconnect_preview::preview(&ctx, &settings, &agent)?;
+        anyhow::ensure!(
+            grant.full_switch
+                && current.full_switch.is_some()
+                && current.fingerprint == grant.fingerprint,
+            "配置在预览后发生变化，请重新获取预览"
+        );
+        apply::disable_binding(&ctx, &settings, &agent)
+    })();
+    let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
+    respond(
+        &format!("{name} 已断开并切回直连，新开的会话生效。"),
+        "断开失败",
+        result,
+    )
+}
+
 /// 开启或更新一个 Agent 的网关接入：改写它的配置指向网关，并确保常驻 helper 在跑。
 #[tauri::command]
 pub fn save_gateway_binding(
@@ -443,16 +680,58 @@ pub fn save_gateway_binding(
 
 /// 断开一个 Agent，恢复它原来的直连设置。
 #[tauri::command]
-pub fn disable_gateway_binding(agent: String) -> CommandResult<Option<GatewayPayload>> {
+pub fn disable_gateway_binding(
+    agent: String,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let settings = SettingsStore::default().load()?;
-        apply::disable_binding(&context(), &settings, &agent)
+        let (ctx, settings) = validate_disconnect_preview(&agent, preview_token.as_deref())?;
+        apply::disable_binding(&ctx, &settings, &agent)
     })();
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
         &format!("{name} 已断开并还原，新开的会话生效。"),
         "断开失败",
+        result,
+    )
+}
+
+/// 选 Agent 自带的模型：接入着就断开并还原，再把模型写进 Agent 自己的配置（直连，不经 Codex++）。
+#[tauri::command]
+pub fn use_gateway_own_model(
+    agent: String,
+    model: String,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = parse_agent(&agent)?;
+        let settings = SettingsStore::default().load()?;
+        let connected = GatewayStore::default()
+            .load()?
+            .binding(&agent)
+            .is_some_and(|binding| binding.enabled);
+        let managed = match agent {
+            ToolId::Codex => settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID,
+            ToolId::Claude => {
+                claude::current_provider_id(&ClaudeContext::default_paths())? == GATEWAY_PROVIDER_ID
+            }
+            _ => false,
+        };
+        let (ctx, settings) = if connected || managed || preview_token.is_some() {
+            validate_disconnect_preview(&agent, preview_token.as_deref())?
+        } else {
+            (context(), settings)
+        };
+        codex_plus_core::gateway::own_models::use_own_model(&ctx, &settings, &agent, &model)
+    })();
+    let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
+    respond(
+        &format!(
+            "{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。",
+            model.trim()
+        ),
+        "切换失败",
         result,
     )
 }
@@ -513,6 +792,53 @@ pub fn save_gateway_auto_models(enabled: bool) -> CommandResult<Option<GatewayPa
     )
 }
 
+/// [`scan_gateway_local_logins`] 的结果。要包一层：[`CommandResult`] 把 payload 用 `serde(flatten)`
+/// 摊平，直接放 `Vec` 序列化会失败，界面只会收到一个报错。
+#[derive(Debug, Default, Serialize)]
+pub struct LocalLoginsPayload {
+    pub logins: Vec<codex_plus_core::gateway::subscriptions::LocalLogin>,
+}
+
+/// 「发现本机已登录的订阅账号」开关。关着时不读各家官方客户端的登录文件。
+#[tauri::command]
+pub fn save_gateway_local_login_discovery(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
+    let result = GatewayStore::default().update(|gateway| {
+        gateway.local_login_discovery = enabled;
+        Ok(())
+    });
+    respond("网关选项已保存。", "保存网关选项失败", result)
+}
+
+/// 本机已登录、还没进池的订阅账号（供应商页提示导入）。开关关着时不扫描，返回空。
+/// 单独一条命令、不放进 [`GatewayPayload`]：读 sqlite / 登录文件不便宜，payload 每次改动都会重建。
+#[tauri::command]
+pub async fn scan_gateway_local_logins() -> CommandResult<LocalLoginsPayload> {
+    let result = tauri::async_runtime::spawn_blocking(|| {
+        let gateway = GatewayStore::default().load()?;
+        if !gateway.local_login_discovery {
+            return Ok(Vec::new());
+        }
+        let pool: Vec<RelayProfile> = gateway
+            .providers
+            .into_iter()
+            .map(|provider| provider.relay)
+            .collect();
+        anyhow::Ok(codex_plus_core::gateway::subscriptions::pending_local_logins(&pool))
+    })
+    .await;
+    match result {
+        Ok(Ok(logins)) => ok("", LocalLoginsPayload { logins }),
+        Ok(Err(error)) => failed(
+            &format!("扫描本机登录失败：{error:#}"),
+            LocalLoginsPayload::default(),
+        ),
+        Err(error) => failed(
+            &format!("扫描本机登录失败：{error}"),
+            LocalLoginsPayload::default(),
+        ),
+    }
+}
+
 /// 「模型名后带供应商」：多家都有的模型在 Codex 的模型列表和输入框里名字后面带不带「（供应商）」。
 #[tauri::command]
 pub fn save_gateway_model_suffix(enabled: bool) -> CommandResult<Option<GatewayPayload>> {
@@ -565,6 +891,22 @@ pub fn save_gateway_image_inline(
         })
     });
     respond("生图选项已保存。", "保存生图选项失败", result)
+}
+
+/// 模型下拉里列不列这个 Agent 自带的模型（直连，不经 Codex++）。
+#[tauri::command]
+pub fn save_gateway_own_models_shown(
+    agent: String,
+    shown: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent).and_then(|agent| {
+        codex_plus_core::gateway::own_models::set_shown(&GatewayStore::default(), &agent, shown)
+    });
+    respond(
+        "自带模型的显示设置已保存。",
+        "保存自带模型的显示设置失败",
+        result,
+    )
 }
 
 /// 供应商各模型内置的思考等级（编辑思考等级时当作没改过的显示值）。
@@ -836,6 +1178,32 @@ pub fn save_gateway_provider_limits(
     )
 }
 
+/// 改 new-api 供应商的访问令牌与用户 ID（#2793，在供应商池的详情里编辑）。
+/// `token` 留空沿用已保存的；`clear` 删掉令牌，之后不再查账户余额。令牌不写进返回的消息。
+#[tauri::command]
+pub fn save_gateway_provider_newapi_access(
+    id: String,
+    token: Option<String>,
+    user_id: String,
+    clear: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        if clear {
+            "访问令牌已清除。"
+        } else {
+            "访问令牌已保存。"
+        },
+        "保存访问令牌失败",
+        apply::set_provider_newapi_access(
+            &GatewayStore::default(),
+            &id,
+            token.as_deref(),
+            &user_id,
+            clear,
+        ),
+    )
+}
+
 /// 改供应商的上下文窗口（按模型的和其余模型用的默认值）；窗口写在 Agent 的模型资料里，存完重写 Agent 配置。
 #[tauri::command]
 pub fn save_gateway_provider_windows(
@@ -914,6 +1282,62 @@ pub fn apply_gateway_provider_models_sync(
         autofill_prices(Some(id));
     }
     respond(&message, "从上游同步模型失败", result)
+}
+
+/// 「从上游同步上下文窗口 / 思考等级」的第一步（#2807）：拉上游 `/models`，读每个模型的元数据，
+/// 返回和现有设置的差异供用户勾选，不改任何数据。
+#[tauri::command]
+pub async fn preview_gateway_provider_meta_sync(
+    id: String,
+) -> CommandResult<Option<meta_sync::MetaSyncPreview>> {
+    match meta_sync::preview_provider_meta(&GatewayStore::default(), &id).await {
+        Ok(preview) => ok(
+            &format!(
+                "上游有 {} 个模型：上下文窗口有 {} 处不同，思考等级有 {} 处不同。",
+                preview.upstream_models,
+                preview.windows.len(),
+                preview.reasoning.len()
+            ),
+            Some(preview),
+        ),
+        Err(error) => failed(&format!("读取上游模型资料失败：{error:#}"), None),
+    }
+}
+
+/// 第二步：只写用户勾选的上下文窗口；窗口写在 Agent 的模型资料里，存完重写 Agent 配置。
+#[tauri::command]
+pub fn apply_gateway_provider_windows_sync(
+    id: String,
+    picks: Vec<meta_sync::WindowPick>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(meta_sync::apply_window_sync(
+        &GatewayStore::default(),
+        &id,
+        &picks,
+    ));
+    let message = match &result {
+        Ok((_, written)) => format!("已从上游同步 {written} 个模型的上下文窗口。"),
+        Err(_) => String::new(),
+    };
+    respond(&message, "同步上下文窗口失败", result)
+}
+
+/// 第二步：只写用户勾选的思考等级；写进模型资料，存完重写 Agent 配置。
+#[tauri::command]
+pub fn apply_gateway_provider_reasoning_sync(
+    id: String,
+    picks: Vec<meta_sync::ReasoningPick>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(meta_sync::apply_reasoning_sync(
+        &GatewayStore::default(),
+        &id,
+        &picks,
+    ));
+    let message = match &result {
+        Ok((_, written)) => format!("已从上游同步 {written} 个模型的思考等级。"),
+        Err(_) => String::new(),
+    };
+    respond(&message, "同步思考等级失败", result)
 }
 
 /// 「从上游同步」的结果提示：新增、移除各几个（列出模型名），都没有就说列表没变。
@@ -1280,12 +1704,11 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
 pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let relative = agent_config_path(&agent).trim_start_matches("~/");
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| anyhow::anyhow!("找不到用户目录"))?;
-        let path = home.join(relative);
+        let env = codex_plus_core::gateway::agents::AgentEnv::current();
+        let path = match codex_plus_core::gateway::agents::spec(agent.as_str()) {
+            Some(spec) => (spec.config_path)(&env),
+            None => env.expand(&agent_config_path(&agent)),
+        };
         if !path.exists() {
             anyhow::bail!("{} 还不存在", path.display());
         }
@@ -1308,11 +1731,20 @@ pub fn reveal_gateway_agent_config(agent: String) -> CommandResult<Option<Gatewa
     respond("已在文件管理器中显示。", "打开失败", result)
 }
 
-fn agent_config_path(agent: &ToolId) -> &'static str {
+fn agent_config_path(agent: &ToolId) -> String {
     match agent {
-        ToolId::Claude => "~/.claude/settings.json",
-        ToolId::Grok => "~/.grok/config.toml",
-        _ => "",
+        // Codex 的配置目录跟着 CODEX_HOME 走；以前漏了它，详情里「改动了」后面是空的，「查看」也打不开。
+        ToolId::Codex => codex_plus_core::gateway::agents::AgentEnv::current()
+            .display(&codex_plus_core::relay_config::default_codex_home_dir().join("config.toml")),
+        ToolId::Claude => "~/.claude/settings.json".to_string(),
+        ToolId::Grok => "~/.grok/config.toml".to_string(),
+        other => match codex_plus_core::gateway::agents::spec(other.as_str()) {
+            Some(spec) => {
+                let env = codex_plus_core::gateway::agents::AgentEnv::current();
+                env.display(&(spec.config_path)(&env))
+            }
+            None => String::new(),
+        },
     }
 }
 
@@ -1325,7 +1757,15 @@ fn agent_version(agent: &ToolId) -> Option<String> {
     let versions = VERSIONS.get_or_init(Mutex::default);
     PROBE.call_once(|| {
         std::thread::spawn(|| {
-            for (agent, binary) in [("claude", "claude"), ("grok", "grok")] {
+            let env = codex_plus_core::gateway::agents::AgentEnv::current();
+            let generic = codex_plus_core::gateway::agents::all()
+                .iter()
+                .filter(|spec| !spec.binary.is_empty() && env.has_binary(spec.binary))
+                .map(|spec| (spec.id, spec.binary));
+            for (agent, binary) in [("claude", "claude"), ("grok", "grok")]
+                .into_iter()
+                .chain(generic)
+            {
                 if let Some(version) = probe_cli_version(binary) {
                     let mut guard = VERSIONS
                         .get_or_init(Mutex::default)
@@ -1429,6 +1869,59 @@ mod tests {
         );
         assert_eq!(parse_version("no version here"), None);
     }
+
+    #[test]
+    fn local_logins_result_serializes_for_the_ui() {
+        // CommandResult 把 payload flatten 进去：payload 不是结构体时序列化会失败，界面收不到列表。
+        let login = codex_plus_core::gateway::subscriptions::LocalLogin {
+            id: "kiro".into(),
+            name: "Kiro".into(),
+            account: String::new(),
+        };
+        let result = crate::commands::ok(
+            "",
+            super::LocalLoginsPayload {
+                logins: vec![login],
+            },
+        );
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["logins"][0]["id"], "kiro");
+    }
+
+    #[test]
+    fn subscription_login_start_result_keeps_message_and_state_separate() {
+        use codex_plus_core::gateway::subscriptions::LoginStart;
+
+        let result = crate::commands::ok(
+            "已读取本机登录。",
+            super::SubscriptionLoginStartPayload {
+                start: Some(LoginStart {
+                    message: "开始登录。".into(),
+                    state: serde_json::json!({ "nonce": "test" }),
+                    ..LoginStart::default()
+                }),
+            },
+        );
+        let text = serde_json::to_string(&result).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(text.matches("\"message\":").count(), 2);
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["message"], "已读取本机登录。");
+        assert_eq!(value["start"]["message"], "开始登录。");
+        assert_eq!(value["start"]["state"]["nonce"], "test");
+        assert!(value.get("state").is_none());
+        assert!(value.get("payload").is_none());
+
+        let failed = crate::commands::failed(
+            "登录失败：测试错误",
+            super::SubscriptionLoginStartPayload { start: None },
+        );
+        let value = serde_json::to_value(failed).unwrap();
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["message"], "登录失败：测试错误");
+        assert!(value["start"].is_null());
+    }
 }
 
 /// 用量汇总。`range`：`today` / `7d` / `30d` / `all`。
@@ -1475,11 +1968,12 @@ pub struct GatewayBalances {
 pub async fn probe_gateway_provider_billing(
     id: String,
 ) -> CommandResult<codex_plus_core::relay_billing::RelayBillingProbe> {
-    let relay = GatewayStore::default()
-        .load()
-        .ok()
-        .and_then(|gateway| gateway.provider(&id).map(|provider| provider.relay.clone()));
-    let Some(relay) = relay else {
+    let provider = GatewayStore::default().load().ok().and_then(|gateway| {
+        gateway
+            .provider(&id)
+            .map(|provider| (provider.relay.clone(), provider.newapi_access.clone()))
+    });
+    let Some((relay, newapi_access)) = provider else {
         return failed(
             &format!("供应商不存在：{id}"),
             codex_plus_core::relay_billing::RelayBillingProbe::unrecognized(
@@ -1488,7 +1982,12 @@ pub async fn probe_gateway_provider_billing(
             ),
         );
     };
-    let probe = codex_plus_core::relay_billing::probe_relay_billing(&relay).await;
+    // 识别成 new-api 且配置了访问令牌时，顺带查账户余额（#2793）。
+    let probe = codex_plus_core::relay_billing::probe_relay_billing_with_access(
+        &relay,
+        newapi_access.as_ref(),
+    )
+    .await;
     let message = match &probe.platform {
         Some(platform) => format!("已识别为 {platform}。"),
         None if probe.outcome
@@ -1515,15 +2014,17 @@ pub struct AgentSessions {
     pub sessions: Vec<codex_plus_core::gateway::sessions::AgentSession>,
 }
 
-/// Claude Code / Grok 的本地会话（Codex 的会话走 `list_local_sessions`）。
+/// Claude Code（含 Claude Desktop 里的）/ Grok 的本地会话（Codex 的会话走 `list_local_sessions`）。
 #[tauri::command]
 pub async fn list_agent_sessions(agent: String) -> CommandResult<AgentSessions> {
     let sessions = tauri::async_runtime::spawn_blocking(move || {
         use codex_plus_core::gateway::sessions;
         match agent.as_str() {
-            "claude" => {
-                sessions::list_claude_sessions(&ClaudeContext::default_paths().claude_home, 300)
-            }
+            "claude" => sessions::list_claude_sessions_with_desktop(
+                &ClaudeContext::default_paths().claude_home,
+                &sessions::claude_desktop_data_dirs(),
+                300,
+            ),
             "grok" => sessions::list_grok_sessions(
                 &codex_plus_core::grok_config::default_grok_home_dir(),
                 300,
@@ -1543,11 +2044,12 @@ pub struct DeletedSession {
     pub trash_path: Option<String>,
 }
 
-/// 删除 Claude Code / Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
+/// 删除 Claude Code（含 Claude Desktop 里的）/ Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
 #[tauri::command]
 pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
     use codex_plus_core::gateway::sessions;
     let trash = sessions::default_trash_dir();
+    let desktop = agent == "claude" && id.starts_with("local_");
     let result = match agent.as_str() {
         "claude" => Err(anyhow::anyhow!(
             "请在 Claude 会话管理中删除，检查进程与备份后再执行"
@@ -1561,7 +2063,11 @@ pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedS
     };
     match result {
         Ok(path) => ok(
-            "会话已移到废纸篓，需要时可以从废纸篓找回。",
+            if desktop {
+                "已从 Claude Desktop 删除，会话记录和对话文件移到了废纸篓。"
+            } else {
+                "会话已移到废纸篓，需要时可以从废纸篓找回。"
+            },
             DeletedSession {
                 trash_path: Some(path.display().to_string()),
             },
@@ -1911,6 +2417,83 @@ pub async fn login_gateway_chatgpt_api(
     login_response(outcome)
 }
 
+/// 私有接口订阅（Cursor、Kiro 等）登录第一步：按选的方式开始登录。要打开的网址在这里打开，
+/// 设备码、说明和完成登录要用的状态返回给界面，界面接着调 [`finish_gateway_subscription_login`]。
+#[derive(Debug, Serialize)]
+pub struct SubscriptionLoginStartPayload {
+    pub start: Option<codex_plus_core::gateway::subscriptions::LoginStart>,
+}
+
+#[tauri::command]
+pub async fn start_gateway_subscription_login(
+    kind: String,
+    method: codex_plus_core::gateway::subscriptions::LoginMethod,
+    input: Option<String>,
+) -> CommandResult<SubscriptionLoginStartPayload> {
+    use codex_plus_core::gateway::subscriptions;
+    let Some(item) = subscriptions::get(&kind) else {
+        return failed(
+            &format!("不认识的订阅 {kind}"),
+            SubscriptionLoginStartPayload { start: None },
+        );
+    };
+    let result = async {
+        let http = codex_plus_core::http_client::proxied_client("")?;
+        item.begin_login(&http, method, input.as_deref().unwrap_or_default())
+            .await
+    }
+    .await;
+    match result {
+        Ok(start) => {
+            if let Some(url) = &start.open_url {
+                open_in_browser(url);
+            }
+            let message = if start.message.is_empty() {
+                "请在浏览器里完成登录。".to_string()
+            } else {
+                start.message.clone()
+            };
+            ok(
+                &message,
+                SubscriptionLoginStartPayload { start: Some(start) },
+            )
+        }
+        Err(error) => failed(
+            &format!("登录失败：{error:#}"),
+            SubscriptionLoginStartPayload { start: None },
+        ),
+    }
+}
+
+/// 私有接口订阅登录第二步：等用户完成登录（或校验粘贴 / 导入的凭据），读模型，加进网关池。
+/// 同一个账号已在池里时只换凭据。
+#[tauri::command]
+pub async fn finish_gateway_subscription_login(
+    kind: String,
+    start: codex_plus_core::gateway::subscriptions::LoginStart,
+    skip_agents: Option<Vec<String>>,
+) -> CommandResult<Option<GatewayPayload>> {
+    use codex_plus_core::gateway::subscriptions;
+    let outcome = cancellable_login(async move {
+        let item =
+            subscriptions::get(&kind).ok_or_else(|| anyhow::anyhow!("不认识的订阅 {kind}"))?;
+        let http = codex_plus_core::http_client::proxied_client("")?;
+        let done = item.finish_login(&http, &start).await?;
+        let models = item
+            .models(&http, &done.credentials)
+            .await
+            .unwrap_or_default();
+        add_account_provider(
+            subscriptions::relay_for(item, &done, &models),
+            &format!("{}{}", subscriptions::KIND_PREFIX, item.id()),
+            "account",
+            skip_agents.as_deref(),
+        )
+    })
+    .await;
+    login_response(outcome)
+}
+
 /// 清掉某个供应商的 Key 冷却与熔断状态。
 #[tauri::command]
 pub fn reset_gateway_key_health(relay_id: String) -> CommandResult<Option<GatewayPayload>> {
@@ -2020,4 +2603,59 @@ pub fn restore_for_uninstall() {
 /// 更新没装成、Codex++ 继续运行：把更新前恢复成直连的 Agent 重新接回网关。
 pub fn undo_restore_for_update() {
     start_from_saved_state();
+}
+
+#[cfg(test)]
+mod disconnect_preview_tests {
+    use super::*;
+
+    fn grant(expires_at: Instant) -> DisconnectPreviewGrant {
+        DisconnectPreviewGrant {
+            agent: "claude".to_string(),
+            fingerprint: "state-fingerprint".to_string(),
+            expires_at,
+            full_switch: false,
+        }
+    }
+
+    #[test]
+    fn preview_grants_are_one_time_and_agent_scoped() {
+        let now = Instant::now();
+        let mut grants =
+            HashMap::from([("preview".to_string(), grant(now + Duration::from_secs(300)))]);
+        assert!(
+            take_disconnect_preview(&mut grants, &ToolId::Codex, Some("preview"), now).is_err()
+        );
+        assert!(grants.is_empty());
+        grants.insert("preview".to_string(), grant(now + Duration::from_secs(300)));
+        assert_eq!(
+            take_disconnect_preview(&mut grants, &ToolId::Claude, Some("preview"), now)
+                .unwrap()
+                .fingerprint,
+            "state-fingerprint"
+        );
+        assert!(
+            take_disconnect_preview(&mut grants, &ToolId::Claude, Some("preview"), now).is_err()
+        );
+    }
+
+    #[test]
+    fn expired_and_missing_previews_are_rejected() {
+        let now = Instant::now();
+        let mut grants = HashMap::from([("expired".to_string(), grant(now))]);
+        assert!(
+            take_disconnect_preview(&mut grants, &ToolId::Claude, Some("expired"), now).is_err()
+        );
+        assert!(take_disconnect_preview(&mut grants, &ToolId::Claude, None, now).is_err());
+        assert!(take_disconnect_preview(&mut grants, &ToolId::Claude, Some(" "), now).is_err());
+    }
+
+    #[test]
+    fn preview_payload_has_an_explicit_preview_field() {
+        let result = ok("preview", GatewayDisconnectPreviewPayload { preview: None });
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["preview"], serde_json::Value::Null);
+        assert!(value.get("preview").is_some());
+    }
 }

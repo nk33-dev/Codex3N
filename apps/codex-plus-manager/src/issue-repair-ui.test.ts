@@ -58,8 +58,8 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
       if (!previous || deps.some((value, i) => value !== previous[i])) { slots[index] = deps; effects.push(callback); }
     },
     formatProgressPercent: (value: number) => String(value),
-    Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
-    RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", Trash2: "Trash2", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
+    Panel: "Panel", CardHead: "CardHead", CardContent: "CardContent", Field: "Field", SettingRow: "SettingRow", AppSelect: "AppSelect", Button: "Button", ToggleVisual: "ToggleVisual",
+    RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", Trash2: "Trash2", SettingsSaveActions: "SettingsSaveActions", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
   });
   vm.runInContext(ts.transpileModule(fn.getText(app) + "\n" + saveActions.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
   let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;

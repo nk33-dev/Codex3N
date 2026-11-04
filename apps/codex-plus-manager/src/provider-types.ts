@@ -1,4 +1,4 @@
-import type { AgentPetSettings } from "./agent-pet-settings";
+import type { WhaleBalanceSettings } from "./whale-settings";
 import type { DreamSkinThemeConfig } from "./dream-skin";
 import type { DictationSettings } from "./dictation-settings";
 import type { PromptEnhanceSettings } from "./prompt-enhance-settings";
@@ -104,8 +104,8 @@ export type ToolShard = {
   relayTestModel?: string;
 };
 
-export type BackendSettings = {
-  agentPet: AgentPetSettings;
+export type BackendSettings = WhaleBalanceSettings & {
+  agentPet?: unknown;
   updateAutoCheck?: boolean;
   updateSkippedVersion?: string;
   codexAppSessionDeleteSkipConfirm: boolean;
@@ -137,7 +137,6 @@ export type BackendSettings = {
   codexAppUsageStatusLine: boolean;
   claudeAppVoiceInput: boolean;
   claudeAppLocalization: boolean;
-  codexAppSessionShare: boolean;
   codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";
   codexAppPasteFix: boolean;
   codexAppForceChineseLocale: boolean;
@@ -212,5 +211,11 @@ export type BackendSettings = {
   protocolProxyMapUnlistedModels: boolean;
   helperMaxRequestBodyMib: number;
   codexAppTurnRewind: boolean;
+  claudeAppExtensions?: boolean;
+  updateAutoDownload?: boolean;
+  codexAppProxyRequestStatus: boolean;
+  weixinConnectAllowOutboundAttachments: boolean;
+  weixinConnectReasoningEffort: string;
+  weixinConnectProjectId: string;
 };
 

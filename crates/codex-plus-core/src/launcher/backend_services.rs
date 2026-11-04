@@ -49,6 +49,7 @@ impl DefaultLaunchHooks {
         debug_port: u16,
         helper_port: u16,
     ) -> anyhow::Result<()> {
+        crate::extension_backend::start_scheduler();
         let bridge_reinjector = self.bridge_reinjector.lock().await.clone();
         let (shutdown, mut shutdown_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {

@@ -36,6 +36,10 @@
       selectors.pluginNavButton,
       'aside.app-shell-left-panel nav[role="navigation"]',
       'nav[data-app-navigation-rail]',
+      // 审批卡片出现时补上拓展的 approval 插槽。
+      "[data-codex-approval-surface]",
+      // Codex 设置页导航出现时补上 settings.nav 插槽。
+      "[data-settings-panel-slug]",
       ...(codexPluginMarketplacePatchEnabled() ? [selectors.disabledInstallButton] : []),
     ].join(", ");
   }
@@ -137,8 +141,10 @@
   function scheduleScan(mutations) {
     if (codexPlusScanDisposed) return;
     const sessionActionsNeedScan = pruneRemovedSessionActions(mutations);
+    const slotsNeedScan = pruneRemovedCodexPlusUiSlots(mutations);
     const work = scanWorkForMutations(mutations);
     if (sessionActionsNeedScan) work.sidebar = true;
+    if (slotsNeedScan) work.conversation = work.shell = true;
     if (!Object.keys(work).length && !Object.keys(codexPlusPendingScanWork).length) return;
     Object.assign(codexPlusPendingScanWork, work);
     if (document.hidden || codexPlusScanComposing) {

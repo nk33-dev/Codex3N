@@ -164,6 +164,7 @@ function runtime(open = false) {
     syncEyeTracking: () => { calls.eyes += 1; },
     installStyle: () => { calls.installs += 1; }, installFloat: noop,
     normalizeActiveTab: () => state.activeTab, captureViewScroll: () => ({}),
+    extensionTab: () => null,
     usesOutlineExpression: () => false, resolveFabExpression: () => "ready",
     fabExpressionLabel: () => "就绪", stepwiseEnabled: () => true, outlineEnabled: () => false,
     refreshControlState: () => ({ blocked: false, title: "刷新" }),

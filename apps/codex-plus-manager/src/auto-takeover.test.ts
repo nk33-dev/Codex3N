@@ -78,9 +78,9 @@ const payloadSource = () =>
 
 test("auto-takeover reports Windows support consistently with its input collector", () => {
   const source = payloadSource();
-  assert.match(source, /platform_supported: cfg!\(any\(target_os = "macos", windows\)\)/);
-  assert.match(source, /let platform_supported = cfg!\(any\(target_os = "macos", windows\)\)/);
-  assert.ok(appSource.includes('t("自动接管目前只支持 macOS 与 Windows。")'));
+  assert.match(source, /platform_supported: cfg!\(any\(target_os = "macos", windows, target_os = "linux"\)\)/);
+  assert.match(source, /let platform_supported = cfg!\(any\(target_os = "macos", windows, target_os = "linux"\)\)/);
+  assert.ok(appSource.includes('t("自动接管目前只支持 macOS、Windows 和 Linux。")'));
 });
 
 test("auto-takeover status fields stay aligned with the Rust payload", () => {

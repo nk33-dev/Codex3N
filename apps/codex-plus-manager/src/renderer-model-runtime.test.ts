@@ -35,7 +35,7 @@ test("客户端资产按内容定位，覆盖新前缀和单个请求失败", as
   const visited: string[] = [];
   const urls = ["app://-/assets/app-shared-new.js", "app://-/assets/renamed-client.js", ...Array.from({ length: 30 }, (_, i) => `app://-/assets/other-${i}.js`)];
   const locate = new Function("codexAppAssetCandidateUrls", "codexAppAssetUrl", "fetch", `
-    ${runtimeSource("codexAppServerClientBundleHints", "codexAppServerClientAssetFetchLimit", "codexAppServerClientCaptureMarker", "codexAppServerClientCaptureAnchor", "locateCodexAppServerClientBreakpoint", "codexAppServerClientAssetCandidateUrls", "resolveCodexAppServerClientHintedUrl", "locateCodexAppServerClientInAssets")}
+    ${runtimeSource("codexAppServerClientCheckedUrls", "codexAppServerClientBundleHints", "codexAppServerClientAssetFetchLimit", "codexAppServerClientCaptureMarker", "codexAppServerClientCaptureAnchor", "locateCodexAppServerClientBreakpoint", "codexAppServerClientAssetCandidateUrls", "resolveCodexAppServerClientHintedUrl", "locateCodexAppServerClientInAssets")}
     return { locate: locateCodexAppServerClientInAssets, marker: codexAppServerClientCaptureMarker, anchor: codexAppServerClientCaptureAnchor };
   `)(() => urls, () => "", async (url: string) => {
     visited.push(url);
@@ -360,7 +360,7 @@ test("设置对象按输入身份缓存，热路径不再重复解析", () => {
   const runtime = new Function(
     "defaultCodexPlusSettings", "backendCodexPlusSettings", "codexPlusSettingsKey", "localStorage", "window", "backendHolder", "JSON", `
     let codexPlusBackendSettings = backendHolder.current;
-    ${section("  // `codexPlusSettings()` 挂在滚动监听和逐帧对齐路径上", "  // Dream skin runtime is adapted from")}
+    ${runtimeSource("codexPlusSettings")}
     return {
       codexPlusSettings,
       setBackend: (next) => { codexPlusBackendSettings = next; },

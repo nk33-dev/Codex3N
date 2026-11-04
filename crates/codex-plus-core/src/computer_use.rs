@@ -1068,7 +1068,7 @@ pub fn status() -> anyhow::Result<StatusReport> {
 }
 
 /// Claude Desktop 是否在运行。只在 macOS/Windows 上探测，失败一律当作没运行。
-fn claude_desktop_running() -> bool {
+pub fn claude_desktop_running() -> bool {
     #[cfg(target_os = "macos")]
     {
         let output = Command::new("/usr/bin/pgrep")
@@ -2276,7 +2276,11 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left["args"][0], "--codex-plus-cu-mcp");
         assert_eq!(left["command"], runtime.self_command());
-        assert!(left.get("env").is_none());
+        if let Some(state_dir) = crate::paths::state_dir_override() {
+            assert_eq!(left["env"][crate::paths::STATE_DIR_ENV], json!(state_dir));
+        } else {
+            assert!(left.get("env").is_none());
+        }
     }
 
     #[test]

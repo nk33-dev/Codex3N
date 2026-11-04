@@ -1052,6 +1052,15 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
     // 于是「切换登录方式后 model_provider 没跟着切换」「历史会话没被自动修复」，
     // 只有管理工具的「重启」才生效（issue #2080）。失败不阻断激活，只记日志。
     run_activation_provider_sync(&hooks, &settings).await;
+    if let Err(error) = codex_plus_core::relay_config::ensure_managed_session_provider_in_home(
+        &codex_plus_core::relay_config::default_codex_home_dir(),
+        &settings,
+    ) {
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "launcher.managed_session_provider_repair_failed",
+            json!({ "message": error.to_string(), "phase": "activate_existing" }),
+        );
+    }
     let launch_result = hooks
         .launch_codex(
             &app_dir,
@@ -1182,8 +1191,11 @@ impl LaunchHooks for LauncherHooks {
         }
     }
 
-    fn cleanup_unsupported_config(&self) -> anyhow::Result<()> {
-        self.core.cleanup_unsupported_config()
+    fn cleanup_unsupported_config(
+        &self,
+        settings: &codex_plus_core::settings::BackendSettings,
+    ) -> anyhow::Result<()> {
+        self.core.cleanup_unsupported_config(settings)
     }
 
     async fn run_provider_sync(&self) -> anyhow::Result<()> {
@@ -1695,6 +1707,24 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("thread usage live task failed: {error}"))
     }
 
+    async fn whale_session(&self, session: SessionRef) -> anyhow::Result<Value> {
+        let adapter = self.storage_adapter();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_usage::session_summary(&adapter, &session)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale session task failed: {error}"))
+    }
+
+    async fn whale_history(&self, query: Value) -> anyhow::Result<Value> {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        tokio::task::spawn_blocking(move || {
+            codex_plus_data::whale_history::query_history(&home, &query)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("whale history task failed: {error}"))
+    }
+
     async fn find_archived_thread_by_title(
         &self,
         title: String,
@@ -1856,12 +1886,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     }
 
     async fn set_user_script_enabled(&self, key: String, enabled: bool) -> anyhow::Result<Value> {
-        self.user_scripts.set_script_enabled(&key, enabled)?;
+        let result = self.user_scripts.set_script_enabled(&key, enabled);
+        // 与管理器一致：拓展带的钩子 / Codex 资产跟着启停写回 Codex 配置。
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
     async fn delete_user_script(&self, key: String) -> anyhow::Result<Value> {
-        self.user_scripts.delete_user_script(&key)?;
+        let result = self.user_scripts.delete_user_script(&key);
+        codex_plus_core::extension_hooks::sync_default(&self.user_scripts);
+        result?;
         self.user_scripts.inventory()
     }
 
@@ -1893,6 +1928,17 @@ impl BridgeRuntimeService for LauncherRuntimeService {
     async fn cdp_evaluate(&self, payload: Value) -> anyhow::Result<Value> {
         let debug_port = *self.debug_port.lock().unwrap();
         codex_plus_core::routes::evaluate_extension_cdp(debug_port, &payload).await
+    }
+
+    async fn request_app_server_client_capture(&self) -> anyhow::Result<Value> {
+        let websocket_url = self
+            .websocket_url
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Codex 页面尚未连接"))?;
+        let started = codex_plus_core::bridge::request_app_server_client_capture(&websocket_url);
+        Ok(serde_json::json!({ "status": "ok", "started": started }))
     }
 
     async fn script_market_list(&self) -> anyhow::Result<Value> {
@@ -2005,9 +2051,7 @@ async fn try_inject_with_context(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
     runtime.set_websocket_url(websocket_url);
-    let settings = codex_plus_core::settings::SettingsStore::default()
-        .load()
-        .unwrap_or_default();
+    let settings = codex_plus_core::builtin_takeover::load_effective_settings()?;
     let config = runtime.recovery_config.lock().unwrap().clone();
     let script = format!(
         "if (window.top === window && /^app:\\/\\/-\\//i.test(window.location.href)) window.__CODEX_PLUS_RECOVERY__ = {};\n{}",
@@ -2018,10 +2062,17 @@ async fn try_inject_with_context(
     if let Some(expected) = expected {
         recovery::validate_browser(debug_port, &expected).await?;
     }
-    let new_document_scripts = vec![
+    let mut new_document_scripts = vec![
         script,
         codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string(),
     ];
+    if settings.enhancements_enabled
+        && let Ok((entries, _)) =
+            codex_plus_core::user_scripts::default_user_script_manager().enabled_preloads()
+        && let Some(preload) = codex_plus_core::extension_launch::preload_document_script(&entries)
+    {
+        new_document_scripts.push(preload);
+    }
     codex_plus_core::bridge::install_bridge(
         websocket_url,
         codex_plus_core::bridge::BRIDGE_BINDING_NAME,
@@ -2073,28 +2124,8 @@ fn open_url(url: &str) -> anyhow::Result<()> {
 }
 
 fn default_user_script_manager() -> UserScriptManager {
-    let config_dir = default_user_scripts_config_dir();
-    UserScriptManager::new(
-        builtin_user_scripts_dir(),
-        config_dir.join("user_scripts"),
-        config_dir.join("user_scripts.json"),
-    )
-}
-
-fn default_user_scripts_config_dir() -> PathBuf {
-    if cfg!(windows) {
-        if let Some(roaming) = std::env::var_os("APPDATA") {
-            return PathBuf::from(roaming).join("Codex++");
-        }
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
-            return home.join("AppData").join("Roaming").join("Codex++");
-        }
-    }
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"))
-        .join("Codex++")
+    // 目录算法统一在 core，管理器、本地代理、钩子分发共用同一份。
+    codex_plus_core::user_scripts::default_user_script_manager()
 }
 
 #[cfg(test)]
@@ -3031,12 +3062,4 @@ mod tests {
 
         assert_ne!(result["message"], "Unknown bridge path");
     }
-}
-
-fn builtin_user_scripts_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-        .map(|path| path.join("user_scripts"))
-        .unwrap_or_else(|| PathBuf::from("user_scripts"))
 }

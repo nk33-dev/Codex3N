@@ -10,13 +10,13 @@
 
 注入设置页的“后端连接”显示已连接、正在重连或连接失败，失败原因留在连接区域。“重新连接”与后台自动重试共用恢复任务，进行中禁用按钮。HTTP helper 可达不代表业务桥接正常，须桥接响应和设置读取均成功才显示已连接。恢复保留窗口与当前会话，宿主进程不可达时提示“请打开 Codex3N 后重试”。恢复实现与边界见[运行实现](runtime.md#后端连接恢复)。
 
-增强页分为常用增强、语音输入、下一步建议三个标签，开关统一只改草稿；顶部显示保存状态与保存按钮，点击保存后同步配置。Stepwise、回答大纲和桌宠开关也不偷偷提交整个表单，避免部分自动保存、部分手动保存造成保存栏闪烁。
+增强页分为内置拓展、语音输入、提示词增强和下一步建议，主设置开关统一只改草稿；顶部显示保存状态与保存按钮，点击保存后同步配置。拓展包自身配置通过独立保存接口写入，不提交主设置草稿。
 
 总开关、保存栏与标签随页面滚动，避免覆盖功能分组标题。“自动接管官方 App”开关位于管理器的“安装维护”页。
 
 入口为 `apps/codex-plus-manager/src/App.tsx` 的 `EnhanceScreen`。配置关注 `enhancementsEnabled`、对应 `codexApp*` 开关，不能把隐藏保存栏当作保存成功。
 
-`codexAppUsageStatusLine` 默认开启，`83-usage-statusline.js` 在输入框下方显示生成速度、缓存命中率和上下文占用；通过内置 `/thread-usage-live` 路由只读取最近用量事件，不加入第三方拓展白名单。新旧会话库并存时，`storage.rs::codex_thread_rollout` 按候选库顺序只读查找当前会话和有效 rollout，失败后继续查下一库；用量历史共用这一查找逻辑。尚无事件时显示“等待用量数据”，读取失败单独提示并记录诊断，连续失败五次后每 30 秒重试，成功后恢复正常轮询。速度包含工具执行时间；缓存命中率为缓存输入 Token / 输入 Token，上下文占用按 Codex 会话记录中的模型窗口计算。`codexAppStandaloneQuotaUnlock` 默认关闭，独立额度解锁与供应商总开关分开保存。两项开关均沿用增强页手动保存。验证见 `usage-statusline.test.ts`、数据层 `storage_adapter.rs`、`standalone_quota_settings.rs`、`native_api_quota_gate.rs` 与 `bridge_routes.rs`。
+`codexAppUsageStatusLine` 的旧值默认开启，迁移后由随附拓展独立启停，`assets/extensions/usage-statusline/statusline.js` 在输入框下方显示生成速度、缓存命中率和上下文占用；通过只读 `/thread-usage-live` 路由读取最近用量事件，声明该权限的拓展也可调用。新旧会话库并存时，`storage.rs::codex_thread_rollout` 按候选库顺序只读查找当前会话和有效 rollout，失败后继续查下一库；用量历史共用这一查找逻辑。尚无事件时显示“等待用量数据”，读取失败单独提示并记录诊断，连续失败五次后每 30 秒重试，成功后恢复正常轮询。速度包含工具执行时间；缓存命中率为缓存输入 Token / 输入 Token，上下文占用按 Codex 会话记录中的模型窗口计算。`codexAppStandaloneQuotaUnlock` 默认关闭，独立额度解锁与供应商总开关分开保存。独立额度解锁沿用主设置手动保存，用量栏由随附拓展启停。验证见 `usage-statusline.test.ts`、数据层 `storage_adapter.rs`、`standalone_quota_settings.rs`、`native_api_quota_gate.rs` 与 `bridge_routes.rs`。
 
 增强页与注入面板使用中文标题、说明；产品名、协议与命令保持原文。注入面板入口为 `assets/inject/renderer-inject.js` 的 `openCodexPlusModal`，管理器英文模式沿用 i18n 字典。远程 Zed、Upstream 工作树适配、原生菜单汉化、快速启动及增强模式选择已随上游撤下，原生 SSH、工作树和会话分享保持可用。
 
@@ -86,13 +86,13 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 管理器沿用上游 Agent 图标栏与原生工作区布局。供应商编辑分组由 `App.tsx::RelayFold` 保存展开偏好，新出现的校验错误展开对应分组，模型配置首次默认展开。
 
-上游已撤下 Codex++ 会话分享、文件导入与分享链接入口，原生会话能力继续由宿主提供。旧 `codexAppSessionShare` 配置保留读取兼容，不再注册分享按钮。`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭；入口为 `94-typing-effects.js`，跟随输入法组合状态和系统减少动态效果设置。
+上游已撤下 Codex++ 会话分享、文件导入与分享链接入口，原生会话能力继续由宿主提供。旧 `codexAppSessionShare` 在保存时清除，不注册分享按钮。`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭；入口为随附拓展 `assets/extensions/typing-effects`，跟随输入法组合状态和系统减少动态效果设置。
 
 `codexAppSideChatSave` 与 `codexAppTurnRewind` 默认关闭。旁支保存由 `85-side-chat-save.js`、`side_chat.rs` 处理，只支持明确本地主机，先固定主历史边界与哈希，再写新会话文件并交给原生恢复登记；不覆盖源会话。轮次回退由 `85-turn-rewind-controller.js`、`86-turn-rewind-menu.js` 对接原生回退并保留恢复记录。二者接入现有 RPC 包装和扫描调度，保留主机隔离、性能计时与输入法门控。
 
 语音全局热键经 `global_dictation.rs` 和管理器同名模块保存、注册，默认关闭；热键只切换已有听写入口，模型下载仍须用户点击配置页。Windows 和 macOS 的注册能力由平台实现决定。
 
-Agent 桌宠使用上游 `agentPet` 配置、`AgentPetPage.tsx`、`agent_pet.rs` 与 `97-agent-pet.js`。图片经 Rust 按需下载缓存，音效支持内嵌、下载与自定义导入；管理器编辑随设置手动保存。旧 `codexAppWhaleWidgetEnabled` 在尚无 `agentPet` 时迁移开启状态，旧用量挂件运行时及其轮询、账本入口已撤下，磁盘历史文件不主动删除。用量改由网关统计与输入框状态栏展示。
+Agent 桌宠、背景图、打字特效、用量状态栏和请求状态条由 `assets/extensions/` 下的随附拓展包运行，原 `agentPet` 与对应开关只作一次性迁移来源。`bundled_extensions.rs` 转换设置并物化包，`user_scripts.rs` 统一启停和热重载；管理器从「万物皆拓展」编辑各包配置。图片和音效继续由 Rust 校验、缓存，页面不取得供应商凭据。桌宠包含上游恢复的大肥鱼，只有启用的拓展声明相应路由时才读取账本或查询余额，不保留旧的注入轮询。
 
 原生输入预测 `codexAppNativePredictions`、第三方推理折叠 `codexAppThirdPartyReasoningCollapse` 和快速删除 `codexAppSessionDeleteSkipConfirm` 默认关闭。增强设置的标题、分组和说明来自 `crates/codex-plus-core/assets/enhancement-settings.json`，管理器与注入设置页共用，个人低功耗与原生模型混入也在此清单维护。Fast 与输入预测共用原生模块补丁启动入口，恢复 binding 不重复注册这些补丁。
 

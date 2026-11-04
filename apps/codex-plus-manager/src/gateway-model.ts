@@ -5,7 +5,8 @@
  */
 import { PRESETS } from "./presets.ts";
 
-export type GatewayAgentId = "codex" | "claude" | "grok";
+/** 内置三个之外，通用 Agent 的 id 由后端的规格表决定（如 "opencode"）。 */
+export type GatewayAgentId = "codex" | "claude" | "grok" | (string & {});
 export type UnknownModelPolicy = "mapToDefault" | "passthrough";
 export type KeyRotationMode = "sticky" | "roundRobin";
 export type GroupMode = "inOrder" | "rotate" | "weighted" | "usage" | "fast" | "manual";
@@ -45,12 +46,16 @@ export type GatewaySettings = {
   autoModels?: boolean;
   /** 多家都有的模型在 Codex 里名字后面带不带「（供应商）」（旧版后端没有，视为带）。 */
   modelSuffix?: boolean;
+  /** 发现本机已登录的订阅账号，供应商页提示导入（旧版后端没有，视为关）。 */
+  localLoginDiscovery?: boolean;
   /** 模型收藏（管理器模型下拉里的星标），Codex 的选择器里也显示。 */
   favoriteModels?: string[];
   /** 各 Agent 的生图模型（键是 Agent id）：没有或空是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。 */
   imageModels?: Record<string, string>;
   /** 生图结果只给链接时原样转发、不下载成图片数据的 Agent（默认都转）。 */
   imageKeepUrls?: string[];
+  /** 模型下拉里不列自带模型的 Agent（默认都列）。 */
+  hideOwnModels?: string[];
 };
 
 export type GatewayPoolEntry = {
@@ -98,7 +103,14 @@ export type GatewayPoolEntry = {
   quota?: ProviderQuota | null;
   /** 已保存的 Key（打码，#2782）：订阅账号等不用 Key 的为空。旧版后端没有。 */
   keys?: ProviderKeyView[];
+  /** 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额。旧版后端没有。 */
+  balanceApi?: boolean;
+  /** new-api 访问令牌（打码，#2793）：只用来查账户余额；没配置为空。令牌原文不出后端。 */
+  newapiAccess?: NewApiAccessView | null;
 };
+
+/** 已保存的 new-api 访问令牌：只有打码后的样子和用户 ID。 */
+export type NewApiAccessView = { masked: string; userId: string };
 
 /** 供应商已保存的一个 Key：后端只给标识和打码后的样子，原文不出后端。删除 / 替换按 `id`。 */
 export type ProviderKeyView = { id: string; masked: string };
@@ -133,6 +145,43 @@ export type QuotaWindow = { windowMinutes: number | null; usedPercent: number; r
 export type ProviderQuota = { windows: QuotaWindow[]; updatedAtMs: number };
 export type SpeedView = { relayId: string; model: string; ms: number; samples: number };
 
+/** 私有接口订阅的登录方式。 */
+export type SubscriptionLoginMethod = "browser" | "deviceCode" | "importLocal" | "paste";
+export type SubscriptionView = { id: string; name: string; methods: SubscriptionLoginMethod[]; note: string };
+/** 本机官方客户端已登录、还没进池的订阅账号（`scan_gateway_local_logins`）；`account` 登录文件里没有时为空。 */
+export type LocalLogin = { id: string; name: string; account: string };
+/** 开始登录的结果：要打开的网址、验证码、说明，以及原样传回去的状态。 */
+export type SubscriptionLoginStart = { openUrl?: string; userCode?: string; message: string; state: unknown };
+
+export type GatewayAgentDiagnostics = {
+  state: "disabled" | "configChanged" | "configMissing" | "configUnreadable" | "configUnverified" | "gatewayStopped" | "awaitingTraffic" | "active" | "upstreamError";
+  endpoint: string | null;
+  expectedEndpoint: string;
+  configEvidence: Array<{ path: string; field: string; code: string; endpoint: string | null; expectedEndpoint: string | null }>;
+  requests: number;
+  errors: number;
+  inFlight: number;
+  lastSeenMs: number | null;
+  recentError: { kind: string; status: number | null; atMs: number } | null;
+};
+
+export type GatewayDisconnectFile = {
+  path: string;
+  kind: "modify" | "remove" | "create";
+  diff: string;
+  redacted: boolean;
+};
+
+export type GatewayDisconnectPreview = {
+  agent: string;
+  previewToken: string;
+  files: GatewayDisconnectFile[];
+  warnings: string[];
+  canDisconnect: boolean;
+  /** 没法逐项预览时（Codex 接入前没留下实时存档等）：断开会完整切换到这个直连供应商，确认后走「完整切换并断开」。 */
+  fullSwitch?: { relayId: string; name: string } | null;
+};
+
 export type GatewayAgentView = {
   agent: GatewayAgentId;
   name: string;
@@ -140,13 +189,25 @@ export type GatewayAgentView = {
   version?: string | null;
   /** 网关改写的配置文件。 */
   configPath?: string;
+  /** 通用 Agent：在 Agent 里怎么切模型、接入后要不要重启等提示。 */
+  hint?: string;
   enabled: boolean;
+  /** 原生配置可能仍由网关管理，即使绑定记录已经关闭。 */
+  requiresDisconnectPreview?: boolean;
   baseUrl: string;
   defaultModel: string;
   models: string[];
   /** 开着网关、但配置已被别的工具改掉：认得出的工具名与现在连的地址。 */
   drift?: { by?: string | null; endpoint: string } | null;
+  /** 配置与最近实际请求的联合诊断；旧版后端没有。 */
+  diagnostics?: GatewayAgentDiagnostics | null;
+  /** Agent 自带的模型：用它自己的登录或 Key 直连厂商，不经 Codex++；选中即断开网关。 */
+  ownModels?: OwnModels | null;
 };
+
+export type OwnModel = { id: string; label: string };
+/** `vendor`：直连的对象（OpenAI、Anthropic、直连模式的供应商名）；`current`：没接入时 Agent 现在用的模型。 */
+export type OwnModels = { vendor: string; models: OwnModel[]; current: string };
 
 export type KeyHealthView = {
   relayId: string;
@@ -201,6 +262,8 @@ export type GatewayPayload = {
   gateway: GatewaySettings;
   port: number;
   helperRunning: boolean;
+  /** Codex 旧版供应商配置总开关；旧版后端没有这个字段。 */
+  relayProfilesEnabled?: boolean;
   /** 网关自己的供应商池（不含 Key）。 */
   pool: GatewayPoolEntry[];
   groups: GatewayGroupEntry[];
@@ -212,6 +275,8 @@ export type GatewayPayload = {
   speeds?: SpeedView[];
   /** 可复制进网关的直连模式供应商。 */
   codexProviders: GatewayPoolEntry[];
+  /** 能在网关里登录的私有接口订阅（Cursor、Kiro 等）；旧版后端没有。 */
+  subscriptions?: SubscriptionView[];
   claudeProviders: Array<{ id: string; name: string }>;
   grokProfiles: Array<{ id: string; name: string }>;
   /** OpenCode 里保存的 OpenCode Go / Zen Key。 */
@@ -291,14 +356,14 @@ export function draftFromBinding(binding: AgentBinding | undefined): BindingDraf
 
 /** 添加供应商时默认勾选的 Agent：没关掉「添加供应商时自动加入」的。 */
 export function defaultProviderAgents(payload: GatewayPayload | null): GatewayAgentId[] {
-  return (payload?.agents ?? [])
+  return glanceAgents(payload?.agents)
     .map((agent) => agent.agent)
     .filter((agent) => payload?.gateway.bindings[agent]?.autoJoinProviders !== false);
 }
 
-/** 添加命令带上的 `skipAgents`：没勾选的 Agent。 */
+/** 添加命令带上的 `skipAgents`：列出来但没勾选的 Agent。没列出来的（装了没接入的）不跳过，以后接入时照常能用。 */
 export function skippedAgents(payload: GatewayPayload | null, picked: GatewayAgentId[]): GatewayAgentId[] {
-  return (payload?.agents ?? []).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
+  return glanceAgents(payload?.agents).map((agent) => agent.agent).filter((agent) => !picked.includes(agent));
 }
 
 /** 窗口支持纯数字和 `200k` / `1M` 写法。无效时返回 NaN。 */
@@ -503,8 +568,24 @@ export const GATEWAY_CLAUDE_PROVIDER_ID = "codex-plus-gateway";
 
 export const GATEWAY_AGENT_NAMES: Record<string, string> = { claude: "Claude Code", grok: "Grok", codex: "Codex" };
 
+/** 内置的三个 Agent：总览、托盘里总是列出。 */
+export const BUILTIN_GATEWAY_AGENTS = ["codex", "claude", "grok"];
+
+/** 总览、托盘这类一屏看全的地方：内置的三个，加上已经接入网关的通用 Agent；
+ * 本机装了但没接入的只在「Agent 接入」页里列出。 */
+export function glanceAgents<T extends { agent: string; enabled: boolean }>(agents: T[] | undefined): T[] {
+  return (agents ?? []).filter((agent) => agent.enabled || BUILTIN_GATEWAY_AGENTS.includes(agent.agent));
+}
+
 export function agentName(agent: string): string {
   return GATEWAY_AGENT_NAMES[agent] ?? agent;
+}
+
+/** 记下后端给的 Agent 名字（通用 Agent 的名字只在网关数据里有），会话、用量等页面按 id 取名时用。 */
+export function rememberAgentNames(agents: Array<{ agent: string; name: string }> | undefined) {
+  for (const item of agents ?? []) {
+    if (item.name && !GATEWAY_AGENT_NAMES[item.agent]) GATEWAY_AGENT_NAMES[item.agent] = item.name;
+  }
 }
 
 export type PickerItem = {
@@ -514,6 +595,8 @@ export type PickerItem = {
   sub: string;
   avatar: string;
   custom?: boolean;
+  /** Agent 自带的模型：直连的对象（不经 Codex++）。 */
+  direct?: string;
 };
 
 export type PickerSection = { key: string; title: string; avatar: string; items: PickerItem[] };
@@ -585,6 +668,27 @@ export function pickerSections(
     });
   }
   return sections;
+}
+
+/** 下拉里要列的自带模型：关掉开关后只留 Agent 现在用着的那一个（没有就不列）。 */
+export function visibleOwnModels(agent: GatewayAgentView, payload: GatewayPayload | null): OwnModels | null {
+  const own = agent.ownModels;
+  if (!own) return null;
+  if (!(payload?.gateway.hideOwnModels ?? []).includes(agent.agent)) return own;
+  const current = own.current.trim().toLowerCase();
+  const models = current ? own.models.filter((model) => model.id.toLowerCase() === current) : [];
+  return models.length ? { ...own, models } : null;
+}
+
+/** 模型下拉里 Agent 自带模型那一组（排在池里的模型后面）：按查询词筛，没有时为 null。 */
+export function ownPickerSection(own: OwnModels | null | undefined, rawQuery: string, avatar: (name: string) => string): PickerSection | null {
+  if (!own || !own.models.length) return null;
+  const query = rawQuery.trim().toLowerCase();
+  const vendorHit = matches(query, own.vendor);
+  const items = own.models
+    .filter((model) => vendorHit || matches(query, model.id, model.label))
+    .map((model) => ({ model: model.id, label: model.label, sub: model.label === model.id ? "" : model.id, avatar: avatar(own.vendor), direct: own.vendor }));
+  return items.length ? { key: "own", title: own.vendor, avatar: avatar(own.vendor), items } : null;
 }
 
 /** `auto`：多家都有的模型的裸名，按池顺序在这几家之间自动切换（`sub` 是这几家，按尝试顺序）。 */
@@ -1170,7 +1274,7 @@ export type UsageSummary = {
   byModel: UsageGroup[];
   costs: UsageCost[];
 };
-export type ProviderBalance = { providerId: string; provider: string; baseUrl: string; amount?: number | null; currency: string; error?: string | null };
+export type ProviderBalance = { providerId: string; provider: string; baseUrl: string; amount?: number | null; currency: string; error?: string | null; note?: string | null };
 export type UsageRange = "today" | "7d" | "30d" | "all";
 
 /** 统计范围从哪一刻开始（本地时间当天零点往前推）；「全部」没有起点。 */
@@ -1271,7 +1375,8 @@ export function shortDate(date: string, english = false): string {
 /* —————————————— 会话 —————————————— */
 
 export type SessionAgent = "codex" | "claude" | "grok";
-export type AgentSessionView = { agent: SessionAgent; id: string; title: string; cwd: string; updatedAtMs: number };
+/** `surface: "desktop"` 是 Claude Desktop 里的会话；`resumeId` 是在终端恢复时用的 id（Desktop 会话与列表 id 不同）。 */
+export type AgentSessionView = { agent: SessionAgent; id: string; title: string; cwd: string; updatedAtMs: number; surface?: "desktop"; archived?: boolean; resumeId?: string };
 
 /** 合并各 Agent 的会话：按更新时间倒序，按 Agent 和关键词（标题、目录、id）过滤。 */
 export function filterSessions(sessions: AgentSessionView[], agent: SessionAgent | "all", query: string): AgentSessionView[] {

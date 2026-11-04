@@ -113,20 +113,63 @@ async fn open_candidates(
         ..RequestTrace::default()
     };
     let conversation_seed = conversation_seed(&request);
-    if plan.candidates.is_empty() {
-        if let Some(wait) = plan.cooling {
-            recorder.cooling(wait.as_millis() as u64);
-            return Ok(GatewayOutcome {
-                upstream: GatewayUpstream::Cooling(wait),
-                trace,
-                busy: None,
-                slot: None,
-            });
+    let mut pending = fit_first(&plan.candidates, estimate_tokens(&request));
+    // 拓展网关中间件的 route 段：按拓展给的顺序重排 / 筛选候选（供应商 + Key）；gateway.replaces 关掉
+    // builtin:gateway-failover 时只试第一个，失败直接回错误，不再换下一个。
+    if pending.len() > 1 {
+        let ids: Vec<String> = pending
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| format!("{}#{index}", candidate.relay.id))
+            .collect();
+        let described: Vec<Value> = pending
+            .iter()
+            .zip(&ids)
+            .map(|(candidate, id)| {
+                serde_json::json!({
+                    "id": id,
+                    "provider": candidate.relay.id,
+                    "name": candidate.relay.name,
+                    "model": candidate.upstream_model,
+                })
+            })
+            .collect();
+        let context =
+            serde_json::json!({ "model": plan.source_model, "agent": format!("{:?}", plan.agent) });
+        if let Some(order) = crate::extension_gateway::route_order(&described, context).await {
+            pending = order
+                .iter()
+                .filter_map(|id| {
+                    ids.iter()
+                        .position(|item| item == id)
+                        .map(|index| pending[index])
+                })
+                .collect();
         }
-        anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
+    }
+    if crate::extension_gateway::builtin_replaced("builtin:gateway-failover") {
+        pending.truncate(1);
+    }
+    if plan.candidates.is_empty() {
+        let Some(wait) = plan.cooling else {
+            anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
+        };
+        // 所有 Key 都在冷却（#2802）：最早的那个很快恢复时等它一等再试，不马上回本地 429——
+        // Codex 自己的重试几秒内就用完了，冷却稍长一点就会整轮失败，而直连时这几秒后上游多半已恢复。
+        match wait_for_cooling_key(plan, &request).await? {
+            Some(ready) => pending = vec![ready],
+            None => {
+                recorder.cooling(wait.as_millis() as u64);
+                return Ok(GatewayOutcome {
+                    upstream: GatewayUpstream::Cooling(wait),
+                    trace,
+                    busy: None,
+                    slot: None,
+                });
+            }
+        }
     }
     let mut last_error: Option<anyhow::Error> = None;
-    let mut pending = fit_first(&plan.candidates, estimate_tokens(&request));
     // 主动限速：第一次因为候选都满了而排队的时刻，和累计排了多久。
     let mut queue_started: Option<Instant> = None;
     let mut queued = Duration::ZERO;
@@ -189,10 +232,13 @@ async fn open_candidates(
             let candidate = &prepared;
             let busy = recorder.begin(candidate);
             let started = Instant::now();
+            // Anthropic → Anthropic 原生直通不经过拓展的 upstream 段：拓展关掉了 builtin:auth-headers 时
+            // 改走协议代理链路，鉴权头才由拓展给。
             let native = request
                 .anthropic
                 .as_ref()
-                .filter(|_| candidate.relay.protocol == RelayProtocol::AnthropicMessages);
+                .filter(|_| candidate.relay.protocol == RelayProtocol::AnthropicMessages)
+                .filter(|_| !crate::extension_gateway::builtin_replaced("builtin:auth-headers"));
             let attempt = match native {
                 Some(passthrough) => {
                     trace.wire_api = "AnthropicMessages".to_string();
@@ -256,7 +302,7 @@ async fn open_candidates(
                         Some(class.label()),
                         upstream.status_code(),
                     );
-                    let failover = key_pool::record_failure(&candidate.key, &class, Instant::now());
+                    let failover = record_key_failure(&candidate.key, &class);
                     // 失败也算「试过了」：速度优先的组不再把它当没测过的排第一。
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
@@ -276,11 +322,7 @@ async fn open_candidates(
                 Err(AttemptError::Fatal(error)) => return Err(error),
                 Err(AttemptError::Transport(error)) => {
                     recorder.step(candidate, "transport", Some("server_error"), None);
-                    key_pool::record_failure(
-                        &candidate.key,
-                        &FailureClass::ServerError,
-                        Instant::now(),
-                    );
+                    record_key_failure(&candidate.key, &FailureClass::ServerError);
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
                         &candidate.upstream_model,
@@ -330,6 +372,90 @@ async fn open_candidates(
         pending = deferred;
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
+}
+
+/// 把一次失败记进 Key 池，返回要不要换下一个候选。
+///
+/// 拓展用 `gateway.replaces` 关掉 `builtin:key-cooldown` 时 429 / 额度耗尽不再让 Key 冷却，
+/// 关掉 `builtin:key-breaker` 时 5xx / 连接失败不再计入供应商熔断；换不换下一个候选照旧按分类定，
+/// 要不要避开这个 Key / 供应商由拓展在 route 段自己决定。
+fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -> bool {
+    let replaced = match class {
+        FailureClass::RateLimited { .. } | FailureClass::QuotaExhausted { .. } => {
+            crate::extension_gateway::builtin_replaced("builtin:key-cooldown")
+        }
+        FailureClass::ServerError => {
+            crate::extension_gateway::builtin_replaced("builtin:key-breaker")
+        }
+        _ => false,
+    };
+    if replaced {
+        return class.should_failover();
+    }
+    key_pool::record_failure(key, class, Instant::now())
+}
+
+/// 所有 Key 都在冷却时，最早恢复的那个最多等这么久（#2802）。
+///
+/// 覆盖无提示 429 的前三次退避（5 / 10 / 20 秒）和上游给的短 Retry-After；
+/// 更久的冷却（额度耗尽、上游明确要求等一分钟以上）照旧马上回 429，不让请求一直挂着。
+pub const COOLING_WAIT_LIMIT: Duration = Duration::from_secs(20);
+
+/// 等冷却中最早恢复的 Key 恢复，交回它；等不到（超过 [`COOLING_WAIT_LIMIT`]）返回 None。
+///
+/// 等的过程中别的请求可能又把它打进冷却（再 429 一次），这时按新的剩余时间接着等，总时长不超过上限；
+/// 客户端断开就不再等。
+async fn wait_for_cooling_key<'a>(
+    plan: &'a RoutePlan,
+    request: &GatewayRequest<'_>,
+) -> anyhow::Result<Option<&'a GatewayCandidate>> {
+    let Some(first) = plan.waiting.first() else {
+        return Ok(None);
+    };
+    let started = Instant::now();
+    let deadline = started + COOLING_WAIT_LIMIT;
+    if started + first.remaining > deadline {
+        return Ok(None);
+    }
+    if let Some(id) = request.live_request_id {
+        crate::request_log::update_running_phase(id, "waiting");
+    }
+    loop {
+        let now = Instant::now();
+        // 冷却中的 Key 里现在还要等最短的那个。
+        let next = plan
+            .waiting
+            .iter()
+            .map(|item| {
+                let remaining =
+                    key_pool::cooling_remaining(&item.candidate.key, now).unwrap_or_default();
+                (&item.candidate, remaining)
+            })
+            .min_by_key(|(_, remaining)| *remaining);
+        let Some((candidate, remaining)) = next else {
+            return Ok(None);
+        };
+        if remaining.is_zero() {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "gateway.cooling_wait",
+                serde_json::json!({
+                    "relayId": candidate.relay.id,
+                    "keyId": candidate.key.key_id,
+                    "waitedMs": started.elapsed().as_millis() as u64,
+                }),
+            );
+            return Ok(Some(candidate));
+        }
+        if now + remaining > deadline {
+            return Ok(None);
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(remaining) => {}
+            _ = client_gone(request.client) => {
+                anyhow::bail!("客户端已断开，放弃等待冷却中的上游 Key");
+            }
+        }
+    }
 }
 
 /// 请求日志里「限速排队」的记录：`local_rate_limit_wait_ms:<毫秒>`，界面显示成「限速排队 Xs」。
@@ -455,11 +581,32 @@ async fn attempt_pipeline(
     if candidate.relay.protocol == RelayProtocol::Responses {
         anthropic_inbound::strip_unreplayable_reasoning(&mut body);
     }
+    // Claude Desktop / Claude Code 只会发 low…max：套到这家这个模型实有的档位。
+    if request.anthropic.is_some()
+        && let Some(effort) = body.pointer("/reasoning/effort").and_then(Value::as_str)
+    {
+        let levels = crate::gateway::route::model_reasoning_levels(
+            &candidate.relay,
+            &candidate.upstream_model,
+        );
+        body["reasoning"]["effort"] =
+            Value::String(anthropic_inbound::fit_reasoning_effort(effort, &levels));
+    }
     // ChatGPT 订阅后端只服务 Codex 自己的客户端：请求体、请求头都整理成 Codex CLI 发的样子。
     let chatgpt = crate::official_login::member_uses_official_login_transport(&candidate.relay);
+    // 拓展用 gateway.replaces 关掉 builtin:official-shaping：请求体、UA 与版本头不再整理成 Codex CLI 的样子，
+    // 由拓展在 upstream 段自己整理（上下文里 official 为 true）；会话头与官方凭据仍由 Codex++ 处理。
+    let shaping = !crate::extension_gateway::builtin_replaced("builtin:official-shaping");
     let mut relay = candidate.relay.clone();
     let mut cache_key = String::new();
-    if chatgpt {
+    if chatgpt && !shaping {
+        body["model"] = Value::String(candidate.upstream_model.clone());
+        cache_key = body
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+    } else if chatgpt {
         let home = crate::codex_home::default_codex_home_dir();
         let prompt = crate::gateway::chatgpt_backend::codex_prompt_from_cache(
             &home,
@@ -498,7 +645,9 @@ async fn attempt_pipeline(
             == Some("chatgpt-api");
     if chatgpt_api {
         body["model"] = Value::String(candidate.upstream_model.clone());
-        crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+        if shaping {
+            crate::gateway::chatgpt_backend::adapt_api_request(&mut body);
+        }
         cache_key = body
             .get("prompt_cache_key")
             .and_then(Value::as_str)

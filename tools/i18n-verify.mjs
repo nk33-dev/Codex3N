@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { tourSteps } from "../apps/codex-plus-manager/src/onboarding-model.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
@@ -44,7 +45,24 @@ const SRC_FILES = [
   "src/lib/default-settings.ts",
   "src/provider-utils.ts",
   "src/AgentDashboard.tsx",
-  "src/AgentPetPage.tsx",
+  "src/AgentFocusDialog.tsx",
+  "src/AgentDisconnectDialog.tsx",
+  "src/OnboardingSetup.tsx",
+  "src/CommunityExtensionsPanel.tsx",
+  "src/CuratedPackages.tsx",
+  "src/DshPluginsPanel.tsx",
+  "src/ExtensionCard.tsx",
+  "src/ExtensionCuration.tsx",
+  "src/ExtensionManagerPanel.tsx",
+  "src/ExtensionPublishDialog.tsx",
+  "src/MyPublishedPanel.tsx",
+  "src/ProviderMetaSyncDialog.tsx",
+  "src/provider-meta-sync-model.ts",
+  "src/RequestFlow.tsx",
+  "src/cx-layout.tsx",
+  "src/extension-config-form.tsx",
+  "src/agent-focus-model.ts",
+  "src/agent-focus-store.ts",
   "src/AppSelect.tsx",
   "src/CommandPalette.tsx",
   "src/GatewayAgents.tsx",
@@ -95,6 +113,25 @@ function scanFile(relPath) {
         if (fn === "t" || ((fn === "tr" || probeHint) && node.arguments.length === 1)) usedPlain.add(literal);
         else if (fn === "tf" || ((fn === "tr" || probeHint) && node.arguments.length >= 2)) usedTemplate.add(literal);
       }
+      if (arg && ts.isConditionalExpression(arg) && (fn === "t" || fn === "tf")) {
+        const collect = (value) => {
+          if (ts.isStringLiteralLike(value)) (fn === "t" ? usedPlain : usedTemplate).add(value.text);
+          else if (ts.isConditionalExpression(value)) { collect(value.whenTrue); collect(value.whenFalse); }
+        };
+        collect(arg);
+      }
+    }
+    if (relPath === "src/AgentFocusDialog.tsx" && ts.isPropertyAssignment(node)
+      && ["name", "hint"].includes(node.name.getText(sf)) && ts.isStringLiteralLike(node.initializer)) {
+      usedPlain.add(node.initializer.text);
+    }
+    if (relPath === "src/provider-meta-sync-model.ts" && ts.isFunctionDeclaration(node)
+      && ["currentSourceLabel", "ignoredReasonLabel"].includes(node.name?.text)) {
+      const collect = (child) => {
+        if (ts.isStringLiteralLike(child) && /\p{Script=Han}/u.test(child.text)) usedPlain.add(child.text);
+        ts.forEachChild(child, collect);
+      };
+      collect(node);
     }
     ts.forEachChild(node, visit);
   };
@@ -102,6 +139,12 @@ function scanFile(relPath) {
 }
 
 for (const f of SRC_FILES) scanFile(f);
+for (const steps of [tourSteps(null), tourSteps("Codex"), tourSteps(null, true)]) {
+  for (const step of steps) {
+    (step.args && !step.plainTitle ? usedTemplate : usedPlain).add(step.title);
+    (step.args ? usedTemplate : usedPlain).add(step.body);
+  }
+}
 
 // 增强设置项清单的文案在管理器里以 t(item.title) 这类动态参数翻译，扫描调用点看不到，
 // 这里按 src/enhancement-catalog.ts 的 enhancementCatalogStrings() 同样的字段补进来。
@@ -117,6 +160,10 @@ for (const item of catalog.items) {
   usedPlain.add(item.description);
   if (item.descriptionWhenEnhancementsOn) usedPlain.add(item.descriptionWhenEnhancementsOn);
   for (const option of item.options ?? []) usedPlain.add(option.label);
+}
+for (const builtin of catalog.builtins ?? []) {
+  usedPlain.add(builtin.title);
+  usedPlain.add(builtin.description);
 }
 
 // ── Read the dictionary keys out of i18n-en.ts. ─────────────────────────────

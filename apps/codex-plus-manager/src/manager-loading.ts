@@ -1,12 +1,15 @@
-export type ManagerRoute = "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "claudeRelay" | "claudeSessions" | "computerUse" | "requestLog" | "agentSettings" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "agentCollaboration" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "agentPet";
+export type ManagerRoute = "extension" | "home" | "recommendations" | "overview" | "relay" | "multiLaunch" | "grok" | "claude" | "claudeRelay" | "claudeSessions" | "computerUse" | "requestLog" | "agentSettings" | "relayEnvironment" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "agentCache" | "agentCollaboration" | "userScripts" | "pluginMarket" | "maintenance" | "about" | "settings" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "agentPet";
 
 type PageTask = "settings" | "overview" | "weixin" | "relay" | "relayFiles" | "envConflicts" | "ccsProviders" | "relayEnvironment" | "sessions" | "providerSyncTargets" | "sessionIndexRepairReport" | "liveContextEntries" | "dreamSkinStatus" | "dreamSkinLibrary" | "dreamSkinMarket" | "dreamSkinCommunity" | "scriptMarket" | "userScriptInventory" | "logs" | "diagnostics" | "watcher";
 export type ManagerPageLoaders = Record<PageTask, () => Promise<unknown>>;
 
 /** 同一批任务互不依赖；不同批次保留设置、脚本库存等数据的写入顺序。 */
 const pageLoadBatches: Record<ManagerRoute, PageTask[][]> = {
+  extension: [],
+  home: [],
+  recommendations: [],
   overview: [["overview"]],
-  relay: [["settings", "weixin", "relay", "relayFiles", "envConflicts", "ccsProviders"]],
+  relay: [["settings", "weixin", "relay", "relayFiles", "envConflicts", "ccsProviders", "relayEnvironment"]],
   multiLaunch: [["settings", "weixin", "relay", "relayFiles", "envConflicts", "ccsProviders"]],
   grok: [["settings"]],
   claude: [],

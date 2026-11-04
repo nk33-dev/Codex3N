@@ -51,11 +51,11 @@ function railRuntime() {
   const rail = new FakeNode().append(new FakeNode("top"), group);
   const all = () => [rail, ...rail.descendants()];
   const context = vm.createContext({
-    codexPlusRailSelector: "nav", codexPlusRailDestinationSelector: "[data-sidebar-destination]",
+    codexPlusBackendGeneration: 1, window: { __codexPlusBackendGeneration: 1 }, codexPlusRailSelector: "nav", codexPlusRailDestinationSelector: "[data-sidebar-destination]",
     codexPlusRailNavId: "codex-plus-rail-nav", codexPlusRailExtensionsId: "codex-plus-rail-extensions",
     codexPlusMenuId: "codex-plus-menu", codexPlusBackendStatus: { status: "ok" },
     codexPlusRailTemplateButton: () => null,
-    createCodexPlusRailButton: ({ id }: any) => new FakeNode(id),
+    createCodexPlusRailButton: ({ id }: any) => Object.assign(new FakeNode(id), { __codexPlusGeneration: 1 }),
     openCodexPlusPage() {}, openCodexPlusExtensions() {}, closeCodexPlusPageAfterNativeNavigation() {},
     codexPlusExtensionConstants: { extensionAttribute: "data-codex-plus-ext" },
     codexPlusDefaultExtensionIconPath: "",
@@ -71,6 +71,7 @@ function railRuntime() {
   vm.runInContext([
     extract("40-backend-settings.js", "codexPlusRailPrimaryAnchor"),
     extract("40-backend-settings.js", "codexPlusRailInsertAnchor"),
+    extract("40-backend-settings.js", "codexPlusNavEntryReusable"),
     extract("40-backend-settings.js", "installCodexPlusRailNavigation"),
   ].join("\n"), context);
   const order = () => group.children.map((node) => node.id || node.getAttribute("data-sidebar-destination") || "home-group");

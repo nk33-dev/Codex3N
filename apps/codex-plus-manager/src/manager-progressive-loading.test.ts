@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import * as skillGroups from "./skill-groups.ts";
+import * as skillBatch from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any> };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -43,6 +45,7 @@ function harness(file: string, component: string) {
     },
     useMemo: (callback: () => unknown) => callback(),
     useDeferredValue: (value: unknown) => value,
+    useSyncExternalStore: (_subscribe: unknown, snapshot: () => unknown) => snapshot(),
     startTransition: (callback: () => void) => callback(),
   };
   const modules: Record<string, any> = {
@@ -50,14 +53,20 @@ function harness(file: string, component: string) {
     "@tauri-apps/api/core": { invoke: (command: string, args: unknown) => new Promise((resolve, reject) => calls.push({ command, args, resolve, reject })) },
     "./management-model": { matchesManagementQuery: () => true },
     "./agent-mcp-model": { MCP_AGENTS: ["codex", "claude", "grok"] },
+    "./skill-groups": skillGroups,
+    "./skill-agent-batch": skillBatch,
+    "./agent-focus-store": { useAgentFocus: () => null },
+    "./agent-focus-model": { agentVisible: () => true },
+    "@dnd-kit/core": { useSensor: () => ({}), useSensors: () => [] },
     "@/i18n": { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, i) => String(args[i])) },
-    "./i18n": { t: (text: string) => text },
+    "./i18n": { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, i) => String(args[i])) },
   };
   const storage = new Map<string, string>();
   const context = vm.createContext({ React, localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) }, exports: {}, require: (name: string) => modules[name] ?? new Proxy({}, { get: (_, key) => String(key) }) });
   vm.runInContext(`${compiled}\nglobalThis.component = ${component};`, context);
   return {
     calls, notices,
+    data: () => hooks.find(value => value?.value?.skills)?.value,
     render() { cursor = 0; const root = context.component({ notify: (...args: unknown[]) => { notices.push(args); } }); while (effects.length) effects.shift()!(); return root as Element; },
     unmount() { cleanups.forEach(cleanup => cleanup()); },
     changes: () => changes,
@@ -95,16 +104,17 @@ test("Skills 写操作隔离旧刷新并合并重复点击", async () => {
   root = screen.render();
   const importButton = find(root, node => node.props.onClick && nodes(node).some(child => child.props.children?.includes("从 cc-switch 导入")));
   importButton.props.onClick(); importButton.props.onClick();
+  await tick();
   assert.equal(screen.calls.length, 3);
   screen.calls[2].resolve(payload("new")); await tick();
   screen.calls[1].resolve(payload("old")); await tick();
   root = screen.render();
-  assert.ok(nodes(root).some(node => node.type === "strong" && node.props.children?.includes("new")));
-  assert.ok(!nodes(root).some(node => node.type === "strong" && node.props.children?.includes("old")));
+  assert.equal(screen.data().skills[0].name, "new");
   importButton.props.onClick();
+  await tick();
   screen.unmount();
   const before = screen.changes();
-  screen.calls[3].reject(new Error("late failure")); await tick();
+  screen.calls.at(-1)!.reject(new Error("late failure")); await tick();
   assert.equal(screen.changes(), before);
 });
 

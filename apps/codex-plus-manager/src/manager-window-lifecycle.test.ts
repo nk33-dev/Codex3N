@@ -10,6 +10,38 @@ const source = (await readFile(new URL("./use-manager-lifecycle.ts", import.meta
   .replace("export function", "function");
 const compiled = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
+test("当前 Codex 设置页启用接管刷新，微信刷新保留旧响应检查", async () => {
+  const app = ts.createSourceFile("App.tsx", await readFile(new URL("./App.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let options: ts.ObjectLiteralExpression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && node.expression.getText(app) === "useManagerLifecycle"
+      && ts.isObjectLiteralExpression(node.arguments[0])) options = node.arguments[0];
+    ts.forEachChild(node, visit);
+  };
+  visit(app);
+  assert.ok(options);
+  const config = options;
+  const property = (name: string) => {
+    const entry = config.properties.find((entry): entry is ts.PropertyAssignment => ts.isPropertyAssignment(entry) && entry.name.getText(app) === name);
+    assert.ok(entry);
+    return ts.transpileModule(`const value = ${entry.initializer.getText(app)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  };
+  const active = new Function("route", "settings", `${property("autoTakeoverActive")} return value;`);
+  for (const route of ["agentSettings", "maintenance"]) {
+    assert.equal(active(route, { settings: { codexAppAutoTakeover: true } }), true);
+    assert.equal(active(route, { settings: { codexAppAutoTakeover: false } }), false);
+  }
+  assert.equal(active("overview", { settings: { codexAppAutoTakeover: true } }), false);
+  let guard: (() => boolean) | undefined;
+  const refresh = new Function("refreshWeixinStatus", `${property("refreshWeixin")} return value;`)((silent: boolean, isCurrent: () => boolean) => {
+    assert.equal(silent, true);
+    guard = isCurrent;
+  });
+  const isCurrent = () => false;
+  refresh(isCurrent);
+  assert.equal(guard, isCurrent);
+});
+
 function harness(readVisible: () => Promise<boolean> = async () => true) {
   const effects: Array<() => () => void> = [];
   const events = new Map<string, (event: { payload: boolean }) => void>();

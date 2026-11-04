@@ -901,3 +901,36 @@ async fn expected_sha256_returns_none_when_metadata_is_missing_or_from_another_v
         None
     );
 }
+
+#[test]
+fn downloaded_installer_requires_complete_marker_with_matching_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = Release {
+        version: "v1.0.9".to_string(),
+        url: "https://example.test".to_string(),
+        body: "fixes".to_string(),
+        asset_name: Some("pkg.dmg".to_string()),
+        asset_url: Some("https://example.test/pkg.dmg".to_string()),
+        asset_sha256: None,
+        sha256sums_url: None,
+    };
+    // 还没下：不算下好。
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+
+    let path = download_asset_to(&release, b"abcdef", dir.path()).unwrap();
+    assert_eq!(
+        codex_plus_core::update::downloaded_installer(&release, dir.path()),
+        Some((path.clone(), 6))
+    );
+    // 没留下半截的临时文件。
+    assert!(!dir.path().join("pkg.dmg.part").exists());
+
+    // 安装包被改过（大小对不上）就不算下好，点「安装」时会重新下载。
+    std::fs::write(&path, b"abc").unwrap();
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+
+    // 标记丢了也不算。
+    std::fs::write(&path, b"abcdef").unwrap();
+    std::fs::remove_file(dir.path().join("pkg.dmg.complete")).unwrap();
+    assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
+}

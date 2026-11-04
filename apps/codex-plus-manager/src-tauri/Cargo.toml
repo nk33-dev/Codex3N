@@ -19,6 +19,7 @@ name = "codex-plus-legacy-shim"
 path = "src/legacy_shim.rs"
 
 [dependencies]
+uuid.workspace = true
 fs2.workspace = true
 futures-util.workspace = true
 anyhow.workspace = true

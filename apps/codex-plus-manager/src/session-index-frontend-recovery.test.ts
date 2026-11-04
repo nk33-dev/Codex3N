@@ -175,7 +175,7 @@ test("the default-off recovery switch is exposed in both settings UIs and uses t
   const defaults = readFileSync(path.join(root, "apps/codex-plus-manager/src/lib/default-settings.ts"), "utf8");
   assert.match(types, /codexAppHistoryTurnRecovery: boolean/);
   assert.match(defaults, /codexAppHistoryTurnRecovery: false/);
-  assert.match(app, /managerGroupItems\(group\.id, enhancementPlatform\)\.map\(renderSetting\)/);
+  assert.match(app, /managerBuiltinCards\(group\.id, enhancementPlatform\)\.map\(renderBuiltin\)/);
   assert.match(styles, /historyTurnRecovery: false/);
   assert.match(styles, /historyTurnRecovery: "codexAppHistoryTurnRecovery"/);
   assert.match(backend, /renderCodexPlusSettingsCatalogSections\(\)/);
