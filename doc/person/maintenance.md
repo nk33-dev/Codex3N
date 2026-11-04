@@ -215,3 +215,5 @@ DSH 升级连接收尾依赖上游锁文件中的 `mio 1.2.4`，保留安全补�
 Windows 隔离 workspace 全量测试 4,493 通过、38 忽略，退出码 0；新增面板协议测试另随最终门禁复验。前端新增提示词安装入口、接管页刷新与微信旧响应隔离、面板身份切换及迟到令牌回收回归。960 px 下增强工具栏可换行，保存操作固定在页头；初始页面加载不再受首次设置回填后的对象身份变化阻断，仍保护启动期间的新草稿。
 
 最终 Node 22.23.3 前端 1,814 通过、2 跳过，TypeScript、Vite、格式与 `cargo local-check` 通过；面板协议专项、relay Clippy、两套注入一致性及语音缓存 10 项通过。npm 审计无漏洞，Rust 审计无阻断漏洞，保留 9 项允许告警。最终提交由保留上游父节点的同步合并产生，push CI 必须验证该提交而不是之前的 `main` 或旧发布结果。
+
+首次 push CI `41785552682` 的 Linux Rust 测试在 `launcher_process_filter_skips_instances_from_another_installation` 失败：Windows 路径夹具在 Unix 上没有目录分隔语义。用例改为当前平台路径，并在 Windows 保留长路径前缀分支；不改变生产过滤逻辑。后续提交重新执行全部 CI。
