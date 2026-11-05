@@ -75,3 +75,38 @@ test("拓展自己插入的菜单不触发布局读取", () => {
   ctx.codexPlusModelPickerReportUnrecognized();
   assert.equal(fakeMenu.rectCalls, 0);
 });
+
+// 菜单关闭后不再常驻 250ms 轮询；菜单开着且页面可见时才续排。
+test("菜单关闭或页面隐藏时停止自检轮询", () => {
+  const start = source.indexOf("function codexPlusModelPickerSchedule(delay)");
+  const end = source.indexOf("\n  }\n", start) + 4;
+  assert.ok(start > 0 && end > start);
+  const timers = [];
+  const state = { disposed: false, timer: 0, activeList: null };
+  const document = { hidden: false };
+  const ctx = vm.createContext({
+    codexPlusModelPickerGroupsState: state,
+    codexPlusModelPickerWatchIntervalMs: 250,
+    codexPlusModelPickerScan: () => {},
+    document,
+    globalThis: {},
+    clearTimeout: () => {},
+    setTimeout: (fn, delay) => { timers.push({ fn, delay }); return timers.length; },
+  });
+  vm.runInContext(`var codexPlusModelPickerSchedule; ${source.slice(start, end)}`, ctx);
+  const runNext = () => timers.shift().fn();
+
+  ctx.codexPlusModelPickerSchedule(0);
+  runNext();
+  assert.equal(timers.length, 0, "菜单没开时不续排");
+
+  state.activeList = {};
+  ctx.codexPlusModelPickerSchedule(0);
+  runNext();
+  assert.equal(timers.length, 1, "菜单开着时续排");
+  assert.equal(timers[0].delay, 250);
+
+  document.hidden = true;
+  runNext();
+  assert.equal(timers.length, 0, "页面隐藏时停下");
+});

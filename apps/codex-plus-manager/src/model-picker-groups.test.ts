@@ -830,3 +830,14 @@ it("模型列表按结构定位（模型行的共同父节点），类名只在�
   assert.equal(matchesNew("ModelList-I4a0SH"), true);
   assert.equal(matchesNew("ModelListMotion-iyH7rX"), false);
 });
+
+it("菜单打开由轻量扫描唤醒分组自检，不常驻轮询", async () => {
+  const builtin = await readFile(
+    new URL("../../../assets/inject/renderer-inject/96-builtin-extensions.js", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    functionSource(builtin, "codexPlusModelPickerGroupsExtension"),
+    /__codexPlusModelPickerGroupsRuntime\?\.sync\?\.\(\), \{ scan: "light" \}/,
+  );
+});

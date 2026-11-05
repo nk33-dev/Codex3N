@@ -157,6 +157,9 @@
 - Bridge 每次调用开始时更新 `lastAttemptAt`，长时间会话检查不能被 watchdog 当成断连。`routes.rs::is_high_frequency_bridge_path` 列出的秒级轮询路由（`/backend/status`、`/diagnostics/log`、`/settings/get`、`/thread-usage-live`）成功时不写路由和 CDP 回执日志；失败仍记录，业务诊断事件保持不变。后两者原先每次调用写 4 行，占日志九成。
 - `/settings/get` 经 `SettingsStore::try_load_cached` 按设置文件的 mtime 与长度复用解析结果，5 秒心跳不再每次读盘解密；读失败照常报错且不缓存。读-改-写路径仍用 `load()`。
 - `/thread-usage-live` 按数据库路径与会话 ID 缓存 rollout 路径（最多 256 项），文件仍在时不再开库查询；文件消失后回落查库。
+- 网关 `gateway/server.rs` 的 Responses 与多方言代理入口用 `SettingsStore::load_cached` 读设置，每个请求不再读盘解密；`GatewayStore` 仍每次读取。
+- 模型分组的 250ms 自检只在模型菜单打开且页面可见时续排；菜单关闭即停，菜单再次挂载由轻量扫描步骤（`96-builtin-extensions.js` 的 `scan: "light"`）唤醒。回归见 `model-picker-groups-scan.test.cjs`。
+- 桥接连接只启动 app-server client 捕获。原外部 API 额度断点循环（每 2 秒 `Runtime.evaluate` 探测 `__codexPlusApiQuotaBreakpoint`）已移除：该坐标在注入分片化后不再由任何脚本发布，循环只空转；额度门控由 `native_quota_bootstrap_script` 经 Query 发布点实现。
 
 ## 会话切换性能诊断
 

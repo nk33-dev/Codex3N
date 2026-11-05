@@ -483,7 +483,7 @@ pub(crate) async fn open_responses_for_agent(
     live_request_id: Option<&str>,
     client: Option<&tokio::net::TcpStream>,
 ) -> anyhow::Result<(UpstreamProxyResponse, Option<KeySlot>)> {
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
     let gateway = GatewayStore::default()
         .load()
         .unwrap_or_default()
@@ -885,7 +885,7 @@ async fn handle_claude_messages(
         });
     let user_agent = header_value_from_headers(headers, "user-agent");
     let beta = header_value_from_headers(headers, "anthropic-beta");
-    let settings = SettingsStore::default().load().unwrap_or_default();
+    let settings = SettingsStore::default().load_cached();
 
     let mut request_log = ProxyRequestLog::begin(
         method,

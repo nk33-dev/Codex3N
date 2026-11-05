@@ -14049,8 +14049,8 @@
     clearTimeout(state.timer);
     state.timer = setTimeout(() => {
       codexPlusModelPickerScan();
-      // 内置拓展「模型分组」停用 / 被顶替时，扫描清理完就停下轮询；装回来时由它重新开始。
-      if (!globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
+      // 只在菜单开着时自检；菜单关闭、页面隐藏或内置拓展停用时停下，菜单再出现由页面扫描唤醒。
+      if (state.activeList && !document.hidden && !globalThis?.__codexPlusBuiltinInactive?.has("model-picker-groups")) codexPlusModelPickerSchedule(codexPlusModelPickerWatchIntervalMs);
     }, delay);
   }
 
@@ -25682,7 +25682,7 @@
 
   /** 模型分组：模型菜单的轮询随拓展装上开始；卸下时扫描一次清理分组、停下轮询。 */
   function codexPlusModelPickerGroupsExtension(ctx) {
-    codexPlusAlignWith(ctx, () => window.__codexPlusModelPickerGroupsRuntime?.sync?.());
+    codexPlusAlignWith(ctx, () => window.__codexPlusModelPickerGroupsRuntime?.sync?.(), { scan: "light" });
   }
 
   /** 梦皮主题：主界面重建时补皮肤，设置变了就重装或清理。 */
