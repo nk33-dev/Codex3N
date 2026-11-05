@@ -10,6 +10,8 @@
 
 网关总览为启动页；管理器沿用上游分节行式布局。网关和拓展页面由各组件读取自己的状态，个人版 `manager-loading.ts` 仍是原有页面任务的唯一编排入口。设置与关于合并到整体设置，安装维护并入 Codex 设置；旧路由通过同一 `navigate` 归一化。托盘快捷面板和 Computer Use 预览通过 `main.tsx` 的 hash 分流，不运行第二个主 App。
 
+托盘快捷面板右上角的关闭按钮调用现有 `tray_panel_action("hide")`，只收起面板，保留后台服务；页脚“退出 Codex++”调用 `"quit"`，走统一应用退出入口。按钮点击回归见 `tray-panel-model.test.ts`。
+
 轻量模式默认关闭，整体设置和托盘右键共用 `set_lightweight_mode_enabled`，沿用 `gateway.json::lightweightOnClose`。开启并保存成功后立即收起主窗口，3 秒后释放 WebView；下次启动不创建主窗口，托盘、helper 与网关继续运行。托盘开启经 `codex-plus-lightweight-mode-requested` 交给已有界面确认草稿，取消不改开关；关闭开关取消待释放任务。托盘打开、Dock 和外部唤起共用 `build_main_window`，恢复尺寸、最大化和隔离数据目录，模式保持开启，关窗后再次释放。快捷面板处理请求时可在后台临时重建界面，完成后释放。「退出程序」仍停止后台服务。
 
 开关的写盘、缓存和事件通知由 `MODE_UPDATE_LOCK` 串行化，前端按事件修订隔离迟到的初读和保存响应，连续点击不重复提交。保存失败保留原状态，损坏配置的重读不覆盖缓存，语言切换保留勾选项；`manager.lightweight_mode` 只记录开关值及 `set`／`refresh` 来源。个人设置仍手动保存，外部设置事件按已保存基线合并草稿，不自动重试旧修订号。

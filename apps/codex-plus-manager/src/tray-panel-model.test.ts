@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
+import ts from "typescript";
+import * as trayPanelModel from "./tray-panel-model.ts";
 import type { GatewayPayload, GatewayPoolEntry, UsageSummary } from "./gateway-model.ts";
 import {
   activeRelayItem,
@@ -20,6 +23,49 @@ import {
 } from "./tray-panel-model.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+test("托盘面板的关闭按钮只收起窗口，退出按钮独立退出 Codex++", () => {
+  type Element = { type: unknown; props: Record<string, any> };
+  const calls: Array<{ command: string; action: string }> = [];
+  const modules: Record<string, unknown> = {
+    react: {
+      useState: (initial: unknown) => [typeof initial === "function" ? initial() : initial, () => {}],
+      useRef: (current: unknown) => ({ current }),
+      useEffect: () => {},
+    },
+    "@tauri-apps/api/core": {
+      invoke: (command: string, args: { action: string }) => {
+        calls.push({ command, action: args.action });
+        return Promise.resolve();
+      },
+    },
+    "./i18n": { t: (text: string) => text },
+    "./tray-panel-model": { ...trayPanelModel, readStoredTrayTab: () => "home" },
+    "./agent-focus-store": { useAgentFocus: () => null },
+    "./agent-focus-model": { providersHidden: () => false },
+  };
+  const context = vm.createContext({
+    React: { createElement: (type: unknown, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
+    exports: {},
+    require: (name: string) => modules[name] ?? new Proxy({}, { get: (_, key) => String(key) }),
+  });
+  const compiled = ts.transpileModule(read("./TrayPanel.tsx"), {
+    compilerOptions: { jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  vm.runInContext(`${compiled}\nglobalThis.render = TrayPanel;`, context);
+  const nodes = (value: any): Element[] => Array.isArray(value) ? value.flatMap(nodes)
+    : value?.props ? [value, ...nodes(value.props.children)] : [];
+  const controls = nodes(context.render()).filter(node => node.type === "button");
+  const close = controls.find(node => node.props["aria-label"] === "关闭窗口");
+  assert.ok(close);
+  assert.equal(close.props.title, "关闭窗口");
+  close.props.onClick();
+  assert.deepEqual(calls, [{ command: "tray_panel_action", action: "hide" }]);
+  const quit = controls.find(node => node.props.children.includes("退出 Codex++"));
+  assert.ok(quit);
+  quit.props.onClick();
+  assert.deepEqual(calls[1], { command: "tray_panel_action", action: "quit" });
+});
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const data = new Map(Object.entries(initial));

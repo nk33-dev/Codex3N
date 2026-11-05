@@ -33,6 +33,7 @@ import {
   Settings,
   Square,
   Waypoints,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { t, tf } from "./i18n";
@@ -324,7 +325,7 @@ export function TrayPanel() {
     void invoke("tray_panel_action", { action: "open" });
   };
 
-  const action = (name: "open" | "quit") => void invoke("tray_panel_action", { action: name });
+  const action = (name: "open" | "quit" | "hide") => void invoke("tray_panel_action", { action: name });
 
   const refreshNow = async () => {
     setRefreshing(true);
@@ -353,6 +354,9 @@ export function TrayPanel() {
         </button>
         <button aria-label={t("打开 Codex++")} className="gw-icon-button" onClick={() => action("open")} title={t("打开 Codex++")} type="button">
           <ExternalLink className="h-4 w-4" />
+        </button>
+        <button aria-label={t("关闭窗口")} className="gw-icon-button" onClick={() => action("hide")} title={t("关闭窗口")} type="button">
+          <X aria-hidden="true" className="h-4 w-4" />
         </button>
       </header>
 
@@ -416,7 +420,7 @@ export function TrayPanel() {
           {t("设置")}
         </button>
         <span />
-        <button className="tp-foot-button" onClick={() => action("quit")} type="button">{t("退出")}</button>
+        <button className="tp-foot-button" onClick={() => action("quit")} type="button">{t("退出 Codex++")}</button>
       </footer>
     </div>
   );

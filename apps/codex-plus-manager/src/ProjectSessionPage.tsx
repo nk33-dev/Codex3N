@@ -146,7 +146,7 @@ export function ProjectSessionPage({
     <button type="button" role="tab" aria-selected={view === "sessions"} data-active={view === "sessions"} disabled={operationPending} onClick={() => setView("sessions")}><History size={14}/>{t("会话")}</button>
     <button type="button" role="tab" aria-selected={view === "backups"} data-active={view === "backups"} disabled={operationPending} onClick={() => setView("backups")}><ArchiveRestore size={14}/>{t("删除备份")}</button>
   </div></div>;
-  if (view === "backups") return <div className="mg-page cx-page mg-session-page">{tabs}<SessionBackups /></div>;
+  if (view === "backups") return <div className="mg-page cx-page mg-session-page">{tabs}<SessionBackups onBusyChange={setOperationPending} /></div>;
   // 参照 Cursor 的列表：工具条（搜索 + 视图 + 选择）→ 按项目分节、每个会话一行 → 分页；修复与维护收成底部一条折叠区。
   return <div className="mg-page cx-page mg-session-page">
     {tabs}
