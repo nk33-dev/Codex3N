@@ -5,6 +5,9 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "移除 Responses 图片 detail 字段": "Remove the Responses image detail field",
+  "部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。": "Some Responses providers reject OpenAI's input_image.detail with a generic parameter error. Remove detail from image blocks in messages and tool outputs and route requests through the local proxy. Off by default.",
+  "部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail。默认关闭。": "Some Responses providers reject OpenAI's input_image.detail with a generic parameter error. Remove detail from image blocks in messages and tool outputs before forwarding. Off by default.",
   "供应商自动压缩比例": "Provider compaction ratio",
   "按模型设置": "Set per model",
   "继承供应商": "Inherit provider",
@@ -1950,7 +1953,7 @@ export const EN_PLAIN: Record<string, string> = {
   "目标平台": "Target platform",
   "应用数量": "App count",
   "浏览器": "Browser",
-  "接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy）才会加载工具，工具名以": "Restart the connected client to load the tools. Tool names use the ",
+  "接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy、Devin）才会加载工具，工具名以": "Restart the connected client to load the tools. Tool names use the ",
   "与": " and ",
   "前缀出现在工具列表中。": " prefixes in the tool list.",
   "已获得屏幕录制权限。": "Screen Recording permission granted.",
@@ -2871,8 +2874,6 @@ export const EN_PLAIN: Record<string, string> = {
   "减少循环动画，并将非仓库和失败的 Git 查询缓存 30 秒。保存后生效。": "Reduce looping animations and cache failed or non-repository Git queries for 30 seconds. Applies after saving.",
   "启用内置拓展": "Enable built-in extensions",
   "关闭后暂停全部内置拓展（独立模式里的补丁除外），服务配置会保留。": "Turning this off pauses all built-in extensions (except standalone patches) and keeps service settings.",
-  "启动前自动修复历史会话": "Auto-repair historical sessions before launch",
-  "启动前整理会话归属并检查缺失消息；运行期间每 30 分钟复查索引。保存设置后生效。": "Repair session ownership and check for missing messages before launch; recheck the index every 30 minutes while running. Save settings to apply.",
   "原生 Edge / Chrome 请求标识兼容（实验）": "Native Edge / Chrome request identification compatibility (experimental)",
   "此兼容补丁仅适配 Windows 上的 Edge / Chrome；下次启动 Codex 时应用。扩展可能保留请求标识设置。": "This compatibility patch supports Edge / Chrome on Windows and applies the next time you start Codex. Extensions may retain their request identification settings.",
   "插件市场解锁": "Plugin marketplace unlock",
@@ -2920,7 +2921,6 @@ export const EN_PLAIN: Record<string, string> = {
   "建议直接发送": "Send suggestions directly",
   "点击建议后直接发送到当前会话。": "Send a suggestion directly to the current conversation when clicked.",
   "官方额度解锁": "Official quota unlock",
-  "官方登录 + API 供应商在官方订阅额度耗尽后仍可发送；只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Official login + API providers can still send after the official subscription quota runs out. Only the client send state changes; real usage and billing are untouched. Restart Codex to apply.",
   "增强开启时此能力已自动生效；此开关只在关闭增强后生效。": "This capability is already active while enhancements are on; the switch only applies after enhancements are turned off.",
   "语音听写": "Dictation",
   "输入框旁的麦克风按钮，录音转写成文字": "A microphone button next to the composer that transcribes speech",
@@ -2933,10 +2933,25 @@ export const EN_PLAIN: Record<string, string> = {
   "多开身份提示": "Instance identity badge",
   "多开实例顶部显示实例名（用公开拓展接口写成）": "Shows the instance name at the top of extra Codex instances (written with the public extension API)",
   "微信会话同步": "WeChat session sync",
-  "微信里发起的会话及时出现在 Codex 桌面会话列表，并归到对应项目": "Makes sessions started from WeChat show up in the Codex desktop session list under the right project"
+  "微信里发起的会话及时出现在 Codex 桌面会话列表，并归到对应项目": "Makes sessions started from WeChat show up in the Codex desktop session list under the right project",
+  "本机用量历史": "Local usage history",
+  "启用本机用量历史": "Enable local usage history",
+  "允许扩展按需读取本机用量元数据，默认关闭。": "Allow extensions to read local usage metadata on demand. Disabled by default.",
+  "不发送 tool_search（上游不支持时开启）": "Do not send tool_search (enable when the upstream does not support it)",
+  "部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。": "Some third-party Responses upstreams do not recognize Codex's hosted tool_search tool; the provider test passes but real chats return 400 (tool type \"tool_search\" is not supported). When enabled, the model catalog sets supports_search_tool to false and Codex lists MCP tools directly. Kimi official addresses are handled automatically. Takes effect after restarting Codex. Off by default.",
+  "不发送 tool_search": "Do not send tool_search",
+  "上游不认 Codex 的 tool_search 工具（实际聊天会返回 400）时开启：模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。默认关闭。": "Enable when the upstream does not recognize Codex's tool_search tool (real chats return 400): the model catalog sets supports_search_tool to false and Codex lists MCP tools directly. Off by default.",
+  "纯 API 启用 Codex 原生生图（实验）": "Native Codex image generation for Pure API (experimental)",
+  "Codex 默认只在登录 ChatGPT 时注册 image_gen 工具。开启后 Codex++ 在 config.toml 里写入占位请求头让 Codex 注册该工具，生图请求经本地代理发给本供应商的 /images/generations、/images/edits，占位头不会发往上游。上游需支持 OpenAI 图片接口；依赖 Codex 内部判据，Codex 更新后可能失效。默认关闭。": "Codex only registers the image_gen tool when signed in to ChatGPT. When enabled, Codex++ writes a placeholder request header into config.toml so Codex registers the tool; image requests go through the local proxy to this provider's /images/generations and /images/edits, and the placeholder header is never sent upstream. The upstream must support the OpenAI Images API. This relies on Codex internals and may stop working after a Codex update. Off by default.",
+  "拿不到远程开关时补开「替我审批」": "Restore \"Approve for me\" when remote flags are unavailable",
+  "国内网络下 Codex 拉不到 OpenAI 的远程功能开关，权限菜单里的「替我审批」会消失。开启后只在远程开关完全为空时补开这一项，审批请求走当前供应商；能正常拿到远程开关时不做任何改动。关闭后重新启动 Codex 生效。": "When Codex cannot reach OpenAI's remote feature flags (common on restricted networks), \"Approve for me\" disappears from the permissions menu. When enabled, Codex++ restores just this option only if no remote flags were received at all; review requests go to your current provider. Nothing changes when remote flags load normally. Restart Codex after turning it off.",
+  "启动前修复会话索引": "Repair session index before launch",
+  "启动前检查会话数据库中缺失的消息投影并补齐；只增不改，不会改写会话归属。运行期间每 30 分钟复查索引。保存设置后生效。": "Scans the session database before launch and backfills missing message projections; append-only and never rewrites thread ownership. Re-checks the index every 30 minutes while running. Applies after saving settings.",
+  "切换供应商时同步会话归属": "Sync thread ownership when switching providers",
+  "启动前把历史会话的供应商归属批量改写到当前供应商，让不同供应商名下的会话归入当前列表。只改写归属，不删除会话。保存设置后生效。": "Rewrites the provider ownership of historical threads to the current provider before launch, so threads from other providers appear in the current list. Ownership only; no threads are deleted. Applies after saving settings.",
+  "官方订阅额度耗尽后仍可发送，不区分供应商模式；纯官方登录发出的请求仍可能被官方拒绝。只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Keeps sending after the official subscription quota runs out, regardless of provider mode; requests from plain official login may still be rejected by OpenAI. Only changes the client send state, not real usage or billing. Takes effect after restarting Codex."
 };
 
-// Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
   "{0} Token": "{0} tokens",
   "压缩阈值：{0} Token": "Compaction threshold: {0} tokens",
@@ -3394,12 +3409,10 @@ export const EN_TEMPLATE: Record<string, string> = {
   "第二步：让 {0} 走网关": "Step 2: route {0} through the gateway",
   "打开 {0} 的网关开关并选一个默认模型；供应商池里的模型就会出现在 {0} 自己的模型列表里。": "Turn on the gateway switch for {0} and pick a default model; models from the provider pool then appear in {0}'s own model list.",
   "{0} 的页面": "{0} pages",
-  "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。": "Open {0} to see its pages below: overview, connection & providers, built-in extensions, skins… Other agents appear after switching to All features in settings."
+  "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。": "Open {0} to see its pages below: overview, connection & providers, built-in extensions, skins… Other agents appear after switching to All features in settings.",
+  "跳过 {0} 个已在操作中的 Skill": "Skipped {0} Skill(s) already in progress"
 };
 
-// Backend (Rust) messages returned via result.message. These are translated
-// at the display layer (showNotice wraps message with t()). Exact-match first,
-// then pattern-based for messages that embed dynamic values.
 export const EN_BACKEND: Record<string, string> = {
   "模型列表没有变化。": "The model list did not change.",
   "要跳过的版本号为空。": "The version to skip is empty.",
@@ -3504,7 +3517,6 @@ export const EN_BACKEND: Record<string, string> = {
   "诊断日志已写入。": "Diagnostics log written.",
   "未命名供应商": "Unnamed provider",
   "响应内容为空": "Response is empty",
-  // Claude 供应商：用变量传进 t() 的文案与后端消息
   "模型厂商": "Model vendors",
   "聚合平台": "Aggregators",
   "Claude 官方": "Claude Official",
@@ -3536,25 +3548,20 @@ export const EN_BACKEND: Record<string, string> = {
   "已把 Claude Code 当前配置保存为供应商。": "Saved the current Claude Code configuration as a provider.",
   "CC Switch 里没有新的 Claude 供应商。": "No new Claude providers in CC Switch.",
   "插件已卸载，重启 Codex 后生效。": "Plugin uninstalled. Restart Codex for the change to take effect.",
-  // 供应商池：单独管理 Key（#2782）
   "Key 已添加。": "Key added.",
   "添加 Key 失败": "Failed to add key",
   "Key 已替换。": "Key replaced.",
   "替换 Key 失败": "Failed to replace key",
   "Key 已删除。": "Key deleted.",
   "删除 Key 失败": "Failed to delete key",
-  // 供应商池：测试供应商
   "测试成功。": "Test succeeded.",
   "测试失败。": "Test failed.",
   "测试已取消。": "Test cancelled.",
   "没有进行中的测试。": "No test is running.",
-  // 从上游同步上下文窗口 / 思考等级（#2807）
   "这类供应商的模型接口不提供上下文窗口和思考等级，请手动填写": "This provider's model endpoint does not report context windows or reasoning levels; fill them in manually",
-  "模型资料不是有效的 JSON，请先在「思考等级」里修正": "The model metadata is not valid JSON; fix it under Reasoning levels first",
+  "模型资料不是有效的 JSON，请先在「思考等级」里修正": "The model metadata is not valid JSON; fix it under Reasoning levels first"
 };
 
-// Pattern-based backend translations: [regex, replacement template].
-// Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^(.+?) 已改用自带的 (.+?)，直连、不经 Codex\+\+，新开的会话生效。$/, "$1 now uses its own $2, directly, not through Codex++. New sessions pick it up."],
   [/^已同步模型：新增 (\d+) 个：(.+?)；移除 (\d+) 个：(.+)。$/, "Models synced. Added $1: $2. Removed $3: $4."],

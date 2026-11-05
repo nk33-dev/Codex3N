@@ -58,6 +58,7 @@
 - Skills 后端命令由 `commands.rs` 实现，统一注册到 `lib.rs` 的 `generate_handler!`。页面首次进入调用 `list_installed_skills` 只读本地目录，手动刷新调用 `refresh_skill_catalog` 拉取远端清单；安装、更新、启停、卸载、备份恢复与删除、仓库保存与删除共用这一入口。注册回归见 `skills_commands_are_registered_with_tauri`，检查全部 10 个命令均只注册一次。
 - Skills 进入及重新进入页面复用 `skill-catalog.json` 与本地安装状态，不自动联网；手动刷新在前端及后端合并进行中的请求，最多并发两个仓库，单库失败沿用其缓存并报告错误，刷新期间已删除或停用的仓库不回填。ZIP 下载在读取响应头及每块数据时检查 64 MiB 上限，无长度头也不能无限缓冲。
 - Skills 安装、启停和仓库保存共用同步操作锁，开始写入即隔离较早的目录刷新和检查结果；卸载页面后不提交写操作结果或提示。目录刷新的迟到错误同样失效。
+- Skills 下载在锁外执行，提交前复核仓库、安装代次、源目录和 Agent 副本；目标子树只提取一次。共享路径去重，跨卷备份使用目标卷暂存并保留可恢复内容。刷新继续合并同一请求、最多并发两个仓库，`skill-catalog.json` 保留磁盘缓存；发布缓存前核对仓库及请求代次。GitHub 请求沿用上游的代理隔离、空闲/总超时与 64 MiB 流式限额，ZIP API 适配个人安全依赖。
 - 跨页面复用的展示原语放 `src/components/ui/manager-primitives.tsx`；默认设置放 `src/lib/default-settings.ts`。
 - 外移模块只能 `import type ... from "../App"`，**不得在运行时从 `App.tsx` 取值**，否则形成循环依赖。需要新类型的可见性时给 `App.tsx` 的类型加 `export`。
 - 后端 Tauri 命令按业务拆到 `apps/codex-plus-manager/src-tauri/src/commands/`（现为 `shared.rs`、`dream_skin.rs`、`provider_import.rs`）：`commands.rs` 用 `mod X; pub use X::*;` 汇总，`lib.rs` 的 `generate_handler!` 仍写 `commands::<命令名>`，不需要改。子模块内用 `use super::{...}` 取父模块项，需被父模块测试引用的私有项放宽为 `pub(super)`。
@@ -71,6 +72,7 @@
 | --- | --- | --- |
 | `launcher.rs::start_helper`、`start_bridge_watchdog` | `launcher/backend_services.rs` | 常驻 helper 复用、macOS/Windows 桌宠与单份 watchdog；常驻 helper 集成测试、恢复服务测试 |
 | `App.tsx` 内类型和默认值 | `provider-types.ts`、`lib/default-settings.ts` | 代理重试、旁支保存、轮次回退、Work 视图和模型跟随共用配置；类型检查、设置测试 |
+| `App.tsx` 的上下文解析函数 | 上游 `context-config-text.ts`，由原 App 调用 | MCP 按 ID 累积，多级子表归属不变；残缺条目不覆盖 live；上下文与配置回归 |
 | `SessionRepairPanel`、旧 `SessionPage` | `App.tsx::SessionMaintenance`、`ProjectSessionPage.tsx` | 全库搜索、整项目选择、归档、删除保护与折叠维护区；会话和维护回归 |
 | `commands.rs` 中待确认供应商导入 | `commands/provider_import.rs` | 读取、确认和取消共用指纹校验，支持网关供应商池；导入链接回归 |
 | `scan()` 全量刷新 | `95-conversation-view.js`、`98-scan-schedule.js` | 旁支保存、回退及菜单清理接入原调度，保留输入法和隐藏门控；注入与性能回归 |
@@ -187,6 +189,8 @@ macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/mac
 多开入口为 `commands.rs::launch_codex_multi_instance`，每个实例隔离 `CODEX_HOME`、SQLite、Electron 用户目录、调试端口和 helper 端口，独立 worker 仍调用同一启动器库。Chat Completions 和搜索历史兼容模式写入实例自己的代理端口；聚合与模型路由配置暂不支持多开。主应用的健康状态由 `runtime_health.rs` 汇总。
 
 实例清单保存在隔离目录的 `instance.json`，`list_codex_multi_instances`、`stop_codex_multi_instance` 与 `restart_codex_multi_instance` 统一注册到 `lib.rs`。多开页的 3 秒刷新复用 `use-manager-lifecycle.ts` 的可见性队列，隐藏或离页后暂停，迟到响应不提交；启动、重启和停止操作完成后按需补读。Windows 清单的 `workerBirthId` 保留十进制字符串格式；创建时从持有的 Child 句柄读取，停止时经核心 `multi_worker.rs` 核对创建时间、可执行文件和精确参数，并用同一进程句柄终止。旧清单缺少标识时不结束 worker。创建清单失败时通过仍持有的 Child 句柄清理子进程。
+
+多开启动、停止和回执共用上游实例生命周期锁与 generation 校验；清理未确认时禁止重启，仍允许再次核验停止。子进程由后台回收，`workerBirthId` 在 JSON 边界保持字符串，内部核验时解析为整数。会话目标转发由 `32-thread-goal.js` 接入已有模型安装扫描，`native_thread_goal.rs` 只转发到同一实例中确认归属的原生窗口。
 
 Windows 安装探测从 MSIX 清单选取桌面应用路径及对应 AUMID，支持 `ChatGPT (Beta).exe`；监控、自动接管和会话清理进程保护使用同一应用名判据。读取不到 Electron 进程参数时跳过接管，防止将 renderer 当主进程。验证见 `app_paths`、`auto_takeover`、`watcher` 和 `multi_worker` 单测。
 

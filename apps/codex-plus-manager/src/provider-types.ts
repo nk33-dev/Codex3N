@@ -77,6 +77,9 @@ export type RelayProfile = {
   multiAgent?: string;
   localCompactionPromptAtEnd?: boolean;
   stripImageGenerationTool?: boolean;
+  stripResponsesImageDetail?: boolean;
+  disableToolSearch?: boolean;
+  pureApiImageGeneration?: boolean;
 };
 
 export type AggregateRelayMember = { relayId: string; weight: number };
@@ -111,6 +114,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppSessionDeleteSkipConfirm: boolean;
   codexAppNativePredictions: boolean;
   codexAppThirdPartyReasoningCollapse: boolean;
+  codexAppOfflineAutoReview: boolean;
   secretDecryptionFailures?: string[];
   revision?: string;
   codexAppNativeFastUnlock: boolean;
@@ -122,6 +126,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppAutoTakeoverWhenActive: string;
   codexExtraArgs: string[];
   providerSyncEnabled: boolean;
+  sessionIndexRepairEnabled?: boolean;
   providerSyncSavedProviders: string[];
   providerSyncManualProviders: string[];
   providerSyncLastSelectedProvider: string;
@@ -135,6 +140,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppSessionDelete: boolean;
   codexAppMarkdownExport: boolean;
   codexAppUsageStatusLine: boolean;
+  usageHistoryEnabled: boolean;
   claudeAppVoiceInput: boolean;
   claudeAppLocalization: boolean;
   codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";

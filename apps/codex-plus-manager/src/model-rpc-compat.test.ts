@@ -72,6 +72,7 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     const refreshCodexThreadModelBeforeTurn = async () => null;
     const codexThreadModelRequestState = () => ({});
     const loadCodexModelCatalog = async () => codexModelCatalog;
+    ${section("  async function prepareCodexPureApiResume(", "  function codexManagedSessionConnection(")}
     ${section("  const codexNativeHostClients =", "  async function deleteRemoteSession(")}
     ${section("  const codexAppServerRpcRoots", "  async function loadAppServerRequestModules(")}
     ${section("  function codexPlusModelDescriptor(", "  function patchModelContainer(")}

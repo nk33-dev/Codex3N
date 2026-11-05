@@ -31,6 +31,8 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 
 ## 历史轮次补载
 
+`sessionIndexRepairEnabled` 默认开启，启动和激活时仅补消息索引投影，与默认关闭的 `providerSyncEnabled` 独立。维护区与 Codex 设置共用同一清单，仍需手动保存。Pure API 恢复旧会话先只读取得已存模型与推理档位，本机归属与配置变化均重新核验；读取失败沿用上游有界降级，不改原始会话。
+
 `codexAppHistoryTurnRecovery` 默认关闭，共用类型、默认值与渲染公开白名单同步维护。索引修复完成后由 `history_turn_recovery::after_index_repair` 通知受管页面，`85-history-turn-recovery.js` 单次限量补载原生消息及元数据；手动和自动修复共用此入口。报告在现有 `SessionMaintenance` 展示，包含补载状态、消息页、元数据页和失败原因，不新增修复轮询。回归见 `session-index-frontend-recovery.test.ts`、`history_turn_recovery` 测试；宿主实际补载效果须单独实测。
 
 ## 管理器删除

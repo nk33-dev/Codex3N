@@ -196,7 +196,7 @@ fn pooled_with(
     Ok(client)
 }
 
-fn apply_configured_ca_certificate(
+pub(crate) fn apply_configured_ca_certificate(
     mut builder: reqwest::ClientBuilder,
 ) -> anyhow::Result<reqwest::ClientBuilder> {
     let Some(value) = std::env::var_os("CODEX_CA_CERTIFICATE") else {

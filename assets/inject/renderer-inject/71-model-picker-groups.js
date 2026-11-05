@@ -257,19 +257,26 @@
       // （display:none），仍然连着 —— 那种情况不能当成关闭，否则回来时补丁已经
       // 被拆掉、要等一轮才重建，看上去就是"分组闪一下没了"。
       if (!root.isConnected) continue;
-      if (!root.querySelector('[class*="_ModelList_"]')) continue;
+      if (!codexPlusModelPickerListIn(root)) continue;
       return root;
     }
     return null;
   }
 
+  // 新版宿主的 CSS Modules 类名会变，优先按模型行的共同父节点定位。
+  function codexPlusModelPickerListIn(root) {
+    const rows = [...root.querySelectorAll('[role="menuitemradio"]')];
+    let list = rows[0]?.parentElement || null;
+    while (list && list !== root && !rows.every((row) => list.contains(row))) list = list.parentElement;
+    if (list && list !== root) return list;
+    return root.querySelector('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]');
+  }
+
   function codexPlusModelPickerList(menu) {
     const root = menu?.matches?.("[data-model-picker-view]") ? menu : menu?.querySelector?.("[data-model-picker-view]");
     if (!root) return null;
-    const list = root.querySelector('[class*="_ModelList_"]');
-    if (!list) return null;
     if (root.getAttribute("data-model-picker-view") === "grid") return null;
-    return list;
+    return codexPlusModelPickerListIn(root);
   }
 
   /**
@@ -345,7 +352,8 @@
     const modelMetadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
     // 会话内已记下的归属先铺一层：目录快照可能被整体替换（重连 / 重新生成），
     // 只认当前快照会让默认供应商的分组名在某一刻变空。
-    const map = new Map(codexPlusModelPickerGroupsState.providerNames);
+    const map = new Map([...codexPlusModelPickerGroupsState.providerNames]
+      .filter(([, value]) => value?.provider && !value.parsed));
     if (!modelMetadata || typeof modelMetadata !== "object") return map;
     const slugList = Array.isArray(codexModelCatalog?.models)
       ? codexModelCatalog.models.filter((slug) => typeof slug === "string" && slug)
@@ -482,6 +490,7 @@
     const defaultGroupId = codexPlusModelPickerDefaultGroupId();
     const providers = codexPlusModelPickerCatalogProviderMap();
     const exact = codexPlusModelPickerCatalogExactMap();
+    const defaultProviderName = codexPlusModelPickerDefaultProviderName();
     const rows = [];
     const items = list.querySelectorAll('[role="menuitemradio"]');
     items.forEach((row) => {
@@ -509,7 +518,7 @@
         || (split.provider ? `provider:${split.provider}` : defaultGroupId);
       // 显示名：整行精确命中目录时用目录里的分组名（网关写的是打过码的完整账号名，后缀可能只是
       // 供应商 id）；否则有后缀就是那一家；裸名（默认成员的模型）用默认供应商的名字。
-      const provider = exactKnown?.provider || split.provider || known?.provider || codexPlusModelPickerDefaultProviderName();
+      const provider = exactKnown?.provider || split.provider || known?.provider || defaultProviderName;
       const authoritativeGroupId = !!known?.groupId
         || (split.provider ? true : !!defaultGroupId);
       rows.push({ row, label: identity.text, name: split.name, provider, groupId, authoritativeGroupId, favorite: exactKnown?.favorite === true });
@@ -565,6 +574,7 @@
     const groups = [];
     const identified = new Map();
     let legacy = null;
+    let unnamed = null;
     for (const entry of rows) {
       const key = entry.provider || "";
       const id = entry.authoritativeGroupId !== false && typeof entry.groupId === "string" ? entry.groupId.trim() : "";
@@ -577,6 +587,13 @@
           identified.set(id, group);
           groups.push(group);
         }
+      } else if (!(entry.provider || defaultProviderName)) {
+        legacy = null;
+        if (!unnamed) {
+          unnamed = { key: "", id: "", name: "", entries: [] };
+          groups.push(unnamed);
+        }
+        group = unnamed;
       } else {
         if (!legacy || legacy.key !== key) {
           legacy = { key, id: `legacy:${groups.length}:${key}`, name: entry.provider || defaultProviderName, entries: [] };
@@ -954,7 +971,7 @@
     codexPlusModelPickerRemoveOwnNodes(list);
     groups.forEach((group) => group.entries.forEach((entry) => codexPlusModelPickerInstallLabel(entry)));
     const groupedRows = new Set(rows.map((entry) => entry.row));
-    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"]').forEach((node) => {
+    list.querySelectorAll('[role="menuitemradio"], [class*="_sectionLabel_"], [class^="sectionLabel-"], [class*=" sectionLabel-"]').forEach((node) => {
       node.classList.toggle("codex-plus-model-provider-overview-only", !groupedRows.has(node));
     });
     const grid = codexPlusModelPickerElement("div", "codex-plus-model-provider-grid");
@@ -1066,11 +1083,14 @@
   function codexPlusModelPickerReportUnrecognized() {
     const state = codexPlusModelPickerGroupsState;
     if (state.unrecognizedReported) return;
+    const now = Date.now();
+    if (state.lastUnrecognizedProbe && now - state.lastUnrecognizedProbe < 2000) return;
+    state.lastUnrecognizedProbe = now;
     let exact = null;
     for (const menu of document.querySelectorAll('[role="menu"]')) {
-      if (!visibleElement(menu) || menu.closest("[data-codex-plus-ext]")) continue;
+      if (menu.closest("[data-codex-plus-ext]")) continue;
       const radios = [...menu.querySelectorAll('[role="menuitemradio"]')];
-      if (radios.length < 2) continue;
+      if (radios.length < 2 || !visibleElement(menu)) continue;
       // 先过廉价的 DOM 条件，真有候选菜单时才建目录映射（扫描每 600ms 一次）。
       exact ||= codexPlusModelPickerCatalogExactMap();
       if (!exact.size) return;
@@ -1096,7 +1116,7 @@
           radios: radios.length,
           catalogMatches: known,
           pickerView: document.querySelectorAll("[data-model-picker-view]").length,
-          modelList: count('[class*="_ModelList_"]'),
+          modelList: count('[class*="_ModelList_"], [class^="ModelList-"], [class*=" ModelList-"]'),
           rowContent: count("[data-menu-row-content]"),
           flex1: count("span.flex-1, span[class*='flex-1']"),
           menuData: dataAttributes(menu),

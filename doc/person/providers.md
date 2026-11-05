@@ -84,3 +84,5 @@ cc-switch 数据库路径 `ccsDbPath` 由共用类型与默认设置提供，后
 网关供应商的 `gateway_proxy` 由 `relay_proxy::proxy_for_relay` 解析，不读取同 ID 的直连代理配置。`http_client::client_for_relay_url` 以实际目标 URL 判断环回，环回显式直连，其余保持供应商代理、PAC 与连接池；模型发现、协议转换和测试请求使用同一规则。
 
 供应商级 `multiAgent`、`stripImageGenerationTool`、`localCompactionPromptAtEnd` 与聚合审批成员 `autoReviewRelayId` 由共用类型保存。xAI 的请求整理与工具还原沿用 `xai_responses.rs`；审批模型、起名模型、网关模型窗口和思考档位不改变个人版显式窗口覆盖规则。
+
+`stripResponsesImageDetail`、`disableToolSearch` 与实验性 `pureApiImageGeneration` 默认关闭，保存在同一共用供应商类型。图片兼容和生图经原协议代理，生图占位头不转发给上游；网关编辑时未传兼容开关仍保留旧值。MCP 上下文按服务器 ID 累积子表，保存前校验 transport，残缺受管条目保留 live 完整版本并备份写入。网关子智能体模型继承上游 `gateway/subagent_models.rs`，使用父回合的完整身份；删除供应商时清理绑定引用，未知模型回落有独立诊断。

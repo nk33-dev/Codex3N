@@ -28,6 +28,8 @@ Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限�
 
 `/settings/catalog` 只返回公开设置项清单；新增的输入预测、推理折叠、删除确认及 `agentPet` 展示配置明确列入白名单。网关凭据不进入此响应。`gateway.json` 沿用上游的本机文件与权限保护，尚未接入个人版 `settings.json` 的密钥加密；导出、备份与共享该文件时按明文凭据处理。
 
+`sessionIndexRepairEnabled`、`codexAppOfflineAutoReview` 和 `usageHistoryEnabled` 仅公开布尔值。用量历史和消费者封存共用默认关闭的开关；封存的固定 client 是命名空间，不是调用者鉴权。请求不能指定数据库或文件路径，数据保存在状态目录按 home 分桶的独立缓存。会话目标与恢复模型查询限制本机 host，目标转发复核所属窗口，错误不回显原生脚本或会话内容。
+
 换 Key 的运行时认证更新走独立的 CDP 调用：后端将密钥作为临时参数交给本机 RPC 的 `account/login/start`，不写入页面全局状态、列表响应或诊断日志。页面只回传是否更新成功，CDP 与 RPC 的原始错误不向页面回显。入口固定为认证更新，不提供读取密钥的桥接路由，也不向远端 host 发送。
 
 ## 拓展与附件

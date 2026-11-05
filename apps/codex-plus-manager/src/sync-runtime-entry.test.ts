@@ -25,3 +25,28 @@ test("提示词工具通过同一延迟扫描安装，侧栏独立更新不重�
   const preparation = fragment("30-service-tier.js");
   assert.equal((preparation.match(/runScanStep\(installCodexPlusPromptEnhance\)/g) ?? []).length, 2);
 });
+
+test("会话目标分片随真实清单装入，模型扫描只安装一次", async () => {
+  const manifest = JSON.parse(readFileSync(new URL("../../../assets/inject/renderer-inject/manifest.json", import.meta.url), "utf8"));
+  const goal = manifest.fragments.find((entry: { name: string }) => entry.name === "32-thread-goal.js");
+  assert.ok(goal);
+  const assembled = readFileSync(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+  assert.ok(assembled.includes(fragment(goal.name)));
+  const source = fragment("70-model-catalog.js");
+  const ensure = source.match(/^  function ensureCodexModelWhitelistInstalls\([^]*?^  \}/m)?.[0];
+  assert.ok(ensure);
+  let installed = 0;
+  const window = { __codexPlusNativeThreadGoal: { install: async (id: string, options: { hostId: string }) => {
+    assert.equal(id, "fixture-thread");
+    assert.equal(options.hostId, "local");
+    installed++;
+  } } };
+  const run = new Function("window", "currentSessionRef", "codexPlusModelUnlockEnabled", "codexPluginMarketplacePatchEnabled",
+    "codexPlusBackendSettingsLoaded", "codexPlusSettings", "installDictationSupportPatch",
+    `${fragment(goal.name)}\n${ensure}\nreturn ensureCodexModelWhitelistInstalls;`,
+  )(window, () => ({ session_id: "fixture-thread", host_id: "local" }), () => false, () => false, false, () => ({}), () => {});
+  run(); run();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  run();
+  assert.equal(installed, 1);
+});
