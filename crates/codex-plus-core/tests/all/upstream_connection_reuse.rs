@@ -261,6 +261,29 @@ async fn request_closed_long_after_sending_is_not_resent() {
 fn reused_clients_are_scoped_to_their_runtime() {
     use std::io::{BufRead, BufReader, Read, Write};
 
+    // 其他并发用例会清空进程级 client 池；独立进程只验证运行时之间的隔离。
+    const CHILD: &str = "CODEX_PLUS_RUNTIME_CLIENT_POOL_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "upstream_connection_reuse::reused_clients_are_scoped_to_their_runtime",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("CODEX_PLUS_STATE_DIR", temp.path().join("state"))
+            .env("CODEX_HOME", temp.path().join("home"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+
     // 保持连接的阻塞式假上游，跑在普通线程里，不依赖任何 tokio 运行时；记建立了几条连接。
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let addr = listener.local_addr().unwrap();
