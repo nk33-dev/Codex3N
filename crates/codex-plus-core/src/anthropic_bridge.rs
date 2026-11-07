@@ -1601,6 +1601,10 @@ impl AnthropicSseToResponsesConverter {
         self.chat.has_terminal_event()
     }
 
+    pub(crate) fn is_complete(&self) -> bool {
+        self.chat.is_complete()
+    }
+
     /// 本次请求的用量（请求日志 / 网关用量统计用）。
     pub(crate) fn request_usage(&self) -> Option<crate::request_log::RequestUsage> {
         self.chat.request_usage()

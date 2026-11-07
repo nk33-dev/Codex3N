@@ -254,7 +254,8 @@
       codexPlusProxyStatusState.requests = await codexPlusProxyStatusFetch();
       codexPlusProxyStatusState.failures = 0;
     } catch {
-      // 超时或失败沿用上一次的结果；桥接自己的看门狗负责判定失效与重注入。
+      // 旧快照不能证明请求仍在运行；恢复连接后再显示实时结果。
+      codexPlusProxyStatusState.requests = [];
       codexPlusProxyStatusState.failures += 1;
     } finally {
       codexPlusProxyStatusState.inFlight = false;

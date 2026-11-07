@@ -3235,6 +3235,11 @@ impl ChatSseToResponsesConverter {
         self.failed || self.state.completed || self.state.finish_reason.is_some()
     }
 
+    /// 收到 [DONE] 才停止读取，finish_reason 后仍可能有独立的 usage 块。
+    pub(crate) fn is_complete(&self) -> bool {
+        self.state.completed
+    }
+
     pub fn with_request(original_request: &Value) -> Self {
         Self {
             state: ChatSseState::with_request(original_request),
@@ -13117,6 +13122,10 @@ impl ResponsesSseTransformer {
     /// 也能立即结束当前流，而不是等到 EOF。
     pub(crate) fn has_failed(&self) -> bool {
         self.failed
+    }
+
+    pub(crate) fn has_completed(&self) -> bool {
+        self.completed
     }
 
     /// 取出 `response.completed` 里捕获的 usage（请求日志用）。

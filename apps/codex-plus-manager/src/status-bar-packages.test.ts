@@ -110,7 +110,7 @@ test("用量状态栏：经 composer.below 插槽挂载、提供 codexpp.usage�
 
 test("请求状态条：经 composer.above 插槽挂载、提供 codexpp.proxyStatus，轮询 /proxy-status 带超时，停用即停", async () => {
   let reply: Promise<unknown> = Promise.resolve({ status: "ok", requests: [{ id: "r1", threadId: "t1" }] });
-  const h = harness("proxy-request-status", ["status.js", "main.js"], ["codexPlusProxyStatusState"], () => reply);
+  const h = harness("proxy-request-status", ["status.js", "main.js"], ["codexPlusProxyStatusState", "codexPlusProxyStatusRefresh"], () => reply);
   assert.deepEqual(h.slots.map((slot) => slot.slot), ["composer.above"]);
   assert.equal(h.scope.codexPlusProxyStatusState.running, true);
   assert.deepEqual(h.legacyDisposed, ["proxy"], "先停掉旧版注入里的内置请求状态条");
@@ -129,6 +129,16 @@ test("请求状态条：经 composer.above 插槽挂载、提供 codexpp.proxySt
   assert.deepEqual(await service.fetch(), []);
   reply = Promise.resolve({ status: "ok", requests: [{ id: "r2" }] });
   assert.deepEqual(await service.fetch(), [{ id: "r2" }]);
+
+  const node = { dataset: { hidden: "false" }, remove() {} };
+  h.scope.codexPlusProxyStatusState.node = node;
+  reply = Promise.reject(new Error("调用 /proxy-status 超时"));
+  await h.scope.codexPlusProxyStatusRefresh();
+  assert.deepEqual(service.requests(), [], "轮询失败后不把旧快照当作当前活动请求");
+  assert.equal(node.dataset.hidden, "true");
+  reply = Promise.resolve({ status: "ok", requests: [{ id: "r3" }] });
+  await h.scope.codexPlusProxyStatusRefresh();
+  assert.deepEqual(service.requests(), [{ id: "r3" }], "连接恢复后重新读取活动请求");
 
   h.dispose();
   assert.equal(h.scope.codexPlusProxyStatusState.running, false);

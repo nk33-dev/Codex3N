@@ -3752,6 +3752,9 @@ async fn handle_protocol_proxy_connection_inner(
 #[cfg(test)]
 #[path = "launcher/final_response_tests.rs"]
 mod final_response_gateway_tests;
+#[cfg(test)]
+#[path = "launcher/proxy_status_tests.rs"]
+mod proxy_status_tests;
 /// 非流式的 Chat / Anthropic 上游响应体 → Responses 响应 JSON。
 pub(crate) fn non_stream_body_to_responses(
     wire_api: crate::protocol_proxy::UpstreamWireApi,
@@ -4511,7 +4514,11 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                 return Ok((transformer.finish(), usage, detail, first_output_at_ms));
             }
         }
-        while let Some(chunk) = chunks.next().await {
+        // 协议完成后立即释放请求日志和网关名额，不依赖上游关闭 HTTP 流。
+        while !transformer.has_completed() {
+            let Some(chunk) = chunks.next().await else {
+                break;
+            };
             match chunk {
                 Ok(bytes) => {
                     observe_protocol_proxy_output(&bytes, &mut first_output_at_ms, live_request_id);
@@ -4572,6 +4579,9 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                             first_output_at_ms,
                         ));
                     }
+                    if converter.is_complete() {
+                        break;
+                    }
                 }
                 Err(error) => {
                     let failed = converter.fail(
@@ -4622,6 +4632,9 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                         None,
                         first_output_at_ms,
                     ));
+                }
+                if converter.is_complete() {
+                    break;
                 }
             }
             Err(error) => {

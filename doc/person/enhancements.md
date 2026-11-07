@@ -98,6 +98,8 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 Agent 桌宠、背景图、打字特效、用量状态栏和请求状态条由 `assets/extensions/` 下的随附拓展包运行，原 `agentPet` 与对应开关只作一次性迁移来源。`bundled_extensions.rs` 转换设置并物化包，`user_scripts.rs` 统一启停和热重载；管理器从「万物皆拓展」编辑各包配置。图片和音效继续由 Rust 校验、缓存，页面不取得供应商凭据。桌宠包含上游恢复的大肥鱼，只有启用的拓展声明相应路由时才读取账本或查询余额，不保留旧的注入轮询。
 
+请求状态条读取 `/proxy-status` 的当前活动请求；轮询失败清除旧快照，恢复后重新显示。代理在 Responses 的 `response.completed`、Chat 的 `[DONE]` 或 Anthropic 的 `message_stop` 到达后结束转发并清理活动记录，不等待 HTTP EOF；Chat 的 `finish_reason` 不提前结束读取，保留其后独立的用量块。回归见 `crates/codex-plus-core/src/launcher/proxy_status_tests.rs` 与 `apps/codex-plus-manager/src/status-bar-packages.test.ts`。
+
 原生输入预测 `codexAppNativePredictions`、第三方推理折叠 `codexAppThirdPartyReasoningCollapse` 和快速删除 `codexAppSessionDeleteSkipConfirm` 默认关闭。增强设置的标题、分组和说明来自 `crates/codex-plus-core/assets/enhancement-settings.json`，管理器与注入设置页共用，个人低功耗与原生模型混入也在此清单维护。Fast 与输入预测共用原生模块补丁启动入口，恢复 binding 不重复注册这些补丁。
 
 
