@@ -51,10 +51,14 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   const sidebar = functionSource("AppSidebar");
   // 在网关、全局管理、工具这些通用页面时 Agent 行不显示选中，侧栏同一时间只有一个选中项。
   assert.match(sidebar, /const current = tool\.id === activeTool && !onGlobalPage;/);
-  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\} \$\{current && agentTabGroups/);
+  assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\} \$\{expanded && agentTabGroups/);
   // 当前 Agent 的页面缩进列在侧栏里它那一行下面，不再是内容区顶部的胶囊。
   assert.match(sidebar, /className="cx-side-subnav" role="group" aria-label=\{t\("Agent 页面"\)\}/);
-  assert.match(sidebar, /\{current \? \(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, activeTool\)/);
+  assert.match(sidebar, /\{expanded \? \(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, activeTool\)/);
+  // #2913：再点当前 Agent 收起 / 展开它的页面列表，不跳页；切到别的 Agent 时重新展开。
+  assert.match(sidebar, /const expanded = current && collapsedAgent !== tool\.id;/);
+  assert.match(sidebar, /if \(current\) \{\n\s*setCollapsedAgent\(\(value\) => \(value === tool\.id \? null : tool\.id\)\);\n\s*return;/);
+  assert.match(sidebar, /aria-expanded=\{current \? expanded : undefined\}/);
   // 状态点表示接入方式而不是运行状态（运行状态在顶栏和 Codex 行的播放 / 停止键上）。
   assert.match(sidebar, /tone: "direct"/);
   const access = sidebar.slice(sidebar.indexOf("const access ="), sidebar.indexOf("return (", sidebar.indexOf("const access =")));
@@ -490,14 +494,16 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   assert.match(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
   assert.match(app, /if \(settingsFocus\) setSettingsSections\(settingsSectionsFor\(settingsFocus\)\);/);
   const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
-  for (const id of ["app-settings-general", "app-settings-config", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
+  for (const id of ["app-settings-general", "app-settings-config", "app-settings-doctor", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
     assert.ok(entries.includes(`"${id}"`), `${id} 要归到某个设置分类`);
   }
   assert.match(app, /if \(target === "about"\) setSettingsFocus\("app-settings-update"\);/);
   assert.ok(app.indexOf("<GlobalSettingsScreen") < app.indexOf("<AboutScreen"));
   const ids = [...text.slice(text.indexOf("function appSettingsSections"), text.indexOf("function AppSettingsFocus")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
-  assert.equal(ids.length, 6);
-  for (const id of ids) assert.match(text, new RegExp(`id="${id}"`));
+  assert.equal(ids.length, 7);
+  // 「配置体检」的分组卡片由 ConfigDoctorPanel 自带，其余都在 App.tsx 里。
+  const sections = `${text}\n${readSource("./ConfigDoctorPanel.tsx")}`;
+  for (const id of ids) assert.match(sections, new RegExp(`id="${id}"`));
 });
 
 test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
@@ -514,7 +520,7 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
   // 使用模式问卷先弹，答完才进引导。
   assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} onCancel=\{cancelAgentFocus\} \/> : null\}/);
   assert.match(app, /\{tourOpen && !agentFocusOpen \? <OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/> : null\}/);
-  assert.match(app, /setupOpen && !agentFocusOpen \? \(\s*<OnboardingSetup/);
+  assert.match(app, /setupOpen && !agentFocusOpen && !agentFocusChecking \? \(\s*<OnboardingSetup/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
   assert.match(functionSource("initialSetupOpen"), /has\("previewRoute"\)/);
   assert.match(functionSource("initialSetupOpen"), /shouldShowSetup\(/);

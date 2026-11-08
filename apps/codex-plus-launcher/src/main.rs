@@ -57,7 +57,11 @@ impl StartupReply {
         if result.is_ok() {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.ready = true;
-            record_session_probe(&state.options, state.status_started_at_ms);
+            record_session_probe(
+                &state.options,
+                state.status_started_at_ms,
+                state.launch_extra_args.clone(),
+            );
         }
         self.reply.send(result)
     }
@@ -70,6 +74,7 @@ struct SessionState {
     requested_at_ms: u64,
     status_started_at_ms: u64,
     expected_browser_id: Option<String>,
+    launch_extra_args: Option<Vec<String>>,
 }
 
 /// 本进程 launcher 会话的只读快照，供自动接管的判据使用。
@@ -86,6 +91,10 @@ pub struct SessionSnapshot {
     /// `latest-status.json` 里的状态（`running` / `running_degraded` / …）。
     pub status: Option<String>,
     pub debug_port: Option<u16>,
+    /// 已就绪会话实际使用的应用目录，不从旧状态文件推测。
+    pub app_dir: Option<PathBuf>,
+    /// 本会话启动时实际使用的附加参数；接管已有实例时可能未知。
+    pub launch_extra_args: Option<Vec<String>>,
     /// 该会话的状态代际，用来判断是不是同一次启动。
     pub started_at_ms: Option<u64>,
 }
@@ -100,18 +109,24 @@ struct SessionProbe {
     helper_port: u16,
     app_dir: Option<std::path::PathBuf>,
     started_at_ms: u64,
+    launch_extra_args: Option<Vec<String>>,
 }
 
 fn session_probe_slot() -> &'static Mutex<Option<SessionProbe>> {
     SESSION_PROBE.get_or_init(|| Mutex::new(None))
 }
 
-fn record_session_probe(options: &LaunchOptions, started_at_ms: u64) {
+fn record_session_probe(
+    options: &LaunchOptions,
+    started_at_ms: u64,
+    launch_extra_args: Option<Vec<String>>,
+) {
     let probe = SessionProbe {
         debug_port: options.debug_port,
         helper_port: options.helper_port,
         app_dir: options.app_dir.clone(),
         started_at_ms,
+        launch_extra_args,
     };
     *session_probe_slot()
         .lock()
@@ -193,6 +208,7 @@ impl EmbeddedSession {
             requested_at_ms,
             status_started_at_ms: requested_at_ms,
             expected_browser_id,
+            launch_extra_args: None,
         }));
         let ready = StartupReply {
             reply: ready,
@@ -442,6 +458,10 @@ pub fn session_snapshot() -> SessionSnapshot {
             .as_ref()
             .map(|probe| probe.debug_port)
             .or_else(|| latest.as_ref().and_then(|latest| latest.debug_port)),
+        app_dir: probe.as_ref().and_then(|probe| probe.app_dir.clone()),
+        launch_extra_args: probe
+            .as_ref()
+            .and_then(|probe| probe.launch_extra_args.clone()),
         started_at_ms: probe
             .as_ref()
             .map(|probe| probe.started_at_ms)
@@ -487,11 +507,11 @@ async fn runtime_commands(
                         if let Some(current) = &session {
                             let current_options = {
                                 let state = current.state.lock().unwrap_or_else(|error| error.into_inner());
-                                state.ready.then(|| (state.options.clone(), state.status_started_at_ms))
+                                state.ready.then(|| (state.options.clone(), state.status_started_at_ms, state.launch_extra_args.clone()))
                             };
                             let result = match current_options {
-                                Some((current_options, started_at_ms)) => {
-                                    record_session_probe(&current_options, started_at_ms);
+                                Some((current_options, started_at_ms, launch_extra_args)) => {
+                                    record_session_probe(&current_options, started_at_ms, launch_extra_args);
                                     if attach_only { Ok(()) } else { activate(current_options, started_at_ms).await }
                                 }
                                 None => Err(StartupBusy.into()),
@@ -1442,6 +1462,12 @@ impl LaunchHooks for LauncherHooks {
                     codex_plus_core::launcher::MacosCleanupPolicy::SkipQuitBecauseAlreadyRunning,
                 ),
             });
+        }
+        if let Some(state) = &self.session_state {
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .launch_extra_args = Some(extra_args.to_vec());
         }
         self.core
             .launch_codex(app_dir, debug_port, settings, extra_args, instance)
@@ -2627,6 +2653,47 @@ mod tests {
     #[test]
     fn embedded_runtime_deduplicates_start_and_waits_for_cleanup_before_restarting() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let child_root = std::env::var_os("CODEX_PLUS_RUNTIME_PROBE_TEST_ROOT");
+        if child_root.is_none() {
+            let fixture = tempfile::tempdir().unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "tests::embedded_runtime_deduplicates_start_and_waits_for_cleanup_before_restarting",
+                    "--nocapture",
+                ])
+                .env("CODEX_PLUS_RUNTIME_PROBE_TEST_ROOT", fixture.path());
+            for (variable, directory) in [
+                ("CODEX_PLUS_STATE_DIR", "state"),
+                ("CODEX_HOME", "home"),
+                ("CODEX_SQLITE_HOME", "sqlite"),
+                ("APPDATA", "appdata"),
+                ("XDG_CONFIG_HOME", "xdg"),
+            ] {
+                let directory = fixture.path().join(directory);
+                std::fs::create_dir(&directory).unwrap();
+                command.env(variable, directory);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(codex_plus_core::windows_create_no_window());
+            }
+            // 其他 runtime 用例也会清空进程级快照；在单独测试进程内验证该快照。
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                std::fs::read(fixture.path().join("completed")).unwrap(),
+                b"ok"
+            );
+            return;
+        }
         let launched = Arc::new(AtomicUsize::new(0));
         let cleaned = Arc::new(AtomicUsize::new(0));
         let activations = Arc::new(AtomicUsize::new(0));
@@ -2654,6 +2721,9 @@ mod tests {
                         std::future::pending::<()>().await;
                     });
                     tokio::task::yield_now().await;
+                    ready.state.lock().unwrap().launch_extra_args = Some(vec![
+                        "--user-data-dir=C:\\test\\started-instance".to_string(),
+                    ]);
                     ready.send(Ok(())).unwrap();
                     let _ = stop.await;
                     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -2676,6 +2746,17 @@ mod tests {
             test_start_command(LaunchOptions::default(), reply)
         })
         .unwrap();
+        assert_eq!(
+            session_probe_slot()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .launch_extra_args,
+            Some(vec![
+                "--user-data-dir=C:\\test\\started-instance".to_string()
+            ])
+        );
         send_test_command(&worker, |reply| {
             test_start_command(
                 LaunchOptions {
@@ -2686,6 +2767,17 @@ mod tests {
             )
         })
         .unwrap();
+        assert_eq!(
+            session_probe_slot()
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .launch_extra_args,
+            Some(vec![
+                "--user-data-dir=C:\\test\\started-instance".to_string()
+            ])
+        );
         assert_eq!(launched.load(Ordering::SeqCst), 1);
         assert_eq!(activations.load(Ordering::SeqCst), 1);
         send_test_command(&worker, RuntimeCommand::Stop).unwrap();
@@ -2700,6 +2792,7 @@ mod tests {
         worker.thread.join().unwrap();
         assert_eq!(cleaned.load(Ordering::SeqCst), 2);
         assert_eq!(connections_dropped.load(Ordering::SeqCst), 2);
+        std::fs::write(PathBuf::from(child_root.unwrap()).join("completed"), b"ok").unwrap();
     }
 
     #[test]

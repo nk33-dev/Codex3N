@@ -122,7 +122,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { isGitHubRepositoryHomepage } from "./github-repository";
 import { NativeBrowserStatusView, nativeBrowserConsent } from "./native-browser-settings";
 import { AgentCachePanel } from "./agent-cache";
-import { rebaseSettingsEdits } from "./settings-rebase";
+import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase";
 import {
   contextEntriesByKind,
   dedupeContextEntryList,
@@ -138,6 +138,7 @@ import {
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { DshPluginsPanel } from "./DshPluginsPanel";
+import { ConfigDoctorPanel } from "./ConfigDoctorPanel";
 import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
@@ -169,7 +170,7 @@ import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldSho
 import { AgentFocusDialog } from "./AgentFocusDialog";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
-import { needAgentFocusPrompt, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
+import { backupAgentFocus, needAgentFocusPrompt, resolveAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
@@ -301,6 +302,7 @@ import {
   normalizeAggregateDefaultRelayId,
 } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
+import { NativeAuthControl, SavedAuthAccountField } from "./NativeAuthControls";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys";
@@ -1187,7 +1189,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
   { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
   { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
-  { id: "claude", get label() { return t("增强"); }, icon: Languages, tool: "claude" },
+  { id: "claude", get label() { return t("Desktop 增强"); }, icon: Languages, tool: "claude" },
   { id: "claudeSessions", get label() { return t("会话管理"); }, icon: MessageCircle, tool: "claude" },
   // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
   { id: "sessions", get label() { return t("会话"); }, icon: MessagesSquare },
@@ -1390,11 +1392,30 @@ export function App() {
   const [setupOpen, setSetupOpen] = useState(initialSetupOpen);
   // 使用模式（只管理 Codex / 全部功能）：没问过就先问，问完再进首次引导（引导按模式换说法）。
   const agentFocus = useAgentFocus();
-  const [agentFocusOpen, setAgentFocusOpen] = useState(needAgentFocusPrompt);
+  // 问卷等设置文件读回来再决定弹不弹（#2936）：本地存储为空不等于没选过，设置文件里可能记着。
+  const [agentFocusOpen, setAgentFocusOpen] = useState(false);
+  // 判定期间入门清单也先不出，免得它先闪一下再被问卷盖住。
+  const [agentFocusChecking, setAgentFocusChecking] = useState(needAgentFocusPrompt);
   const cancelAgentFocus = useCallback(() => {
     setAgentFocusOpen(false);
-    if (!agentFocus) setSetupOpen(false);
+    if (!agentFocus) {
+      // 第一次问时点「稍后设置」：按全部功能记下（和没选时的显示一样），之后启动不再追问，设置里随时可改（#2936）。
+      saveAgentFocus("all");
+      setSetupOpen(false);
+    }
   }, [agentFocus]);
+  // 本地存储丢了使用模式、设置文件里还记着时补回来，问卷不再每次启动都弹（#2902）。
+  const settingsLoaded = Boolean(settings);
+  const savedAgentFocus = settings?.settings.managerAgentFocus;
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (restoreAgentFocusFromSettings(savedAgentFocus)) {
+      setAgentFocusOpen(false);
+    } else if (!savedAgentFocus && agentFocus) {
+      // 升级前就选过模式的老用户：设置文件里还没有备份，补存一次。
+      backupAgentFocus(agentFocus);
+    }
+  }, [settingsLoaded, savedAgentFocus, agentFocus]);
   const closeSetup = (completed: boolean) => {
     try { window.localStorage.setItem(SETUP_STORAGE_KEY, serializeSetupState(completed ? "completed" : "dismissed")); } catch { /* 本次窗口内仍可关闭。 */ }
     setSetupOpen(false);
@@ -1498,13 +1519,53 @@ export function App() {
     [settings, settingsForm],
   );
 
+  /// 保存撞上 settings_revision_conflict（后台 token 刷新等抢先写盘）时自动恢复：
+  /// 拉最新设置，把本次提交的编辑 rebase 上去、合并外部轮换的登录 token 后重试一次；
+  /// 再次冲突或读取失败返回 null，由调用方按原逻辑抛错、保留草稿。
+  const retrySaveSettingsAfterConflict = async <T,>(
+    args: Record<string, unknown> | undefined,
+    snapshot: BackendSettings | undefined,
+    previous: BackendSettings | undefined,
+  ): Promise<T | null> => {
+    if (!snapshot || !previous) return null;
+    let latest: SettingsResult;
+    try {
+      latest = await invoke<SettingsResult>("load_settings");
+    } catch {
+      return null;
+    }
+    if (!latest || !isSuccessStatus(latest.status)) return null;
+    const base = normalizeSettings(previous);
+    const fresh = normalizeSettings(latest.settings);
+    const merged = mergeRotatedAuthContents(
+      rebaseSettingsEdits(normalizeSettings(snapshot), base, fresh),
+      base,
+      fresh,
+    );
+    try {
+      const retried = await invoke<T>("save_settings", {
+        ...args,
+        settings: merged,
+        expectedRevision: merged.revision || "",
+      });
+      const response = retried as { message?: string };
+      if (response?.message?.includes("settings_revision_conflict")) return null;
+      return retried;
+    } catch {
+      return null;
+    }
+  };
+
   const call = <T,>(command: string, args?: Record<string, unknown>) => {
     const snapshot = args?.settings as BackendSettings | undefined;
+    const previous = settingsRef.current?.settings;
     return invoke<T>(command, command === "save_settings"
       ? { ...args, expectedRevision: snapshot?.revision || "" }
-      : args).then((result) => {
+      : args).then(async (result) => {
         const response = result as { message?: string };
         if (command === "save_settings" && response?.message?.includes("settings_revision_conflict")) {
+          const recovered = await retrySaveSettingsAfterConflict<T>(args, snapshot, previous);
+          if (recovered !== null) return recovered;
           // 所有保存调用都保留当前草稿，不能把失败响应当成新表单回填。
           throw new Error(response.message);
         }
@@ -1591,23 +1652,30 @@ export function App() {
     }
   };
 
-  // Computer Use 和 Claude 增强页的开关由后端单独写进 settings.json：只合并这些键和版本号，
-  // 别处没保存的草稿保持不动；否则表单里的旧版本号会让之后的保存全部报冲突。
+  // Computer Use 和 Claude 增强页的开关、使用模式由后端单独写进 settings.json：只合并这些键和版本号，
+  // 别处没保存的草稿保持不动；否则表单里的旧版本号会让之后的保存全部报冲突（#2937）。
   useEffect(() => {
     let disposed = false;
     let revision = 0;
     const sync = async () => {
       const request = ++revision;
       const formRevision = settingsFormRef.current.revision;
+      const previous = settingsRef.current?.settings;
       const result = await run(() => call<SettingsResult>("load_settings"));
       if (!result || disposed || request !== revision || settingsFormRef.current.revision !== formRevision) return;
       const fresh = normalizeSettings(result.settings) as BackendSettings & Record<string, unknown>;
       setSettings(result);
       setSettingsForm((current) => {
-        const merged: Record<string, unknown> = { ...current, revision: fresh.revision };
+        const credentials = previous
+          ? mergeRotatedAuthContents(current, normalizeSettings(previous), fresh)
+          : current;
+        const merged: Record<string, unknown> = { ...credentials, revision: fresh.revision };
         for (const key of [
           "computerUseMode", "computerUseApproval", "computerUsePip",
           "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout",
+          // 使用模式也要带上：表单留着旧值，下一次整份保存会把刚记下的模式写回去。
+          "managerAgentFocus",
+          "nativeAuthSelection",
         ]) merged[key] = fresh[key];
         settingsFormRef.current = merged as BackendSettings;
         return merged as BackendSettings;
@@ -1762,7 +1830,11 @@ export function App() {
   const deleteUserScript = async (key: string) => {
     const script = settings?.user_scripts?.scripts?.find((item) => item.key === key);
     const name = script?.name || key;
-    if (!(await appConfirm(tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]), { title: t("删除脚本"), confirmText: t("删除"), danger: true }))) return;
+    const isPackage = script?.kind === "package";
+    const question = isPackage
+      ? tf("卸载拓展“{0}”？整个拓展文件夹会移进废纸篓，需要时可以从废纸篓找回。", [name])
+      : tf("删除脚本“{0}”？此操作会移除本地脚本文件。", [name]);
+    if (!(await appConfirm(question, { title: isPackage ? t("卸载拓展") : t("删除脚本"), confirmText: isPackage ? t("卸载") : t("删除"), danger: true }))) return;
     const result = await run(() => call<SettingsResult>("delete_user_script", { key }));
     if (result) {
       setSettings(result);
@@ -3904,7 +3976,14 @@ export function App() {
     void (async () => {
       const startup = await initializeManager({
         startup: () => run(() => call<StartupResult>("startup_options")),
-        settings: () => refreshSettings(true, () => settingsFormRef.current === initialForm),
+        settings: async () => {
+          const loaded = await refreshSettings(true, () => settingsFormRef.current === initialForm);
+          if (disposed) return;
+          const ask = await resolveAgentFocusPrompt(async () => loaded?.managerAgentFocus);
+          if (disposed) return;
+          if (ask) setAgentFocusOpen(true);
+          setAgentFocusChecking(false);
+        },
         overview: () => refreshOverview(true),
         tools: () => refreshTools(true),
       });
@@ -4621,7 +4700,7 @@ export function App() {
             : routeTitle(navAliasRoute[route] ?? route);
 
   // 入门清单放在侧栏底部（参照 Cursor 的 Getting Started 卡片）：平时收成一张进度卡，点开在上方展开清单。
-  const setupCard = setupOpen && !agentFocusOpen ? (
+  const setupCard = setupOpen && !agentFocusOpen && !agentFocusChecking ? (
           <OnboardingSetup
             focus={agentFocus}
             codexInstalled={overview ? overview.codex_app.status === "found" : null}
@@ -7637,6 +7716,7 @@ function RelayScreen({
         )}
       />
       {connection}
+      <NativeAuthControl />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
       {!normalized.relayProfilesEnabled ? (
@@ -11123,6 +11203,7 @@ function useLightweightModeSetting(dirty: boolean) {
   return { enabled, saving, error, toggle };
 }
 
+
 /// 整体设置页（最左侧齿轮）。
 ///
 /// 只放与当前 Agent 无关的应用级选项，内容不随 Agent 切换而变。
@@ -11204,6 +11285,7 @@ function GlobalSettingsScreen({
           </CxCard>
         </CxSection>
       </div>
+      <ConfigDoctorPanel />
       <div className="cx-set-group" id="app-settings-config">
         <CxSection title={t("配置备份与迁移")}>
           <CxCard>
@@ -12759,7 +12841,7 @@ function RelayProfileEditor({
                   mode: "pureApi" as const,
                   icon: KeyRound,
                   title: t("纯 API"),
-                  description: t("只使用 API 凭据，不依赖官方登录。"),
+                  description: t("使用 API 凭据，原生登录账号独立选择。"),
                 },
               ]).map(({ mode, icon: Icon, title, description }) => (
                 <button
@@ -12779,6 +12861,9 @@ function RelayProfileEditor({
                 </button>
               ))}
             </div>
+            {editorMode !== "pureApi" ? (
+              <SavedAuthAccountField onChange={(officialAccountRef) => updateDraft({ officialAccountRef })} value={profile.officialAccountRef ?? ""} />
+            ) : null}
             {showApiFields ? (
               <div className="relay-inline-connection">
                 <div className="relay-inline-connection-head">
@@ -15116,6 +15201,7 @@ function appSettingsSections() {
   return [
     { id: "app-settings-general", label: t("基础设置") },
     { id: "app-settings-config", label: t("配置文件") },
+    { id: "app-settings-doctor", label: t("配置体检") },
     { id: "app-settings-update", label: t("版本与更新") },
     { id: "app-settings-about", label: t("关于") },
     { id: "app-settings-logs", label: t("日志") },
@@ -16268,6 +16354,7 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
   const entries: SettingsNavEntry[] = [
     { key: "general", label: t("通用"), icon: Settings, route: "settings", sections: ["app-settings-general"], group: "app", keywords: "theme mode tour 主题 模式 引导 托盘" },
     { key: "config", label: t("配置文件"), icon: FileCode2, route: "settings", sections: ["app-settings-config"], group: "app", keywords: "backup import export 备份 导入 导出 路径" },
+    { key: "doctor", label: t("配置体检"), icon: Stethoscope, route: "settings", sections: ["app-settings-doctor"], group: "app", keywords: "doctor ai config check health 体检 检查 诊断 配置" },
     { key: "update", label: t("版本与更新"), icon: Download, route: "settings", sections: ["app-settings-update"], group: "app", keywords: "update version 更新 版本" },
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
@@ -16388,6 +16475,8 @@ function AppSidebar({
 }) {
   const gateway = useGatewayPayload(10_000);
   const [settingsQuery, setSettingsQuery] = useState("");
+  // 收起了页面列表的 Agent：再点一次当前 Agent 收起 / 展开它下面的页面（#2913）。切到别的 Agent 时清掉。
+  const [collapsedAgent, setCollapsedAgent] = useState<string | null>(null);
   const enhanceOnly = providersHidden(focus);
   const settingsMode = settingsModeRoutes.has(route);
   const onGlobalPage = globalNavigationRoutes.includes(route);
@@ -16568,6 +16657,9 @@ function AppSidebar({
           {/* 每个 Agent 一行；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面在内容区顶部的胶囊里。 */}
           {tools.map((tool) => {
             const current = tool.id === activeTool && !onGlobalPage;
+            const expanded = current && collapsedAgent !== tool.id;
+            // 这一行同时管 Claude Code（命令行配置概览）和 Claude Desktop（增强），侧栏只写 Claude，免得误以为增强针对的是命令行（#2913）。
+            const displayName = tool.id === "claude" ? "Claude" : tool.name;
             const title = tool.switchable
               ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
               : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
@@ -16582,15 +16674,24 @@ function AppSidebar({
               <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()}>
                 <button
                   aria-current={current ? "true" : undefined}
-                  aria-label={tool.switchable ? `${tool.name} · ${access.label}` : `${tool.name} · ${t("待接入")}`}
-                  className={`cx-side-item ${current ? "active" : ""} ${current && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
+                  aria-expanded={current ? expanded : undefined}
+                  aria-label={tool.switchable ? `${displayName} · ${access.label}` : `${displayName} · ${t("待接入")}`}
+                  className={`cx-side-item ${current ? "active" : ""} ${expanded && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
                   disabled={!tool.switchable}
-                  onClick={() => onOpenAgent(tool.id)}
+                  onClick={() => {
+                    // 再点当前 Agent：只收起 / 展开它的页面列表，不跳页；点别的 Agent 照常切过去并展开。
+                    if (current) {
+                      setCollapsedAgent((value) => (value === tool.id ? null : tool.id));
+                      return;
+                    }
+                    setCollapsedAgent(null);
+                    onOpenAgent(tool.id);
+                  }}
                   title={`${title}｜${access.label}`}
                   type="button"
                 >
                   <AgentGlyph agent={tool.id} className="cx-side-icon" />
-                  <span className="cx-side-label">{tool.name}</span>
+                  <span className="cx-side-label">{displayName}</span>
                   {enhanceOnly ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
                 {tool.id === "codex" && tool.switchable ? (() => {
@@ -16615,7 +16716,7 @@ function AppSidebar({
                 })() : null}
               </div>
               {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
-{current ? (() => {
+{expanded ? (() => {
             const pages = agentTabGroups(navigationSections, routeTool, activeTool)
               .flatMap((entry) => visibleRoutes(focus, entry.routes));
             if (pages.length < 2) return null;
@@ -16886,8 +16987,8 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
     : isPackage
       ? tf("拓展包 · {0}", [script.package?.version || t("未知版本")])
       : script.source === "builtin" ? t("内置") : t("用户");
-  // 拓展包是文件夹，后端只删单文件，这里不给删除按钮。
-  const canDelete = codexHost && script.source === "user" && !isPackage;
+  // 拓展包是文件夹：后端整个移进废纸篓（可找回，#2919），单文件脚本直接删除。
+  const canDelete = codexHost && script.source === "user";
   const state = extensionStateForHost(script, host, globalEnabled);
   const { label, hint } = localScriptStateLabel(state, host);
   const stateHint = codexHost && state === "failed" && script.error ? `${hint}\n${script.error}` : hint;

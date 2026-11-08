@@ -1457,6 +1457,7 @@ const RENDERER_SETTING_FIELDS: &[&str] = &[
     "codexAppNativePredictions",
     "codexAppThirdPartyReasoningCollapse",
     "codexAppOfflineAutoReview",
+    "codexAppStatsigOverrides",
     "sessionIndexRepairEnabled",
     "usageHistoryEnabled",
     "codexAppPetRealMouseLook",

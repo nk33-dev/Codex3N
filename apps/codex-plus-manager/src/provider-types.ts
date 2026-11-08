@@ -39,6 +39,7 @@ export type RelayProfile = {
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
   officialMixApiKey: boolean;
+  officialAccountRef?: string;
   hideOfficialUsageAlert: boolean;
   testModel: string;
   configContents: string;
@@ -115,6 +116,9 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppNativePredictions: boolean;
   codexAppThirdPartyReasoningCollapse: boolean;
   codexAppOfflineAutoReview: boolean;
+  codexAppStatsigOverrides: boolean;
+  managerAgentFocus?: string;
+  nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   secretDecryptionFailures?: string[];
   revision?: string;
   codexAppNativeFastUnlock: boolean;

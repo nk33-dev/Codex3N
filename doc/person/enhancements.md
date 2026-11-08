@@ -88,6 +88,8 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 ## 功能归属与验证
 
+`codexAppStatsigOverrides` 默认关闭，`34-statsig-overrides.js` 经既有内置拓展入口安装；仅覆盖本机升级推销、网络超时和记忆相关的客户端配置，不改变服务端能力或额度。离线分支对话兜底共用 `32-fork-readiness-fallback.js` 与 `33-offline-auto-review.js`，仅在无账号且没有真实远程数据时补内存数据，不另建模型目录入口。
+
 管理器沿用上游 Agent 图标栏与原生工作区布局。供应商编辑分组由 `App.tsx::RelayFold` 保存展开偏好，新出现的校验错误展开对应分组，模型配置首次默认展开。
 
 上游已撤下 Codex++ 会话分享、文件导入与分享链接入口，原生会话能力继续由宿主提供。旧 `codexAppSessionShare` 在保存时清除，不注册分享按钮。`codexAppTypingEffect` 保存 `off`、`rainbow`、`fireworks`、`stars`，默认关闭；入口为随附拓展 `assets/extensions/typing-effects`，跟随输入法组合状态和系统减少动态效果设置。

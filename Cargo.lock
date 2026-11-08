@@ -455,7 +455,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-core"
-version = "2.3.0-3n.1"
+version = "2.4.0-3n.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-data"
-version = "2.3.0-3n.1"
+version = "2.4.0-3n.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -521,7 +521,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-launcher"
-version = "2.3.0-3n.1"
+version = "2.4.0-3n.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-manager"
-version = "2.3.0-3n.1"
+version = "2.4.0-3n.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -553,6 +553,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tempfile",
+ "tokio",
  "toml_edit 0.22.27",
  "url",
  "uuid",
@@ -560,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-mobile-relay"
-version = "2.3.0-3n.1"
+version = "2.4.0-3n.1"
 dependencies = [
  "anyhow",
  "futures-util",

@@ -76,6 +76,8 @@ pub struct GatewayPoolEntry {
     pub upstream_gone: Vec<String>,
     /// 订阅账号的额度（ChatGPT 5 小时 / 每周、Copilot 本月高级请求）；查不到或普通供应商为空。
     pub quota: Option<codex_plus_core::gateway::quota::ProviderQuota>,
+    pub subscription_policy: Option<codex_plus_core::gateway::store::SubscriptionPolicy>,
+    pub subscription_block_reason: Option<String>,
     /// 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额，不当中转站识别。
     pub balance_api: bool,
     /// new-api 访问令牌（打码，#2793）；没配置为空。令牌原文不传给界面。
@@ -122,6 +124,27 @@ pub struct AutoGroupView {
 pub struct GatewaySourceEntry {
     pub id: String,
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAuthAccount {
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub workspace_id: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAuthState {
+    pub managed: bool,
+    pub selection: Option<codex_plus_core::settings::NativeAuthSelection>,
+    pub actual_account_ref: Option<String>,
+    pub actual_label: String,
+    pub accounts: Vec<NativeAuthAccount>,
+    pub drift: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,7 +259,9 @@ fn pool_entry(
         disable_tool_search: relay.disable_tool_search,
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
-        quota: codex_plus_core::gateway::quota::get(&relay.id),
+        quota: codex_plus_core::gateway::quota::quota_for_relay(relay),
+        subscription_policy: None,
+        subscription_block_reason: None,
         balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
         newapi_access: None,
     }
@@ -265,6 +290,13 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         .map(|provider| GatewayPoolEntry {
             keys: apply::provider_keys(&provider.relay),
             newapi_access: apply::provider_newapi_access(provider),
+            subscription_policy: provider.subscription_policy.clone(),
+            subscription_block_reason: codex_plus_core::gateway::quota::dispatch_decision(
+                &gateway,
+                &provider.relay,
+            )
+            .err()
+            .map(|blocked| blocked.message),
             model_windows: provider.model_windows.clone(),
             context_window: provider.context_window,
             compaction: provider.compaction_settings(),
@@ -432,6 +464,128 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
     }
 }
 
+fn native_auth_state() -> anyhow::Result<NativeAuthState> {
+    let settings = SettingsStore::default().load()?;
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    let live = match std::fs::read_to_string(home.join("auth.json")) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let gateway = GatewayStore::default().load()?;
+    let has_native_login =
+        codex_plus_core::official_login::official_login_from_auth_contents(&live).is_some();
+    let mut accounts = Vec::new();
+    let mut actual_account_ref = None;
+    let mut actual_label = if has_native_login {
+        "ChatGPT".to_string()
+    } else {
+        String::new()
+    };
+    for provider in &gateway.providers {
+        if codex_plus_core::official_login::official_login_from_auth_contents(
+            &provider.relay.auth_contents,
+        )
+        .is_none()
+        {
+            continue;
+        }
+        let account_id = codex_plus_core::official_login::chatgpt_account_id_from_auth_contents(
+            &provider.relay.auth_contents,
+        );
+        let name = provider.relay.name.clone();
+        if !live.trim().is_empty()
+            && codex_plus_core::native_auth::same_account(&live, &provider.relay.auth_contents)
+            && (actual_account_ref.is_none()
+                || codex_plus_core::native_auth::selection_account_ref(&settings)
+                    == Some(provider.relay.id.as_str()))
+        {
+            actual_account_ref = Some(provider.relay.id.clone());
+            actual_label = name.clone();
+        }
+        accounts.push(NativeAuthAccount {
+            id: provider.relay.id.clone(),
+            name,
+            email: String::new(),
+            workspace_id: account_id,
+            source: provider.source.clone(),
+        });
+    }
+    let drift = match settings.native_auth_selection.as_ref() {
+        Some(codex_plus_core::settings::NativeAuthSelection::None) if has_native_login => {
+            Some("当前 auth 仍有登录凭据".to_string())
+        }
+        Some(codex_plus_core::settings::NativeAuthSelection::Account { account_ref })
+            if actual_account_ref.as_deref() != Some(account_ref.as_str()) =>
+        {
+            Some("当前 auth 与显式选择不一致".to_string())
+        }
+        _ => None,
+    };
+    Ok(NativeAuthState {
+        managed: settings.native_auth_selection.is_some(),
+        selection: settings.native_auth_selection,
+        actual_account_ref,
+        actual_label,
+        accounts,
+        drift,
+    })
+}
+
+#[tauri::command]
+pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
+    match native_auth_state() {
+        Ok(state) => ok("", state),
+        Err(error) => failed(
+            &format!("读取原生登录状态失败：{error}"),
+            NativeAuthState {
+                managed: false,
+                selection: None,
+                actual_account_ref: None,
+                actual_label: String::new(),
+                accounts: Vec::new(),
+                drift: Some(error.to_string()),
+            },
+        ),
+    }
+}
+
+#[tauri::command]
+pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<NativeAuthState> {
+    let result = (|| -> anyhow::Result<NativeAuthState> {
+        if let Some(account_ref) = account_ref.as_deref() {
+            let gateway = GatewayStore::default().load()?;
+            let provider = gateway
+                .provider(account_ref)
+                .context("所选 ChatGPT 账号不存在")?;
+            if codex_plus_core::official_login::official_login_from_auth_contents(
+                &provider.relay.auth_contents,
+            )
+            .is_none()
+            {
+                anyhow::bail!("所选供应商没有可用的 ChatGPT 登录凭据");
+            }
+        }
+        codex_plus_core::native_auth::set_native_auth_selection(account_ref.as_deref())?;
+        notify_settings_changed();
+        native_auth_state()
+    })();
+    match result {
+        Ok(state) => ok("原生登录选择已保存。", state),
+        Err(error) => failed(
+            &format!("保存原生登录选择失败：{error}"),
+            NativeAuthState {
+                managed: false,
+                selection: None,
+                actual_account_ref: None,
+                actual_label: String::new(),
+                accounts: Vec::new(),
+                drift: Some(error.to_string()),
+            },
+        ),
+    }
+}
+
 fn current_payload() -> Option<GatewayPayload> {
     let settings = SettingsStore::default().load().unwrap_or_default();
     let gateway = GatewayStore::default().load().ok()?;
@@ -485,6 +639,7 @@ fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
 /// 放到阻塞线程池里做，不占主线程。返回格式不变。
 #[tauri::command]
 pub async fn load_gateway() -> CommandResult<Option<GatewayPayload>> {
+    refresh_quotas();
     match tauri::async_runtime::spawn_blocking(load_gateway_blocking).await {
         Ok(result) => result,
         Err(error) => failed(&format!("读取网关状态失败：{error}"), None),
@@ -1027,6 +1182,7 @@ pub fn update_gateway_provider(
     // 表单里可能改了模型列表：新模型按公开价格表补价格。
     if result.is_ok() {
         autofill_prices(Some(id));
+        refresh_quotas();
     }
     respond("供应商已保存。", "保存供应商失败", result)
 }
@@ -1441,15 +1597,30 @@ fn autofill_prices(only: Option<String>) {
 /// 后台查一遍订阅账号的额度（刚登录的账号不用等下一轮）。
 fn refresh_quotas() {
     tauri::async_runtime::spawn(async move {
-        let Ok(gateway) = GatewayStore::default().load() else {
-            return;
-        };
-        for provider in gateway.providers.iter().filter(|provider| provider.enabled) {
-            if codex_plus_core::gateway::quota::supports(&provider.relay) {
-                let _ = codex_plus_core::gateway::quota::refresh(&provider.relay).await;
-            }
-        }
+        prefetch_quotas().await;
     });
+}
+
+async fn prefetch_quotas() {
+    if let Ok(gateway) = GatewayStore::default().load() {
+        codex_plus_core::gateway::quota::prefetch(&gateway).await;
+    }
+}
+
+async fn prefetch_changed_quotas(before: &GatewaySettings) {
+    if let Ok(mut gateway) = GatewayStore::default().load() {
+        gateway.providers.retain(|provider| {
+            before
+                .provider(&provider.relay.id)
+                .is_none_or(|old| old.relay.auth_contents != provider.relay.auth_contents)
+        });
+        // 只等待此次导入/重登录的账号；其它账号留给后台，不拖住登录响应。
+        let _ = tokio::time::timeout(
+            Duration::from_secs(8),
+            codex_plus_core::gateway::quota::prefetch(&gateway),
+        )
+        .await;
+    }
 }
 
 /// 手动刷新一个账号的额度。
@@ -1521,6 +1692,14 @@ pub fn set_gateway_provider_enabled(
     id: String,
     enabled: bool,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let result = refresh_agents(apply::set_provider_enabled(
+        &GatewayStore::default(),
+        &id,
+        enabled,
+    ));
+    if enabled && result.is_ok() {
+        refresh_quotas();
+    }
     respond(
         if enabled {
             "已打开，接入的 Agent 能用它的模型了。"
@@ -1528,11 +1707,7 @@ pub fn set_gateway_provider_enabled(
             "已关闭，它不再参与调度。"
         },
         "切换供应商失败",
-        refresh_agents(apply::set_provider_enabled(
-            &GatewayStore::default(),
-            &id,
-            enabled,
-        )),
+        result,
     )
 }
 
@@ -1570,6 +1745,7 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         model_prices: None,
         proxy: None,
         strip_image_generation_tool: None,
+        subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
     };
@@ -1603,6 +1779,7 @@ pub async fn import_gateway_providers(
     items: Vec<ImportItem>,
     skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let before = GatewayStore::default().load().unwrap_or_default();
     let skip = skip_agents.as_deref();
     let mut added = 0usize;
     let mut skipped = 0usize;
@@ -1650,6 +1827,7 @@ pub async fn import_gateway_providers(
         }
     }
     let _ = refresh_added(Ok(()));
+    prefetch_changed_quotas(&before).await;
     let mut message = format!("已导入 {added} 个供应商");
     if !groups.is_empty() {
         message.push_str(&format!("，建好模型组「{}」", groups.join("」「")));
@@ -2108,9 +2286,46 @@ pub fn resume_agent_session(
     }
 }
 
+/// 最近一次打开的登录页地址：登录提示条上「复制登录链接」读它，方便用无痕窗口或别的浏览器打开（#2823）。
+static LAST_LOGIN_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 清掉记住的登录地址：每次开始新登录时调用，避免提示条复制到上一次登录的旧链接。
+/// finish 阶段不能清——订阅 / Copilot 的登录网址是 start 阶段打开的，等待期间还要能复制。
+fn clear_login_url() {
+    if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+        *slot = None;
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginUrlPayload {
+    pub url: Option<String>,
+}
+
+/// 当前登录要打开的地址（没有进行中的浏览器登录时为空）。
+#[tauri::command]
+pub fn gateway_login_url() -> CommandResult<LoginUrlPayload> {
+    let url = LAST_LOGIN_URL
+        .lock()
+        .map(|slot| slot.clone())
+        .unwrap_or_default();
+    ok(
+        if url.is_some() {
+            "ok"
+        } else {
+            "没有进行中的浏览器登录。"
+        },
+        LoginUrlPayload { url },
+    )
+}
+
 /// 用系统默认浏览器打开登录页。
 /// Windows 不能用 `cmd /c start`：授权地址里的 `&` 会被 cmd 当成命令分隔符，参数全丢。
 fn open_in_browser(url: &str) {
+    if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+        *slot = Some(url.to_string());
+    }
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
@@ -2185,7 +2400,10 @@ where
 }
 
 /// 登录命令统一的返回：成功刷新价格 / 额度 / Agent，取消时返回 `cancelled`。
-fn login_response(outcome: LoginOutcome<String>) -> CommandResult<Option<GatewayPayload>> {
+async fn login_response(
+    outcome: LoginOutcome<String>,
+    before: &GatewaySettings,
+) -> CommandResult<Option<GatewayPayload>> {
     match outcome {
         LoginOutcome::Cancelled => CommandResult {
             status: "cancelled".to_string(),
@@ -2193,7 +2411,10 @@ fn login_response(outcome: LoginOutcome<String>) -> CommandResult<Option<Gateway
             payload: current_payload(),
         },
         LoginOutcome::Done(result) => match refresh_added(result) {
-            Ok(message) => ok(&message, current_payload()),
+            Ok(message) => {
+                prefetch_changed_quotas(before).await;
+                ok(&message, current_payload())
+            }
             Err(error) => failed(&format!("登录失败：{error:#}"), current_payload()),
         },
     }
@@ -2203,6 +2424,9 @@ fn login_response(outcome: LoginOutcome<String>) -> CommandResult<Option<Gateway
 #[tauri::command]
 pub fn cancel_gateway_login() -> CommandResult<()> {
     let cancelled = login_slot().take().map(|(_, abort)| abort()).is_some();
+    if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+        *slot = None;
+    }
     ok(
         if cancelled {
             LOGIN_CANCELLED
@@ -2215,7 +2439,10 @@ pub fn cancel_gateway_login() -> CommandResult<()> {
 
 #[cfg(test)]
 mod login_tests {
-    use super::{LoginOutcome, cancel_gateway_login, cancellable_login, login_slot};
+    use super::{
+        LAST_LOGIN_URL, LoginOutcome, cancel_gateway_login, cancellable_login, clear_login_url,
+        login_slot,
+    };
 
     /// 等后台登录任务登记好中止函数。
     fn wait_registered() {
@@ -2251,6 +2478,15 @@ mod login_tests {
             assert!(login_slot().is_none());
         });
     }
+
+    #[test]
+    fn clear_login_url_drops_the_remembered_address() {
+        if let Ok(mut slot) = LAST_LOGIN_URL.lock() {
+            *slot = Some("https://example.test/login".to_string());
+        }
+        clear_login_url();
+        assert!(LAST_LOGIN_URL.lock().unwrap().is_none());
+    }
 }
 
 /// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的供应商池。同一个账号再登录只更新 token。
@@ -2259,7 +2495,9 @@ mod login_tests {
 pub async fn login_gateway_chatgpt(
     skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
+    clear_login_url();
     let outcome = cancellable_login(async move {
         let account = accounts::chatgpt_login(open_in_browser).await?;
         let store = GatewayStore::default();
@@ -2270,10 +2508,12 @@ pub async fn login_gateway_chatgpt(
                 .providers
                 .iter_mut()
                 .find(|provider| {
-                    accounts::same_chatgpt_login(
-                        &provider.relay.auth_contents,
-                        &account.auth_contents,
-                    )
+                    provider.source != "native:external"
+                        && !codex_plus_core::official_login::is_native_owned_login(&provider.relay)
+                        && accounts::same_chatgpt_login(
+                            &provider.relay.auth_contents,
+                            &account.auth_contents,
+                        )
                 })
                 .map(|provider| {
                     provider.relay.auth_contents = account.auth_contents.clone();
@@ -2298,7 +2538,7 @@ pub async fn login_gateway_chatgpt(
         })
     })
     .await;
-    login_response(outcome)
+    login_response(outcome, &before).await
 }
 
 /// 账号类供应商（Copilot / SuperGrok）加进网关池；同一个账号（按 `identity_field`）已存在时只换凭据。
@@ -2359,6 +2599,7 @@ fn add_account_provider(
 #[tauri::command]
 pub async fn start_gateway_copilot_login()
 -> CommandResult<Option<codex_plus_core::gateway::accounts::DeviceCode>> {
+    clear_login_url();
     match codex_plus_core::gateway::accounts::copilot_device_code().await {
         Ok(code) => {
             open_in_browser(&code.verification_uri);
@@ -2374,12 +2615,13 @@ pub async fn finish_gateway_copilot_login(
     code: codex_plus_core::gateway::accounts::DeviceCode,
     skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let before = GatewayStore::default().load().unwrap_or_default();
     let outcome = cancellable_login(async move {
         let relay = codex_plus_core::gateway::accounts::copilot_finish(&code).await?;
         add_account_provider(relay, "copilot", "login", skip_agents.as_deref())
     })
     .await;
-    login_response(outcome)
+    login_response(outcome, &before).await
 }
 
 /// 在网关里登录 SuperGrok：浏览器登录后加进网关池。与 Grok CLI 自己的登录互不影响。
@@ -2387,7 +2629,9 @@ pub async fn finish_gateway_copilot_login(
 pub async fn login_gateway_grok(
     skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
+    clear_login_url();
     let outcome = cancellable_login(async move {
         let tokens = accounts::grok_login(open_in_browser).await?;
         // 登录时还没有供应商（也就没有它的代理设置），走系统代理。
@@ -2400,7 +2644,7 @@ pub async fn login_gateway_grok(
         )
     })
     .await;
-    login_response(outcome)
+    login_response(outcome, &before).await
 }
 
 /// 在网关里登录 ChatGPT API（OpenAI 的「用 ChatGPT 登录」）：套餐额度直接用在 api.openai.com 上，
@@ -2409,7 +2653,9 @@ pub async fn login_gateway_grok(
 pub async fn login_gateway_chatgpt_api(
     skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
+    clear_login_url();
     let outcome = cancellable_login(async move {
         let state_dir = codex_plus_core::paths::default_app_state_dir();
         let account = accounts::chatgpt_api_login(&state_dir, open_in_browser).await?;
@@ -2427,7 +2673,7 @@ pub async fn login_gateway_chatgpt_api(
         )
     })
     .await;
-    login_response(outcome)
+    login_response(outcome, &before).await
 }
 
 /// 私有接口订阅（Cursor、Kiro 等）登录第一步：按选的方式开始登录。要打开的网址在这里打开，
@@ -2450,6 +2696,9 @@ pub async fn start_gateway_subscription_login(
             SubscriptionLoginStartPayload { start: None },
         );
     };
+    // 导入本地凭据 / 粘贴凭据这类方式没有要打开的网址：先清掉上一次登录记住的地址，
+    // 否则等待条上的「复制登录链接」会拿到旧链接。
+    clear_login_url();
     let result = async {
         let http = codex_plus_core::http_client::proxied_client("")?;
         item.begin_login(&http, method, input.as_deref().unwrap_or_default())
@@ -2486,6 +2735,7 @@ pub async fn finish_gateway_subscription_login(
     start: codex_plus_core::gateway::subscriptions::LoginStart,
     skip_agents: Option<Vec<String>>,
 ) -> CommandResult<Option<GatewayPayload>> {
+    let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::subscriptions;
     let outcome = cancellable_login(async move {
         let item =
@@ -2504,7 +2754,7 @@ pub async fn finish_gateway_subscription_login(
         )
     })
     .await;
-    login_response(outcome)
+    login_response(outcome, &before).await
 }
 
 /// 清掉某个供应商的 Key 冷却与熔断状态。

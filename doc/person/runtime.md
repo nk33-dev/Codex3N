@@ -14,7 +14,7 @@
 
 轻量模式默认关闭，整体设置和托盘右键共用 `set_lightweight_mode_enabled`，沿用 `gateway.json::lightweightOnClose`。开启并保存成功后立即收起主窗口，3 秒后释放 WebView；下次启动不创建主窗口，托盘、helper 与网关继续运行。托盘开启经 `codex-plus-lightweight-mode-requested` 交给已有界面确认草稿，取消不改开关；关闭开关取消待释放任务。托盘打开、Dock 和外部唤起共用 `build_main_window`，恢复尺寸、最大化和隔离数据目录，模式保持开启，关窗后再次释放。快捷面板处理请求时可在后台临时重建界面，完成后释放。「退出程序」仍停止后台服务。
 
-开关的写盘、缓存和事件通知由 `MODE_UPDATE_LOCK` 串行化，前端按事件修订隔离迟到的初读和保存响应，连续点击不重复提交。保存失败保留原状态，损坏配置的重读不覆盖缓存，语言切换保留勾选项；`manager.lightweight_mode` 只记录开关值及 `set`／`refresh` 来源。个人设置仍手动保存，外部设置事件按已保存基线合并草稿，不自动重试旧修订号。
+开关的写盘、缓存和事件通知由 `MODE_UPDATE_LOCK` 串行化，前端按事件修订隔离迟到的初读和保存响应，连续点击不重复提交。保存失败保留原状态，损坏配置的重读不覆盖缓存，语言切换保留勾选项；`manager.lightweight_mode` 只记录开关值及 `set`／`refresh` 来源。个人设置仍手动保存；保存遇到修订冲突时读取最新设置，按提交时基线合并用户编辑和已轮换凭据，只重试一次。设置事件同步修订号时也采用新凭据，用户手动改过的凭据和其他草稿保留。再次冲突保留草稿，不循环提交；`issue-repair-ui.test.ts` 与 `claude-extensions-navigation.test.ts` 验证真实回调。
 
 轻量模式回归见 `lightweight-mode.test.ts`、`tray-panel-model.test.ts` 与 Windows 下 `lightweight::tests`，覆盖草稿取消、迟到响应、重复点击、并发保存、菜单勾选及损坏配置。`scripts/lightweight-live-probe.mjs <debug 管理器 exe>` 使用临时状态目录、独立端口与假网关凭据验证后台启动、窗口释放和唤起、网关存活及重启持久化；不操作真实会话和凭据，不代替真实托盘点击与 macOS、Linux 验收。`CODEX_PLUS_MANAGER_TEST_DEBUG_PORT` 仅在 Windows debug 构建且显式设置隔离状态目录时生效，正式包不读取。
 
@@ -74,6 +74,7 @@
 | --- | --- | --- |
 | `launcher.rs::start_helper`、`start_bridge_watchdog` | `launcher/backend_services.rs` | 常驻 helper 复用、macOS/Windows 桌宠与单份 watchdog；常驻 helper 集成测试、恢复服务测试 |
 | `App.tsx` 内类型和默认值 | `provider-types.ts`、`lib/default-settings.ts` | 代理重试、旁支保存、轮次回退、Work 视图和模型跟随共用配置；类型检查、设置测试 |
+| `App.tsx` 新增使用模式、Statsig 设置与账号引用 | 同一共用类型与默认值；`routes.rs` 仅公开 Statsig 布尔开关 | 使用模式和原生账号变化经既有设置事件同步修订号，其他草稿保留；翻译扫描和设置回归 |
 | `App.tsx` 的上下文解析函数 | 上游 `context-config-text.ts`，由原 App 调用 | MCP 按 ID 累积，多级子表归属不变；残缺条目不覆盖 live；上下文与配置回归 |
 | `SessionRepairPanel`、旧 `SessionPage` | `App.tsx::SessionMaintenance`、`ProjectSessionPage.tsx` | 全库搜索、整项目选择、归档、删除保护与折叠维护区；会话和维护回归 |
 | `commands.rs` 中待确认供应商导入 | `commands/provider_import.rs` | 读取、确认和取消共用指纹校验，支持网关供应商池；导入链接回归 |
@@ -82,6 +83,8 @@
 上游扩展内核的 `ctx.onScan` 注册表接入同一轻量/延迟扫描，卸载时撤销扫描项；菜单和 UI 插槽在隐藏或任务已排队时仍回收脱离节点。`codex/exchange` 请求链同时承载旁支保存与第三方中间件，个人性能计时包在同一发送入口外。`/backend/status` 的 `settingsRevision` 未变化时不再拉取设置；版本变化后成功读取才接受新修订号，恢复仍要求业务桥接和设置均可用。
 
 `builtin_takeover.rs` 管理 Rust 侧内置拓展替换，读取继续复用设置缓存。扩展调度器在 `launcher/backend_services.rs::start_bridge_watchdog_runtime` 启动；核心与带数据服务的启动器都将扩展 preload 加入已有新文档脚本集合，恢复服务沿用原 browser 身份检查，不另建注入入口。
+
+使用模式恢复在 `initializeManager` 的同一次设置读取完成后判定，未取得有效模式才弹问卷，不另起设置请求；“稍后设置”保存为全部功能。整体设置的配置体检沿用 `ConfigDoctorPanel.tsx` → `config_doctor_commands.rs::config_doctor_request` → `config_doctor.rs` 单一入口。本地规则只读，AI 解释默认关闭；模型来源为当前供应商、本机服务或自定义地址。独立配置存于状态目录 `config-doctor.json`，不参与主设置的手动保存。外链仍经过 `commands/external_url.rs` 的 HTTPS 精确站点白名单。页面和纯逻辑文案均纳入 `tools/i18n-verify.mjs`。
 
 管理器拓展面板通过 `ExtensionManagerPanel.tsx` 与 `extension_panel.rs` 的随机令牌协议加载；面板拥有独立 CSP，主窗口仍拒绝内联脚本。协议只返回已注册 HTML，不接受文件路径。边界和清理见[安全文档](security.md#拓展与附件)。
 
@@ -198,6 +201,8 @@ macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/mac
 多开启动、停止和回执共用上游实例生命周期锁与 generation 校验；清理未确认时禁止重启，仍允许再次核验停止。子进程由后台回收，`workerBirthId` 在 JSON 边界保持字符串，内部核验时解析为整数。会话目标转发由 `32-thread-goal.js` 接入已有模型安装扫描，`native_thread_goal.rs` 只转发到同一实例中确认归属的原生窗口。
 
 Windows 安装探测从 MSIX 清单选取桌面应用路径及对应 AUMID，支持 `ChatGPT (Beta).exe`；监控、自动接管和会话清理进程保护使用同一应用名判据。读取不到 Electron 进程参数时跳过接管，防止将 renderer 当主进程。验证见 `app_paths`、`auto_takeover`、`watcher` 和 `multi_worker` 单测。
+
+Windows 的停止与重启经 `commands.rs::stop_main_codex_process` → `watcher/windows_main_stop.rs`；优先使用 launcher 就绪会话实际启动的目录和附加参数，保留个人恢复身份。停止前核对进程代际、映像、参数、用户与登录会话，身份不明时保留目标。过期多开记录只在两次确认进程、worker、目录和端口均已释放后清理身份，不终止其他实例。
 
 MCP 保存、删除和导入后通过 `syncLiveContextEntries` 将启用状态同步到 live 配置，供应商总开关与现有保存互斥保持不变。管理页高度与滚动采用上游 `management-screen` 布局，会话维护仍在 `SessionMaintenance` 单次挂载。验证见管理器前端回归、`manager-window-lifecycle.test.ts` 及多开清单 Rust 单测。
 

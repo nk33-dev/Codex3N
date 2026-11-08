@@ -150,6 +150,7 @@ fn providers(relays: Vec<RelayProfile>) -> Vec<GatewayProvider> {
             upstream_gone: Vec::new(),
             models_checked_at_ms: 0,
             newapi_access: None,
+            subscription_policy: None,
             upstream_meta: Default::default(),
             relay,
             extra: Default::default(),
@@ -194,6 +195,148 @@ fn claude_request(stream: bool) -> Value {
     })
 }
 
+async fn native_auth_compatibility(home: &std::path::Path) {
+    use base64::Engine;
+    use codex_plus_core::native_auth;
+    use codex_plus_core::official_login;
+    use codex_plus_core::settings::{BackendSettings, RelayMode, SettingsStore};
+
+    let auth = |subject: &str| {
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(json!({"iss": "https://auth.openai.com", "sub": subject}).to_string());
+        json!({
+            "auth_mode": "chatgpt",
+            official_login::GATEWAY_OWNED_MARKER: true,
+            "tokens": {
+                "id_token": format!("header.{claims}.signature"),
+                "account_id": "native-test-workspace",
+                "access_token": format!("access-{subject}"),
+                "refresh_token": format!("refresh-{subject}")
+            }
+        })
+        .to_string()
+    };
+    let store = GatewayStore::default();
+    let settings = SettingsStore::default();
+    let settings_path = codex_plus_core::paths::default_settings_path();
+    assert_eq!(settings_path.parent(), home.parent());
+    assert!(!settings_path.exists() && !store.path.exists());
+    settings.save(&BackendSettings::default()).unwrap();
+    std::fs::write(home.join("auth.json"), auth("native-a")).unwrap();
+    assert!(native_auth::preserve_live_auth(home).unwrap().is_none());
+    assert_eq!(native_auth::project_native_auth(home, "{}").unwrap(), "{}");
+    assert!(
+        !store.path.exists(),
+        "legacy apply must not materialize a native gateway copy"
+    );
+    codex_plus_core::relay_config::apply_pure_api_config_to_home(
+        home,
+        "http://127.0.0.1:9/v1",
+        "synthetic-api",
+    )
+    .unwrap();
+    let live: Value =
+        serde_json::from_slice(&std::fs::read(home.join("auth.json")).unwrap()).unwrap();
+    assert_eq!(live, json!({"OPENAI_API_KEY": "synthetic-api"}));
+    assert!(!store.path.exists());
+
+    let mut gateway = GatewaySettings {
+        providers: providers(vec![RelayProfile {
+            id: "native-test-b".into(),
+            name: "Account B".into(),
+            relay_mode: RelayMode::Official,
+            auth_contents: auth("native-b"),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    gateway.providers[0].source = "login:chatgpt".into();
+    store.save(&gateway).unwrap();
+    std::fs::write(home.join("auth.json"), auth("native-a")).unwrap();
+    native_auth::set_native_auth_selection(Some("native-test-b")).unwrap();
+    let gateway = store.load().unwrap();
+    let backup = gateway
+        .providers
+        .iter()
+        .find(|provider| provider.source == "native:external")
+        .unwrap();
+    assert!(!backup.enabled);
+    assert!(official_login::is_native_owned_login(&backup.relay));
+    assert!(native_auth::same_account(
+        &std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        &auth("native-b"),
+    ));
+    let mut old_lent = gateway.providers[0].relay.clone();
+    old_lent.id = "old-lent-session".into();
+    let mut old_auth: Value = serde_json::from_str(&old_lent.auth_contents).unwrap();
+    old_auth[official_login::LENT_TO_CODEX_MARKER] = json!(true);
+    old_auth["tokens"]["access_token"] = json!("old-independent-access");
+    old_auth["tokens"]["refresh_token"] = json!("old-independent-refresh");
+    old_lent.auth_contents = old_auth.to_string();
+    let native_before = std::fs::read_to_string(home.join("auth.json")).unwrap();
+    for credential in [
+        official_login::resolve_official_credential(&old_lent, false)
+            .await
+            .unwrap(),
+        official_login::resolve_official_credential_for_quota(&old_lent)
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(
+            credential.access_token, "old-independent-access",
+            "an old lending marker must not merge an independently selected session"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        native_before
+    );
+    codex_plus_core::relay_config::apply_pure_api_config_to_home(
+        home,
+        "http://127.0.0.1:9/v1",
+        "synthetic-api-2",
+    )
+    .unwrap();
+    assert!(native_auth::same_account(
+        &std::fs::read_to_string(home.join("auth.json")).unwrap(),
+        &auth("native-b"),
+    ));
+    native_auth::set_native_auth_selection(None).unwrap();
+    let live: Value =
+        serde_json::from_slice(&std::fs::read(home.join("auth.json")).unwrap()).unwrap();
+    assert!(live.get("tokens").is_none());
+    assert_eq!(store.load().unwrap().providers.len(), 2);
+
+    // Old native backups without the new marker are also read-only.
+    let mut legacy = backup.relay.clone();
+    let mut legacy_auth: Value = serde_json::from_str(&legacy.auth_contents).unwrap();
+    legacy_auth
+        .as_object_mut()
+        .unwrap()
+        .remove(official_login::NATIVE_OWNED_MARKER);
+    legacy.auth_contents = legacy_auth.to_string();
+    let mut gateway = store.load().unwrap();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == legacy.id)
+        .unwrap()
+        .relay = legacy.clone();
+    store.save(&gateway).unwrap();
+    assert!(
+        official_login::resolve_official_credential(&legacy, true)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("不会轮换")
+    );
+
+    std::fs::remove_file(settings_path).unwrap();
+    std::fs::remove_file(&store.path).unwrap();
+    std::fs::remove_file(home.join("auth.json")).unwrap();
+    std::fs::remove_file(home.join("config.toml")).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gateway_end_to_end() {
     let state_dir = tempfile::tempdir().unwrap();
@@ -209,6 +352,7 @@ async fn gateway_end_to_end() {
         std::env::set_var("CODEX_HOME", &codex_home);
         std::env::set_var("CODEX_SQLITE_HOME", &sqlite_home);
     }
+    native_auth_compatibility(&codex_home).await;
     let port = {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.local_addr().unwrap().port()
@@ -614,7 +758,25 @@ async fn gateway_end_to_end() {
     );
     // 路由动态：最近一次请求先试 bad（502）再由 good 回答，计数里有换过上游和 Agent 收到的错误。
     {
-        let activity = codex_plus_core::gateway::activity::snapshot();
+        // 客户端读到 EOF 时，服务端可能尚未返回并 drop InFlight；等待清理完成，
+        // 不把客户端收完响应当作服务端清理完成的同步信号。超时仍报错，防止漏清理被掩盖。
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let activity = loop {
+            let activity = codex_plus_core::gateway::activity::snapshot();
+            let claude = activity
+                .agents
+                .iter()
+                .find(|agent| agent.agent == "claude")
+                .expect("claude 有路由动态");
+            if claude.in_flight.is_empty() {
+                break activity;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "响应转发完后应清空正在回答状态，等待 5 秒后仍未清理：{claude:?}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
         let claude = activity
             .agents
             .iter()
@@ -1202,7 +1364,6 @@ async fn gateway_end_to_end() {
         .bearer_auth("cpx-gw-codex-e2e")
         .header("session-id", "explicit-child")
         .header("x-codex-parent-thread-id", "inherit-parent-0")
-        .header("x-openai-subagent", "collab_spawn")
         .header("x-codex-turn-metadata", json!({"thread_id":"explicit-child","turn_id":"turn","parent_thread_id":"inherit-parent-0","parent_turn_id":"turn"}).to_string())
         .json(&json!({"model":"inherit-a/gpt-6.1-sol","input":[]}))
         .send().await.unwrap();

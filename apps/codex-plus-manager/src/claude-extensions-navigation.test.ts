@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mergeRotatedAuthContents } from "./settings-rebase.ts";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
@@ -595,6 +596,9 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: true,
     claudeAppComputerUse: true,
     claudeAppBashTimeout: 900000,
+    // #2937：记下使用模式也由后端单独写入，表单要跟上，否则下一次整份保存会写回旧值。
+    managerAgentFocus: "enhance",
+    nativeAuthSelection: { mode: "account", accountRef: "saved-account" },
   };
   const draft = {
     revision: 3,
@@ -606,13 +610,19 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppExtensions: false,
     claudeAppComputerUse: false,
     claudeAppBashTimeout: 60000,
+    managerAgentFocus: "",
+    nativeAuthSelection: { mode: "none" },
     theme: "unsaved-theme",
     providerDraft: { model: "unsaved-model" },
   };
   const originalDraft = structuredClone(draft);
+  const profile = { id: "official", name: "saved-name", authContents: "old-token" };
+  const localProfiles = [{ ...profile, name: "unsaved-name" }];
+  const latestProfiles = [{ ...profile, authContents: "new-token" }];
+  Object.assign(draft, { relayProfiles: localProfiles });
   const result = {
     status: "ok",
-    settings: { ...changed, revision: 4, theme: "saved-theme", providerDraft: { model: "saved-model" } },
+    settings: { ...changed, revision: 4, relayProfiles: latestProfiles, theme: "saved-theme", providerDraft: { model: "saved-model" } },
   };
   const eventName = "codex-plus:backend-settings-changed";
   const listeners = new Map<string, () => void>();
@@ -622,6 +632,8 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
   const context = vm.createContext({
     BACKEND_SETTINGS_CHANGED_EVENT: eventName,
     settingsFormRef: { current: draft },
+    settingsRef: { current: { settings: { ...originalDraft, relayProfiles: [profile] } } },
+    mergeRotatedAuthContents,
     window: {
       addEventListener: (name: string, handler: () => void) => listeners.set(name, handler),
       removeEventListener: (name: string, handler: () => void) => {
@@ -645,9 +657,12 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(requests, ["load_settings"]);
   assert.deepEqual(updates, [result]);
-  assert.deepEqual(structuredClone(form), { ...originalDraft, ...changed, revision: 4 });
+  assert.deepEqual(structuredClone(form), {
+    ...originalDraft, ...changed, revision: 4,
+    relayProfiles: [{ ...profile, name: "unsaved-name", authContents: "new-token" }],
+  });
   assert.equal(form.providerDraft, draft.providerDraft);
-  assert.deepEqual(draft, originalDraft);
+  assert.deepEqual(draft, { ...originalDraft, relayProfiles: localProfiles });
   cleanup();
   assert.equal(listeners.size, 0);
 });

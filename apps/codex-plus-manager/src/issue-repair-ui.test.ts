@@ -6,6 +6,7 @@ import ts from "typescript";
 import { parseModelMetadataDocument } from "./model-metadata.ts";
 import { isProviderSyncTargetSelectable } from "./provider-sync-target.ts";
 import { enhancementItem } from "./enhancement-catalog.ts";
+import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase.ts";
 
 test("metadata rejects invalid final critical types and retains empty instructions", () => {
   for (const metadata of [{ base_instructions: null }, { supports_parallel_tool_calls: "true" }]) {
@@ -133,7 +134,13 @@ test("all full saves require their own revision and conflicts preserve the calle
   find(app);
   assert.ok(initializer);
   let request: any;
-  const context = vm.createContext({ invoke: async (_command: string, args: unknown) => { request = args; return { message: "settings_revision_conflict: newer settings exist", status: "failed" }; } });
+  // 冲突自动恢复在真实组件里会拉最新设置重试；这里注入不可恢复的桩，
+  // 验证恢复失败时仍按原逻辑抛 settings_revision_conflict 并保留草稿。
+  const context = vm.createContext({
+    settingsRef: { current: { settings: { revision: "old" } } },
+    invoke: async (_command: string, args: unknown) => { request = args; return { message: "settings_revision_conflict: newer settings exist", status: "failed" }; },
+    retrySaveSettingsAfterConflict: async () => null,
+  });
   vm.runInContext(ts.transpileModule(`const call = ${initializer}; globalThis.callTest = call;`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const draft = { revision: "old", model: "draft-model" };
   await assert.rejects(context.callTest("save_settings", { settings: draft }), /settings_revision_conflict/);
@@ -141,4 +148,44 @@ test("all full saves require their own revision and conflicts preserve the calle
   assert.deepEqual(draft, { revision: "old", model: "draft-model" });
   await assert.rejects(context.callTest("save_settings", { settings: { model: "unversioned" } }));
   assert.equal(request.expectedRevision, "");
+});
+
+test("保存冲突只重试一次，采用新凭据并保留提交时的编辑", async () => {
+  const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const start = source.indexOf("  const retrySaveSettingsAfterConflict =");
+  const end = source.indexOf("  const logDiagnostic =", start);
+  const profile = { id: "official", name: "original", authContents: "old-token" };
+  const base = { revision: "r1", relayProfiles: [profile] };
+  const draft = { revision: "r1", relayProfiles: [{ ...profile, name: "edited" }] };
+  const latest = { revision: "r2", relayProfiles: [{ ...profile, authContents: "new-token" }] };
+  for (const conflictAgain of [false, true]) {
+    const writes: any[] = [];
+    const settingsRef = { current: { settings: base } };
+    const context = vm.createContext({
+      settingsRef, mergeRotatedAuthContents, rebaseSettingsEdits,
+      normalizeSettings: (value: unknown) => value,
+      isSuccessStatus: (status: string) => status === "ok",
+      invoke: async (command: string, args: any) => {
+        if (command === "load_settings") return { status: "ok", settings: latest };
+        writes.push(args);
+        if (writes.length === 1) {
+          settingsRef.current = { settings: latest };
+          return { status: "failed", message: "settings_revision_conflict" };
+        }
+        return conflictAgain
+          ? { status: "failed", message: "settings_revision_conflict" }
+          : { status: "ok", settings: args.settings };
+      },
+    });
+    vm.runInContext(ts.transpileModule(`${source.slice(start, end)}\nglobalThis.save = call;`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText, context);
+    const saving = context.save("save_settings", { settings: draft });
+    if (conflictAgain) await assert.rejects(saving, /settings_revision_conflict/);
+    else assert.equal((await saving).status, "ok");
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].expectedRevision, "r2");
+    assert.deepEqual(writes[1].settings.relayProfiles, [{ ...profile, name: "edited", authContents: "new-token" }]);
+    assert.equal(draft.relayProfiles[0].authContents, "old-token");
+  }
 });

@@ -22,6 +22,10 @@ const ts = require("typescript");
 
 const SRC_FILES = [
   "src/App.tsx",
+  "src/ConfigDoctorPanel.tsx",
+  "src/config-doctor-model.ts",
+  "src/NativeAuthControls.tsx",
+  "src/SubscriptionPolicyFields.tsx",
   "src/prompt-tools.tsx",
   "src/PluginMarketScreen.tsx",
   "src/ManagementPages.tsx",
@@ -132,6 +136,10 @@ function scanFile(relPath) {
         ts.forEachChild(child, collect);
       };
       collect(node);
+    }
+    if (relPath === "src/config-doctor-model.ts" && ts.isStringLiteralLike(node)
+      && /\p{Script=Han}/u.test(node.text)) {
+      (/\{\d+\}/.test(node.text) ? usedTemplate : usedPlain).add(node.text);
     }
     ts.forEachChild(node, visit);
   };

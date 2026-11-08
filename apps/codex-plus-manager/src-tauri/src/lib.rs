@@ -4,6 +4,7 @@ mod agent_mcp_commands;
 mod auto_takeover;
 pub mod commands;
 mod computer_use_commands;
+mod config_doctor_commands;
 mod cu_pip;
 mod dsh_plugin_commands;
 mod extension_community_commands;
@@ -358,6 +359,7 @@ pub fn run() {
             commands::load_settings,
             preferences::load_ui_preferences,
             preferences::save_ui_preferences,
+            config_doctor_commands::config_doctor_request,
             commands::load_request_logs,
             commands::load_request_flow,
             commands::clear_request_logs,
@@ -414,6 +416,7 @@ pub fn run() {
             computer_use_commands::computer_use_preview_stop,
             commands::native_browser_status,
             commands::save_settings,
+            commands::set_manager_agent_focus,
             commands::list_tools,
             commands::test_vlm,
             commands::load_grok_providers,
@@ -447,6 +450,8 @@ pub fn run() {
             gateway_commands::reset_gateway_key_health,
             gateway_commands::create_gateway_provider,
             gateway_commands::update_gateway_provider,
+            gateway_commands::get_native_auth_state,
+            gateway_commands::set_native_auth_account,
             gateway_commands::add_gateway_provider_key,
             gateway_commands::replace_gateway_provider_key,
             gateway_commands::delete_gateway_provider_key,
@@ -482,6 +487,7 @@ pub fn run() {
             gateway_commands::finish_gateway_subscription_login,
             gateway_commands::login_gateway_chatgpt_api,
             gateway_commands::cancel_gateway_login,
+            gateway_commands::gateway_login_url,
             gateway_commands::import_gateway_providers,
             gateway_commands::save_gateway_provider_extras,
             gateway_commands::save_gateway_provider_limits,

@@ -12,7 +12,7 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 30 && cached.ready && cached.source === source);
+    const reuse = !!(config.enabled && source && cached?.version === 36 && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -42,6 +42,10 @@
       "[data-browser-sidebar-toolbar]",
     ].join(", ");
     const toolbarSelector = "[data-browser-sidebar-toolbar]";
+    const toolbarSurfaceSelector = `${toolbarSelector} :is([data-menu-overlay-surface], [class*="controlSurface"])`;
+    // 胶囊内的按钮共用外壳，只补画最外层材质，避免嵌套控件重复叠图。
+    const isToolbarSurface = node => node.matches(toolbarSurfaceSelector) &&
+      !node.parentElement?.closest(toolbarSurfaceSelector);
     const browserSelector = `[data-browser-sidebar-webview], ${toolbarSelector}`;
     const sidebarSelector = "aside.app-shell-left-panel, [data-app-action-sidebar-scroll], nav[data-app-navigation-rail]";
     const sidebarRowSelector = "[data-app-action-sidebar-thread-row], [data-app-action-sidebar-project-row]";
@@ -53,8 +57,8 @@
       `${rightPanelSelector}[inert], ${rightPanelSelector}[aria-hidden="true"]`);
     const mediaSelector = `img, video, canvas, ${viewerSelector}, ${reviewHeaderSelector}`;
     const nativeRangeSelector = 'input[type="range"], [role="slider"]';
-    const composerSelector = '[class*="_ComposerLayoutRoot_"]';
-    const headerSelector = '[data-app-shell-header-layout], [data-sticky][class*="_shell_"], .sticky.z-30.bg-surface';
+    const composerSelector = ':is([data-composer-surface-variant][data-composer-radius-variant], [class*="_ComposerLayoutRoot_"])';
+    const headerSelector = '[data-app-shell-header-layout], [data-sticky]:is([class*="_shell_"], [class^="shell-"], [class*=" shell-"]), .sticky.z-30.bg-surface';
     const editorSelector = '[contenteditable="true"], .ProseMirror';
     const composerOverlaySelector = "[data-composer-overlay-floating-ui]";
     const diffPreviewSelector = '[data-testid="diff-preview-scroll"]';
@@ -72,8 +76,27 @@
     const topControlAttribute = "data-codex-plus-image-top-control";
     const footerAttribute = "data-codex-plus-image-footer-gutter";
     const footerSelector = "[data-thread-scroll-footer]";
+    // 原生共享卡片没有全部暴露 data 属性（例如旧 optionPicker），保留其外壳组合匹配。
+    const nativeTooltipSelector = '[role="tooltip"]:is([class^="Tooltip-"], [class*=" Tooltip-"])';
+    const surfaceSelector = [
+      "[data-composer-attachment-pill]", ".codex-toast-area [data-sonner-toast] .alert-root", nativeTooltipSelector,
+      "[data-codex-composer-request-navigation]", "[data-codex-approval-surface]", "[data-composer-rail-item]",
+      ".flex.flex-col.overflow-hidden.rounded-3xl.border.bg-surface-elevated-secondary",
+      "[data-in-progress-fixed-content] .rounded-3xl.border.bg-surface-elevated-secondary",
+      ".group.relative.flex.flex-wrap.rounded-2xl.bg-surface-elevated-secondary",
+      ".tortilla-gallery.bg-surface-elevated-secondary", ".tortilla-gallery .bg-surface-elevated-secondary",
+    ].join(", ");
+    const surfaceBoundarySelector = `[${mediaAttribute}^="surface"]`;
+    const imageViewerSelector = '.codex-dialog:has([data-image-preview-toolbar], [data-image-preview-composer]), [role="dialog"]:has([data-testid="image-preview-dismiss-area"])';
+    const viewerSurfaceSelector = `:is(${imageViewerSelector}) :is(` +
+      `[class*="controlSurface"], [role="toolbar"][class*="annotationTheme"], ` +
+      `.pointer-events-auto.rounded-full:has([role="slider"]), [data-image-preview-composer] ${composerSelector})`;
+    const isViewerSurface = node => node.matches(viewerSurfaceSelector) &&
+      !node.parentElement?.closest(viewerSurfaceSelector);
     const topControlSelector = [
-      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]',
+      '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]', '[class^="Tooltip-"]', '[class*=" Tooltip-"]',
+      // Sonner 的内层 z-index 无法越过这个原生 z60 外壳；只抬外壳，不改通知本身的颜色与动画。
+      ".codex-toast-area",
       "[data-radix-popper-content-wrapper]", '[data-slot="popover-content"]', "[popover]", composerOverlaySelector,
     ].join(", ");
     // Extensions keep their own layers; their full-page shell is the one wallpaper surface.
@@ -95,12 +118,14 @@
     const nativeRules = `
       [${scopeAttribute}] { isolation:auto!important;z-index:auto!important;will-change:auto!important; }
       [${browserPortalAttribute}] { z-index:${wallpaperLayer + 1}!important; }
+      ${popupPortalSelector}[${browserPortalAttribute}] { z-index:${wallpaperLayer + 2}!important; }
       [${scopeAttribute}^="identity"] { transform:none!important; }
       [${scopeAttribute}="identity-flow"] { position:relative!important; }
       [${containmentAttribute}] { contain:none!important; }
       [${containmentAttribute}^="flow"] { position:relative!important; }
       [${containmentAttribute}$="-clip"] { overflow:clip!important; }
-      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"])) { z-index:${wallpaperLayer}!important; }
+      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"], [${mediaAttribute}^="toolbar-surface"], ${surfaceBoundarySelector})) { z-index:${wallpaperLayer}!important; }
+      [${mediaAttribute}="surface-flow"] { position:relative!important; }
       [${mediaAttribute}="flow"], [${mediaAttribute}="island-flow"] { position:relative!important; }
       [${mediaAttribute}="viewer"] { z-index:${wallpaperLayer + 3}!important; }
       [${mediaAttribute}="footer"] { z-index:${wallpaperLayer + 1}!important; }
@@ -110,8 +135,9 @@
       ${composerSelector} .top-full [data-composer-placement="home"].bg-background-composer-action-bar { background:none!important; }
       [${mediaAttribute}="page"], [${mediaAttribute}="composer"] { isolation:isolate!important; }
       [${mediaAttribute}="composer"]:not([${mediaAttribute}="footer"] *) { z-index:${wallpaperLayer + 1}!important; }
-      [${mediaAttribute}^="toolbar"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
-      [${mediaAttribute}="toolbar-flow"] { position:relative!important; }
+      [${mediaAttribute}="toolbar"], [${mediaAttribute}="toolbar-flow"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
+      [${mediaAttribute}="toolbar-flow"], [${mediaAttribute}="toolbar-surface-flow"] { position:relative!important; }
+      [${mediaAttribute}^="toolbar-surface"] { isolation:isolate!important;backdrop-filter:none!important; }
       ${timelineSelector} { overscroll-behavior-y:none!important; }
       [${popupMaterialAttribute}] { background-image:none!important;filter:none!important;backdrop-filter:none!important; }
       [${paintAttribute}] { isolation:isolate!important; }
@@ -253,24 +279,29 @@
       mark(node, scopeAttribute, identity ? originalStyle.position === "static" ? "identity-flow" : "identity" : "stack");
       scopeKeys.set(node, scopeKey(node));
     };
-    const nativeKind = node => node.matches(reviewHeaderSelector) ? "review" :
+    const nativeKind = node => records.get(node)?.localSurface ? computed(node).position === "static" ? "surface-flow" : "surface" :
+      node.matches(reviewHeaderSelector) ? "review" :
       node.matches(toolbarSelector) ? computed(node).position === "static" ? "toolbar-flow" : "toolbar" :
+      isToolbarSurface(node) ? computed(node).position === "static" ? "toolbar-surface-flow" : "toolbar-surface" :
       node.matches(pageSelector) ? "page" : node.matches(composerSelector) ? "composer" :
       node.matches(headerSelector) ? computed(node).position === "static" ? "header-flow" : "header" :
       node.matches(footerSelector) ? "footer" :
       node.matches(viewerSelector) && !node.matches("[data-browser-sidebar-webview]") ? "viewer" :
       records.get(node)?.mediaIsland ? computed(node).position === "static" ? "island-flow" : "island" :
       computed(node).position === "static" ? "flow" : "positioned";
-    const add = node => {
+    const add = (node, localSurface = false) => {
       if (owned(node) || inactivePanel(node) || node.closest(editorSelector)) return;
       const previous = records.get(node);
-      if (!node.matches(viewerSelector) && node.closest(viewerSelector) ||
+      localSurface ||= !!previous?.localSurface;
+      const toolbarSurface = isToolbarSurface(node);
+      if (!toolbarSurface && !isViewerSurface(node) && !node.matches(viewerSelector) && node.closest(viewerSelector) ||
         !node.matches(reviewHeaderSelector) && node.closest(reviewHeaderSelector)) {
         if (previous) removeMedia(node, previous);
         return;
       }
-      const nativeBoundary = node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
-      if (nativeBoundary && !node.matches(`${composerSelector}, ${headerSelector}`)) {
+      const nativeBoundary = toolbarSurface ? node.closest(toolbarSelector) : (localSurface && node.closest(viewerSelector)) ||
+        node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${surfaceBoundarySelector}, ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
+      if (nativeBoundary && !localSurface && !toolbarSurface && !node.matches(`${composerSelector}, ${headerSelector}`)) {
         if (previous) removeMedia(node, previous);
         return;
       }
@@ -302,7 +333,8 @@
           return;
         }
       }
-      let browserPortal = node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
+      let browserPortal = node.matches(nativeTooltipSelector) ? node.closest(popupPortalSelector)
+        : node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
       if (node.matches(browserSelector)) {
         for (let parent = node.parentElement; !browserPortal && parent && parent !== root; parent = parent.parentElement) {
           const paint = computed(parent);
@@ -316,7 +348,7 @@
           parent !== nativeBoundary; parent = parent.parentElement) {
         ancestors.push(parent);
       }
-      if (previous?.parent === node.parentElement && previous.browserPortal === browserPortal && previous.nativeBoundary === nativeBoundary &&
+      if (previous?.parent === node.parentElement && previous.localSurface === localSurface && previous.browserPortal === browserPortal && previous.nativeBoundary === nativeBoundary &&
         previous.ancestors.length === ancestors.length &&
         ancestors.every((parent, index) => previous.ancestors[index] === parent)) return;
       if (previous) release(previous);
@@ -329,7 +361,7 @@
         browserPortals.set(browserPortal, (browserPortals.get(browserPortal) || 0) + 1);
         mark(browserPortal, browserPortalAttribute, "");
       }
-      records.set(node, { ...previous, parent: node.parentElement, ancestors, browserPortal, nativeBoundary, box: null });
+      records.set(node, { ...previous, localSurface, parent: node.parentElement, ancestors, browserPortal, nativeBoundary, box: null });
       unmark(node, mediaAttribute);
       mark(node, mediaAttribute, nativeKind(node));
       if (node.getAttribute(mediaAttribute) === "viewer") {
@@ -347,7 +379,7 @@
         node.matches(nativeRangeSelector) || node.closest(browserSelector) ||
         node.closest(sidebarSelector) || node.closest(pageSelector) || node.closest(viewerSelector) ||
         node.closest(topControlSelector) || node.closest(`[${popupBoundaryAttribute}]`) ||
-        node.closest(`${composerSelector}, ${footerSelector}, ${editorSelector}, [${mediaAttribute}^="island"], ${headerSelector}`)) {
+          node.closest(`${composerSelector}, ${footerSelector}, ${editorSelector}, ${surfaceBoundarySelector}, [${mediaAttribute}^="island"], ${headerSelector}`)) {
         const previous = controls.get(node);
         if (previous) removeControl(node, previous);
         return;
@@ -424,9 +456,10 @@
         resizeObserver.unobserve(surface);
     };
     // 祖先样式变化（class/style 突变、过渡/动画结束）后，只标记待查，统一在 render 里读样式。
-    const invalidatePaintChains = target => {
+    const invalidatePaintChains = (target, viewerOnly = false) => {
       let found = false;
       for (const node of paintedNodes) {
+        if (viewerOnly && !isViewerSurface(node)) continue;
         const paint = records.get(node)?.paint;
         if (!paint || target !== paint.surface && !target.contains(paint.surface)) continue;
         paint.chainDirty = true;
@@ -435,9 +468,10 @@
       }
       return found;
     };
-    const refreshPaints = () => {
+    const refreshPaints = (viewerOnly = false) => {
       const nodes = geometryDirty ? new Set([...paintsDirty, ...geometryPaints]) : paintsDirty;
       for (const node of nodes) {
+        if (viewerOnly && !isViewerSurface(node)) continue;
         const record = records.get(node);
         const paint = record?.paint;
         if (!paint || !paintedNodes.has(node) || !paint.surface.isConnected) continue;
@@ -459,7 +493,9 @@
         const rule = wallRule(paint);
         if (record.wallRule !== rule) { record.wallRule = rule; writeRules(); }
       }
-      paintsDirty.clear();
+      if (viewerOnly) {
+        for (const node of nodes) if (isViewerSurface(node)) paintsDirty.delete(node);
+      } else paintsDirty.clear();
     };
     const registerPaint = (node, paint = records.get(node).paint || nativeSurfacePaint(node)) => {
       const record = records.get(node);
@@ -508,11 +544,83 @@
     const popupBackgroundKey = node => Array.from(node.style)
       .filter(name => name.startsWith("background") || name === "color")
       .sort().map(name => `${name}:${node.style.getPropertyValue(name)}:${node.style.getPropertyPriority(name)}`).join(";");
+    // 与普通宿主卡片保持一致：只补画全覆盖不透明材质，避免给透出的父层再叠一张壁纸。
+    const opaqueColor = value => value !== "transparent" && !/rgba\(|hsla\(|\//.test(value);
+    const hasLocalMaterial = paint => {
+      if (paint.backgroundClip === "text") return false;
+      if (paint.backgroundImage === "none") return opaqueColor(paint.backgroundColor);
+      if (!paint.backgroundImage.includes("gradient(") || /url\(/.test(paint.backgroundImage)) return false;
+      if (opaqueColor(paint.backgroundColor)) return true;
+      return !/transparent|rgba\(|hsla\(|\//.test(paint.backgroundImage) &&
+        ["auto", "auto auto", "100% 100%"].includes(paint.backgroundSize) &&
+        paint.backgroundRepeat === "repeat";
+    };
+    // 弱引用记录候选表面的祖先，包括当前透明/尚未获得宿主身份的候选。
+    // 无关流式文字的 class/style 变化不需要查询子树，也不遍历 records。
+    const localSurfaceAncestors = new WeakSet();
+    const trackLocalSurfaceAncestors = node => {
+      for (let parent = node.parentElement; parent; parent = parent.parentElement)
+        localSurfaceAncestors.add(parent);
+    };
+    const isLocalSurface = node => {
+      const viewerSurface = isViewerSurface(node);
+      const nativeTooltip = node.matches(nativeTooltipSelector);
+      if (!(viewerSurface || node.matches(surfaceSelector)) || owned(node) || inactivePanel(node) ||
+        node.closest(`${editorSelector}, ${pageSelector}`) || (!nativeTooltip && node.matches(topControlSelector)) ||
+        (!viewerSurface && (node.closest(viewerSelector) || !nativeTooltip &&
+          !node.parentElement?.closest(`${composerSelector}, ${footerSelector}, ${topControlSelector}`)))) return false;
+      // 即使 tooltip 本身半透明，也要保留前景层；只决定是否补画，不让文字落回全屏壁纸下面。
+      return nativeTooltip || hasLocalMaterial(computed(node));
+    };
+    const addSurface = node => {
+      trackLocalSurfaceAncestors(node);
+      // 同一节点可能先是普通 popup，稍后才挂上原生 tooltip 类名；先释放旧 alpha 规则再读材质。
+      if (node.matches(nativeTooltipSelector) && popups.has(node)) removePopup(node, popups.get(node));
+      if (!isLocalSurface(node)) {
+        const previous = records.get(node);
+        if (previous?.localSurface) { removeMedia(node, previous); visit(node); }
+        return;
+      }
+      if (node.matches(nativeTooltipSelector) && !hasLocalMaterial(computed(node))) {
+        const previous = records.get(node);
+        if (previous?.paint) removeMedia(node, previous);
+        add(node, true);
+        return;
+      }
+      add(node, true);
+      if (!records.has(node)) return;
+      // 外壳上补画，子按钮、图标和编辑器继续使用原生堆叠与事件。
+      removeWithin(controls, node, removeControl);
+      for (const [child, record] of records)
+        if (child !== node && node.contains(child) && !record.localSurface &&
+          !child.matches(`${composerSelector}, ${headerSelector}, ${topControlSelector}`)) removeMedia(child, record);
+      registerPaint(node);
+    };
+    // 宿主身份和继承的主题变量都会改变后代表面资格；仅扫描变更子树，已登记且资格不变的表面不重建。
+    const refreshLocalSurfaces = tree => {
+      const candidates = new Set([tree, ...(tree.childElementCount
+        ? queryAll(tree, `${surfaceSelector}, ${viewerSurfaceSelector}`) : [])]);
+      for (const [node, record] of records)
+        if (record.localSurface && tree.childElementCount && tree.contains(node)) candidates.add(node);
+      let changed = false;
+      for (const node of candidates) {
+        // 新发现的透明候选也要登记；后续祖先主题变化才有机会使它获得补画资格。
+        if (node.matches(surfaceSelector) || isViewerSurface(node)) trackLocalSurfaceAncestors(node);
+        const localSurface = isLocalSurface(node);
+        const tooltipMaterialChanged = localSurface && node.matches(nativeTooltipSelector) &&
+          !!records.get(node)?.paint !== hasLocalMaterial(computed(node));
+        if (localSurface === !!records.get(node)?.localSurface && !tooltipMaterialChanged) continue;
+        addSurface(node);
+        changed = true;
+      }
+      return changed;
+    };
     const addComposer = node => {
+      if (isViewerSurface(node)) { addSurface(node); return; }
       if (owned(node) || inactivePanel(node) || node.closest(viewerSelector)) return;
       // Paint below the native children. Never annotate editor-owned node views.
       const surface = node.matches('[data-composer-utility-bar-variant="home"]')
-        ? node.querySelector('[class*="_ComposerLayoutBody_"]') || node : node;
+        ? node.querySelector('[class*="ComposerLayoutBody"]') || node : node;
       let surfacePaint = records.get(node)?.paint;
       if (!surfacePaint) {
         unmark(node, mediaAttribute);
@@ -520,6 +628,21 @@
       }
       add(node);
       registerPaint(node, surfacePaint);
+    };
+    const addToolbarSurface = node => {
+      if (!isToolbarSurface(node) || owned(node) || inactivePanel(node)) return;
+      unmark(node, mediaAttribute);
+      const kind = nativeKind(node);
+      add(node);
+      // 保留原生渐变、阴影和交互伪元素，沿用输入框的空闲伪元素及视口坐标补画。
+      if (records.has(node)) {
+        mark(node, mediaAttribute, kind);
+        registerPaint(node);
+      }
+    };
+    const visitToolbarSurfaces = node => {
+      if (isToolbarSurface(node)) addToolbarSurface(node);
+      queryAll(node, toolbarSurfaceSelector).forEach(addToolbarSurface);
     };
     const addPopupSurface = (boundary, surface) => {
       if (owned(surface) || inactivePanel(surface) || surface.closest(reviewHeaderSelector) ||
@@ -563,6 +686,10 @@
     };
     const addNativePopup = node => {
       if (owned(node) || node.closest(viewerSelector) || node.closest(pageSelector)) return;
+      // 原生 tooltip 的不透明底色单独补画；仅降低底色 alpha 会把底下已混合的壁纸再次衰减。
+      const tooltip = node.matches(nativeTooltipSelector) ? node :
+        node.matches('[data-radix-popper-content-wrapper]') ? node.querySelector(nativeTooltipSelector) : null;
+      if (tooltip) { addSurface(tooltip); return; }
       const composerOverlay = node.matches(composerOverlaySelector);
       const parent = node.parentElement;
       // The roleless composer menu uses a translated positioning wrapper.
@@ -660,25 +787,34 @@
       removeWithin(records, node, removeMedia, false);
       add(node);
     };
-    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, footerSelector, headerSelector,
+    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, surfaceSelector, viewerSurfaceSelector, toolbarSurfaceSelector, footerSelector, headerSelector,
       diffPreviewSelector, topControlSelector].join(", ");
     const visit = node => {
       if (node?.nodeType !== 1 || !node.isConnected || owned(node) || inactivePanel(node) ||
         node.closest(editorSelector)) return;
-      if (node.matches(browserSelector)) { add(node); return; }
-      if (node.closest(browserSelector)) return;
+      if (node.matches(browserSelector)) {
+        add(node);
+        if (node.matches(toolbarSelector)) visitToolbarSurfaces(node);
+        return;
+      }
+      if (node.closest(browserSelector)) {
+        if (node.closest(toolbarSelector)) visitToolbarSurfaces(node);
+        return;
+      }
       const targets = [node, ...(node.childElementCount ? queryAll(node, discoverySelector) : [])]
         .filter(target => !inactivePanel(target));
       // Establish native boundaries before registering their media descendants.
       for (const target of targets) if (target.matches(pageSelector)) addPage(target);
       for (const target of targets) if (target.matches(footerSelector)) addFooter(target);
       for (const target of targets) if (target.matches(composerSelector)) addComposer(target);
+      for (const target of targets) if (isToolbarSurface(target)) addToolbarSurface(target);
       for (const target of targets) if (target.matches(headerSelector)) addHeader(target);
       for (const target of targets) if (target.matches(reviewHeaderSelector)) addReviewHeader(target);
       for (const target of targets) {
         if (target.matches(diffPreviewSelector)) addDiffPreview(target);
         if (target.matches(topControlSelector)) addNativePopup(target);
       }
+      for (const target of targets) if (target.matches(surfaceSelector) || isViewerSurface(target)) addSurface(target);
       for (const target of targets) {
         if (target.matches(mediaSelector)) add(target);
         if (target.matches(controlSelector)) addControl(target);
@@ -718,6 +854,7 @@
     });
     const resizeObserver = new ResizeObserver(entries => {
       let changed = false;
+      let viewerChanged = false;
       for (const { target } of entries) {
         for (const [footer, record] of footers)
           if (record.scroller === target && updateFooter(footer, record)) writeRules();
@@ -727,9 +864,10 @@
         if (record) record.box = null;
         const painted = paintObservers.get(target);
         if (painted) paintsDirty.add(painted);
+        viewerChanged ||= !!painted && isViewerSurface(painted);
         changed ||= !!(control || record || painted);
       }
-      if (changed && !previewVisible) schedule();
+      if (changed && (!previewVisible || viewerChanged)) schedule();
     });
     const removeControl = (node, control) => {
       control.filter?.remove();
@@ -776,13 +914,19 @@
         removePopup(surface, popup);
       }
       for (const [node, record] of records) {
+        if (record.localSurface) {
+          if (node.isConnected && isLocalSurface(node)) { add(node, true); continue; }
+          removeMedia(node, record);
+          if (node.isConnected) visit(node);
+          continue;
+        }
         if (node.isConnected && !inactivePanel(node) &&
-          (node.matches(viewerSelector) || !node.closest(viewerSelector)) &&
+          (node.matches(viewerSelector) || isToolbarSurface(node) || !node.closest(viewerSelector)) &&
           (node.matches(reviewHeaderSelector) || !node.closest(reviewHeaderSelector)) &&
-          (node.matches(mediaSelector) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
+          (node.matches(mediaSelector) || isToolbarSurface(node) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
             record.mediaIsland && node.querySelector("img, video, canvas"))) {
           if (record.nativeBoundary &&
-            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}`)) add(node);
+            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}, ${toolbarSelector}`)) add(node);
           continue;
         }
         removeMedia(node, record);
@@ -830,7 +974,7 @@
           continue;
         }
         if (mutation.type === "childList") {
-          if (mutation.target.closest?.(browserSelector)) continue;
+          if (mutation.target.closest?.(browserSelector) && !mutation.target.closest(toolbarSelector)) continue;
           const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
           if (!nodes.some(node => node.nodeType === 1 && !owned(node))) continue;
           pruneNeeded = true;
@@ -861,13 +1005,31 @@
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
         if (!node.isConnected || inactivePanel(node)) continue;
-        if (node.closest?.(browserSelector) && !node.matches(browserSelector)) continue;
+        if (node !== root && node !== document.body &&
+          (localSurfaceAncestors.has(node) || node.matches(`${surfaceSelector}, ${viewerSurfaceSelector}, ${footerSelector}, ${topControlSelector}, [data-in-progress-fixed-content], [data-sonner-toast], .tortilla-gallery`)) &&
+          refreshLocalSurfaces(node)) changed = true;
+        if (node.matches(toolbarSelector)) {
+          // 原生容器可能在子控件已挂载后才声明工具栏身份。
+          if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); pruneNeeded = true; changed = true; }
+          // 工具栏自身由浏览器定位，但其新补画表面仍须跟踪 none → transform。
+          if (invalidatePaintChains(node)) changed = true;
+        }
+        if (node.closest?.(browserSelector) && !node.matches(browserSelector)) {
+          if (node.closest(toolbarSelector)) {
+            if (semanticAttributes.has(node)) { visitToolbarSurfaces(node); changed = true; }
+            else if (isToolbarSurface(node)) { addToolbarSurface(node); changed = true; }
+            if (invalidatePaintChains(node)) changed = true;
+            pruneNeeded ||= semanticAttributes.has(node);
+          }
+          continue;
+        }
         // Native hosts and painted surfaces own their animated geometry.
         if (node.matches(`${browserSelector}, ${headerSelector}`) && records.has(node) && !semanticAttributes.has(node)) continue;
         if (node === root || node === document.body) {
           const key = themeKey(node);
           if (themeInputs.get(node) !== key) {
             themeInputs.set(node, key);
+            if (refreshLocalSurfaces(node)) changed = true;
             refreshPopupTheme();
             for (const surface of paintedNodes) if (surface.matches(headerSelector)) registerPaint(surface);
           }
@@ -882,15 +1044,27 @@
             continue;
           }
           const key = viewerKey(node);
+          if (semanticAttributes.has(node)) {
+            queryAll(node, viewerSurfaceSelector).forEach(addSurface);
+            pruneNeeded = true; changed = true;
+          }
+          if (invalidatePaintChains(node)) changed = true;
           if (record.viewerKey === key) continue;
           record.viewerKey = key;
           changed ||= isPreviewOpen() !== previewVisible;
           continue;
-        } else if (node.closest(viewerSelector) && !node.matches(browserSelector)) continue;
+        } else if (node.closest(viewerSelector) && !node.matches(browserSelector)) {
+          if (isViewerSurface(node) || records.get(node)?.localSurface) { addSurface(node); changed = true; }
+          if (semanticAttributes.has(node)) { queryAll(node, viewerSurfaceSelector).forEach(addSurface); pruneNeeded = true; changed = true; }
+          if (invalidatePaintChains(node)) changed = true;
+          continue;
+        }
         if ([...viewers].some(viewer => node.contains(viewer)))
           changed ||= isPreviewOpen() !== previewVisible;
         pruneNeeded ||= semanticAttributes.has(node);
         if (node.matches(pageSelector) && !records.get(node)?.paint) visit(node);
+        if (node.matches(composerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addComposer(node); changed = true; }
+        if (node.matches(surfaceSelector) || records.get(node)?.localSurface) { addSurface(node); changed = true; }
         if (node.matches(headerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addHeader(node); changed = true; }
         if (node.matches(reviewHeaderSelector)) { addReviewHeader(node); continue; }
         const popup = popups.get(node);
@@ -1186,7 +1360,12 @@
       stats.frames++;
       const previewWasVisible = previewVisible;
       previewVisible = isPreviewOpen();
-      if (previewVisible) return;
+      if (previewVisible) {
+        // 保留预览内容的原生层级，只更新控件背景；不恢复整个会话的媒体/控件扫描。
+        if (paintsDirty.size || geometryDirty && geometryPaints.size) refreshPaints(true);
+        geometryDirty = false;
+        return;
+      }
       // 预览期间跳过的祖先变化，在预览关闭后补查一次。
       if (previewWasVisible) for (const node of paintedNodes) {
         const paint = records.get(node)?.paint;
@@ -1298,12 +1477,17 @@
     // 侧栏开合等带过渡的 translate 在结束时才落定；不逐帧跟随，只在结束后重算一次。
     const onPaintMotionEnd = event => {
       const target = event.target;
-      if (target?.nodeType !== 1 || previewVisible || owned(target)) return;
-      if (invalidatePaintChains(target)) schedule();
+      if (target?.nodeType !== 1 || owned(target)) return;
+      if (invalidatePaintChains(target, previewVisible)) schedule();
     };
     const onScroll = event => {
       if (event.target?.closest?.(sidebarSelector)) sidebarScrollUntil = performance.now() + 180;
-      if (previewVisible) return;
+      if (previewVisible) {
+        for (const node of geometryPaints) if (isViewerSurface(node) && event.target?.contains?.(node)) {
+          paintsDirty.add(node); schedule();
+        }
+        return;
+      }
       const target = event.target;
       // 只有按视口换算的表面需要跟随滚动重算；沿用 fixed 的表面不受影响，无额外开销。
       if (geometryPaints.size) {
@@ -1416,7 +1600,7 @@
       themeInputs.set(root, themeKey(root));
       if (document.body) themeInputs.set(document.body, themeKey(document.body));
       mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement"] });
+        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-composer-attachment-pill", "data-sonner-toast", "data-in-progress-fixed-content", "data-image-preview-composer", "data-image-preview-toolbar"] });
       for (const [target, event, handler, capture] of events)
         target.addEventListener(event, handler, { capture, passive: true });
       // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
@@ -1435,7 +1619,7 @@
         for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
         blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
       }
-      resource = { version: 30, source, blobUrl, imageSource: blobUrl || source };
+      resource = { version: 36, source, blobUrl, imageSource: blobUrl || source };
       window.__codexPlusImageOverlayResource = resource;
       window.__codexPlusImageOverlayBlobUrl = blobUrl;
       image.onload = install;

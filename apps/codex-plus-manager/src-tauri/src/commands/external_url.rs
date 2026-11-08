@@ -11,6 +11,16 @@ const ALLOWED_HOSTS: &[&str] = &[
     "ilinkai.weixin.qq.com",
     "weixin.qq.com",
     "open.weixin.qq.com",
+    "docs.ollama.com",
+    "lmstudio.ai",
+    "open.bigmodel.cn",
+    "dash.cloudflare.com",
+    "cloud.siliconflow.cn",
+    "aistudio.google.com",
+    "console.groq.com",
+    "openrouter.ai",
+    "console.mistral.ai",
+    "bailian.console.aliyun.com",
 ];
 
 fn allowed_external_url(input: &str) -> Option<Url> {
@@ -69,6 +79,15 @@ mod tests {
     #[test]
     fn external_links_require_allowed_https_hosts() {
         assert!(allowed_external_url("https://github.com/nk33-dev/Codex3N").is_some());
+        for preset in codex_plus_core::config_doctor::presets() {
+            if !preset.docs_url.is_empty() {
+                assert!(
+                    allowed_external_url(preset.docs_url).is_some(),
+                    "{}",
+                    preset.docs_url
+                );
+            }
+        }
         for link in [
             "file:///C:/Windows/win.ini",
             "http://github.com",
