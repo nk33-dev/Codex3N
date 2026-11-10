@@ -74,6 +74,6 @@ Claude 语音通过主进程 `hook.js` 读取用户状态目录的 `dictation-he
 
 ## Claude Desktop 本地模式
 
-该本地模式目前仅支持 macOS；Windows/Linux 保留状态展示但不允许启动。完整功能模式通过本机 CA 与代理映射 Claude 服务，证书信任和取消信任由用户显式操作；3p 模式使用隔离配置目录。启用前应理解本机证书信任和代理的作用范围，离线夹具不代表官方服务、登录或 Computer Use 已可用。
+该本地模式支持 macOS 与 Windows；Linux 保留状态展示但不允许启动。完整功能模式通过本机 CA 与代理映射 Claude 服务，证书信任和取消信任由用户显式操作；Windows 通过 `certutil -user` 操作当前用户的根证书存储，macOS 使用登录钥匙串。CA 和服务证书由 `rcgen` 在进程内生成，已有完整材料继续沿用；测试只在临时目录生成证书，不安装系统信任。3p 模式使用隔离配置目录。启用前应理解本机证书信任和代理的作用范围，离线夹具不代表官方服务、登录或 Computer Use 已可用。
 
 `/dictation/claude-stream` 先经过 helper 对端和来源检查，再核对听写能力令牌；仅允许本地 SenseVoice，不回退在线转写。流有 30 秒空闲、16 分钟会话、帧及总输入输出预算，同一时间只接受一个识别会话；连接断开后等待不可取消的原生推理结束才释放容量。新增响应头保持个人 CORS，不开放通配来源。回归见 helper WebSocket、dictation 与 `tools/claude-local` 测试。

@@ -195,7 +195,9 @@ node scripts/profile-codex-switching.mjs --compare "$env:TEMP\codex-official-sho
 
 `App.tsx` 的后台下载在读取更新偏好后由 `UpdateNotifications::autoDownloadEnabled` 判定；关闭自动下载时不因首屏设置未回填而启动下载。个人更新源、校验和及降级拦截继续共用原入口。
 
-Claude Desktop 本地模式沿用 `claude_local_backend.rs` 与 `tools/claude-local`，通过 Tauri 的 `claude_local_status/configure/action` 注册；`App.tsx::ClaudeLocalizationScreen` 的本地模式与 `claudePatch` 补丁副本页面分开。本地模式配置为 `claudeDesktopLocal`，默认关闭，动作后按需刷新状态，不增加后台轮询。管理器重启可在原端口恢复已挂接代理；应用退出经统一收尾入口停止代理。Code 会话同步由 `claude_session_sync.rs` 在显式开启后执行，复制记录与对应 transcript，原文件保留。平台、证书及代理限制见 [安全边界](security.md#claude-desktop-本地模式)。
+Claude Desktop 本地模式沿用 `claude_local_backend.rs` 与 `tools/claude-local`，通过 Tauri 的 `claude_local_status/configure/action` 注册；`App.tsx::ClaudeLocalizationScreen` 的本地模式与 `claudePatch` 补丁副本页面分开。本地模式配置为 `claudeDesktopLocal`，默认关闭，动作后按需刷新状态；已启动页面沿用上游 3 秒状态刷新，离页后停止。管理器重启可在原端口恢复已挂接代理；应用退出经统一收尾入口停止代理。显示邮箱 `email` 与类型、默认值共用 `provider-types.ts`、`lib/default-settings.ts`，由后端校验并传给同一代理，不进入 Codex 注入设置白名单。
+
+Windows 安装路径探测在进程内合并，未安装结果缓存 30 秒，存在的文件或 MSIX 路径缓存 5 分钟后重新查询以发现升级；版本号继续按路径和修改时间缓存。`cached_source_app` 回归验证探测次数及过期刷新。Classic 与 MSIX 的 profile 按 `profile_sets` 映射，模式切换记录兼容旧单份备份与新多份备份。Code 会话同步由 `claude_session_sync.rs` 在显式开启后执行，沿用主 profile 集合，复制记录与对应 transcript，原文件保留；其他 MSIX profile 的实际会话同步未验收。平台、证书及代理限制见 [安全边界](security.md#claude-desktop-本地模式)。
 
 macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换 `Codex++.app`，失败时回滚。DMG 中保留隐藏的 `codex-plus-legacy-shim` 兼容壳供旧双应用更新器迁移，首次启动归档旧管理器；helper 脱离 bundle 后重新签名并保留执行权限。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 包内只有统一 GUI，升级清理旧管理器文件，保留用户对桌面快捷方式的选择。
 

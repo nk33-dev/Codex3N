@@ -281,3 +281,22 @@ Windows 最终低并发 workspace 全量测试 5,245 通过、47 忽略，退出
 隔离 Edge 模型菜单覆盖 310/400 px、长名称、深浅主题、默认组合并与键盘导航，截图复核无溢出；图片覆盖层 43 项像素及交互回归通过。主题使用真实 Rust 生成的 CSS，验证自定义布局、切换、停用、平台隔离和原生弹层清理。上述结果仍是隔离夹具，不代表真实宿主、证书信任或安装升级实测。
 
 首轮 push CI `42847060653` 的独立 Ubuntu 前端 job 仅在发布脚本第一条夹具失败：`spawnSync pwsh ETIMEDOUT` 命中 15 秒进程限制，其余 2,175 项通过，同轮 Windows 与 Linux DEB 前端通过。发布夹具的 PowerShell 进程时限调整为 60 秒，保留 CI 缺失、运行中、失败、查询错误和检查后脏工作区的全部拦截断言；生产发布脚本与门禁不变。图片覆盖层 CI `42847061029` 通过。最终发布仍须等待新提交的完整 push CI。
+
+### 官方 v2.6.1 同步
+
+个人起点为 `3ea7ebd8`，已验证上游基线为 `7d501392`，目标正式标签 v2.6.1 与本次取得的 `upstream/main` 均为 `d2479eed`，共 6 个提交。`main` 仅快进并推送，在独立工作树的 `codex/sync-2.6.1` 保留正式标签的合并父节点；个人版本为 `2.6.1-3n.1`，宿主为 Windows 官方 App 26.1103.3517.0。原工作区的插件市场响应生命周期改动单独保留，不进入本次发布。
+
+| 上游变化 | 当前入口与处理 |
+| --- | --- |
+| Windows Claude Desktop 3p 与完整功能模式 | 沿用 `claude_local_backend.rs`、`claude_localization.rs`；Classic/MSIX profile 由同一 `profile_sets` 映射，模式回滚兼容旧单份和新多份备份 |
+| 本地 CA 进程内生成 | 沿用 `rcgen`、原证书准备与显式信任入口；临时目录回归覆盖材料复用、指纹、域名、签名、私钥匹配及 Node TLS 加载 |
+| 自定义显示邮箱 | 迁入 `provider-types.ts`、`lib/default-settings.ts`，页面留在 App；后端校验并经现有环境变量交给代理，补齐真实翻译调用 |
+| Windows 安装探测与升级 | `cached_source_app` 为未安装结果保留 30 秒缓存，文件/MSIX 路径 5 分钟后重查；回归验证探测次数和到期刷新 |
+
+同步前基线复用同一 `3ea7ebd8` 的成功 push CI `42848785904` 及上一轮 Windows 5,245 项 Rust、2,176 项前端成功记录。保留个人更新源、手动保存、配置保护、SQLite 等安全依赖、完整开发调试信息与低并发入口。检查日志保存在仓库外 `D:/Project/rust/Codex3N-verification-20261111`。
+
+证书、profile 切换、恢复及会话同步只使用临时副本和隔离状态，不安装系统信任或修改活动用户配置。MSIX 非主 profile 的真实会话同步、系统授权、Claude 实际调用与 Windows/macOS/Linux 安装升级未在本机验收；跨平台编译和产包以最终提交 CI 为准。代码回退不恢复已变更数据，恢复继续使用原文件及既有备份链路。
+
+Windows 最终低并发 workspace 测试 5,259 通过、47 忽略，退出码 0，计数排除子进程重复输出；格式与 `cargo local-check` 通过。Node 22.23.3 前端 2,176 通过、2 跳过，翻译扫描、类型检查、Vite、两套注入拼装、Native Fast 19 项和语音缓存 10 项通过；Claude Node 代理 70 项通过、1 项 Unix 凭据用例在 Windows 跳过。npm 审计无漏洞，Rust 审计无阻断漏洞，保留 9 项允许告警。
+
+首轮 Rust 的两项 Skills 代理夹具收到无关环回健康探测，11 项代理专项及第二轮 workspace 全量均通过，生产逻辑与原断言不变；失败日志中的请求正文脱敏保留。测试 CA 准备使用 Git Bash 并设置 `MSYS_NO_PATHCONV=1`；WSL Bash 与 MSYS 路径转换导致的失败尝试分别保留。正式发布须等待最终 `personal` SHA 的 push CI 全部成功。

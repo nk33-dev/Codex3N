@@ -24,7 +24,7 @@ export const defaultSettings: BackendSettings = {
   codexAppReportedUsageCompaction: false,
   claudeDesktopLocal: {
     enabled: false, model: "", localization: true, voiceInput: true,
-    computerUse: false, backgroundMode: false, displayName: "", plan: "ultra",
+    computerUse: false, backgroundMode: false, displayName: "", email: "", plan: "ultra",
     sessionSync: false, listAllModels: false,
   },
   managerAgentFocus: "",

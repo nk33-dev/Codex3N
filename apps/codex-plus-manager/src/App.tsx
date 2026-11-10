@@ -16350,6 +16350,22 @@ function ClaudeLocalizationScreen(
               placeholder={t("Local User")}
             />
           </CxRow>
+          <CxRow detail={t("只改 Claude 里显示的账号邮箱，从这里启动后生效。")} title={t("邮箱")}>
+            <Input
+              aria-label={t("邮箱")}
+              defaultValue={local?.config.email ?? ""}
+              disabled={localDisabled || !local?.supported}
+              key={local?.config.email ?? ""}
+              onBlur={(event) => {
+                if (local && event.currentTarget.value !== (local.config.email ?? "")) void configureLocal({ ...local.config, email: event.currentTarget.value });
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              placeholder="local@claude.local"
+              type="email"
+            />
+          </CxRow>
           <CxRow title={t("套餐")}>
             <AppSelect
               ariaLabel={t("套餐")}

@@ -116,6 +116,7 @@ export type ClaudeLocalConfig = {
   computerUse: boolean;
   backgroundMode: boolean;
   displayName?: string;
+  email?: string;
   plan?: string;
   sessionSync?: boolean;
   listAllModels?: boolean;

@@ -23,6 +23,8 @@ export const EN_PLAIN: Record<string, string> = {
   "3p 模式": "3p mode",
   "完整功能模式": "Full-feature mode",
   "只改 Claude 里显示的账号信息，从这里启动后生效。": "Only changes account details displayed in Claude. Applies when launched here.",
+  "只改 Claude 里显示的账号邮箱，从这里启动后生效。": "Only changes the email displayed in Claude. Applies when launched here.",
+  "邮箱": "Email",
   "用户名": "Username",
   "Local User": "Local User",
   "已信任": "Trusted",
