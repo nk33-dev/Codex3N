@@ -71,7 +71,7 @@ New-Item -ItemType Directory -Force (Join-Path $fixtureRoot "apps/codex-plus-man
     const result = spawnSync("pwsh", ["-NoProfile", "-NonInteractive", "-File", join(dir, "driver.ps1")], {
       cwd: dir,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: 60_000,
       stdio: ["ignore", "pipe", "pipe"],
     });
     assert.ifError(result.error);

@@ -279,3 +279,5 @@ Claude 代理专项的 Unix 权限断言仅在 Unix 检查，Windows 跳过要�
 Windows 最终低并发 workspace 全量测试 5,245 通过、47 忽略，退出码 0，计数排除子进程过滤用例的重复输出；`cargo local-check`、格式、relay Clippy 与两套注入拼装通过。Node 22.23.3 前端 2,176 通过、2 跳过，TypeScript、Vite、npm 审计通过；Rust 审计无阻断漏洞，保留 9 项允许告警。语音缓存 10 项、Native Fast 19 项、Claude Node 代理 70 项通过，后者在 Windows 跳过 1 项 Unix 凭据用例。
 
 隔离 Edge 模型菜单覆盖 310/400 px、长名称、深浅主题、默认组合并与键盘导航，截图复核无溢出；图片覆盖层 43 项像素及交互回归通过。主题使用真实 Rust 生成的 CSS，验证自定义布局、切换、停用、平台隔离和原生弹层清理。上述结果仍是隔离夹具，不代表真实宿主、证书信任或安装升级实测。
+
+首轮 push CI `42847060653` 的独立 Ubuntu 前端 job 仅在发布脚本第一条夹具失败：`spawnSync pwsh ETIMEDOUT` 命中 15 秒进程限制，其余 2,175 项通过，同轮 Windows 与 Linux DEB 前端通过。发布夹具的 PowerShell 进程时限调整为 60 秒，保留 CI 缺失、运行中、失败、查询错误和检查后脏工作区的全部拦截断言；生产发布脚本与门禁不变。图片覆盖层 CI `42847061029` 通过。最终发布仍须等待新提交的完整 push CI。
