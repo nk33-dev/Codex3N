@@ -103,9 +103,9 @@ test("原生隐藏标记可修正旧列表，显式配置同一型号时仍可�
   const start = renderer.indexOf("  function patchModelArray(");
   const end = renderer.indexOf("  function patchModelContainer(", start);
   const patch = new Function("custom", `
-    const codexPureApiAllowedModelSet=()=>null, prepareModelCollection=()=>false, finishModelCollection=()=>{};
+    const codexModelAllowedSet=()=>null, prepareModelCollection=()=>false, finishModelCollection=()=>{};
     const modelArrayLooksPatchable=Array.isArray;
-    const codexPlusModelNames=()=>custom, codexPlusModelMetadata=()=>({hidden:true});
+    const codexPlusModelNames=()=>custom, codexPlusModelMetadata=model=>({hidden:!custom.includes(model)});
     const applyCodexPlusModelMetadata=()=>false, sortModelChoices=()=>false;
     const codexPlusModelDescriptor=model=>({model,hidden:false});
     const codexModelCatalog={status:"ok"};

@@ -1075,7 +1075,7 @@ mod tests {
             "function installThreadIdBadge(row)",
             "function releaseThreadScrollControl()",
             "function downloadMarkdownFallback(filename, markdown)",
-            "function patchAppServerModelResult(method, result, hostId)",
+            "function patchAppServerModelResult(method, result, hostId, params)",
             "function openDeleteConfirmForRow(row, button, ref, event)",
             "function conversationViewFindComposerEl()",
             "function removeLegacyCodexServiceTierBadges()",

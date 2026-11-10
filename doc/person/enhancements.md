@@ -88,6 +88,8 @@ Stepwise 的 Chat Completions 返回若因推理内容耗尽输出额度而没�
 
 ## 功能归属与验证
 
+`codexAppReportedUsageCompaction` 默认关闭，作为内置拓展项沿用主设置手动保存。仅对经过本地代理且有明确 Codex App/CLI 身份的响应增加上报用量策略标记，不改 usage、不自动开启代理；真实上游推理标记与本地策略分开记录。旧会话首次响应前可能仍用原估算。回归见 `reported-usage-compaction-settings.test.ts` 与 `launcher/reported_usage_tests.rs`。
+
 `codexAppStatsigOverrides` 默认关闭，`34-statsig-overrides.js` 经既有内置拓展入口安装；仅覆盖本机升级推销、网络超时和记忆相关的客户端配置，不改变服务端能力或额度。离线分支对话兜底共用 `32-fork-readiness-fallback.js` 与 `33-offline-auto-review.js`，仅在无账号且没有真实远程数据时补内存数据，不另建模型目录入口。
 
 管理器沿用上游 Agent 图标栏与原生工作区布局。供应商编辑分组由 `App.tsx::RelayFold` 保存展开偏好，新出现的校验错误展开对应分组，模型配置首次默认展开。

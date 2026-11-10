@@ -1787,11 +1787,7 @@ pub(crate) fn select_dicts(
     params: &[&dyn ToSql],
 ) -> anyhow::Result<Vec<Value>> {
     let mut stmt = db.prepare(sql)?;
-    let columns: Vec<String> = stmt
-        .column_names()
-        .iter()
-        .map(|name| name.to_string())
-        .collect();
+    let columns: Vec<String> = stmt.column_names().map(|name| name.to_string()).collect();
     let rows = stmt.query_map(params, |row| {
         let mut data = Map::new();
         for (index, column) in columns.iter().enumerate() {

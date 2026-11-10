@@ -835,6 +835,8 @@ async fn gateway_end_to_end() {
             .unwrap()
             > 0
     );
+    gateway.groups[0].name = "Daily renamed group".into();
+    save(&gateway);
     let models = reqwest::Client::new()
         .get(format!("http://127.0.0.1:{port}/gw/claude/v1/models"))
         .header("x-api-key", token)
@@ -852,8 +854,42 @@ async fn gateway_end_to_end() {
         .map(|model| model["id"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["group/group", "deepseek-v4-pro", "glm-5.3"]);
+    assert_eq!(models["data"][0]["display_name"], "Daily renamed group");
 
-    // Claude Desktop：非 Claude 模型换成数字别名，真实名字在 display_name 里。
+    // Codex 的公开列表直接验证条目、顺序和去重：错误的额外裸模型不能
+    // 借默认组或默认供应商获得伪归属。
+    let mut codex_binding = binding("group/group", "cpx-gw-codex-e2e");
+    codex_binding.extra_models = vec![
+        "deepseek-v4-pro".into(),
+        "deepseek-v4-pro".into(),
+        "declared-only".into(),
+    ];
+    gateway.bindings.insert("codex".into(), codex_binding);
+    save(&gateway);
+    let models = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/gw/codex/v1/models"))
+        .header("x-api-key", "cpx-gw-codex-e2e")
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let ids = models["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|model| model["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ids,
+        vec!["group/group", "deepseek-v4-pro", "glm-5.3", "declared-only"]
+    );
+    assert_eq!(ids.iter().filter(|id| **id == "deepseek-v4-pro").count(), 1);
+    gateway.bindings.remove("codex");
+    save(&gateway);
+
+    // Claude Desktop：请求仍用稳定 ID 生成数字别名，display_name 跟随组改名。
     gateway.bindings.insert(
         "claude-desktop".into(),
         binding("deepseek-v4-pro", "cpx-gw-desktop-e2e"),
@@ -875,9 +911,14 @@ async fn gateway_end_to_end() {
         .iter()
         .map(|row| row["display_name"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(names, vec!["deepseek-v4-pro", "glm-5.3", "group/group"]);
-    for row in rows {
-        let real = row["display_name"].as_str().unwrap();
+    assert_eq!(
+        names,
+        vec!["deepseek-v4-pro", "glm-5.3", "Daily renamed group"]
+    );
+    for (row, real) in rows
+        .iter()
+        .zip(["deepseek-v4-pro", "glm-5.3", "group/group"])
+    {
         let id = row["id"].as_str().unwrap();
         // 有思考档位的模型用 mythos-gw- 别名（Desktop 才出思考等级菜单），其余仍是 claude-gw-；
         // 数字部分与旧别名一致，旧会话选中的模型照样能还原。

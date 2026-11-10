@@ -21,6 +21,7 @@
 
 - 新版 Codex 的侧栏项目存于 `~/.codex/.codex-global-state.json` 的 `local-projects`、`project-order`、`thread-project-assignments` 和宿主项目 ID 映射；数据库 `state_5.sqlite` 的 `projects`、`project_roots`、`threads.project_id` 存另一份关联。项目消失时先检查两处，不要清空用户目录。
 - `codex_app_state.rs` 分别保存旧工作区路径快照与新版项目快照，恢复时不把旧路径当新版项目 ID；新版快照保留此前的项目、ID 映射和会话关联，切换供应商后合并到当前状态，当前项目同 ID 的字段优先。
+- 存在 `electron-account-renderer-state-v1` 时按其 owner 保存活动和 inactive 账号的公开项目字段，只为当前仍存在的同账号补缺键，显式空值和当前顺序保留。账号快照不进入旧版跨项目合并，未知结构拒绝写回；不读取认证文件推算身份。临时副本回归覆盖切换账号、无归属旧快照和降级到无账号结构。
 - 若已升级且当前侧栏只剩少量项目，先运行 `python scripts/restore_codex_projects.py` 只读预览。确认项目数据库仍在、完全退出 Codex 桌面版和管理器后，在独立终端运行 `python scripts/restore_codex_projects.py --apply`。脚本先备份原全局状态与一致性 SQLite 副本到 `~/.codex/backups_state/project-recovery/`，再恢复可明确匹配的项目和会话；显式无项目、已归档、路径不匹配或有歧义的会话不自动归类。重新启动 Codex 后核对侧栏和会话数。
 
 ## 隐藏失效会话
@@ -36,6 +37,8 @@ Codex 内“检查并隐藏失效会话 / 显示已隐藏会话”只影响显�
 `codexAppHistoryTurnRecovery` 默认关闭，共用类型、默认值与渲染公开白名单同步维护。索引修复完成后由 `history_turn_recovery::after_index_repair` 通知受管页面，`85-history-turn-recovery.js` 单次限量补载原生消息及元数据；手动和自动修复共用此入口。报告在现有 `SessionMaintenance` 展示，包含补载状态、消息页、元数据页和失败原因，不新增修复轮询。回归见 `session-index-frontend-recovery.test.ts`、`history_turn_recovery` 测试；宿主实际补载效果须单独实测。
 
 ## 管理器删除
+
+创建失败的临时会话通过原生 pending 行的关闭回调清理，不进入本地数据库删除接口。确认前后核对 client ID、主机及 pending 对象，变化时停止；原生回调负责草稿和迟到创建结果。验证见 `session-delete-runtime.test.ts`。
 
 - 单删和批删共用备份删除链路。删除涉及 SQLite、rollout、会话索引和新版侧栏目录；计数减少不等于完整成功，部分失败仍须报告。
 - `provider_sync.rs` 的侧栏清理在 `CODEX_HOME/tmp/provider-sync-tombstones.json` 记录删除墓碑，目录修复和 canonical 会话重建均跳过这些 ID；撤销删除时清除对应墓碑。最多保留最近 4096 个 ID，读取失败会退回原修复行为，可能重新出现旧会话。墓碑写入失败记录诊断，删除备份仍由原链路保存。

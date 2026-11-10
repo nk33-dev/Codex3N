@@ -48,6 +48,66 @@ test("backend refresh notifies builtins and skips failed heartbeat reads", async
   assert.equal(settingsEvents, 1, "failed reads do not notify builtins (Weixin sync, typing effects…)");
 });
 
+test("heartbeat retries settings revisions after failed or overlapping reads", async () => {
+  const source = fragment("40-backend-settings.js");
+  let revision = "one";
+  let reads = 0;
+  const pending: Array<(value: boolean) => void> = [];
+  const context = vm.createContext({
+    window: { __codexPlusBackendGeneration: 1 },
+    codexPlusBackendGeneration: 1, codexPlusBackendCheckInFlight: false,
+    codexPlusBackendCheckSeq: 0, codexPlusBackendFailureCount: 0,
+    codexPlusBackendSettingsRevision: "", codexPlusBackendSettingsLoaded: true,
+    codexPlusBackendSettings: {}, CODEX_PLUS_BACKEND_FAILURE_THRESHOLD: 3,
+    codexPlusRecoveryFailures: 0, codexPlusRecoveryRetryAt: 0,
+    reportBackendRecoveryHealth: async () => {},
+    sendCodexPlusDiagnostic: () => {},
+    postJson: async () => ({ status: "ok", settingsRevision: revision }),
+    loadBackendSettingsState: () => { reads++; return new Promise<boolean>(resolve => pending.push(resolve)); },
+    syncOfficialUsagePolicy: () => {}, emitCodexPlusSettingsLoaded: () => {},
+    syncCodexPlusBackendToggleButtons: () => {}, renderCodexPlusMenu: () => {},
+    renderBackendStatus: () => {},
+  });
+  vm.runInContext(source.slice(source.indexOf("  let syncBackendSettingsInFlight"),
+    source.indexOf("  async function setBackendSetting(")), context);
+  vm.runInContext(source.slice(source.indexOf("  async function checkBackendStatus("),
+    source.indexOf("  async function openManagerFromCodex()")), context);
+  const settle = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+
+  const first = context.checkBackendStatus(false);
+  await settle();
+  assert.equal(reads, 1);
+  pending.shift()!(false);
+  await first;
+  const second = context.checkBackendStatus(false);
+  await settle();
+  assert.equal(reads, 2, "a failed read must retry even when the revision is unchanged");
+
+  revision = "two";
+  await context.checkBackendStatus(false);
+  assert.equal(reads, 2, "a later heartbeat must not duplicate an in-flight read");
+  pending.shift()!(true);
+  await second;
+  const third = context.checkBackendStatus(false);
+  await settle();
+  assert.equal(reads, 3, "a newer revision observed during an in-flight read must be retried");
+  pending.shift()!(true);
+  await third;
+  await context.checkBackendStatus(false);
+  assert.equal(reads, 3, "a successfully read revision should not trigger another read");
+
+  revision = "";
+  const fourth = context.checkBackendStatus(false);
+  await settle();
+  pending.shift()!(true);
+  await fourth;
+  const fifth = context.checkBackendStatus(false);
+  await settle();
+  assert.equal(reads, 5, "old backends without a revision retain per-heartbeat reads");
+  pending.shift()!(true);
+  await fifth;
+});
+
 test("optimistic backend writes apply to the page before their response arrives", async () => {
   const source = fragment("40-backend-settings.js");
   const applied: unknown[] = [];
@@ -75,6 +135,7 @@ test("heartbeat reports changed keys and relay events for settings changed outsi
   const context: any = vm.createContext({
     codexPlusSettings: () => ({ conversationView: false }),
     syncOfficialUsagePolicy: () => {}, renderCodexPlusMenu: () => {}, syncCodexPlusBackendToggleButtons: () => {},
+    loadCodexModelCatalog: async () => {},
     codexPlusEmitExtensionEvent: (event: string, [detail]: unknown[]) => events.push([event, detail]),
     codexPlusBackendSettingsLoaded: false,
     codexPlusBackendSettings: {},
@@ -112,4 +173,35 @@ test("heartbeat reports changed keys and relay events for settings changed outsi
   next = { modelCatalogFingerprint: "f3" };
   await context.syncBackendSettingsFromHeartbeat();
   assert.deepEqual(events.map(([event]) => event), ["settings/loaded", "modelCatalog/changed"]);
+});
+
+test("heartbeat forces a native model catalog refresh only when its fingerprint changes", async () => {
+  const source = fragment("40-backend-settings.js");
+  const refreshes: boolean[] = [];
+  let fingerprint = "before";
+  let loaded = true;
+  const context: any = vm.createContext({
+    codexPlusBackendSettingsLoaded: true,
+    codexPlusBackendSettings: { modelCatalogFingerprint: fingerprint },
+    codexPlusSettings: () => ({ conversationView: false }),
+    syncOfficialUsagePolicy: () => {}, renderCodexPlusMenu: () => {},
+    syncCodexPlusBackendToggleButtons: () => {}, emitCodexPlusSettingsLoaded: () => {},
+    loadCodexModelCatalog: async (force: boolean) => { refreshes.push(force); },
+  });
+  context.loadBackendSettingsState = async () => {
+    if (loaded) context.codexPlusBackendSettings = { modelCatalogFingerprint: fingerprint };
+    return loaded;
+  };
+  vm.runInContext(source.slice(source.indexOf("  let syncBackendSettingsInFlight"), source.indexOf("  async function setBackendSetting(")), context);
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, []);
+  fingerprint = "after";
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, [true]);
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, [true]);
+  loaded = false;
+  fingerprint = "unavailable";
+  await context.syncBackendSettingsFromHeartbeat();
+  assert.deepEqual(refreshes, [true]);
 });

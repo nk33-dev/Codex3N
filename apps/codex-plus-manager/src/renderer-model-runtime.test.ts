@@ -389,19 +389,30 @@ test("设置对象按输入身份缓存，热路径不再重复解析", () => {
   assert.equal(reads >= 3, true, "每次调用仍会读一次 localStorage 原文用于比较");
 });
 
+function catalogLoaderRuntime(read: () => Promise<unknown>, now: () => number,
+  render = () => {}, schedule = () => {}) {
+  return new Function("window", "readCodexAppServerPreparation", "Date",
+    "renderCodexPlusMenu", "scheduleCodexModelWhitelistRefresh", `
+    const codexPlusBackendSettingsLoaded = false;
+    const codexPlusModelUnlockEnabled = () => false, findCodexQueryClient = () => null;
+    ${runtimeSource("previousCodexModelCatalogRuntime", "codexModelCatalog",
+      "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRevision",
+      "codexModelCatalogRuntime", "patchModelJsonResponse", "patchStatsigModelDynamicConfig",
+      "recordModelListRequest", "patchMcpModelResponseData", "refreshCodexNativeModelQueries",
+      "scheduleCodexModelCatalogRetry", "syncCodexPlusGroupModelQueries", "loadCodexModelCatalog")}
+    window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
+    return loadCodexModelCatalog;
+  `)({ setTimeout: () => 0 }, read, { now }, render, schedule);
+}
+
 test("相同目录刷新不重绘菜单，也不重启白名单补扫", async () => {
   let now = 1000;
   let renders = 0;
   let schedules = 0;
   let requests = 0;
   let models = ["custom"];
-  const load = new Function("readCodexAppServerPreparation", "Date", "renderCodexPlusMenu", "scheduleCodexModelWhitelistRefresh", `
-    ${runtimeSource("codexModelCatalog", "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRetryAt", "codexModelCatalogFailures")}
-    const refreshCodexModelQueries = () => {};
-    ${section("  async function loadCodexModelCatalog(", "  function codexPlusModelMetadata(")}
-    return loadCodexModelCatalog;
-  `)(async () => { requests += 1; return { status: "ok", models }; },
-    { now: () => now }, () => { renders += 1; }, () => { schedules += 1; });
+  const load = catalogLoaderRuntime(async () => { requests += 1; return { status: "ok", models }; },
+    () => now, () => { renders += 1; }, () => { schedules += 1; });
   await load();
   now += 11000;
   await load();
@@ -418,15 +429,11 @@ test("目录请求失败后退避，扫描复用进行中的请求", async () =>
   let now = 1000;
   let requests = 0;
   let resolveRequest: (value: unknown) => void = () => {};
-  const load = new Function("readCodexAppServerPreparation", "Date", `
-    ${runtimeSource("codexModelCatalog", "codexModelCatalogLoadedAt", "codexModelCatalogPromise", "codexModelCatalogRetryAt", "codexModelCatalogFailures", "loadCodexModelCatalog")}
-    const renderCodexPlusMenu = () => {}, scheduleCodexModelWhitelistRefresh = () => {}, refreshCodexModelQueries = () => {};
-    return loadCodexModelCatalog;
-  `)(() => {
+  const load = catalogLoaderRuntime(() => {
     requests += 1;
     if (requests === 1) return Promise.reject(new Error("offline"));
     return new Promise((resolve) => { resolveRequest = resolve; });
-  }, { now: () => now });
+  }, () => now);
   assert.equal((await load()).status, "failed");
   now += 4999;
   await load();

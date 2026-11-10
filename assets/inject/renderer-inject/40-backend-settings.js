@@ -108,7 +108,7 @@
   }
 
   async function syncBackendSettingsFromHeartbeat() {
-    if (syncBackendSettingsInFlight) return;
+    if (syncBackendSettingsInFlight) return false;
     syncBackendSettingsInFlight = true;
     try {
       const previous = typeof codexPlusBackendSettingsSnapshot === "function" ? codexPlusBackendSettingsSnapshot() : null;
@@ -119,6 +119,10 @@
       if (loaded && (!previous || previousSettings !== JSON.stringify(next))) {
         if (typeof syncCodexPlusLowPower === "function") syncCodexPlusLowPower();
         syncOfficialUsagePolicy();
+        if (previous?.modelCatalogFingerprint && next?.modelCatalogFingerprint
+            && previous.modelCatalogFingerprint !== next.modelCatalogFingerprint) {
+          await loadCodexModelCatalog(typeof refreshCodexModelCatalogForSettings !== "function");
+        }
         // 启动期读取全部失败时，心跳是之后唯一的设置来源；跟着设置走的功能（含梦皮 #2680、对话宽度）由内置拓展订阅。
         emitCodexPlusSettingsLoaded("heartbeat", previous && next && typeof codexPlusChangedBackendSettingKeys === "function"
           ? codexPlusChangedBackendSettingKeys(previous, next)
@@ -214,7 +218,7 @@
   let codexPlusBackendCheckSeq = 0;
   let codexPlusBackendCheckInFlight = false;
   let codexPlusBackendFailureCount = 0;
-  /** 上次心跳看到的设置版本；只有它变了才值得再拉一份完整的 /settings/get。 */
+  /** 上次心跳成功读取的设置版本。 */
   let codexPlusBackendSettingsRevision = "";
   const CODEX_PLUS_BACKEND_FAILURE_THRESHOLD = 3;
   // HTTP 回落只能证明 helper 可达；业务可用还需要桥接与设置读取都成功。
@@ -1226,7 +1230,9 @@
   function syncCodexPlusRailNativeSelection() {
     const root = document.documentElement;
     if (!root) return;
-    if (!document.querySelector(`.${codexPlusPageClass}`)) {
+    const open = Boolean(document.querySelector(`.${codexPlusPageClass}`));
+    syncCodexPlusPagePopupStyle(open);
+    if (!open) {
       root.removeAttribute("data-codex-plus-page-open");
       root.style.removeProperty("--codex-plus-rail-dim");
       return;

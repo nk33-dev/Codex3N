@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 const root = path.resolve(import.meta.dirname, "..");
-const buildRoot = path.join(root, "target/debug/build");
+const buildRoot = path.resolve(root, process.env.CARGO_TARGET_DIR || "target", "debug/build");
 const executable = process.platform === "win32" ? "build-script-build.exe" : "build-script-build";
 const buildScript = readdirSync(buildRoot)
   .filter((name) => name.startsWith("sherpa-onnx-sys-"))

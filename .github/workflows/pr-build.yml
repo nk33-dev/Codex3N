@@ -52,6 +52,12 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm test
 
+      - name: Claude local proxy regressions
+        shell: bash
+        run: |
+          bash tools/claude-local/scripts/gen-ca.sh
+          node --test --test-concurrency=2 tools/claude-local/*.test.mjs tools/claude-local/scripts/*.test.mjs
+
       - name: Native Fast regression tests
         run: >-
           node --test

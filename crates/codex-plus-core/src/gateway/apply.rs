@@ -107,7 +107,7 @@ pub fn claude_gateway_provider(
     let default_model = binding_default_model(gateway, binding);
     let role = |value: &str| {
         let (slug, _) = crate::model_suffix::parse_model_suffix(value.trim());
-        if slug.trim().is_empty() {
+        if slug.trim().is_empty() || route::is_disabled_group_model(gateway, &slug) {
             default_model.clone()
         } else {
             slug.trim().to_string()
@@ -187,32 +187,7 @@ fn agent_gateway_profile(
     port: u16,
     agent: &ToolId,
 ) -> RelayProfile {
-    let default_model = binding_default_model(gateway, binding);
-    let mut models = vec![default_model.clone()];
-    // 池里所有能用的模型和模型组都进 Agent 的模型列表；Codex 按供应商分组显示，多家都有的模型每家各列一份。
-    let pool = if *agent == ToolId::Codex {
-        route::codex_pool_models_led_by(gateway, binding, &default_model)
-    } else {
-        route::pool_models(gateway, binding)
-    };
-    for model in pool.into_iter().chain(binding.declared_models()) {
-        if !models.contains(&model) {
-            models.push(model);
-        }
-    }
-    let model_list = models
-        .iter()
-        .filter(|model| !model.is_empty())
-        // 每个模型带自己的窗口（供应商池里按模型写的）；没写的用 Agent 的默认窗口，都没有就不带，
-        // 交给 Agent 自带的模型资料。
-        .map(|model| {
-            match route::model_entry_window(gateway, binding, model).or(binding.context_window) {
-                Some(window) => format!("{model}[{window}]"),
-                None => model.clone(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let model_list = agent_gateway_model_list(gateway, binding, agent);
     let base = format!("{}/v1", gateway_base_url_on(host, port, agent));
     RelayProfile {
         id: "codex-plus-gateway".to_string(),
@@ -227,6 +202,47 @@ fn agent_gateway_profile(
     }
 }
 
+fn agent_gateway_model_list(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    agent: &ToolId,
+) -> String {
+    // 池里所有能用的模型和模型组都进 Agent 的模型列表；Codex 按供应商分组显示，多家都有的模型每家各列一份。
+    let models = if *agent == ToolId::Codex {
+        route::codex_binding_models(gateway, binding)
+    } else {
+        route::binding_exposed_models(gateway, binding)
+    };
+    models
+        .iter()
+        .filter(|model| !model.is_empty())
+        // 窗口依次取供应商池、绑定声明的后缀、Agent 默认窗口；都没有就不带，
+        // 交给 Agent 自带的模型资料。
+        .map(|model| {
+            let declared_window = std::iter::once(&binding.model)
+                .chain([
+                    &binding.claude_roles.opus,
+                    &binding.claude_roles.sonnet,
+                    &binding.claude_roles.haiku,
+                    &binding.claude_roles.subagent,
+                ])
+                .chain(binding.extra_models.iter())
+                .find_map(|raw| {
+                    let (slug, window) = crate::model_suffix::parse_model_suffix(raw);
+                    window.filter(|_| slug.eq_ignore_ascii_case(model))
+                });
+            match route::model_entry_window(gateway, binding, model)
+                .or(declared_window)
+                .or(binding.context_window)
+            {
+                Some(window) => format!("{model}[{window}]"),
+                None => model.clone(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 写 Agent 配置。Claude 首次切换时若把 live 配置存成了「切换前的配置」，返回它的 id。
 fn write_agent_config(
     ctx: &ApplyContext,
@@ -235,6 +251,11 @@ fn write_agent_config(
 ) -> anyhow::Result<Option<String>> {
     // 拓展声明的供应商也写进 Agent 的模型资料（只读，不落盘）。
     let gateway = ctx.gateway.load()?.with_extension_providers();
+    if route::is_disabled_group_model(&gateway, &binding.model)
+        && binding_default_model(&gateway, binding).is_empty()
+    {
+        bail!("默认模型组已停用，且没有其他可用模型");
+    }
     match agent {
         ToolId::Claude => {
             // 还没指向网关：先把 settings.json 原样存一份，断开时据此还原（见 [`restore_claude`]）。
@@ -351,19 +372,20 @@ pub fn codex_gateway_profile_on(
 ) -> anyhow::Result<RelayProfile> {
     let signed_in = crate::wsl_network::codex_gateway_uses_official_identity(signed_in, wsl_host);
     let host = crate::wsl_network::codex_gateway_host(wsl_host);
-    let synthetic = agent_gateway_profile(gateway, binding, &host, port, &ToolId::Codex);
+    let catalog = codex_gateway_model_catalog(gateway, binding);
+    let base_url = format!("{}/v1", gateway_base_url_on(&host, port, &ToolId::Codex));
     let mut profile = crate::provider_import::pool_relay_profile(
         "Codex++ 网关",
-        &synthetic.base_url,
-        &synthetic.api_key,
+        &base_url,
+        &binding.token,
         RelayProtocol::Responses,
         &binding_default_model(gateway, binding),
-        &synthetic.model_list,
+        &catalog.model_list,
         &[],
     )?;
     profile.id = CODEX_GATEWAY_RELAY_ID.to_string();
     profile.relay_mode = RelayMode::PureApi;
-    profile.model_metadata = codex_model_metadata(gateway, binding);
+    profile.model_metadata = catalog.model_metadata;
     let mut compact = BTreeMap::new();
     for model in route::codex_pool_models(gateway, binding) {
         if let Some((relay, upstream)) =
@@ -381,15 +403,38 @@ pub fn codex_gateway_profile_on(
     crate::relay_config::normalize_relay_profile_for_storage(&mut profile)?;
     if !signed_in {
         // 归一化会把导入时的旧版供应商表换成 `custom`，声明要在它之后写上。
-        profile.config_contents = with_local_api_identity(&profile.config_contents)?;
+        profile.config_contents = with_local_api_identity(
+            &profile.config_contents,
+            crate::gateway::images::targets(gateway, &ToolId::Codex, None).is_ok(),
+        )?;
     }
     Ok(profile)
+}
+
+/// 仅包含展示目录，不携带网关地址、凭据或实例的默认模型。
+/// model_list 保留窗口后缀；写入供应商前应清除旧窗口映射并执行标准归一化。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexGatewayModelCatalog {
+    pub model_list: String,
+    pub model_metadata: String,
+}
+
+pub fn codex_gateway_model_catalog(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+) -> CodexGatewayModelCatalog {
+    let model_list = agent_gateway_model_list(gateway, binding, &ToolId::Codex);
+    let model_metadata = codex_model_metadata(gateway, binding, &model_list);
+    CodexGatewayModelCatalog {
+        model_list,
+        model_metadata,
+    }
 }
 
 /// 没登录 ChatGPT 时的托管供应商：显式写 `requires_openai_auth = false`，与直连模式手加的
 /// 纯 API 供应商一致。Codex 这时没有账号身份，原生 Fast 只认这个明确声明的本机 API 配置
 /// （见 [`crate::native_fast`]），缺这一行时 Fast 按钮整个不显示（#2746）。
-fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
+fn with_local_api_identity(contents: &str, image_generation: bool) -> anyhow::Result<String> {
     let mut doc = contents
         .parse::<toml_edit::DocumentMut>()
         .context("托管供应商配置不是合法 TOML")?;
@@ -405,6 +450,15 @@ fn with_local_api_identity(contents: &str) -> anyhow::Result<String> {
         .and_then(toml_edit::Item::as_table_mut)
         .context("托管供应商配置里没有传输供应商")?;
     table["requires_openai_auth"] = toml_edit::value(false);
+    if image_generation {
+        // 网关已经代理图片接口，不启用会把地址改到本地 helper 的直连生图开关。
+        let mut headers = toml_edit::InlineTable::new();
+        headers.insert(
+            crate::relay_config::PURE_API_IMAGE_GENERATION_HEADER,
+            "codex-plus-gateway-image-generation".into(),
+        );
+        table["http_headers"] = toml_edit::value(headers);
+    }
     Ok(doc.to_string())
 }
 
@@ -429,7 +483,11 @@ const CODEX_GROUPS_GROUP_ID: &str = "codex-plus-gateway-groups";
 ///
 /// 写进托管供应商的 `model_metadata`：生成 `model_catalog_json` 时覆盖进目录，
 /// 注入层读的 `/codex-model-catalog` 也按它给出推理档位与分组。
-fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> String {
+fn codex_model_metadata(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model_list: &str,
+) -> String {
     let relays = route::binding_pool_relays(gateway, binding);
     let default_id = relays
         .iter()
@@ -437,9 +495,17 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
         .map(|relay| relay.id.as_str());
     let mut member_catalogs: Vec<Option<Vec<Value>>> = vec![None; relays.len()];
     let mut metadata = Map::new();
-    for model in route::codex_pool_models(gateway, binding) {
-        if let Some(id) = model.strip_prefix(GROUP_MODEL_PREFIX) {
-            let Some(group) = gateway.group(id) else {
+    for (model, _) in crate::tools::grok::parse_grok_model_list(model_list) {
+        if let Some(id) = model
+            .get(..GROUP_MODEL_PREFIX.len())
+            .filter(|prefix| prefix.eq_ignore_ascii_case(GROUP_MODEL_PREFIX))
+            .map(|_| &model[GROUP_MODEL_PREFIX.len()..])
+        {
+            let Some(group) = gateway
+                .groups
+                .iter()
+                .find(|group| group.id.eq_ignore_ascii_case(id))
+            else {
                 continue;
             };
             // 组的推理档位取第一个成员的；Fast 要每个成员都支持才开（#2740）：
@@ -504,7 +570,84 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             continue;
         }
         // 归哪家：`<供应商 id>/<模型>` 是那一家；裸名归第一个提供它的供应商（多家都有时它是自动切换入口）。
-        let Some((index, upstream)) = route::codex_model_owner(&relays, &model) else {
+        let Some((index, upstream, providers)) =
+            route::codex_model_route(gateway, binding, &relays, &model)
+        else {
+            // 未知声明使用默认模型的候选能力，但不推断供应商归属。
+            let members = route::codex_model_members(
+                gateway,
+                binding,
+                &binding_default_model(gateway, binding),
+            );
+            let member_entries: Vec<Value> = members
+                .iter()
+                .filter_map(|(member, _)| {
+                    relays
+                        .iter()
+                        .position(|relay| relay.id == member.id)
+                        .and_then(|index| {
+                            member_catalog_entry(&mut member_catalogs, &relays, index, &model)
+                        })
+                })
+                .collect();
+            let mut fields = member_entries
+                .first()
+                .map(|entry| catalog_ui_fields(&entry))
+                .unwrap_or_default();
+            fields.insert("codex_plus_group_id".into(), Value::Null);
+            if member_entries
+                .iter()
+                .any(|entry| entry["supports_search_tool"] == json!(false))
+            {
+                fields.insert("supports_search_tool".into(), json!(false));
+            }
+            if let Some(mut modalities) = member_entries
+                .first()
+                .and_then(|entry| entry["input_modalities"].as_array().cloned())
+            {
+                for entry in member_entries.iter().skip(1) {
+                    if let Some(other) = entry["input_modalities"].as_array() {
+                        modalities.retain(|modality| other.contains(modality));
+                    }
+                }
+                fields.insert("input_modalities".into(), json!(modalities));
+            }
+            let all_support_fast = !members.is_empty()
+                && members.iter().all(|(relay, _)| {
+                    relays
+                        .iter()
+                        .position(|candidate| candidate.id == relay.id)
+                        .and_then(|index| {
+                            member_catalog_entry(&mut member_catalogs, &relays, index, &model)
+                        })
+                        .is_some_and(|entry| {
+                            entry["service_tiers"].as_array().is_some_and(|tiers| {
+                                tiers.iter().any(|tier| {
+                                    crate::model_suffix::model_speed_tier_is(tier, "priority")
+                                })
+                            }) || entry["additional_speed_tiers"]
+                                .as_array()
+                                .is_some_and(|tiers| {
+                                    tiers.iter().any(|tier| {
+                                        crate::model_suffix::model_speed_tier_is(tier, "fast")
+                                    })
+                                })
+                        })
+                });
+            if !all_support_fast {
+                fields.insert("service_tiers".into(), json!([]));
+                fields.insert("additional_speed_tiers".into(), json!([]));
+            }
+            if members
+                .iter()
+                .any(|(relay, _)| crate::relay_config::upstream_rejects_tool_search(relay))
+            {
+                fields.insert("supports_search_tool".into(), json!(false));
+            }
+            if codex_favorite(gateway, &relays, &model) {
+                fields.insert("codex_plus_favorite".into(), json!(true));
+            }
+            metadata.insert(model, Value::Object(fields));
             continue;
         };
         let relay = relays[index];
@@ -520,21 +663,25 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
             .filter(|name| !name.eq_ignore_ascii_case(&upstream))
             .map(str::to_string)
             .unwrap_or_else(|| pretty_model_name(&upstream));
-        let providers = route::serving_count(&relays, &upstream);
         if providers > 1 && upstream == model {
-            // 多家自动切换入口：单独一组，按池顺序依次尝试各家。
-            let marked = if gateway.model_suffix {
-                format!("{display}（自动）")
+            if route::active_auto_group(gateway, &model).is_some() {
+                // 多家自动切换入口：单独一组，按池顺序依次尝试各家。
+                let marked = if gateway.model_suffix {
+                    format!("{display}（自动）")
+                } else {
+                    format!("{display}{AUTO_MARK}")
+                };
+                fields.insert("display_name".into(), json!(marked));
+                fields.insert(
+                    "description".into(),
+                    json!(format!("{model} · {providers} 家按顺序自动切换")),
+                );
+                fields.insert("codex_plus_group".into(), json!("自动组"));
+                fields.insert("codex_plus_group_id".into(), json!(CODEX_AUTO_GROUP_ID));
             } else {
-                format!("{display}{AUTO_MARK}")
-            };
-            fields.insert("display_name".into(), json!(marked));
-            fields.insert(
-                "description".into(),
-                json!(format!("{model} · {providers} 家按顺序自动切换")),
-            );
-            fields.insert("codex_plus_group".into(), json!("自动组"));
-            fields.insert("codex_plus_group_id".into(), json!(CODEX_AUTO_GROUP_ID));
+                fields.insert("display_name".into(), json!(display));
+                fields.insert("codex_plus_group_id".into(), Value::Null);
+            }
             if codex_favorite(gateway, &relays, &model) {
                 fields.insert("codex_plus_favorite".into(), json!(true));
             }
@@ -546,7 +693,12 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
                         .iter()
                         .any(|known| known.eq_ignore_ascii_case(&upstream))
                 })
-                .any(|candidate| crate::relay_config::upstream_rejects_tool_search(*candidate));
+                .any(|candidate| crate::relay_config::upstream_rejects_tool_search(*candidate))
+                || route::codex_model_members(gateway, binding, &model)
+                    .iter()
+                    .any(|(candidate, _)| {
+                        crate::relay_config::upstream_rejects_tool_search(candidate)
+                    });
             if rejects {
                 fields.insert("supports_search_tool".into(), json!(false));
             }
@@ -592,21 +744,28 @@ fn codex_model_metadata(gateway: &GatewaySettings, binding: &AgentBinding) -> St
     if metadata.is_empty() {
         return String::new();
     }
-    for (index, model) in route::codex_pool_models(gateway, binding)
-        .iter()
-        .enumerate()
-    {
-        if let Some(fields) = metadata.get_mut(model) {
-            fields["codex_plus_order"] = json!(index);
-            // 导入的绝对阈值按成员保留，编辑供应商比例后由界面清除兼容值。
-            if let Some((relay, upstream)) =
-                route::model_entry_members(gateway, binding, model).first()
-                && let Some(provider) = gateway.provider(&relay.id)
-                && provider.compact_percent_for(upstream).is_none()
-                && let Some(limit) = provider.compaction_settings().token_limit
-            {
-                fields["codex_plus_auto_compact_token_limit"] = json!(limit);
-            }
+    let pool_models = route::codex_pool_models(gateway, binding);
+    for (index, (model, fields)) in metadata.iter_mut().enumerate() {
+        let order = pool_models
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(model))
+            .or_else(|| {
+                let (owner, upstream) = route::codex_model_owner(&relays, model)?;
+                pool_models.iter().position(|candidate| {
+                    route::codex_model_owner(&relays, candidate).is_some_and(|(index, slug)| {
+                        index == owner && slug.eq_ignore_ascii_case(&upstream)
+                    })
+                })
+            })
+            .unwrap_or(pool_models.len() + index);
+        fields["codex_plus_order"] = json!(order);
+        // 导入的绝对阈值按成员保留，编辑供应商比例后由界面清除兼容值。
+        if let Some((relay, upstream)) = route::model_entry_members(gateway, binding, model).first()
+            && let Some(provider) = gateway.provider(&relay.id)
+            && provider.compact_percent_for(upstream).is_none()
+            && let Some(limit) = provider.compaction_settings().token_limit
+        {
+            fields["codex_plus_auto_compact_token_limit"] = json!(limit);
         }
     }
     serde_json::to_string(&Value::Object(metadata)).unwrap_or_default()
@@ -680,7 +839,7 @@ fn member_catalog_entry(
             .and_then(|payload| payload["models"].as_array().cloned())
             .unwrap_or_default()
     });
-    catalog
+    if let Some(entry) = catalog
         .iter()
         .find(|entry| {
             entry["slug"]
@@ -688,6 +847,24 @@ fn member_catalog_entry(
                 .is_some_and(|slug| slug.eq_ignore_ascii_case(upstream))
         })
         .cloned()
+    {
+        return Some(entry);
+    }
+    // 限定名可路由到供应商未公布的模型；目录仍沿用该供应商保存的模型能力覆盖。
+    let mut profile = (*relays[index]).clone();
+    profile.model_list = upstream.to_string();
+    let payload = crate::aggregate_catalog::build_member_catalog(&profile).ok()?;
+    let entry = payload["models"]
+        .as_array()?
+        .iter()
+        .find(|entry| {
+            entry["slug"]
+                .as_str()
+                .is_some_and(|slug| slug.eq_ignore_ascii_case(upstream))
+        })?
+        .clone();
+    catalog.push(entry.clone());
+    Some(entry)
 }
 
 /// 目录条目里选择器要用的字段；整条（含基础指令等大字段）不进设置文件。
@@ -2047,8 +2224,8 @@ pub fn codex_switch_blocked_by_gateway(settings: &SettingsStore, target_id: &str
             .unwrap_or(false)
 }
 
-/// Codex 开着网关时，托管供应商的会话身份要跟 Codex 的登录状态一致（登录了 ChatGPT 就保留官方身份）：
-/// 不一致（之后才登录 / 退出，或旧版写的）就重写一次。返回是否重写了。
+/// Codex 开着网关时，同步托管供应商的会话身份和原生生图注册条件。
+/// 不一致（登录 / 退出，或旧版配置缺少生图标记）就重写一次，端口没变也要检查。
 pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let gateway = ctx.gateway.load()?;
     let Some(binding) = gateway
@@ -2078,7 +2255,25 @@ pub fn sync_codex_identity(ctx: &ApplyContext) -> anyhow::Result<bool> {
     let can_sign_in = codex_signed_in(&ctx.codex_home)
         || (crate::native_auth::selection_allows_auto_lend(&settings)
             && lendable_login(&gateway).is_some());
-    if keeps_login == can_sign_in {
+    let image_config_matches = if can_sign_in {
+        true
+    } else {
+        let config = std::fs::read_to_string(ctx.codex_home.join("config.toml"))?
+            .parse::<toml_edit::DocumentMut>()?;
+        let provider = config
+            .get("model_provider")
+            .and_then(toml_edit::Item::as_str)
+            .unwrap_or("openai");
+        let registered = config
+            .get("model_providers")
+            .and_then(|providers| providers.get(provider))
+            .and_then(|provider| provider.get("http_headers"))
+            .and_then(|headers| headers.get("x-openai-actor-authorization"))
+            .and_then(toml_edit::Item::as_str)
+            == Some("codex-plus-gateway-image-generation");
+        registered == crate::gateway::images::targets(&gateway, &ToolId::Codex, None).is_ok()
+    };
+    if keeps_login == can_sign_in && image_config_matches {
         return Ok(false);
     }
     write_codex(ctx, &gateway, &binding.clone())?;
@@ -2252,7 +2447,7 @@ pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
         match write_agent_config(ctx, &agent, binding) {
             Ok(_) => count += 1,
             Err(error) => {
-                first_error.get_or_insert(error);
+                first_error.get_or_insert(error.context(format!("刷新 {} 失败", agent.as_str())));
             }
         }
     }
@@ -3654,6 +3849,9 @@ pub struct GroupInput {
     pub sticky: GroupSticky,
     #[serde(default)]
     pub members: Vec<GroupMember>,
+    /// 省略时保留已有组的状态，新组默认启用。
+    #[serde(default)]
+    pub disabled: Option<bool>,
     /// 隐藏成员：组里的模型不再单独出现在 Agent 的模型列表里。
     #[serde(default)]
     pub hide_members: bool,
@@ -3668,6 +3866,24 @@ pub fn save_group(
     input: &GroupInput,
 ) -> anyhow::Result<(GatewaySettings, String)> {
     store.update(|gateway| save_group_in(gateway, input))
+}
+
+/// 只更新模型组开关，避免使用旧界面快照覆盖其它设置。
+pub fn set_group_enabled(
+    store: &GatewayStore,
+    id: &str,
+    enabled: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        let group = gateway
+            .groups
+            .iter_mut()
+            .find(|group| group.id == id)
+            .ok_or_else(|| anyhow::anyhow!("模型组不存在：{id}"))?;
+        group.disabled = !enabled;
+        Ok(())
+    })?;
+    Ok(gateway)
 }
 
 fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::Result<String> {
@@ -3700,6 +3916,9 @@ fn save_group_in(gateway: &mut GatewaySettings, input: &GroupInput) -> anyhow::R
     let mut group = GatewayGroup {
         id: id.clone(),
         name: name.to_string(),
+        disabled: input
+            .disabled
+            .unwrap_or_else(|| gateway.group(&id).is_some_and(|existing| existing.disabled)),
         mode: input.mode,
         sticky: input.sticky,
         members,
@@ -3724,17 +3943,55 @@ pub fn save_auto_group(
     model: &str,
     settings: AutoGroupSettings,
 ) -> anyhow::Result<GatewaySettings> {
+    let hidden = settings.hidden;
+    save_auto_group_with_hidden(store, model, settings, Some(hidden))
+}
+
+/// `hidden` 省略时保留当前状态，避免其它窗口的设置修改覆盖开关。
+pub fn save_auto_group_with_hidden(
+    store: &GatewayStore,
+    model: &str,
+    settings: AutoGroupSettings,
+    hidden: Option<bool>,
+) -> anyhow::Result<GatewaySettings> {
     let key = model.trim().to_ascii_lowercase();
     if key.is_empty() {
         bail!("没有指定自动组的模型");
     }
     let (gateway, _) = store.update(|gateway| {
         let mut settings = settings;
+        settings.hidden = hidden.unwrap_or_else(|| {
+            gateway
+                .auto_groups
+                .get(&key)
+                .is_some_and(|current| current.hidden)
+        });
         settings.pick = settings.pick.trim().to_string();
         if settings == AutoGroupSettings::default() {
             gateway.auto_groups.remove(&key);
         } else {
             gateway.auto_groups.insert(key.clone(), settings);
+        }
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
+/// 只更新自动组开关，保留当前模式、成员设置和未知字段。
+pub fn set_auto_group_enabled(
+    store: &GatewayStore,
+    model: &str,
+    enabled: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let key = model.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        bail!("没有指定自动组的模型");
+    }
+    let (gateway, ()) = store.update(|gateway| {
+        let settings = gateway.auto_groups.entry(key.clone()).or_default();
+        settings.hidden = !enabled;
+        if *settings == AutoGroupSettings::default() {
+            gateway.auto_groups.remove(&key);
         }
         Ok(())
     })?;
@@ -3769,6 +4026,61 @@ mod tests {
     use crate::settings::{
         AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, RelaySessionProvider,
     };
+
+    #[test]
+    fn group_switches_preserve_latest_settings() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = GatewayStore::at(temp.path().join("gateway.json"));
+        let group = GatewayGroup {
+            id: "daily".into(),
+            name: "Daily updated".into(),
+            mode: GroupMode::Rotate,
+            sticky: GroupSticky::Session,
+            members: vec![GroupMember {
+                model: "provider/new-model".into(),
+                weight: 3,
+            }],
+            hide_members: true,
+            pick: "provider/new-model".into(),
+            extra: serde_json::from_value(json!({ "futureField": 3 })).unwrap(),
+            ..GatewayGroup::default()
+        };
+        let auto = AutoGroupSettings {
+            mode: GroupMode::Manual,
+            sticky: GroupSticky::Session,
+            hide_members: true,
+            pick: "provider/new-model".into(),
+            extra: serde_json::from_value(json!({ "futureField": 4 })).unwrap(),
+            ..AutoGroupSettings::default()
+        };
+        store
+            .update(|gateway| {
+                gateway.groups.push(group.clone());
+                gateway.auto_groups.insert("shared".into(), auto.clone());
+                Ok(())
+            })
+            .unwrap();
+
+        let mut disabled_group = group.clone();
+        disabled_group.disabled = true;
+        let gateway = set_group_enabled(&store, "daily", false).unwrap();
+        assert_eq!(gateway.groups[0], disabled_group);
+        let gateway = set_group_enabled(&store, "daily", true).unwrap();
+        assert_eq!(gateway.groups[0], group);
+        assert!(set_group_enabled(&store, "missing", false).is_err());
+
+        let mut hidden_auto = auto.clone();
+        hidden_auto.hidden = true;
+        let gateway = set_auto_group_enabled(&store, "Shared", false).unwrap();
+        assert_eq!(gateway.auto_groups["shared"], hidden_auto);
+        let gateway = set_auto_group_enabled(&store, "Shared", true).unwrap();
+        assert_eq!(gateway.auto_groups["shared"], auto);
+
+        let gateway = set_auto_group_enabled(&store, "new-model", false).unwrap();
+        assert!(gateway.auto_groups["new-model"].hidden);
+        let gateway = set_auto_group_enabled(&store, "new-model", true).unwrap();
+        assert!(!gateway.auto_groups.contains_key("new-model"));
+    }
 
     #[test]
     fn catalog_ui_fields_keep_fast_tiers_and_drop_bulky_fields() {

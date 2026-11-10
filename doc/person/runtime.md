@@ -75,6 +75,7 @@
 | `launcher.rs::start_helper`、`start_bridge_watchdog` | `launcher/backend_services.rs` | 常驻 helper 复用、macOS/Windows 桌宠与单份 watchdog；常驻 helper 集成测试、恢复服务测试 |
 | `App.tsx` 内类型和默认值 | `provider-types.ts`、`lib/default-settings.ts` | 代理重试、旁支保存、轮次回退、Work 视图和模型跟随共用配置；类型检查、设置测试 |
 | `App.tsx` 新增使用模式、Statsig 设置与账号引用 | 同一共用类型与默认值；`routes.rs` 仅公开 Statsig 布尔开关 | 使用模式和原生账号变化经既有设置事件同步修订号，其他草稿保留；翻译扫描和设置回归 |
+| `App.tsx::ClaudeLocalConfig`、本地模式及上报用量默认值 | `provider-types.ts`、`lib/default-settings.ts`；页面仍在 `App.tsx` | `claudePatch` 接入原导航，Claude 独立会话页保留；设置事件只同步对应字段与修订号 |
 | `App.tsx` 的上下文解析函数 | 上游 `context-config-text.ts`，由原 App 调用 | MCP 按 ID 累积，多级子表归属不变；残缺条目不覆盖 live；上下文与配置回归 |
 | `SessionRepairPanel`、旧 `SessionPage` | `App.tsx::SessionMaintenance`、`ProjectSessionPage.tsx` | 全库搜索、整项目选择、归档、删除保护与折叠维护区；会话和维护回归 |
 | `commands.rs` 中待确认供应商导入 | `commands/provider_import.rs` | 读取、确认和取消共用指纹校验，支持网关供应商池；导入链接回归 |
@@ -191,6 +192,10 @@ node scripts/profile-codex-switching.mjs --compare "$env:TEMP\codex-official-sho
 验证：`renderer-performance.test.ts`、`floating-panel-interaction.test.ts`、`renderer-inject.test.ts` 和 `assets.rs` opt-in 单测。三组真实客户端采样需单独执行，Windows、macOS、Linux 各自记录，mock 不代替真机结果。
 
 ## 安装与自动更新
+
+`App.tsx` 的后台下载在读取更新偏好后由 `UpdateNotifications::autoDownloadEnabled` 判定；关闭自动下载时不因首屏设置未回填而启动下载。个人更新源、校验和及降级拦截继续共用原入口。
+
+Claude Desktop 本地模式沿用 `claude_local_backend.rs` 与 `tools/claude-local`，通过 Tauri 的 `claude_local_status/configure/action` 注册；`App.tsx::ClaudeLocalizationScreen` 的本地模式与 `claudePatch` 补丁副本页面分开。本地模式配置为 `claudeDesktopLocal`，默认关闭，动作后按需刷新状态，不增加后台轮询。管理器重启可在原端口恢复已挂接代理；应用退出经统一收尾入口停止代理。Code 会话同步由 `claude_session_sync.rs` 在显式开启后执行，复制记录与对应 transcript，原文件保留。平台、证书及代理限制见 [安全边界](security.md#claude-desktop-本地模式)。
 
 macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换 `Codex++.app`，失败时回滚。DMG 中保留隐藏的 `codex-plus-legacy-shim` 兼容壳供旧双应用更新器迁移，首次启动归档旧管理器；helper 脱离 bundle 后重新签名并保留执行权限。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 包内只有统一 GUI，升级清理旧管理器文件，保留用户对桌面快捷方式的选择。
 

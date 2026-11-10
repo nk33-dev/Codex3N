@@ -6,6 +6,7 @@
 - ChatGPT 供应商的 `subscriptionPolicy` 限制新网关请求，可选择停止、下一订阅账号或 API 回退；真实账号别名共享额度与更严格的策略。未知、过期和已重置但未刷新的用量按策略处理，不虚构满额。`gateway/quota.rs`、`route.rs` 和 `pipeline.rs` 共用准入规则；进行中的请求和外部使用可能超出阈值。
 
 - 本地网关通过 `gateway.json` 独立保存供应商池、模型组、Agent 接入及凭据；直连供应商导入为副本，两边后续互不覆盖。Codex 接入和断开复用原配置切换、修订号与备份链路。完整网关契约见 [本地网关](../../docs/local-gateway.md)。
+- 模型组的 `disabled` 默认关闭，停用保留配置并从发布目录及路由中移除；默认组停用时按可用模型回退，无可用模型则拒绝更新。Codex 自带模型在网关接入期间优先取接入前的普通供应商，其次官方登录，不展开聚合成员冒充自带模型。
 - 网关供应商支持按 Key 增删、替换、测试及 RPM/并发限制；管理器只接收打码 Key 和稳定标识。模型同步先只读预览，再按勾选项增删，移除模型时同步清理其元数据并处理默认模型。供应商测试沿用网关请求路径，支持取消，不占正常请求的限速名额或路由统计。
 - `/models` 元数据同步先预览上下文窗口和思考等级差异，手工覆盖默认不选；确认后才写入目标模型。直连与网关复用 `upstream_model_meta.rs`，模型拉取继续通过个人版按目标 URL 选择的连接池，环回显式直连。网关通用 Agent、Chat/Gemini 入站、自带模型与订阅接入沿用上游模块；切换到自带模型时仍保留用户其他配置。
 - 网关供应商的上下文窗口弹窗同时编辑自动压缩比例；`save_gateway_provider_windows` 的可选 `compaction` 参数与窗口一起原子保存，并重建已接入 Agent 的配置。省略该参数的旧调用保留已有压缩设置；只在编辑中的部分模型列表打开弹窗时，未列出模型的窗口和压缩值仍保留。继承、存储字段与兼容规则见 [模型目录](models.md)。
@@ -88,4 +89,6 @@ cc-switch 数据库路径 `ccsDbPath` 由共用类型与默认设置提供，后
 
 供应商级 `multiAgent`、`stripImageGenerationTool`、`localCompactionPromptAtEnd` 与聚合审批成员 `autoReviewRelayId` 由共用类型保存。xAI 的请求整理与工具还原沿用 `xai_responses.rs`；审批模型、起名模型、网关模型窗口和思考档位不改变个人版显式窗口覆盖规则。
 
-`stripResponsesImageDetail`、`disableToolSearch` 与实验性 `pureApiImageGeneration` 默认关闭，保存在同一共用供应商类型。图片兼容和生图经原协议代理，生图占位头不转发给上游；网关编辑时未传兼容开关仍保留旧值。MCP 上下文按服务器 ID 累积子表，保存前校验 transport，残缺受管条目保留 live 完整版本并备份写入。网关子智能体模型继承上游 `gateway/subagent_models.rs`，使用父回合的完整身份；删除供应商时清理绑定引用，未知模型回落有独立诊断。
+`stripResponsesImageDetail`、`disableToolSearch` 与实验性 `pureApiImageGeneration` 默认关闭，保存在同一共用供应商类型。图片兼容和生图经原协议代理，生图占位头不转发给上游；网关编辑时未传兼容开关仍保留旧值。MCP 上下文按服务器 ID 累积子表，保存前校验 transport，残缺受管条目保留 live 完整版本并备份写入。启用“切换时保留”后，用户 MCP 同 ID 条目采用 live 版本，Codex 和本工具生成的实例条目仍以目标配置为准。
+
+网关子智能体模型由 `gateway/subagent_models.rs` 处理，默认继承父回合完整身份；`gateway.json::subagentModelFollowRequest` 开启后采用子智能体请求模型，不注入继承指引。删除供应商清理绑定引用，未知模型回落有独立诊断。HTTP Responses 中缺少 `call_id` 的工具输出按上游兼容规则转为 user 消息；带命名空间 GLM 图片保留 data URL，已确认明文的 xAI `agent_message` 转为 user 消息，其他加密载荷仍拒绝明文猜测。

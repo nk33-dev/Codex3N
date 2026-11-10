@@ -21,6 +21,12 @@ export const defaultSettings: BackendSettings = {
   codexAppThirdPartyReasoningCollapse: false,
   codexAppOfflineAutoReview: false,
   codexAppStatsigOverrides: false,
+  codexAppReportedUsageCompaction: false,
+  claudeDesktopLocal: {
+    enabled: false, model: "", localization: true, voiceInput: true,
+    computerUse: false, backgroundMode: false, displayName: "", plan: "ultra",
+    sessionSync: false, listAllModels: false,
+  },
   managerAgentFocus: "",
   nativeAuthSelection: null,
   dictation: defaultDictationSettings(),

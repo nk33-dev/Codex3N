@@ -54,11 +54,15 @@ RUSTSEC-2026-0367/0368/0369。`sherpa-onnx-sys 1.13.8` 尚固定依赖 zip 2，
 
 TLS 根证书与校验依赖在锁文件中使用 `rustls-webpki 0.103.16`、`webpki-roots 1.0.11`，覆盖 RUSTSEC-2026-0381/0382。请求解压使用 `zstd 0.14.3`、`zstd-safe 8.2.0` 与 `zstd-sys 2.1.2`，覆盖流复用、内存和分配器公告；有界正文读取与压缩请求测试继续验证原行为。
 
+SQLite 使用 `rusqlite 0.41.1` 与 `libsqlite3-sys 0.39.1` 的 bundled SQLite 3.54.1，修复 RUSTSEC-2026-0459：恶意数据库与不同页大小 WAL 组合可能暴露进程未初始化内存。保留缓存和在线备份功能，数据库回归使用临时文件；原生安装升级及旧版本读取新数据库的行为不能由依赖升级本身保证。
+
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。
 
 push CI 包含 Windows lint/产包、Ubuntu/macOS 前端以及 macOS universal、Linux DEB 产包 job：Windows 上的 `rust-lint` 只跑格式化、`cargo check` 与 relay clippy，作为快速失败面；`windows-artifacts` 执行完整前端、Rust 与安全门禁并构建 NSIS 安装包；Ubuntu 与 macOS 各跑一遍共享前端回归；macOS x64/arm64 各自构建原生 DMG。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外——发布脚本要求当前 SHA 最新一次 push CI 已全部成功，取消会让那个提交永远等不到结果。`-SkipChecks` 只复用该结果。缺少结果、运行中、失败、查询异常或检查产生未提交改动时，脚本在创建标签前停止。行为回归见 `apps/codex-plus-manager/src/release.test.ts`；环境与日志检查见 [maintenance.md](maintenance.md)。
 
 ## 语音服务边界
+
+新增 `codexAppReportedUsageCompaction` 只公开布尔值；`claudeDesktopLocal` 不进入注入白名单。模型目录来源指纹不含凭据，内部来源身份和多开标记只下发受管页面，不进入第三方公开设置接口。
 
 `dictation.apiKey` 使用既有密钥字段规则加密落盘，桥接只返回 `apiKeyConfigured`；`apiKeyEnv` 保存环境变量名称。语音路由仍先通过 helper 的回环与来源检查，再核对语音 helper token；音频上传限制为 25 MiB，CDP 完整消息及单 frame 限制为 40 MiB。语音失败响应不回显音频、token 或请求中的会话内容。提示词增强的 `promptEnhance.apiKey` 同样加密落盘，桥接只返回 `apiKeyConfigured`；`/prompt-enhance/generate` 由 Rust 请求模型，失败信息会遮蔽 Key，也不加入第三方脚本的路由白名单。提示词增强的项目上下文默认关闭，页面仅传本机会话定位，后端按保存的类别白名单读取工作目录内的普通文本；有字符、读取字节及目录扫描上限，跳过越界链接和远程项目。所选内容会发给配置的模型服务，设置页明确提示；上下文、草稿、答案作为数据发送，不作为系统指令。问答默认驻留页面，后端校验轮次、题数和长度。用户主动保存反馈时记录原稿、结果、已确认答案和生效规则，不保存项目上下文文件正文或供应商密钥。收藏与反馈通过实例内 SQLite 事务保存；内部 `/prompt-enhance/library/*` 和 `/prompt-enhance/feedback/*` 不加入第三方扩展路由白名单，失败不回显正文，界面按文本显示持久化内容。收藏导入受 8 MiB 与 5000 条限制，先校验再在事务中追加。配置存储与内部回滚共用 16 MiB 预算。
 
@@ -67,3 +71,9 @@ Claude 语音通过主进程 `hook.js` 读取用户状态目录的 `dictation-he
 ## WSL 网关入口
 
 `launcher.rs::handle_helper_connection_on` 区分本机回环监听与 WSL 网卡监听。后者只接受 `wsl_network::wsl_listener_allows` 列出的网关路径，实际请求继续由网关核对 token；状态、设置、听写及无鉴权协议代理均拒绝。两种监听共用来源限制，普通网页 Origin 不放行。网卡地址不可用或 mirrored 模式时回退环回，网关恢复在后台进行。测试用虚拟非回环对端覆盖路径、来源与 token 门禁，不代表真实 WSL 网络实测。
+
+## Claude Desktop 本地模式
+
+该本地模式目前仅支持 macOS；Windows/Linux 保留状态展示但不允许启动。完整功能模式通过本机 CA 与代理映射 Claude 服务，证书信任和取消信任由用户显式操作；3p 模式使用隔离配置目录。启用前应理解本机证书信任和代理的作用范围，离线夹具不代表官方服务、登录或 Computer Use 已可用。
+
+`/dictation/claude-stream` 先经过 helper 对端和来源检查，再核对听写能力令牌；仅允许本地 SenseVoice，不回退在线转写。流有 30 秒空闲、16 分钟会话、帧及总输入输出预算，同一时间只接受一个识别会话；连接断开后等待不可取消的原生推理结束才释放容量。新增响应头保持个人 CORS，不开放通配来源。回归见 helper WebSocket、dictation 与 `tools/claude-local` 测试。

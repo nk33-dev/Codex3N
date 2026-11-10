@@ -53,6 +53,7 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     const prepareCodexManagedSessionConnection = async (_method, params) => params;
     const sendCodexManagedSessionTurn = async () => null;
     const noteCodexManagedSessionStart = () => {};
+    const codexPerModelContextEnabled = () => false;
     const codexPlusSettings = () => ({ includeNativeModels });
     const codexPlusBackendSettingsLoaded = true;
     const codexRemoteSessionActiveProfile = () => ({ id: provider, relayMode: provider === "openai" ? "official" : "pureApi" });
@@ -72,11 +73,13 @@ function runtime({ provider = "crs", status = "ok", hasRoot = true, includeNativ
     const refreshCodexThreadModelBeforeTurn = async () => null;
     const codexThreadModelRequestState = () => ({});
     const loadCodexModelCatalog = async () => codexModelCatalog;
+    ${section("  async function prepareCodexThreadContextStart(", "  async function refreshCodexThreadModelBeforeTurn(")}
     ${section("  async function prepareCodexPureApiResume(", "  function codexManagedSessionConnection(")}
     ${section("  const codexNativeHostClients =", "  async function deleteRemoteSession(")}
     ${section("  const codexAppServerRpcRoots", "  async function loadAppServerRequestModules(")}
     ${section("  function codexPlusModelDescriptor(", "  function patchModelContainer(")}
     ${section("  function appServerModelRequestMethod(", "  function codexPerModelContextEnabled(")}
+    ${section("  function modelRequestCursor(", "  function recordModelListRequest(")}
     ${section("  function patchAppServerModelRequestClient(", "  const appServerModelRequestPatchMaxMisses")}
     return { collectScopedAppServerRequestCandidates, refreshCodexModelQueries, codexAppScopeNodes,
       setIncludeNativeModels: value => { includeNativeModels = value; } };

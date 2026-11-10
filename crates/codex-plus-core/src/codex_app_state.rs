@@ -20,6 +20,7 @@ const MODERN_PROJECT_MAP_KEYS: &[&str] = &[
     "sidebar-project-thread-orders",
 ];
 const MODERN_PROJECT_ID_MAP_KEY: &str = "app-server-project-id-by-legacy-project-id-by-host";
+const ACCOUNT_RENDERER_STATE_KEY: &str = "electron-account-renderer-state-v1";
 
 const WORKSPACE_PATH_ARRAY_KEYS: &[&str] = &["electron-saved-workspace-roots", "project-order"];
 
@@ -63,6 +64,9 @@ const COMPOSER_RECENT_MODELS_KEY: &str = "composer-recent-model-configurations-v
 
 const SAFE_ATOM_KEYS: &[&str] = &[
     "default-service-tier",
+    "flat-project-sidebar-preferences-v1",
+    "unified-sidebar-project-order-v1",
+    "unified-sidebar-pinned-order-v1",
     "avatar-overlay-mascot-width-px",
     "composer-auto-context-enabled",
     "diff-filter",
@@ -93,10 +97,16 @@ pub fn capture_app_state_snapshot(home: &Path) -> anyhow::Result<Option<PathBuf>
     let Some(state) = load_global_state(home)? else {
         return Ok(None);
     };
-    let modern = is_modern_project_state(&state);
+    let account_scoped = state.contains_key(ACCOUNT_RENDERER_STATE_KEY);
+    if account_scoped && account_renderer_state(&state).is_none() {
+        anyhow::bail!("unrecognized account renderer state; refusing to capture");
+    }
+    let modern = account_scoped || is_modern_project_state(&state);
     let mut snapshot = safe_snapshot_from_state(&state);
     if modern
+        && !account_scoped
         && let Some(previous) = load_snapshot(home, true)?
+        && !previous.contains_key(ACCOUNT_RENDERER_STATE_KEY)
         && let Some(current) = snapshot.get_mut("state").and_then(Value::as_object_mut)
     {
         for key in MODERN_PROJECT_MAP_KEYS {
@@ -172,7 +182,11 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
     };
     // 读到疑似 Codex 写入中途的半截 state 时拒绝 merge 写回，
     // 避免把缺的项目键永久截掉（#2876 / #2707）。
-    if looks_like_truncated_state(&state) {
+    let account_scoped = state.contains_key(ACCOUNT_RENDERER_STATE_KEY);
+    if account_scoped && account_renderer_state(&state).is_none() {
+        anyhow::bail!("unrecognized account renderer state; refusing to merge");
+    }
+    if !account_scoped && looks_like_truncated_state(&state) {
         return Err(anyhow::anyhow!(
             "{} looks like a partially-written state (thread-* keys present but project keys missing); refusing to merge",
             state_path(home).display()
@@ -180,9 +194,10 @@ pub fn sync_app_state_after_provider_switch(home: &Path) -> anyhow::Result<AppSt
     }
     let original = Value::Object(state.clone());
     let mut changed_keys = BTreeSet::new();
-    let modern = is_modern_project_state(&state);
-
-    normalize_current_state(&mut state, &mut changed_keys, modern);
+    let modern = account_scoped || is_modern_project_state(&state);
+    if !account_scoped {
+        normalize_current_state(&mut state, &mut changed_keys, modern);
+    }
     if let Some(snapshot) = load_snapshot(home, modern)? {
         merge_safe_snapshot(&mut state, &snapshot, &mut changed_keys, modern);
     }
@@ -376,6 +391,30 @@ fn load_snapshot(home: &Path, modern: bool) -> anyhow::Result<Option<Map<String,
 }
 
 fn safe_snapshot_from_state(state: &Map<String, Value>) -> Value {
+    let mut safe = safe_state_fields(state);
+    if let Some(accounts) = account_renderer_state(state) {
+        let mut inactive = Map::new();
+        for (owner, scope) in accounts["inactive"].as_object().unwrap() {
+            let mut fields = scope["globals"].as_object().unwrap().clone();
+            fields.insert(
+                "electron-persisted-atom-state".to_string(),
+                scope["atoms"].clone(),
+            );
+            let mut globals = safe_state_fields(&fields);
+            let atoms = globals
+                .remove("electron-persisted-atom-state")
+                .unwrap_or_else(|| json!({}));
+            inactive.insert(owner.clone(), json!({"globals": globals, "atoms": atoms}));
+        }
+        safe.insert(
+            ACCOUNT_RENDERER_STATE_KEY.to_string(),
+            json!({"owner": accounts["owner"], "inactive": inactive}),
+        );
+    }
+    json!({"version": SNAPSHOT_VERSION, "state": safe})
+}
+
+fn safe_state_fields(state: &Map<String, Value>) -> Map<String, Value> {
     let mut safe = Map::new();
     let modern = is_modern_project_state(state);
     for key in WORKSPACE_PATH_ARRAY_KEYS {
@@ -460,10 +499,7 @@ fn safe_snapshot_from_state(state: &Map<String, Value>) -> Value {
             );
         }
     }
-    json!({
-        "version": SNAPSHOT_VERSION,
-        "state": safe,
-    })
+    safe
 }
 
 fn normalize_current_state(
@@ -529,6 +565,12 @@ fn merge_safe_snapshot(
     changed: &mut BTreeSet<String>,
     modern: bool,
 ) {
+    if target.contains_key(ACCOUNT_RENDERER_STATE_KEY)
+        || snapshot.contains_key(ACCOUNT_RENDERER_STATE_KEY)
+    {
+        merge_account_scoped_snapshot(target, snapshot, changed);
+        return;
+    }
     if modern {
         for key in MODERN_PROJECT_MAP_KEYS {
             let merged = merge_string_keyed_maps(
@@ -662,6 +704,106 @@ fn merge_safe_snapshot(
             changed,
         );
     }
+}
+
+// owner 只作为 Codex 已保存的作用域标识；不读取 auth.json，也不推算或创建身份。
+fn account_renderer_state(state: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    let accounts = state.get(ACCOUNT_RENDERER_STATE_KEY)?.as_object()?;
+    let owner = accounts.get("owner")?;
+    if !owner.is_string() && !owner.is_null() {
+        return None;
+    }
+    let inactive = accounts.get("inactive")?.as_object()?;
+    if inactive.values().any(|scope| {
+        scope.get("globals").and_then(Value::as_object).is_none()
+            || scope.get("atoms").and_then(Value::as_object).is_none()
+    }) {
+        return None;
+    }
+    if owner
+        .as_str()
+        .is_some_and(|owner| inactive.contains_key(owner))
+    {
+        return None;
+    }
+    Some(accounts)
+}
+
+fn snapshot_for_owner(snapshot: &Map<String, Value>, owner: &str) -> Option<Map<String, Value>> {
+    let accounts = account_renderer_state(snapshot)?;
+    if accounts["owner"].as_str() == Some(owner) {
+        return Some(safe_state_fields(snapshot));
+    }
+    let scope = accounts["inactive"].as_object()?.get(owner)?;
+    let mut fields = scope["globals"].as_object()?.clone();
+    fields.insert(
+        "electron-persisted-atom-state".to_string(),
+        scope["atoms"].clone(),
+    );
+    Some(safe_state_fields(&fields))
+}
+
+// 只补缺失键。已有空值可能来自用户删除或重排，不能当成损坏而用旧快照覆盖。
+fn restore_missing_fields(target: &mut Map<String, Value>, snapshot: Map<String, Value>) {
+    for (key, value) in snapshot {
+        if key == "electron-persisted-atom-state" {
+            let atom = target.entry(key).or_insert_with(|| json!({}));
+            if let (Some(atom), Some(saved)) = (atom.as_object_mut(), value.as_object()) {
+                for (key, value) in saved {
+                    atom.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+        } else {
+            target.entry(key).or_insert(value);
+        }
+    }
+}
+
+fn merge_account_scoped_snapshot(
+    target: &mut Map<String, Value>,
+    snapshot: &Map<String, Value>,
+    changed: &mut BTreeSet<String>,
+) {
+    let Some(accounts) = account_renderer_state(target) else {
+        return;
+    };
+    let owner = accounts["owner"].as_str().map(str::to_owned);
+    let mut accounts = accounts.clone();
+    if let Some(saved) = owner
+        .as_deref()
+        .and_then(|owner| snapshot_for_owner(snapshot, owner))
+    {
+        let before = target.clone();
+        restore_missing_fields(target, saved);
+        for (key, value) in target.iter() {
+            if before.get(key) != Some(value) {
+                changed.insert(key.clone());
+            }
+        }
+    }
+    // 仅恢复当前文件仍然保存的账号，不复活已退出并移除的账号。
+    for (owner, scope) in accounts["inactive"].as_object_mut().unwrap() {
+        let Some(mut saved) = snapshot_for_owner(snapshot, owner) else {
+            continue;
+        };
+        let atoms = saved
+            .remove("electron-persisted-atom-state")
+            .unwrap_or_else(|| json!({}));
+        let globals = scope["globals"].as_object_mut().unwrap();
+        restore_missing_fields(globals, saved);
+        let current_atoms = scope["atoms"].as_object_mut().unwrap();
+        for (key, value) in atoms.as_object().unwrap() {
+            current_atoms
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    replace_if_changed(
+        target,
+        ACCOUNT_RENDERER_STATE_KEY,
+        Value::Object(accounts),
+        changed,
+    );
 }
 
 fn replace_if_changed(

@@ -23,7 +23,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2899
+      "lines": 2922
     },
     {
       "name": "20-menu.js",
@@ -33,7 +33,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1037
+      "lines": 1056
     },
     {
       "name": "31-config-read-deadline.js",
@@ -63,7 +63,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2600
+      "lines": 2606
     },
     {
       "name": "41-extension-detail.js",
@@ -93,17 +93,17 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1309
+      "lines": 1654
     },
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器供应商图标与折叠列表双视图、有效默认身份展示",
-      "lines": 2101
+      "lines": 2296
     },
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 637
+      "lines": 678
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -143,7 +143,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1136
+      "lines": 1137
     },
     {
       "name": "91-extension-api.js",
@@ -153,12 +153,12 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1385
+      "lines": 1455
     },
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 432
+      "lines": 615
     },
     {
       "name": "92-extension-host.js",
@@ -208,7 +208,7 @@
     {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 409
+      "lines": 410
     },
     {
       "name": "96-paste-fix.js",

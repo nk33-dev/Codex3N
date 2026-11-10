@@ -46,6 +46,73 @@ fn is_zero_u64(value: &u64) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClaudeLocalSettings {
+    pub enabled: bool,
+    pub model: String,
+    pub localization: bool,
+    pub voice_input: bool,
+    pub computer_use: bool,
+    pub background_mode: bool,
+    /// Claude 里显示的用户名；空串按「Local User」。
+    pub display_name: String,
+    /// Claude 里显示的套餐：free / pro / max / ultra。
+    pub plan: String,
+    /// 启动前同步 3p 模式与完整功能模式的 Code 会话（默认关）。
+    pub session_sync: bool,
+    /// 交给 Claude 的模型是否按窗口过滤：默认只列窗口不小于默认模型的那些
+    /// （Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）。
+    /// 打开后池里的聊天模型全列出来，代价是切到小窗口模型时可能超上限。
+    pub list_all_models: bool,
+}
+
+impl Default for ClaudeLocalSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: String::new(),
+            localization: true,
+            voice_input: true,
+            computer_use: false,
+            background_mode: false,
+            display_name: String::new(),
+            plan: "ultra".into(),
+            session_sync: false,
+            list_all_models: false,
+        }
+    }
+}
+
+impl ClaudeLocalSettings {
+    /// 套餐只认 free / pro / max / ultra（大小写不敏感），其他一律 ultra。
+    pub fn normalized_plan(&self) -> &str {
+        match self.plan.trim().to_ascii_lowercase().as_str() {
+            "free" => "free",
+            "pro" => "pro",
+            "max" => "max",
+            _ => "ultra",
+        }
+    }
+
+    /// 显示名：trim、去控制字符、最多 64 字符；空则按默认「Local User」。
+    pub fn effective_display_name(&self) -> String {
+        let name: String = self
+            .display_name
+            .trim()
+            .chars()
+            .filter(|ch| !ch.is_control())
+            .take(64)
+            .collect();
+        let name = name.trim();
+        if name.is_empty() {
+            "Local User".to_string()
+        } else {
+            name.to_string()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelayProfile {
     pub id: String,
@@ -1309,6 +1376,9 @@ pub struct BackendSettings {
     // 默认开启：输入框上方的请求状态条（#2824），纯展示层；关掉后注入层停止轮询 /proxy-status。
     #[serde(rename = "codexAppProxyRequestStatus", default = "default_true")]
     pub codex_app_proxy_request_status: bool,
+    /// 原版 Claude 的本地兼容服务，与增强副本的开关独立，默认不接管启动。
+    #[serde(rename = "claudeDesktopLocal", default)]
+    pub claude_desktop_local: ClaudeLocalSettings,
     // 默认开启：只在受管副本的页面里加一个语音入口，识别走 Codex++ 自己的听写服务，
     // 不改官方应用、不动输入框已有内容；关掉只是没有入口，已运行的副本需重启才生效。
     #[serde(rename = "claudeAppVoiceInput", default = "default_true")]
@@ -1391,6 +1461,9 @@ pub struct BackendSettings {
     /// 只改本机界面与超时参数，服务端能力不变。默认关。
     #[serde(rename = "codexAppStatsigOverrides", default)]
     pub codex_app_statsig_overrides: bool,
+    /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
+    #[serde(rename = "codexAppReportedUsageCompaction", default)]
+    pub codex_app_reported_usage_compaction: bool,
     /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
     /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
     #[serde(rename = "managerAgentFocus", default)]
@@ -1682,6 +1755,7 @@ impl Default for BackendSettings {
             codex_app_usage_status_line: true,
             usage_history_enabled: false,
             codex_app_proxy_request_status: true,
+            claude_desktop_local: ClaudeLocalSettings::default(),
             claude_app_voice_input: true,
             claude_app_localization: true,
             claude_app_extensions: false,
@@ -1705,6 +1779,7 @@ impl Default for BackendSettings {
             codex_app_third_party_reasoning_collapse: false,
             codex_app_offline_auto_review: false,
             codex_app_statsig_overrides: false,
+            codex_app_reported_usage_compaction: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
             codex_app_activity_overlay_right: false,
@@ -3695,6 +3770,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppStatsigOverrides");
+    merge_bool_setting(target, source, "codexAppReportedUsageCompaction");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
     {

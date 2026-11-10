@@ -18,7 +18,9 @@ pub mod cdp;
 pub mod claude_hooks;
 #[cfg(any(target_os = "windows", test))]
 mod claude_ion_asar;
+pub mod claude_local_backend;
 pub mod claude_localization;
+pub mod claude_session_sync;
 pub mod codex_app_state;
 pub mod codex_home;
 pub mod codex_local_storage;

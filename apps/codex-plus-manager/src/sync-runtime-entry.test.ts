@@ -43,7 +43,7 @@ test("会话目标分片随真实清单装入，模型扫描只安装一次", as
   } } };
   const run = new Function("window", "currentSessionRef", "codexPlusModelUnlockEnabled", "codexPluginMarketplacePatchEnabled",
     "codexPlusBackendSettingsLoaded", "codexPlusSettings", "installDictationSupportPatch",
-    `${fragment(goal.name)}\n${ensure}\nreturn ensureCodexModelWhitelistInstalls;`,
+    `const codexPerModelContextEnabled = () => false;\n${fragment(goal.name)}\n${ensure}\nreturn ensureCodexModelWhitelistInstalls;`,
   )(window, () => ({ session_id: "fixture-thread", host_id: "local" }), () => false, () => false, false, () => ({}), () => {});
   run(); run();
   await new Promise<void>((resolve) => setImmediate(resolve));

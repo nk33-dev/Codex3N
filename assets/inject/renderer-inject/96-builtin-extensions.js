@@ -64,6 +64,7 @@
       { id: "low-power", name: "低功耗模式", apply: codexPlusLowPowerExtension },
       { id: "native-fast-unlock", name: "原生 Fast 强制解锁" },
       { id: "native-predictions", name: "原生输入预测" },
+      { id: "reported-usage-compaction", name: "按上报用量判断压缩（实验）" },
       { id: "reasoning-collapse", name: "第三方模型回答完自动折叠过程" },
       { id: "disable-work-view", name: "纯 API 模式禁用 Work 视图" },
       { id: "force-chinese-locale", name: "强制中文界面" },
@@ -125,7 +126,7 @@
       } else if (!wanted && !inactive.has(definition.id)) {
         // 还没装上过（注入早期按默认启用跑着）：直接记成停用，补一轮扫描让按停用集合判断的功能撤下。
         inactive.add(definition.id);
-        scheduleDeferredScan();
+        scheduleScan();
       }
     }
   }

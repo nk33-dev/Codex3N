@@ -108,6 +108,19 @@ export type ToolShard = {
   relayTestModel?: string;
 };
 
+export type ClaudeLocalConfig = {
+  enabled: boolean;
+  model: string;
+  localization: boolean;
+  voiceInput: boolean;
+  computerUse: boolean;
+  backgroundMode: boolean;
+  displayName?: string;
+  plan?: string;
+  sessionSync?: boolean;
+  listAllModels?: boolean;
+};
+
 export type BackendSettings = WhaleBalanceSettings & {
   agentPet?: unknown;
   updateAutoCheck?: boolean;
@@ -117,6 +130,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppThirdPartyReasoningCollapse: boolean;
   codexAppOfflineAutoReview: boolean;
   codexAppStatsigOverrides: boolean;
+  codexAppReportedUsageCompaction: boolean;
+  claudeDesktopLocal?: ClaudeLocalConfig;
   managerAgentFocus?: string;
   nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   secretDecryptionFailures?: string[];
