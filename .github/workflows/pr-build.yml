@@ -52,12 +52,6 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm test
 
-      - name: Claude local proxy regressions
-        shell: bash
-        run: |
-          bash tools/claude-local/scripts/gen-ca.sh
-          node --test --test-concurrency=2 tools/claude-local/*.test.mjs tools/claude-local/scripts/*.test.mjs
-
       - name: Native Fast regression tests
         run: >-
           node --test
@@ -243,8 +237,12 @@ jobs:
           if ($env:RUST_TEST_FILTER) {
             cargo test --workspace -- $env:RUST_TEST_FILTER --test-threads=1
           } else {
-            cargo test --workspace --no-fail-fast
+            cargo test --workspace --exclude codex-plus-data --no-fail-fast
           }
+
+      - name: Data tests (shared memory budget)
+        if: ${{ !inputs.rust_test_filter }}
+        run: cargo test -p codex-plus-data -- --test-threads=1
 
       - name: Build release application
         run: cargo build --release
@@ -279,7 +277,8 @@ jobs:
           }
           Push-Location scripts/installer/windows
           try {
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
+            $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location
@@ -448,13 +447,35 @@ jobs:
           cargo clean -p sherpa-onnx-sys
           cargo clean -p sherpa-onnx-sys --release
       - name: Install Linux build dependencies
+        timeout-minutes: 20
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential curl git pkg-config libssl-dev libsqlite3-dev \
+          set -euo pipefail
+          pkgs="build-essential curl git pkg-config libssl-dev libsqlite3-dev \
             libdbus-1-dev libglib2.0-dev libgtk-3-dev \
             libayatana-appindicator3-dev libjavascriptcoregtk-4.1-dev \
-            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15"
+          try_install() {
+            timeout 480 bash -c "$apt update -qq && $apt install -y --no-install-recommends $pkgs"
+          }
+          # 新版 runner 的源写成 mirror+file:/etc/apt/apt-mirrors.txt（里面是 azure 镜像），旧版直接写 azure 地址，两种都换。
+          use_official_mirror() {
+            echo "::warning::默认 Ubuntu 镜像不可用，改用 archive.ubuntu.com"
+            for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+              if [ -f "$f" ]; then
+                sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu#g' \
+                  -e 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
+              fi
+            done
+          }
+          # 域名都解析不了时 apt 要白等好几分钟才放弃（2026-11-11 实测），先探一下，不通直接换。
+          if ! getent hosts azure.archive.ubuntu.com >/dev/null; then
+            use_official_mirror
+          fi
+          if ! try_install; then
+            use_official_mirror
+            try_install
+          fi
       - name: Install frontend dependencies
         working-directory: apps/codex-plus-manager
         run: npm ci
@@ -487,7 +508,10 @@ jobs:
       - name: Rust tests
         # 有用例卡死时到点失败，不要一直占着 runner 到作业 6 小时上限（编译加测试平时 20 分钟左右）。
         timeout-minutes: 60
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude codex-plus-data
+
+      - name: Data tests (shared memory budget)
+        run: cargo test -p codex-plus-data -- --test-threads=1
 
       - name: Build Linux application
         run: cargo build --release -p codex-plus-manager

@@ -468,6 +468,10 @@ pub trait LaunchHooks: Send + Sync {
     fn remote_control_session_recovery_is_safe_to_run(&self) -> bool {
         true
     }
+    /// Codex 桌面端是否在运行。运行中改 `.codex-global-state.json` 会被它的内存状态覆盖回去。
+    fn codex_desktop_running(&self) -> bool {
+        false
+    }
     async fn run_remote_control_session_recovery(&self) -> anyhow::Result<()>;
     async fn apply_active_relay_profile(&self, _settings: &BackendSettings) -> anyhow::Result<()> {
         Ok(())
@@ -606,7 +610,7 @@ struct HelperRuntime {
 }
 
 struct BridgeWatchdogRuntime {
-    shutdown: tokio::sync::oneshot::Sender<()>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -931,6 +935,13 @@ where
                 "launcher.after_provider_sync",
             );
         }
+        // #2947 / #3018：非官方登录时 Codex 每次启动都清空匿名身份的项目，开关打开时启动前挪走账号容器。
+        crate::codex_app_state::reconcile_account_scope_nonfatal(
+            &home,
+            &settings,
+            hooks.codex_desktop_running(),
+            "launcher.before_launch",
+        );
         if hooks.has_pending_remote_control_session_recoveries()
             && hooks.remote_control_session_recovery_is_safe_to_run()
         {
@@ -1278,6 +1289,17 @@ impl DefaultLaunchHooks {
         *self.bridge_reinjector.lock().await = Some(reinjector);
     }
 
+    pub async fn stop_bridge_watchdog(&self) {
+        let mut slot = self.bridge_watchdog.lock().await;
+        if let Some(runtime) = slot.as_mut() {
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            let _ = (&mut runtime.task).await;
+        }
+        slot.take();
+    }
+
     /// 恢复已结束的自有服务；现有 listener 和 watchdog 继续复用。
     pub async fn ensure_backend_services(
         &self,
@@ -1478,6 +1500,10 @@ impl LaunchHooks for DefaultLaunchHooks {
         crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
     }
 
+    fn codex_desktop_running(&self) -> bool {
+        !crate::watcher::find_session_index_cleanup_blocking_processes().is_empty()
+    }
+
     async fn apply_active_relay_profile(&self, settings: &BackendSettings) -> anyhow::Result<()> {
         if !settings.relay_profiles_enabled {
             return Ok(());
@@ -1537,7 +1563,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .unwrap_or_else(crate::paths::default_app_state_dir),
             crate::app_paths::build_codex_executable(app_dir),
         );
-        let launch_extra_args = normalize_codex_extra_args(extra_args);
+        let launch_extra_args =
+            crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
         // 打包版（MSIX/Store）上的多开必须另走一条路。
@@ -1807,6 +1834,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
             let child = Command::new(executable)
                 .args(&command[1..])
+                // `open` 会把自身环境带给新启动的应用：回环地址不走系统代理（issue #3131）。
+                .envs(crate::proxy::codex_launch_no_proxy_env())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -1838,6 +1867,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         if let Some(state_dir) = instance.state_dir.as_deref() {
             child_command.env(crate::paths::STATE_DIR_ENV, state_dir);
         }
+        // 发往本地网关 / 协议代理的请求不能被系统代理拦走（issue #3131）。
+        child_command.envs(crate::proxy::codex_launch_no_proxy_env());
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
         let child = child_command
@@ -2055,10 +2086,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
-        if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
+        self.stop_bridge_watchdog().await;
         if let Some(runtime) = self.helper.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -2336,11 +2364,17 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     // 浏览器里的网页能对 127.0.0.1 发「简单请求」（不触发预检），读不到答复，但请求照样执行、照样计费。
-    // Agent 都不带 Origin；带了的模型 / 生图 / 转写请求一律拒绝，免得本地服务被网页拿去用池里的额度。
-    if method == "POST"
+    // Agent 都不带 Origin；WS 升级也在路由和鉴权前拦截，免得网页使用上游额度并读取输出。
+    if (method == "POST"
+        || (method == "GET"
+            && header_value_from_headers(&request_headers, "upgrade")
+                .is_some_and(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))))
         && is_billable_proxy_path(path)
-        && header_value_from_headers(&request_headers, "origin")
-            .is_some_and(|origin| !origin.trim().is_empty())
+        && request_headers.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("origin") && !value.trim().is_empty()
+            })
+        })
     {
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "forbidden",
@@ -2418,6 +2452,7 @@ pub(crate) async fn handle_helper_connection_on(
                         raw_path,
                         &request_headers,
                         &request.body,
+                        request.read_ahead.clone(),
                         remote_addr_text,
                     ),
                 ),
@@ -2480,6 +2515,16 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "GET" {
+        if !crate::protocol_proxy::is_responses_compact_proxy_path(path) {
+            return crate::responses_websocket::handle(
+                &mut stream,
+                &request_headers,
+                request.read_ahead,
+                path,
+                ProxyOpener::Legacy,
+            )
+            .await;
+        }
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "upgrade_required",
             "message": "WebSocket transport is not supported by the local protocol proxy; retry with HTTP."
@@ -3014,6 +3059,7 @@ impl ProxyRequestLog {
                 usage: None,
                 cache_hit_ratio: None,
                 final_response_evidence: None,
+                final_response_id: None,
                 agent: None,
             },
             written: false,
@@ -3040,6 +3086,7 @@ impl ProxyRequestLog {
     ) {
         self.final_response_eligible = false;
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.entry.status_code = status_code;
         self.entry.success = (200..300).contains(&status_code);
         self.entry.stream = stream;
@@ -3063,6 +3110,7 @@ impl ProxyRequestLog {
         upstream: &crate::protocol_proxy::UpstreamProxyResponse,
     ) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.final_response_eligible = upstream.wire_api
             == crate::protocol_proxy::UpstreamWireApi::Responses
             && !upstream.compaction
@@ -3099,6 +3147,7 @@ impl ProxyRequestLog {
 
     pub(crate) fn record_error(&mut self, status: &str, error: String) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.entry.status_code = status
             .split_whitespace()
             .next()
@@ -3115,17 +3164,22 @@ impl ProxyRequestLog {
     }
 
     /// 仅在全部响应字节成功写出并正常关闭后调用；usage 必须来自最终终态。
-    fn record_final_response(&mut self, usage: Option<crate::request_log::RequestUsage>) {
+    pub(crate) fn record_final_response(
+        &mut self,
+        terminal: Option<crate::request_log::FinalResponseUsage>,
+    ) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
+        let Some(terminal) = terminal else { return };
         if self.final_response_eligible
             && self.entry.success
             && (200..300).contains(&self.entry.status_code)
             && self.entry.error.is_none()
-            && usage.is_some()
-            && usage == self.entry.usage
+            && Some(&terminal.usage) == self.entry.usage.as_ref()
         {
             self.entry.final_response_evidence =
                 Some(crate::request_log::FINAL_RESPONSE_EVIDENCE_V1.to_string());
+            self.entry.final_response_id = terminal.response_id;
         }
     }
 
@@ -3138,6 +3192,7 @@ impl ProxyRequestLog {
         match failure {
             Some(reason) => {
                 self.entry.final_response_evidence = None;
+                self.entry.final_response_id = None;
                 self.entry.success = false;
                 self.entry.stream_outcome = Some(reason.to_string());
                 if self.entry.error.is_none() {
@@ -3330,9 +3385,11 @@ async fn handle_protocol_proxy_connection_inner(
                 error.downcast_ref::<crate::protocol_proxy::UnsupportedInputFile>();
             let vlm_failure = error.downcast_ref::<crate::vision::VlmPreprocessError>();
             let local_limited = error.downcast_ref::<crate::gateway::pipeline::LocalRateLimited>();
+            let retired_model = error.downcast_ref::<crate::gateway::server::RetiredCodexModel>();
             let status = if unsupported.is_some()
                 || search_unsupported.is_some()
                 || file_unsupported.is_some()
+                || retired_model.is_some()
                 || matches!(
                     vlm_failure,
                     Some(crate::vision::VlmPreprocessError::MissingConfiguration)
@@ -3347,15 +3404,18 @@ async fn handle_protocol_proxy_connection_inner(
             // 502 响应与诊断日志都带上完整错误链，便于直接看到真实失败原因。
             let error_chain = crate::protocol_proxy::error_chain(&error);
             let body = serde_json::to_vec(
-                &unsupported
-                    .map(|error| error.response_body())
-                    .or_else(|| search_unsupported.map(|error| error.response_body()))
-                    .or_else(|| file_unsupported.map(|error| error.response_body()))
-                    .or_else(|| vlm_failure.map(|error| error.response_body()))
-                    .unwrap_or_else(
-                        || serde_json::json!({"status":"failed","message":error_chain.clone()}),
-                    ),
-            )?;
+                    &unsupported
+                        .map(|error| error.response_body())
+                        .or_else(|| search_unsupported.map(|error| error.response_body()))
+                        .or_else(|| file_unsupported.map(|error| error.response_body()))
+                        .or_else(|| vlm_failure.map(|error| error.response_body()))
+                        .or_else(|| retired_model.map(|error| serde_json::json!({
+                            "error": { "message": error.to_string(), "type": "invalid_request_error", "code": "model_not_found" }
+                        })))
+                        .unwrap_or_else(
+                            || serde_json::json!({"status":"failed","message":error_chain.clone()}),
+                        ),
+                )?;
             write_http_response(
                 stream,
                 status,
@@ -5854,7 +5914,7 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
     thread_id: Option<&str>,
     foreign_client: bool,
     live_request_id: Option<&str>,
-    final_response_usage: &mut Option<crate::request_log::RequestUsage>,
+    final_response_usage: &mut Option<crate::request_log::FinalResponseUsage>,
 ) -> anyhow::Result<(
     Option<String>,
     Option<crate::request_log::RequestUsage>,
@@ -6403,7 +6463,9 @@ async fn read_http_request_with_limits(
                 if end > MAX_HTTP_HEADER_BYTES {
                     return Err(HttpRequestReadError::bad_request("HTTP 请求头过大"));
                 }
-                if is_local_dictation_ws_upgrade(&buffer[..end]) {
+                if is_local_dictation_ws_upgrade(&buffer[..end])
+                    || is_responses_ws_upgrade(&buffer[..end])
+                {
                     // The first WebSocket frame can arrive in the same TCP read as the
                     // upgrade headers. Do not consume it as an HTTP body.
                     local_dictation_upgrade = true;
@@ -6490,6 +6552,24 @@ fn is_local_dictation_ws_upgrade(headers: &[u8]) -> bool {
     method == "GET"
         && raw_path.split('?').next() == Some("/dictation/claude-stream")
         && crate::extension_backend::is_websocket_upgrade(&headers)
+}
+
+fn is_responses_ws_upgrade(headers: &[u8]) -> bool {
+    let headers = String::from_utf8_lossy(headers);
+    let line = headers.lines().next().unwrap_or_default();
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default();
+    method == "GET"
+        && crate::extension_backend::is_websocket_upgrade(&headers)
+        && ((crate::protocol_proxy::is_responses_proxy_path(path)
+            && !crate::protocol_proxy::is_responses_compact_proxy_path(path))
+            || (crate::gateway::is_gateway_path(path) && path.ends_with("/responses")))
 }
 
 fn http_body_framing(headers: &[u8]) -> Result<HttpBodyFraming, HttpRequestReadError> {
@@ -8410,6 +8490,53 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stopping_bridge_watchdog_waits_for_its_cleanup_and_is_idempotent() {
+        let hooks = super::DefaultLaunchHooks::default();
+        let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let done = cleaned.clone();
+        let task = tokio::spawn(async move {
+            let _ = stopped.await;
+            tokio::task::yield_now().await;
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime {
+            shutdown: Some(shutdown),
+            task,
+        });
+        hooks.stop_bridge_watchdog().await;
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+        hooks.stop_bridge_watchdog().await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_watchdog_stop_keeps_the_join_handle_for_outer_cleanup() {
+        let hooks = std::sync::Arc::new(super::DefaultLaunchHooks::default());
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            stopped.await.unwrap();
+            entered.send(()).unwrap();
+            finished.await.unwrap();
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime {
+            shutdown: Some(shutdown),
+            task,
+        });
+        let stopping = hooks.clone();
+        let stop = tokio::spawn(async move { stopping.stop_bridge_watchdog().await });
+        waiting.await.unwrap();
+        stop.abort();
+        let _ = stop.await;
+        assert!(hooks.bridge_watchdog.lock().await.is_some());
+        finish.send(()).unwrap();
+        hooks.stop_bridge_watchdog().await;
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -8451,10 +8578,11 @@ mod tests {
             request_trace: Some(trace),
             exec_adapted: false,
             exec_outcome: None,
+            websocket: None,
             response: None,
         };
         let usage = crate::request_log::final_response_usage(&serde_json::json!({
-            "status":"completed","usage":{"input_tokens":12,"output_tokens":3,
+            "id":"resp_returned","status":"completed","usage":{"input_tokens":12,"output_tokens":3,
                 "input_tokens_details":{"cached_tokens":0}}
         }))
         .unwrap();
@@ -8463,8 +8591,12 @@ mod tests {
             log.entry.final_response_evidence.is_none(),
             "HTTP 200 is insufficient"
         );
-        log.record_stream(None, Some(usage.clone()), None);
+        log.record_stream(None, Some(usage.usage.clone()), None);
         log.record_final_response(Some(usage.clone()));
+        assert_eq!(
+            log.entry.final_response_id.as_deref(),
+            Some("resp_returned")
+        );
         assert_eq!(
             log.entry.final_response_evidence.as_deref(),
             Some("final-response-v1")
@@ -8472,8 +8604,9 @@ mod tests {
         assert_eq!(log.entry.relay_id, "final-supplier");
         assert_eq!(log.entry.upstream_model, "after-middleware");
         assert_eq!(log.entry.attempts, 2);
-        log.record_stream(Some("incomplete"), Some(usage.clone()), None);
+        log.record_stream(Some("incomplete"), Some(usage.usage.clone()), None);
         log.record_final_response(Some(usage.clone()));
+        assert!(log.entry.final_response_id.is_none());
         assert!(log.entry.final_response_evidence.is_none());
         log.entry.error = None;
 
@@ -8513,7 +8646,7 @@ mod tests {
                 _ => unreachable!(),
             }
             log.record_upstream(&upstream);
-            log.record_stream(None, Some(usage.clone()), None);
+            log.record_stream(None, Some(usage.usage.clone()), None);
             log.record_final_response(Some(usage.clone()));
             assert!(log.entry.final_response_evidence.is_none(), "{case}");
             upstream.request_trace = saved_trace;
@@ -8529,10 +8662,9 @@ mod tests {
             log.entry.final_response_evidence.is_none(),
             "unverified response middleware / counts"
         );
-        log.record_final_response(Some(crate::request_log::RequestUsage {
-            input_tokens: 999,
-            ..usage
-        }));
+        let mut discarded = usage;
+        discarded.usage.input_tokens = 999;
+        log.record_final_response(Some(discarded));
         assert!(
             log.entry.final_response_evidence.is_none(),
             "counts from a discarded attempt"
@@ -9535,13 +9667,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn helper_returns_426_for_responses_websocket_upgrade() {
+    async fn helper_rejects_incomplete_responses_websocket_upgrade() {
         let response = send_raw_helper_request(
             b"GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
         )
         .await;
 
-        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 400 Bad Request"));
     }
 
     #[tokio::test]
@@ -9854,6 +9986,7 @@ mod tests {
         assert_eq!(usage.output_tokens, 30);
         assert_eq!(usage.cached_tokens, 100);
         assert_eq!(entry.cache_hit_ratio, Some(100.0 / 120.0));
+        assert_eq!(entry.final_response_id.as_deref(), Some("resp_logged"));
         assert_eq!(
             entry.final_response_evidence.as_deref(),
             Some("final-response-v1")
@@ -9979,6 +10112,7 @@ mod tests {
         assert_eq!(entries[0].attempts, 2);
         assert_eq!(entries[0].auto_retries, 1);
         assert_eq!(entries[0].usage.as_ref().map(|u| u.input_tokens), Some(12));
+        assert_eq!(entries[0].final_response_id.as_deref(), Some("resp_ok"));
         assert_eq!(
             entries[0].final_response_evidence.as_deref(),
             Some("final-response-v1")

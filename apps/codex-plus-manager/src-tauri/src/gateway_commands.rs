@@ -52,6 +52,8 @@ pub struct GatewayPoolEntry {
     /// 没单独写窗口的模型用的窗口。
     pub context_window: Option<u64>,
     pub compaction: codex_plus_core::gateway::store::ProviderCompaction,
+    /// 自动压缩阈值（窗口的百分比，按模型 + 默认值，#3100）；没设时为空。
+    pub auto_compact: codex_plus_core::gateway::store::ProviderAutoCompact,
     /// 登录得到的账号：`chatgpt` / `copilot` / `grok`；普通供应商为空。
     pub account: String,
     /// 订阅账号的套餐（如「ChatGPT Pro」「Copilot Pro+」）；普通供应商为空。
@@ -76,12 +78,17 @@ pub struct GatewayPoolEntry {
     pub upstream_gone: Vec<String>,
     /// 订阅账号的额度（ChatGPT 5 小时 / 每周、Copilot 本月高级请求）；查不到或普通供应商为空。
     pub quota: Option<codex_plus_core::gateway::quota::ProviderQuota>,
+    /// 有额度可查（订阅账号，或 OpenCode Go、Command Code 等 API Key 套餐，#3084）：
+    /// 界面据此在首次查询返回前就显示额度一行和刷新按钮。
+    pub quota_api: bool,
     pub subscription_policy: Option<codex_plus_core::gateway::store::SubscriptionPolicy>,
     pub subscription_block_reason: Option<String>,
     /// 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额，不当中转站识别。
     pub balance_api: bool,
     /// new-api 访问令牌（打码，#2793）；没配置为空。令牌原文不传给界面。
     pub newapi_access: Option<apply::NewApiAccessView>,
+    /// 自定义请求头（#3075）：敏感头只给打码后的样子；订阅账号、官方登录等不开放编辑的为空。
+    pub custom_headers: Vec<codex_plus_core::gateway::provider_headers::ProviderHeaderView>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -100,6 +107,10 @@ pub struct GatewayAgentView {
     pub requires_disconnect_preview: bool,
     pub base_url: String,
     pub default_model: String,
+    /// 当前默认选择在实际路由快照中的状态。
+    pub default_selection_status: Option<&'static str>,
+    /// 网关默认模型的成员与可编辑供应商池不一致时，界面只显示模型 ID。
+    pub default_model_differs: bool,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
     pub drift: Option<codex_plus_core::gateway::drift::Drift>,
@@ -145,6 +156,8 @@ pub struct NativeAuthState {
     pub actual_label: String,
     pub accounts: Vec<NativeAuthAccount>,
     pub drift: Option<String>,
+    /// 当前连接不能应用所选身份时，提示先处理连接而非反复重启。
+    pub restart_blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,6 +259,7 @@ fn pool_entry(
         model_windows: Default::default(),
         context_window: None,
         compaction: Default::default(),
+        auto_compact: Default::default(),
         model_metadata: relay.model_metadata.clone(),
         image_models: codex_plus_core::gateway::images::provider_image_models(relay),
         account: account_kind(relay),
@@ -260,10 +274,12 @@ fn pool_entry(
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
         quota: codex_plus_core::gateway::quota::quota_for_relay(relay),
+        quota_api: codex_plus_core::gateway::quota::supports(relay),
         subscription_policy: None,
         subscription_block_reason: None,
         balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
         newapi_access: None,
+        custom_headers: codex_plus_core::gateway::provider_headers::view(relay),
     }
 }
 
@@ -282,8 +298,49 @@ fn account_kind(relay: &RelayProfile) -> String {
         .unwrap_or_default()
 }
 
+fn default_model_view(
+    gateway: &GatewaySettings,
+    runtime: &GatewaySettings,
+    binding: &AgentBinding,
+) -> (String, Option<&'static str>, bool) {
+    use codex_plus_core::gateway::route::model_entry_members;
+
+    let model = apply::resolved_default_model(runtime, binding);
+    let (selected, _) = codex_plus_core::model_suffix::parse_model_suffix(binding.model.trim());
+    let status = binding.selection_for(&selected).map(|_| {
+        if !model.eq_ignore_ascii_case(&selected) {
+            "fallback"
+        } else if model_entry_members(runtime, binding, &selected).is_empty() {
+            "invalid"
+        } else {
+            "available"
+        }
+    });
+    let differs = if !model.is_empty() {
+        let actual = model_entry_members(runtime, binding, &model);
+        let local = model_entry_members(gateway, binding, &model);
+        actual.len() != local.len()
+            || actual
+                .iter()
+                .zip(&local)
+                .any(|((actual, actual_model), (local, local_model))| {
+                    actual.id != local.id
+                        || actual.name != local.name
+                        || actual_model != local_model
+                        || runtime
+                            .provider(&actual.id)
+                            .map(|provider| &provider.source)
+                            != gateway.provider(&local.id).map(|provider| &provider.source)
+                })
+    } else {
+        false
+    };
+    (model, status, differs)
+}
+
 fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> GatewayPayload {
     let port = port();
+    let runtime_gateway = gateway.clone().with_extension_providers();
     let pool = gateway
         .providers
         .iter()
@@ -300,6 +357,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
             model_windows: provider.model_windows.clone(),
             context_window: provider.context_window,
             compaction: provider.compaction_settings(),
+            auto_compact: provider.auto_compact.clone(),
             key_rpm: provider.key_rpm,
             key_concurrency: provider.key_concurrency,
             ..pool_entry(
@@ -344,6 +402,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         .map(|agent| {
             let binding = gateway.binding(agent);
             let enabled = binding.is_some_and(|binding| binding.enabled);
+            let (default_model, default_selection_status, default_model_differs) = binding
+                .map(|binding| default_model_view(&gateway, &runtime_gateway, binding))
+                .unwrap_or_default();
             GatewayAgentView {
                 agent: agent.as_str().to_string(),
                 name: codex_plus_core::tools::tool_display_name(agent).to_string(),
@@ -361,9 +422,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                         _ => false,
                     },
                 base_url: apply::gateway_base_url(port, agent),
-                default_model: binding
-                    .map(|binding| apply::resolved_default_model(&gateway, binding))
-                    .unwrap_or_default(),
+                default_model,
+                default_selection_status,
+                default_model_differs,
                 models: codex_plus_core::gateway::server::exposed_models(&gateway, agent),
                 drift: binding
                     .filter(|binding| binding.enabled)
@@ -511,7 +572,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
             source: provider.source.clone(),
         });
     }
-    let drift = match settings.native_auth_selection.as_ref() {
+    let mut drift = match settings.native_auth_selection.as_ref() {
         Some(codex_plus_core::settings::NativeAuthSelection::None) if has_native_login => {
             Some("当前 auth 仍有登录凭据".to_string())
         }
@@ -522,6 +583,46 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         }
         _ => None,
     };
+    let managed = settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID;
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let live_official = codex_plus_core::relay_config::relay_session_provider_from_config(&config)
+        == codex_plus_core::settings::RelaySessionProvider::Openai;
+    let blocked_reason = if let Some(selection) = settings.native_auth_selection.as_ref() {
+        let binding_enabled = gateway
+            .binding(&ToolId::Codex)
+            .is_some_and(|binding| binding.enabled);
+        let taken_over =
+            codex_plus_core::gateway::drift::check(&context(), &ToolId::Codex).is_some();
+        let wants_account = matches!(
+            selection,
+            codex_plus_core::settings::NativeAuthSelection::Account { .. }
+        );
+        native_auth_restart_blocker(
+            managed,
+            binding_enabled,
+            taken_over,
+            wants_account && codex_plus_core::wsl_network::codex_runs_in_wsl(&home),
+            wants_account,
+            live_official,
+        )
+    } else {
+        None
+    };
+    if drift.is_none()
+        && blocked_reason.is_none()
+        && settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID
+        && let Some(selection) = settings.native_auth_selection.as_ref()
+    {
+        let expected = matches!(
+            selection,
+            codex_plus_core::settings::NativeAuthSelection::Account { .. }
+        );
+        let saved_official = settings.active_relay_session_provider()
+            == codex_plus_core::settings::RelaySessionProvider::Openai;
+        if expected != live_official || expected != saved_official {
+            drift = Some("当前连接尚未切换到所选登录身份，请重新应用".to_string());
+        }
+    }
     Ok(NativeAuthState {
         managed: settings.native_auth_selection.is_some(),
         selection: settings.native_auth_selection,
@@ -529,7 +630,29 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         actual_label,
         accounts,
         drift,
+        restart_blocked_reason: blocked_reason.map(str::to_string),
     })
+}
+
+fn native_auth_restart_blocker(
+    managed: bool,
+    binding_enabled: bool,
+    taken_over: bool,
+    wsl_account: bool,
+    wants_account: bool,
+    live_official: bool,
+) -> Option<&'static str> {
+    if managed && !binding_enabled {
+        Some("Codex 网关连接未启用；登录选择已保存，接入后再应用")
+    } else if managed && taken_over {
+        Some("Codex 配置已由其他工具接管；请先恢复网关连接")
+    } else if wsl_account {
+        Some("WSL 连接不使用官方登录身份；当前选择无法在此连接生效")
+    } else if wants_account != live_official && !managed {
+        Some("当前直连配置不支持所选登录状态；请先调整连接身份")
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -545,6 +668,7 @@ pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
                 actual_label: String::new(),
                 accounts: Vec::new(),
                 drift: Some(error.to_string()),
+                restart_blocked_reason: None,
             },
         ),
     }
@@ -568,21 +692,53 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
         }
         codex_plus_core::native_auth::set_native_auth_selection(account_ref.as_deref())?;
         notify_settings_changed();
+        // 复用网关已有的官方会话身份转换，不能只写 auth 而继续留下 requires_openai_auth=false。
+        if apply::sync_codex_identity_after_selection(&context()).is_err() {
+            anyhow::bail!("登录选择已保存，但连接身份同步失败，请重新应用；尚未重启 Codex");
+        }
+        notify_settings_changed();
         native_auth_state()
     })();
     match result {
         Ok(state) => ok("原生登录选择已保存。", state),
         Err(error) => failed(
             &format!("保存原生登录选择失败：{error}"),
-            NativeAuthState {
+            native_auth_state().unwrap_or(NativeAuthState {
                 managed: false,
                 selection: None,
                 actual_account_ref: None,
                 actual_label: String::new(),
                 accounts: Vec::new(),
                 drift: Some(error.to_string()),
-            },
+                restart_blocked_reason: None,
+            }),
         ),
+    }
+}
+
+#[cfg(test)]
+mod native_auth_restart_tests {
+    use super::native_auth_restart_blocker;
+
+    #[test]
+    fn unavailable_connection_never_promises_that_a_restart_will_apply_the_login() {
+        assert!(native_auth_restart_blocker(true, false, false, false, true, false).is_some());
+        assert!(native_auth_restart_blocker(true, true, true, false, true, false).is_some());
+        assert!(native_auth_restart_blocker(true, true, false, true, true, false).is_some());
+        assert!(native_auth_restart_blocker(false, false, false, false, true, false).is_some());
+        assert!(native_auth_restart_blocker(false, false, false, false, false, true).is_some());
+        assert_eq!(
+            native_auth_restart_blocker(false, false, false, false, true, true),
+            None
+        );
+        assert_eq!(
+            native_auth_restart_blocker(false, false, false, false, false, false),
+            None
+        );
+        assert_eq!(
+            native_auth_restart_blocker(true, true, false, false, true, true),
+            None
+        );
     }
 }
 
@@ -831,12 +987,21 @@ pub fn disable_gateway_binding_full_switch(
 pub fn save_gateway_binding(
     agent: String,
     binding: AgentBinding,
+    reconnect: Option<bool>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let saved = apply::enable_binding(&context(), &agent, binding)?;
+        let ctx = context();
+        let (saved, changed) = if agent == ToolId::Codex {
+            apply::enable_binding_deferred(&ctx, &agent, binding)?
+        } else {
+            (apply::enable_binding(&ctx, &agent, binding)?, false)
+        };
         if sync_resident_helper().is_none() {
             anyhow::bail!("网关绑定已写入，但本地网关没能启动，请查看诊断日志");
+        }
+        if agent == ToolId::Codex && (changed || reconnect.unwrap_or(false)) {
+            codex_plus_core::gateway::connection_generation::publish(&ctx.codex_home)?;
         }
         Ok(saved)
     })();
@@ -911,21 +1076,28 @@ pub fn use_gateway_own_model(
 pub fn rotate_gateway_token(agent: String) -> CommandResult<Option<GatewayPayload>> {
     let result = (|| {
         let agent = parse_agent(&agent)?;
-        let store = GatewayStore::default();
-        // 带锁读改写：只换这个 Agent 的 token，不拿旧状态覆盖同时刷新写回的登录 token。
-        let (gateway, binding) = store.update(|gateway| {
-            let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
-                anyhow::bail!("还没有配置网关绑定");
-            };
-            binding.token = new_client_token(&agent);
-            Ok(binding.clone())
-        })?;
-        if binding.enabled {
-            return apply::enable_binding(&context(), &agent, binding);
+        let ctx = context();
+        let (saved, changed) = apply::rotate_binding_token(&ctx, &agent)?;
+        if agent == ToolId::Codex && changed {
+            if sync_resident_helper().is_none() {
+                anyhow::bail!("网关 token 已更换，但本地网关没能启动，请查看诊断日志");
+            }
+            codex_plus_core::gateway::connection_generation::publish(&ctx.codex_home)?;
         }
-        Ok(gateway)
+        Ok(saved)
     })();
     respond("已更换网关 token。", "更换网关 token 失败", result)
+}
+
+#[tauri::command]
+pub fn reset_gateway_model_selections(agent: String) -> CommandResult<Option<GatewayPayload>> {
+    let result = parse_agent(&agent)
+        .and_then(|agent| apply::reset_model_selections(&GatewayStore::default(), &agent));
+    respond(
+        "已清除历史模型选择。",
+        "清除历史模型选择失败",
+        refresh_agents(result),
+    )
 }
 
 /// 网关全局选项：Key 轮换方式、退出时恢复直连。
@@ -1038,6 +1210,64 @@ pub fn save_gateway_model_suffix(enabled: bool) -> CommandResult<Option<GatewayP
         "保存网关选项失败",
         refresh_agents(result),
     )
+}
+
+/// 「本地网关端口」一行的数据（#3082）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GatewayPortPayload {
+    /// 下次启动使用的端口。
+    pub configured_port: u16,
+    pub default_port: u16,
+    /// 环境变量 `CODEX_PLUS_PROTOCOL_PROXY_PORT` 指定的端口；有值时界面禁用输入。
+    pub env_port: Option<u16>,
+    /// 本进程常驻本地服务正在监听的端口；没在跑时为空。
+    pub running_port: Option<u16>,
+    /// 改过端口、还没重启 Codex++：正在监听的端口和下次启动的端口不一样。
+    pub restart_required: bool,
+}
+
+fn gateway_port_payload() -> GatewayPortPayload {
+    let state = codex_plus_core::protocol_proxy::protocol_proxy_port_state();
+    let running_port = codex_plus_core::resident_helper::resident_helper_port();
+    GatewayPortPayload {
+        configured_port: state.configured,
+        default_port: state.default_port,
+        env_port: state.env_override,
+        running_port,
+        restart_required: running_port.is_some_and(|port| port != state.configured),
+    }
+}
+
+#[tauri::command]
+pub fn load_gateway_port() -> CommandResult<GatewayPortPayload> {
+    ok("", gateway_port_payload())
+}
+
+/// 改本地网关端口：只写持久化端口文件，不动正在监听的服务。
+///
+/// 不当场切换：Codex、Claude 等 Agent 的配置里写着旧端口，正在跑的会话也连着旧端口，
+/// 运行中换端口会让它们一起断。重启 Codex++ 后常驻服务按新端口监听，
+/// 启动流程（`start_from_saved_state` → `reapply_if_port_changed`）会把走网关的 Agent 改到新端口。
+#[tauri::command]
+pub async fn save_gateway_port(port: u32) -> CommandResult<GatewayPortPayload> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let running = codex_plus_core::resident_helper::resident_helper_port();
+        codex_plus_core::protocol_proxy::set_custom_protocol_proxy_port(port, running)
+    })
+    .await;
+    match result {
+        Ok(Ok(true)) => ok(
+            "本地网关端口已保存。完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。",
+            gateway_port_payload(),
+        ),
+        Ok(Ok(false)) => ok("端口没有变化。", gateway_port_payload()),
+        Ok(Err(error)) => failed(&format!("{error:#}"), gateway_port_payload()),
+        Err(error) => failed(
+            &format!("保存本地网关端口失败：{error}"),
+            gateway_port_payload(),
+        ),
+    }
 }
 
 /// 某个 Agent 的生图模型：空串是自动，`off` 是关闭，其余是 `<供应商 id>/<模型>`。
@@ -1421,7 +1651,8 @@ pub fn save_gateway_provider_newapi_access(
     )
 }
 
-/// 改供应商的上下文窗口（按模型的和其余模型用的默认值）；窗口写在 Agent 的模型资料里，存完重写 Agent 配置。
+/// 改供应商的上下文窗口（按模型的和其余模型用的默认值）与自动压缩阈值（#3100，可不传）；
+/// 都写在 Agent 的模型资料里，存完重写 Agent 配置。
 #[tauri::command]
 pub fn save_gateway_provider_windows(
     id: String,
@@ -1801,6 +2032,7 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         subscription_policy: None,
         strip_responses_image_detail: None,
         disable_tool_search: None,
+        custom_headers: None,
     };
     apply::create_provider(
         &GatewayStore::default(),
@@ -2120,6 +2352,121 @@ fn parse_version(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::parse_version;
+
+    #[test]
+    fn default_model_view_uses_the_extension_routing_snapshot() {
+        use codex_plus_core::gateway::store::{AgentBinding, GatewaySettings};
+        use codex_plus_core::user_scripts::UserScriptManager;
+        use serde_json::json;
+
+        let gateway: GatewaySettings = serde_json::from_value(json!({
+            "providers": [{
+                "source": "preset:a",
+                "relay": { "id": "a", "name": "A", "model": "m", "modelList": "m" }
+            }]
+        }))
+        .unwrap();
+        let binding: AgentBinding = serde_json::from_value(json!({
+            "model": "a/m[1M]",
+            "defaultModelSelection": { "providerId": "a", "upstreamModel": "m", "providerSource": "preset:a" }
+        })).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("user/swap");
+        std::fs::create_dir_all(&package).unwrap();
+        let manifest = package.join("codexpp.json");
+        let manager = UserScriptManager::new(
+            temp.path().join("builtin"),
+            temp.path().join("user"),
+            temp.path().join("user_scripts.json"),
+        );
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m"], "override": false }]
+        }).to_string()).unwrap();
+        let unchanged = gateway.clone().with_extension_providers_from(&manager);
+        assert_eq!(
+            super::default_model_view(&gateway, &unchanged, &binding),
+            ("a/m".into(), Some("available"), false)
+        );
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m"], "override": true }]
+        }).to_string()).unwrap();
+        let mut disabled = gateway.clone();
+        disabled.providers[0].enabled = false;
+        assert_eq!(
+            super::default_model_view(&disabled, &disabled, &binding),
+            ("".into(), Some("fallback"), false)
+        );
+        let overridden = disabled.clone().with_extension_providers_from(&manager);
+        assert_eq!(overridden.provider("a").unwrap().source, "extension:swap");
+        assert_eq!(
+            super::default_model_view(&disabled, &overridden, &binding),
+            ("m".into(), Some("fallback"), true)
+        );
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "b", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["a/m"] }]
+        }).to_string()).unwrap();
+        let collision = gateway.clone().with_extension_providers_from(&manager);
+        assert_eq!(
+            super::default_model_view(&gateway, &collision, &binding),
+            ("m".into(), Some("fallback"), false)
+        );
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "b", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["fallback"] }]
+        }).to_string()).unwrap();
+        let added = disabled.clone().with_extension_providers_from(&manager);
+        assert_eq!(
+            super::default_model_view(&disabled, &added, &binding),
+            ("fallback".into(), Some("fallback"), true)
+        );
+
+        let empty: AgentBinding = serde_json::from_value(json!({ "model": "" })).unwrap();
+        assert_eq!(
+            super::default_model_view(&disabled, &added, &empty),
+            ("fallback".into(), None, true)
+        );
+        assert_eq!(
+            super::default_model_view(&disabled, &disabled, &empty),
+            ("".into(), None, false)
+        );
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m2"], "override": true }]
+        }).to_string()).unwrap();
+        let different_model = gateway.clone().with_extension_providers_from(&manager);
+        assert_eq!(
+            super::default_model_view(&gateway, &different_model, &empty),
+            ("m2".into(), None, true)
+        );
+
+        std::fs::write(&manifest, json!({
+            "id": "swap", "name": "swap",
+            "providers": [{ "id": "a", "baseUrl": "http://127.0.0.1:9000/v1", "models": ["m"], "override": true }]
+        }).to_string()).unwrap();
+        let mut with_group = gateway.clone();
+        with_group.groups = serde_json::from_value(json!([{
+            "id": "disabled", "name": "Disabled", "disabled": true, "members": []
+        }]))
+        .unwrap();
+        let inactive: AgentBinding =
+            serde_json::from_value(json!({ "model": "group/disabled" })).unwrap();
+        let overridden = with_group.clone().with_extension_providers_from(&manager);
+        assert_eq!(
+            super::default_model_view(&with_group, &overridden, &inactive),
+            ("m".into(), None, true)
+        );
+        assert_eq!(
+            super::default_model_view(&with_group, &with_group, &inactive),
+            ("m".into(), None, false)
+        );
+    }
 
     #[test]
     fn agent_config_paths_follow_the_write_directories() {
@@ -3072,4 +3419,92 @@ mod disconnect_preview_tests {
         assert_eq!(value["preview"], serde_json::Value::Null);
         assert!(value.get("preview").is_some());
     }
+}
+
+/// Codex 页面「供应商」页的网关命令分发（core `provider_page::route_gateway` 已做白名单与脱敏）。
+///
+/// 参数名与前端 `invoke` 一致（camelCase）。直接调用上面的命令函数，所以生效（`refresh_agents`）、
+/// 价格填充、额度预取、断开预览 token、`notify_settings_changed` 都与管理器自己的界面完全相同。
+/// 调用方在阻塞线程里（bridge 路由用 `spawn_blocking`），异步命令用 `block_on` 等结果。
+pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> serde_json::Value {
+    fn arg<T: serde::de::DeserializeOwned>(
+        args: &serde_json::Value,
+        key: &str,
+    ) -> Result<T, String> {
+        serde_json::from_value(args.get(key).cloned().unwrap_or(serde_json::Value::Null))
+            .map_err(|error| format!("参数 {key} 不正确：{error}"))
+    }
+    fn to_value<T: Serialize>(result: CommandResult<T>) -> serde_json::Value {
+        serde_json::to_value(result).unwrap_or_else(|error| {
+            serde_json::json!({ "status": "failed", "message": format!("返回结果无法序列化：{error}") })
+        })
+    }
+    let run = || -> Result<serde_json::Value, String> {
+        Ok(match command {
+            "load_gateway" => to_value(tauri::async_runtime::block_on(load_gateway())),
+            "create_gateway_provider" => to_value(create_gateway_provider(
+                arg(&args, "input")?,
+                arg::<Option<String>>(&args, "source")?.unwrap_or_else(|| "custom".to_string()),
+                arg(&args, "skipAgents")?,
+            )),
+            "update_gateway_provider" => to_value(update_gateway_provider(
+                arg(&args, "id")?,
+                arg(&args, "input")?,
+            )),
+            "delete_gateway_provider" => to_value(delete_gateway_provider(arg(&args, "id")?)),
+            "set_gateway_provider_enabled" => to_value(set_gateway_provider_enabled(
+                arg(&args, "id")?,
+                arg(&args, "enabled")?,
+            )),
+            "reorder_gateway_providers" => to_value(reorder_gateway_providers(arg(&args, "ids")?)),
+            "add_gateway_provider_key" => to_value(add_gateway_provider_key(
+                arg(&args, "id")?,
+                arg(&args, "key")?,
+            )),
+            "replace_gateway_provider_key" => to_value(replace_gateway_provider_key(
+                arg(&args, "id")?,
+                arg(&args, "keyId")?,
+                arg(&args, "key")?,
+            )),
+            "delete_gateway_provider_key" => to_value(delete_gateway_provider_key(
+                arg(&args, "id")?,
+                arg(&args, "keyId")?,
+            )),
+            "test_gateway_provider" => {
+                to_value(tauri::async_runtime::block_on(test_gateway_provider(
+                    arg(&args, "id")?,
+                    arg(&args, "model")?,
+                    arg(&args, "keyId")?,
+                )))
+            }
+            "cancel_gateway_provider_test" => to_value(cancel_gateway_provider_test()),
+            "fetch_provider_models" => to_value(tauri::async_runtime::block_on(
+                crate::provider_lookup_commands::fetch_provider_models(
+                    arg(&args, "baseUrl")?,
+                    arg(&args, "protocol")?,
+                    arg::<Option<String>>(&args, "apiKey")?.unwrap_or_default(),
+                    arg(&args, "providerId")?,
+                    arg(&args, "customHeaders")?,
+                ),
+            )),
+            "save_gateway_binding" => to_value(save_gateway_binding(
+                arg(&args, "agent")?,
+                arg(&args, "binding")?,
+                arg(&args, "reconnect")?,
+            )),
+            "preview_gateway_disconnect" => to_value(tauri::async_runtime::block_on(
+                preview_gateway_disconnect(arg(&args, "agent")?),
+            )),
+            "disable_gateway_binding" => to_value(disable_gateway_binding(
+                arg(&args, "agent")?,
+                arg(&args, "previewToken")?,
+            )),
+            "disable_gateway_binding_full_switch" => to_value(disable_gateway_binding_full_switch(
+                arg(&args, "agent")?,
+                arg(&args, "previewToken")?,
+            )),
+            other => return Err(format!("不支持的网关命令 {other}")),
+        })
+    };
+    run().unwrap_or_else(|message| serde_json::json!({ "status": "failed", "message": message }))
 }

@@ -14,9 +14,11 @@ import { t, tf } from "./i18n";
 import { providerPoolSections, reorderProviderSlots } from "./provider-pool-layout";
 import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
+import { providerHeadersSummary } from "./relay-headers";
 import {
   glanceAgents,
   defaultProviderAgents,
+  connectedAgents,
   failureLabel,
   formatRemaining,
   gatewayPresets,
@@ -27,10 +29,12 @@ import {
   pendingImportCount,
   presetAdded,
   presetHost,
+  poolExcludeToggle,
   protocolLabel,
   providerEnabled,
   providerInput,
   skippedAgents,
+  quotaSupported,
   subscriptionBlockReason,
   maskAccountText,
   type GatewayAgentId,
@@ -42,6 +46,7 @@ import {
   type ProviderDraft,
   type ProviderPrice,
   maskAccountName,
+  imageModelLabel,
   isDirectProxy,
   keyLabel,
   type ImportCandidate,
@@ -281,8 +286,9 @@ export function ProvidersView({
       ) : null}
       {adding ? <ProviderAdder busy={busy} notify={notify} onClose={() => setAdding(false)} payload={payload} run={run} startWith={adding === "import" ? "import" : "catalog"} /> : null}
       {loginDialog}
-      {form ? (
+      {form?.mode === "edit" ? (
         <ProviderFormDialog
+          agentPicks={<EditAgentPicks busy={busy} entry={editingEntry ?? form.entry} payload={payload} run={run} />}
           busy={busy}
           form={form}
           onCancel={closeForm}
@@ -665,14 +671,15 @@ function PoolRow({
     if (await run(`models:${entry.id}`, "save_gateway_provider_models", { id: entry.id, models, defaultModel }, t("保存模型列表"))) setModelsOpen(false);
   };
   const price = priceSummary(entry);
-  // ChatGPT 订阅账号、Copilot 和 SuperGrok 能查额度（ChatGPT API 账号按量计费，没有额度窗口）。
-  const quotaSupported = entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok";
+  // 订阅账号和 OpenCode Go、Command Code 等 API Key 套餐能查额度（#3084）；后端给标志，首次查询前就显示这一行。
+  const hasQuota = quotaSupported(entry);
   const testBlocked = subscriptionBlockReason(entry);
   const saveExtras = async (nextPrice: ProviderPrice | null, modelPrices: Record<string, ProviderPrice> | null, proxy: string) => {
     const title = extrasOpen === "proxy" ? t("保存代理") : t("保存价格");
     if (await run(`extras:${entry.id}`, "save_gateway_provider_extras", { id: entry.id, price: nextPrice, modelPrices, proxy }, title)) setExtrasOpen(null);
   };
   const keyLimits = keyLimitSummary(entry);
+  const headersSummary = providerHeadersSummary(entry.customHeaders);
   const saveLimits = async (rpm: number | null, concurrency: number | null) => {
     if (await run(`limits:${entry.id}`, "save_gateway_provider_limits", { id: entry.id, rpm, concurrency }, t("保存限速"))) setLimitsOpen(false);
   };
@@ -703,7 +710,7 @@ function PoolRow({
         <div className="gw-pool-main">
           <strong>{maskAccountName(entry.name)}</strong>
           <small>{sub}</small>
-          {quotaSupported ? entry.quota
+          {hasQuota ? entry.quota
             ? <QuotaWindows compact maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} />
             : <small>{t("额度待刷新")}</small> : null}
         </div>
@@ -741,7 +748,7 @@ function PoolRow({
             </button>
           )}
           <Switch
-            disabled={busy !== null}
+            pending={busy !== null}
             label={tf("{0} 参与调度", [maskAccountName(entry.name)])}
             on={enabled}
             onToggle={() => void run(`toggle:${entry.id}`, "set_gateway_provider_enabled", { id: entry.id, enabled: !enabled }, t("切换供应商"), true)}
@@ -784,7 +791,7 @@ function PoolRow({
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("生图模型")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {imageModels.map((model) => <code className="gw-chip" key={model}>{model}</code>)}
+                {imageModels.map((model) => <code className="gw-chip" key={model}>{imageModelLabel(model, entry.account === "chatgpt")}</code>)}
               </div>
               <span className="gw-detail-actions gw-detail-hint" title={entry.account === "chatgpt" ? t("ChatGPT 后端自己选生图模型；在「Agent 接入」里选用哪个") : t("Agent 不和它们对话，不在模型列表里；在「Agent 接入」里选用哪个")}>
                 {t("在「Agent 接入」里选用")}
@@ -825,11 +832,11 @@ function PoolRow({
               </span>
             </div>
           ) : null}
-          {quotaSupported ? (
+          {hasQuota ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{t("尚未取得官方用量")}</span>}
+                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{entry.account ? t("尚未取得官方用量") : t("尚未取得套餐用量")}</span>}
               </div>
               <span className="gw-detail-actions">
                 <button
@@ -858,7 +865,7 @@ function PoolRow({
             <summary>
               <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
               {t("更多设置")}
-              <span className="gw-pool-more-hint">{t("价格、上下文窗口、思考等级、代理、限速")}</span>
+              <span className="gw-pool-more-hint">{entry.account ? t("价格、上下文窗口、思考等级、代理、限速") : t("价格、上下文窗口、思考等级、代理、限速、请求头")}</span>
             </summary>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("价格")}</span>
@@ -941,6 +948,18 @@ function PoolRow({
               <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
             </span>
           </div>
+          {/* 自定义请求头（#3075）：只列名称（值可能是凭据），在编辑弹窗里改；订阅账号不开放。 */}
+          {!entry.account ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("请求头")}</span>
+              <div className="gw-detail-value gw-chip-row">
+                {headersSummary ? <code className="gw-chip" title={t("测试连接、获取模型和实际请求都会带上")}>{headersSummary}</code> : <span className="gw-muted">{t("未设置")}</span>}
+              </div>
+              <span className="gw-detail-actions">
+                <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={onEdit} />
+              </span>
+            </div>
+          ) : null}
           </details>
           <div className="gw-detail-row gw-detail-foot">
             <span className="gw-detail-label" />
@@ -1070,6 +1089,42 @@ function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | n
 }
 
 type CatalogItem = { key: string; name: string; added?: boolean; icon?: ReactNode; onClick: () => void };
+
+/** 编辑时给哪些 Agent 用（#3030）：每个已接入 Agent 一个开关，改的是各自的「挑选」排除列表。 */
+function EditAgentPicks({ payload, busy, run, entry }: { payload: GatewayPayload | null; busy: string | null; run: Run; entry: GatewayPoolEntry }) {
+  const focus = useAgentFocus();
+  const connected = connectedAgents(payload);
+  // 只列已接入的 Agent：没接入的谈不上用不用这家供应商。
+  const agents = visibleAgents(focus, glanceAgents(payload?.agents)).filter((agent) => connected.includes(agent.agent));
+  if (!agents.length || singleAgent(focus)) return null;
+  const toggle = (agent: GatewayAgentId, on: boolean) => {
+    const binding = payload?.gateway.bindings[agent];
+    if (!binding) return;
+    void run(`pool:${agent}:${entry.id}`, "save_gateway_binding", { agent, binding: { ...binding, poolExclude: poolExcludeToggle(binding.poolExclude, entry.id, on) } }, t("保存网关绑定"));
+  };
+  return (
+    <div className="gw-agent-picks">
+      <span>{t("给这些 Agent 用")}</span>
+      {agents.map((agent) => {
+        const on = !(payload?.gateway.bindings[agent.agent]?.poolExclude ?? []).includes(entry.id);
+        return (
+          <button
+            aria-pressed={on}
+            data-on={on}
+            disabled={busy !== null}
+            key={agent.agent}
+            onClick={() => toggle(agent.agent, !on)}
+            type="button"
+          >
+            <AgentIcon agent={agent.agent} className="gw-agent-pick-icon" />
+            {agent.name}
+            {on ? <Check className="h-3.5 w-3.5" /> : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 /** 「添加供应商」目录：订阅、供应商（厂商 API）、中转、本机；「导入…」从直连模式复制。 */
 function ProviderCatalog({

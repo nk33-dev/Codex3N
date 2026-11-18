@@ -6,7 +6,7 @@ import { isAggregateProfile, normalizeAggregateDefaultRelayId, normalizeAggregat
 import { clampAggregateRoutePriority, normalizeAggregateRoutes } from "./aggregate-routes.ts";
 
 test("聚合登录同步开关经过回填、标准化和保存镜像后保持选择", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./relay-profile-editing.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
   const app = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const names = new Set([
     "hydrateAggregateRelayProfile", "normalizeAggregateConfig", "normalizeAggregateProfilesFromRelayProfiles",

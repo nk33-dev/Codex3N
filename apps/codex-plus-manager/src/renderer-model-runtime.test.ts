@@ -91,6 +91,7 @@ test("线程徽章重复安装保留标题的父节点和顺序", () => {
 
 test("模型仍可选择，但不再插入管理面板或未测试状态", () => {
   const descriptor = new Function("codexPlusModelMetadata", "codexModelCatalog", "modelReasoningEfforts", `
+    ${runtimeSource("codexPlusModelInputModalities", "codexPlusModelImageDetailOriginal")}
     ${section("  function codexPlusModelDescriptor(", "  function modelArrayLooksPatchable(")}
     return codexPlusModelDescriptor("custom-model");
   `)(() => null, { provider_name: "示例供应商" }, () => []);
@@ -103,6 +104,7 @@ test("模型仍可选择，但不再插入管理面板或未测试状态", () =>
 
 test("手工上下文窗口覆盖同名上游模型描述", () => {
   const patch = new Function("codexPlusModelMetadata", "modelReasoningEfforts", `
+    ${runtimeSource("codexPlusModelInputModalities", "codexPlusModelImageDetailOriginal")}
     ${section("  function applyCodexPlusModelMetadata(", "  function codexPlusModelDescriptor(")}
     return applyCodexPlusModelMetadata;
   `)(() => ({ contextWindow: 1_000_000, maxContextWindow: 1_000_000 }), () => []);

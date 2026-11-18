@@ -2,7 +2,7 @@ export type EnhancementSection = "stepwise" | "dictation" | "promptEnhance";
 export type EnhancementTab = "general" | EnhancementSection;
 
 export type ManagerNavigationIntent = {
-  page: "settings" | "enhance" | "relay" | "pluginMarket";
+  page: "settings" | "enhance" | "relay" | "pluginMarket" | "weixin";
   section?: EnhancementSection;
 };
 
@@ -13,7 +13,7 @@ export const ENHANCEMENT_SECTION_IDS: Record<EnhancementSection, string> = {
 };
 
 export function managerNavigationDestination(intent: ManagerNavigationIntent): {
-  route: "settings" | "enhance" | "relay" | "pluginMarket";
+  route: "settings" | "enhance" | "relay" | "pluginMarket" | "weixin";
   section: EnhancementSection | null;
 } {
   // 旧版悬浮球发出的 settings + section 也定位到新的增强配置页。

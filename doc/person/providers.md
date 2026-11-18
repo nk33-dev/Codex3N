@@ -15,6 +15,7 @@
 
 - 首次将本机 `config.toml` / `auth.json` 导入为普通可选的“系统默认”供应商，不重复覆盖用户配置。
 - 自定义供应商及配置导入入口在管理器供应商页。
+- Codex 图标栏的供应商页通过 `provider_page.rs` 调用管理器注册的 `ProviderPageHost`，保存、切换和网关接入仍走同一后端。`relay-profile-editing.ts` 是字段与配置文件互转的唯一纯函数实现，由拼装脚本生成 `42-provider-editing.generated.js`；共用类型保持在 `provider-types.ts`。列表中的命名 Key 打码，配置内凭据和自定义请求头使用占位符；提交时按已存供应商及字段恢复，不把占位符写成真实凭据。
 - 普通供应商与聚合配置分别展示，新建入口可按账号、模型厂商、第三方平台和自定义配置搜索。纯 API 模式同时保存 `auth.json` API 登录态与 provider 的 `experimental_bearer_token`，供新版 Codex 显式鉴权；关闭接管后两处都有 Key 的配置仍按窄路径规则拒绝轻量切换，需使用整份供应商切换。
 - 供应商列表依次为直连、模型聚合、协议转换和故障转移。`aggregate.modelAggregationEnabled` 与后端聚合镜像同名字段区分两类，默认关闭；新建时确定类型。模型聚合固定绑定成员，不使用轮转策略与通配符路由。分页只控制展示，保存与切换始终基于完整供应商列表；总开关关闭时点击“使用”显示开启提示。
 - 聚合成员仅在供应商从完整配置中删除时移除，凭据或配置暂时不可用仍保留成员。`aggregate.defaultRelayId` 与聚合镜像的 `defaultRelayId` 保存默认成员，成员移除时同步清理默认指向。
@@ -41,7 +42,7 @@
 - `crates/codex-plus-core/src/routes.rs`：`/relay-api-keys` 提供脱敏列表，`/relay-api-keys/select` 执行当前供应商 Key 切换。
 - `crates/codex-plus-core/src/bridge.rs::reload_api_key_at` 与启动器的 `reload_api_key` 复用当前页面 CDP 连接；`40-backend-settings.js::reloadCodexApiKey` 只向 `hostId: "local"` 的 RPC 客户端提交认证更新，串行处理更新，失败仅返回布尔值。
 - `assets/inject/renderer-inject/40-backend-settings.js` 的 `renderRelayApiKeys`、`selectRelayApiKey` 提供设置页的 Key 选择器。`80-session-share.js::removeLegacyRelayApiKeyBadges` 由 `99-startup.js` 在注入重载时清理旧徽章，防止旧节点留在会话或提问面板。
-- `apps/codex-plus-manager/src/App.tsx`：供应商页状态、配置保存与切换编排。列表的 `onSwitch` 先调用 `syncLegacyRelayFields` 同步目标配置，再将结果和旧供应商 ID 交给 `switchRelayProfile`，保留切换前快照与锁定流程。
+- `apps/codex-plus-manager/src/App.tsx`：供应商页状态、配置保存与切换编排。列表的 `onSwitch` 先调用共用 `relay-profile-editing.ts::syncLegacyRelayFields` 同步目标配置，再将结果和旧供应商 ID 交给 `switchRelayProfile`，保留切换前快照与锁定流程。归一化、聚合镜像、复制删除及文件互转均从同一共用模块导入。
 - `apps/codex-plus-manager/src/provider-types.ts`：`BackendSettings`、`ToolShard`、`RelayProfile` 及其关联类型；不从 `App.tsx` 反向导入。
 - `apps/codex-plus-manager/src/provider-utils.ts`：供应商首字、模式/协议/倍率标签，以及聚合和系统默认判断的唯一实现。涉及配置解析、聚合归一化的摘要仍由 `App.tsx` 生成。
 - `apps/codex-plus-manager/src/provider-config.ts`：导入与编辑共用的配置读取和鉴权 JSON 解析；保留既有 TOML 字段读取兼容规则，`parseProviderAuth` 给出文件/字段错误。后端保存前使用既有 `toml_edit` 检查完整 TOML 语法；仅检查新增或变更的文件，避免历史未修改配置阻断其他设置保存。

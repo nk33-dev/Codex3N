@@ -99,7 +99,10 @@ async fn assert_completed_without_eof(wire: UpstreamWireApi, prefix: &[u8], chun
     );
     assert!(!output.contains("event: response.failed"), "{output}");
     if wire == UpstreamWireApi::Responses {
-        assert_eq!(final_usage, Some(usage));
+        assert_eq!(
+            final_usage.map(|final_usage| final_usage.usage),
+            Some(usage)
+        );
     }
 }
 

@@ -129,7 +129,7 @@ fn normalize_navigation(
         navigation.page = "enhance".to_string();
     }
     match (navigation.page.as_str(), navigation.section.as_deref()) {
-        ("settings" | "pluginMarket", None)
+        ("settings" | "pluginMarket" | "weixin", None)
         | ("enhance", None | Some("stepwise" | "dictation" | "promptEnhance"))
         | ("relay", None) => Ok(navigation),
         _ => anyhow::bail!(
@@ -274,6 +274,11 @@ mod tests {
             },
             ManagerNavigationIntent {
                 page: "settings".to_string(),
+                section: None,
+            },
+            // Codex 里「微信连接」页跳到管理器的微信页。
+            ManagerNavigationIntent {
+                page: "weixin".to_string(),
                 section: None,
             },
         ] {

@@ -6,7 +6,7 @@ import ts from "typescript";
 import { relayProfileWithNormalizedApiKeys } from "./provider-api-keys.ts";
 
 test("官方供应商的本机配置在前端标准化后仍可编辑和切换", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./relay-profile-editing.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
   const tree = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const names = ["normalizeRelayProfile", "relayProfileUsesLiveFiles", "normalizeRelayProtocol", "normalizeAnthropicAuthHeader", "normalizeAnthropicMaxTokens", "normalizeAnthropicThinkingMode"];
   const compiled = ts.transpileModule(tree.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text || "")).map(node => node.getText(tree)).join("\n"), {
@@ -14,7 +14,7 @@ test("官方供应商的本机配置在前端标准化后仍可编辑和切换",
   }).outputText;
   // 接真实实现而不是桩：命名 Key 的归一化被同步合并弄丢过一次，桩会让这条回归隐身。
   const runtime = new Function("relayProfileWithNormalizedApiKeys", `
-    const defaultSettings = { relayBaseUrl: "" };
+    const relayProfileEditingHost = { defaultRelayBaseUrl: () => "" };
     const emptyContextSelection = () => ({}), normalizeContextSelection = () => ({});
     const normalizeRelayMode = value => value;
     const relaySessionProvider = () => "openai";
@@ -36,14 +36,14 @@ test("官方供应商的本机配置在前端标准化后仍可编辑和切换",
 });
 
 test("标准化保留命名 Key 并让 apiKey 跟随当前项", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./relay-profile-editing.ts", import.meta.url), "utf8")).replace(/^export /gm, "");
   const tree = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const names = ["normalizeRelayProfile", "relayProfileUsesLiveFiles", "normalizeRelayProtocol", "normalizeAnthropicAuthHeader", "normalizeAnthropicMaxTokens", "normalizeAnthropicThinkingMode"];
   const compiled = ts.transpileModule(tree.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text || "")).map(node => node.getText(tree)).join("\n"), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const runtime = new Function("relayProfileWithNormalizedApiKeys", `
-    const defaultSettings = { relayBaseUrl: "" };
+    const relayProfileEditingHost = { defaultRelayBaseUrl: () => "" };
     const emptyContextSelection = () => ({}), normalizeContextSelection = () => ({});
     const normalizeRelayMode = value => value;
     const relaySessionProvider = () => "custom";
@@ -76,12 +76,12 @@ test("标准化保留命名 Key 并让 apiKey 跟随当前项", async () => {
 });
 
 test("官方本机配置保留可编辑快照并接入现有文件编辑路径", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = (await readFile(new URL("./App.tsx", import.meta.url), "utf8")) + "\n" + (await readFile(new URL("./relay-profile-editing.ts", import.meta.url), "utf8"));
   const file = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const fn = file.statements.find((node) => ts.isFunctionDeclaration(node)
     && node.name?.text === "relayProfileUsesLiveFiles");
   assert.ok(fn);
-  const compiled = ts.transpileModule(fn.getText(file), {
+  const compiled = ts.transpileModule(fn.getText(file).replace(/^export /, ""), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const usesFiles = new Function(`${compiled}; return relayProfileUsesLiveFiles;`)();

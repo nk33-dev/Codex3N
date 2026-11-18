@@ -115,6 +115,10 @@ export type ClaudeLocalConfig = {
   voiceInput: boolean;
   computerUse: boolean;
   backgroundMode: boolean;
+  forceBackgroundMode?: boolean;
+  hideUnroutedModels?: boolean;
+  codeShareHome?: boolean;
+  importCliSessions?: boolean;
   displayName?: string;
   email?: string;
   plan?: string;
@@ -131,6 +135,9 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppThirdPartyReasoningCollapse: boolean;
   codexAppOfflineAutoReview: boolean;
   codexAppStatsigOverrides: boolean;
+  codexAppStatsigGateOverrides?: Record<string, "on" | "off" | "native">;
+  keepProjectsWithoutAccount?: boolean;
+  upstreamStreamHeaderTimeoutSecs?: number;
   codexAppReportedUsageCompaction: boolean;
   claudeDesktopLocal?: ClaudeLocalConfig;
   managerAgentFocus?: string;
@@ -165,6 +172,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   claudeAppLocalization: boolean;
   codexAppTypingEffect: "off" | "rainbow" | "fireworks" | "stars";
   codexAppPasteFix: boolean;
+  codexAppPromptArgs: boolean;
   codexAppForceChineseLocale: boolean;
   codexAppNativeBrowserRequireIdentification: boolean;
   codexAppThreadIdBadge: boolean;
@@ -210,6 +218,9 @@ export type BackendSettings = WhaleBalanceSettings & {
   weixinConnectModel: string;
   weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
   weixinConnectCodexPath: string;
+  weixinConnectLinkedUserId: string;
+  weixinConnectDefaultMode: "jiajia" | "direct";
+  weixinConnectPushToWeixin: boolean;
   relayBaseUrl: string;
   relayApiKey: string;
   relayProfiles: RelayProfile[];

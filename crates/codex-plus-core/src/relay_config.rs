@@ -2332,6 +2332,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.strips_image_generation_tool()
         || profile.strips_responses_image_detail()
         || profile.enables_pure_api_image_generation()
+        || profile.strips_responses_image_detail()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -2792,6 +2793,96 @@ pub fn delete_context_entry_from_common_config(
     Ok(normalize_optional_toml(doc))
 }
 
+/// `[[skills.config]]` 是 codex 现在的技能启停写法：一个数组，每项按 `path`（或 `name`）
+/// 标识一个技能。它和 `[mcp_servers.<id>]` / `[plugins.<id>]` 这种「按 id 分表」的结构不同，
+/// 不能把整个 `config` 当成一个 id 覆盖，否则用户自己写进去的条目会被模板里的几条顶掉（#3115）。
+const SKILLS_CONFIG_KEY: &str = "config";
+
+fn skill_config_entry_key(entry: &toml_edit::Table) -> Option<String> {
+    entry
+        .get("path")
+        .and_then(Item::as_str)
+        .map(str::to_string)
+        .or_else(|| entry.get("name").and_then(Item::as_str).map(str::to_string))
+}
+
+fn skill_config_entries_of(table: &toml_edit::Table) -> Vec<toml_edit::Table> {
+    table
+        .get(SKILLS_CONFIG_KEY)
+        .and_then(Item::as_array_of_tables)
+        .map(|entries| entries.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn write_skill_config_entries(table: &mut toml_edit::Table, entries: Vec<toml_edit::Table>) {
+    if entries.is_empty() {
+        table.remove(SKILLS_CONFIG_KEY);
+        return;
+    }
+    let mut array = toml_edit::ArrayOfTables::new();
+    for entry in entries {
+        array.push(entry);
+    }
+    table.insert(SKILLS_CONFIG_KEY, Item::ArrayOfTables(array));
+}
+
+/// 模板（managed）里的技能条目按 `path` / `name` 覆盖同名的 live 条目，其余 live 条目原样保留。
+fn merge_managed_skill_config(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
+    let managed_entries = skill_config_entries_of(managed);
+    if managed_entries.is_empty() {
+        return;
+    }
+    let mut target_entries = skill_config_entries_of(target);
+    for managed_entry in managed_entries {
+        let key = skill_config_entry_key(&managed_entry);
+        match key.as_deref().and_then(|key| {
+            target_entries
+                .iter()
+                .position(|entry| skill_config_entry_key(entry).as_deref() == Some(key))
+        }) {
+            Some(index) => target_entries[index] = managed_entry,
+            None => target_entries.push(managed_entry),
+        }
+    }
+    write_skill_config_entries(target, target_entries);
+}
+
+/// 删掉模板里出现过的技能条目（同样按 `path` / `name` 匹配），其余保留。
+fn remove_managed_skill_config(target: &mut toml_edit::Table, managed: &toml_edit::Table) {
+    let managed_keys: std::collections::HashSet<String> = skill_config_entries_of(managed)
+        .iter()
+        .filter_map(skill_config_entry_key)
+        .collect();
+    if managed_keys.is_empty() {
+        return;
+    }
+    let mut entries = skill_config_entries_of(target);
+    entries.retain(|entry| {
+        skill_config_entry_key(entry).is_none_or(|key| !managed_keys.contains(&key))
+    });
+    write_skill_config_entries(target, entries);
+}
+
+/// 把 live 里模板没有的技能条目补回目标（同一个技能以模板为准）。
+fn preserve_unmanaged_skill_config(target: &mut toml_edit::Table, live: &toml_edit::Table) {
+    let live_entries = skill_config_entries_of(live);
+    if live_entries.is_empty() {
+        return;
+    }
+    let mut target_entries = skill_config_entries_of(target);
+    let existing: std::collections::HashSet<String> = target_entries
+        .iter()
+        .filter_map(skill_config_entry_key)
+        .collect();
+    for entry in live_entries {
+        match skill_config_entry_key(&entry) {
+            Some(key) if existing.contains(&key) => {}
+            _ => target_entries.push(entry),
+        }
+    }
+    write_skill_config_entries(target, target_entries);
+}
+
 /// 剥掉通用配置里供应商各自持有的键，丢掉历史遗留的 `[skills.<id>]` 死表，
 /// 再丢掉标记为 `enabled = false` 的上下文条目，得到本次切换真正要合并进
 /// config.toml 的那份通用配置。
@@ -2925,11 +3016,22 @@ fn merge_managed_context_table(
     if target.get(table_name).is_none() {
         target[table_name] = toml_edit::table();
     }
+    if table_name == "skills" {
+        if let (Some(target_plain), Some(managed_plain)) = (
+            target.get_mut(table_name).and_then(Item::as_table_mut),
+            managed.get(table_name).and_then(Item::as_table),
+        ) {
+            merge_managed_skill_config(target_plain, managed_plain);
+        }
+    }
     let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
         target[table_name] = managed_item.clone();
         return;
     };
     for (id, item) in managed_table.iter() {
+        if table_name == "skills" && id == SKILLS_CONFIG_KEY {
+            continue;
+        }
         target_table.insert(id, item.clone());
     }
 }
@@ -2951,10 +3053,21 @@ fn remove_managed_context_entry_table(
     let Some(managed_table) = managed_item.as_table_like() else {
         return;
     };
+    if table_name == "skills" {
+        if let (Some(target_plain), Some(managed_plain)) = (
+            target.get_mut(table_name).and_then(Item::as_table_mut),
+            managed.get(table_name).and_then(Item::as_table),
+        ) {
+            remove_managed_skill_config(target_plain, managed_plain);
+        }
+    }
     let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
         return;
     };
     for (id, _) in managed_table.iter() {
+        if table_name == "skills" && id == SKILLS_CONFIG_KEY {
+            continue;
+        }
         target_table.remove(id);
     }
 }
@@ -2984,6 +3097,14 @@ fn preserve_unmanaged_context_table(
     if target.get(table_name).is_none() {
         target[table_name] = toml_edit::table();
     }
+    if table_name == "skills" {
+        if let (Some(target_plain), Some(live_plain)) = (
+            target.get_mut(table_name).and_then(Item::as_table_mut),
+            live.get(table_name).and_then(Item::as_table),
+        ) {
+            preserve_unmanaged_skill_config(target_plain, live_plain);
+        }
+    }
     let Some(target_table) = target.get_mut(table_name).and_then(Item::as_table_like_mut) else {
         return;
     };
@@ -2998,6 +3119,9 @@ fn preserve_unmanaged_context_table(
         })
         .unwrap_or_default();
     for (id, item) in live_table.iter() {
+        if table_name == "skills" && id == SKILLS_CONFIG_KEY {
+            continue;
+        }
         if !managed_ids.contains(id) && target_table.get(id).is_none() {
             target_table.insert(id, item.clone());
         }
@@ -3019,8 +3143,12 @@ const CODEX_PLUS_OWNED_MCP_SERVER_IDS: &[&str] = &[
     crate::computer_use::CODEX_SERVER_ID,
 ];
 
+/// 停用的托管条目不写进 live。只对 MCP（以及遗留的 `[skills.<id>]`）这样做：
+/// 插件不能删——Codex 把「config.toml 里没有 `[plugins."<id>"]`」当成「未安装」，
+/// 停用必须写成 `enabled = false`；删掉后内置插件（`*@openai-bundled`）会被 Codex
+/// 当作启用重新装回，界面上的停用、编辑成 `enabled = false` 也就都白做了（#3115）。
 fn remove_disabled_context_tables(table: &mut toml_edit::Table) {
-    for table_name in ["mcp_servers", "skills", "plugins"] {
+    for table_name in ["mcp_servers", "skills"] {
         let Some(item) = table.get_mut(table_name) else {
             continue;
         };
@@ -4093,6 +4221,56 @@ fn preserve_missing_table_keys(
     }
 }
 
+/// 多开实例（#3144）：`[windows]`（Windows 沙箱实现 elevated / unelevated 等）以主实例
+/// **当前** live config 为准。
+///
+/// 供应商 profile 的 `config_contents` 是回填时整份 live config 的快照，会连带当时的
+/// `[windows]` 一起存下来。主实例切换时 live 优先（[`preserve_live_app_settings`]），这份
+/// 旧值从不生效；但多开实例的 codex-home 第一次写入时没有 live，快照里的旧值（例如主实例
+/// 早已改成 unelevated、快照里还是 elevated）就原样落进实例，之后又被当成实例自己的
+/// live 一直保留。结果同一台机器上主实例与多开实例的沙箱实现不一致。
+///
+/// 规则：
+/// - 主实例有 `[windows]`：整段沿用主实例的（只改多开实例，不碰主实例）；
+/// - 主实例没有：保留多开实例写入前自己的 `[windows]`（`instance_live_before` 是写入
+///   前读到的实例 config.toml 文本，没有就传空串）；
+/// - 两边都没有：去掉写入时从 profile 快照带进来的 `[windows]`，交给 Codex 自己决定。
+///
+/// 返回是否改写了实例的 config.toml。
+pub fn align_isolated_instance_windows_settings(
+    instance_home: &Path,
+    main_home: &Path,
+    instance_live_before: &str,
+) -> anyhow::Result<bool> {
+    fn windows_table(text: &str) -> Option<Item> {
+        let doc = parse_toml_document(&normalize_duplicate_toml_text(text)).ok()?;
+        doc.get("windows")
+            .filter(|item| item.is_table_like())
+            .cloned()
+    }
+    let main_live = read_optional_text(&main_home.join("config.toml")).unwrap_or_default();
+    let desired = windows_table(&main_live).or_else(|| windows_table(instance_live_before));
+    let config_path = instance_home.join("config.toml");
+    let current = read_optional_text(&config_path)?;
+    let mut doc = parse_toml_document(&current)?;
+    let changed = match desired {
+        Some(windows) => {
+            let same = doc
+                .get("windows")
+                .is_some_and(|existing| existing.to_string() == windows.to_string());
+            if !same {
+                doc["windows"] = windows;
+            }
+            !same
+        }
+        None => doc.as_table_mut().remove("windows").is_some(),
+    };
+    if changed {
+        crate::settings::atomic_write(&config_path, normalize_optional_toml(doc).as_bytes())?;
+    }
+    Ok(changed)
+}
+
 /// Normal-user launches cannot complete the elevated native Windows sandbox
 /// setup. Downgrade only that case; an elevated process keeps the user's mode.
 pub fn ensure_windows_sandbox_usable_for_current_user(home: &Path) -> anyhow::Result<bool> {
@@ -4767,12 +4945,15 @@ fn apply_model_catalog_to_config_with_live_policy(
         validate_managed_model_catalog(&catalog_json)?;
         crate::settings::atomic_write(&catalog_path, catalog_json.as_bytes())?;
         let mut doc = parse_toml_document(&config_text)?;
+        // config.toml 没有 model 时补一个：优先取默认成员的模型（#2958）。
+        // 目录按成员顺序输出，默认成员不一定排第一，直接取 first() 会落到别家的 cpx- 模型上。
         if root_key_string(&config_text, "model").is_none()
             && let Ok(catalog) = serde_json::from_str::<Value>(&catalog_json)
-            && let Some(default_model) = catalog
-                .get("models")
-                .and_then(Value::as_array)
-                .and_then(|models| models.first())
+            && let Some(models) = catalog.get("models").and_then(Value::as_array)
+            && let Some(default_model) = models
+                .iter()
+                .find(|model| model["codex_plus_default"].as_bool() == Some(true))
+                .or_else(|| models.first())
                 .and_then(|model| model.get("slug"))
                 .and_then(Value::as_str)
         {
@@ -5520,6 +5701,23 @@ pub(crate) fn upstream_rejects_tool_search(profile: &RelayProfile) -> bool {
     .any(|base_url| kimi_official_base_url(base_url))
 }
 
+/// Kimi 官方（Moonshot 开放平台 / Kimi For Coding）的 Responses 接口只认
+/// `reasoning.encrypted_content`，Codex 客户端私有的 `output.encrypted_content`
+/// 会让整单 400（issue #3026）。官方 ChatGPT 路径不受影响。
+pub(crate) fn upstream_is_kimi_official_responses(profile: &RelayProfile) -> bool {
+    if profile.protocol != RelayProtocol::Responses {
+        return false;
+    }
+    let resolved_base_url = relay_profile_base_url(profile);
+    [
+        profile.base_url.as_str(),
+        profile.upstream_base_url.as_str(),
+        resolved_base_url.as_str(),
+    ]
+    .iter()
+    .any(|base_url| kimi_official_base_url(base_url))
+}
+
 fn kimi_official_base_url(base_url: &str) -> bool {
     let host = base_url
         .trim()
@@ -5968,7 +6166,18 @@ fn merge_toml_item(target: &mut Item, source: &Item) {
             return;
         }
     }
-
+    // 数组表（[[table]]）重复出现时必须按条目追加，不能整棵替换：
+    // 每个独立的 [[skills.config]] 块只含一个条目，逐块合并阶段整棵覆盖会把
+    // N 条用户规则塌缩成最后出现的那 1 条（issue #3115：切换供应商后
+    // config.toml 里 260 条 [[skills.config]] 只剩最后写的 1 条）。
+    if let (Some(target_array), Some(source_array)) =
+        (target.as_array_of_tables_mut(), source.as_array_of_tables())
+    {
+        for entry in source_array.iter() {
+            target_array.push(entry.clone());
+        }
+        return;
+    }
     *target = source.clone();
 }
 
@@ -6497,7 +6706,7 @@ const MODEL_NAME_FORBIDDEN_KEYWORDS: [&str; 6] = [
     "model_catalog_json",
 ];
 
-fn sanitize_relay_model_name(raw: &str) -> Option<String> {
+pub(crate) fn sanitize_relay_model_name(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty()
         || trimmed.len() > MAX_MODEL_NAME_LEN
@@ -6578,6 +6787,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.strips_image_generation_tool()
         || profile.strips_responses_image_detail()
         || profile.enables_pure_api_image_generation()
+        || profile.strips_responses_image_detail()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -6962,6 +7172,7 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.strips_image_generation_tool()
         || profile.strips_responses_image_detail()
         || profile.enables_pure_api_image_generation()
+        || profile.strips_responses_image_detail()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {

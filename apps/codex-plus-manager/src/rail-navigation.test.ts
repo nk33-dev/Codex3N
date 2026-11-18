@@ -53,12 +53,16 @@ function railRuntime() {
   const context = vm.createContext({
     codexPlusBackendGeneration: 1, window: { __codexPlusBackendGeneration: 1 }, codexPlusRailSelector: "nav", codexPlusRailDestinationSelector: "[data-sidebar-destination]",
     codexPlusRailNavId: "codex-plus-rail-nav", codexPlusRailExtensionsId: "codex-plus-rail-extensions",
+    codexPlusRailProviderId: "codex-plus-rail-provider", codexPlusRailRemoteId: "codex-plus-rail-remote",
+    codexPlusRailWeixinId: "codex-plus-rail-weixin", codexPlusRailTasksId: "codex-plus-rail-tasks",
     codexPlusMenuId: "codex-plus-menu", codexPlusBackendStatus: { status: "ok" },
     codexPlusRailTemplateButton: () => null,
     createCodexPlusRailButton: ({ id }: any) => Object.assign(new FakeNode(id), { __codexPlusGeneration: 1 }),
     openCodexPlusPage() {}, openCodexPlusExtensions() {}, closeCodexPlusPageAfterNativeNavigation() {},
+    openCodexPlusProviderPage() {}, openCodexPlusRemoteControlPage() {}, openCodexPlusWeixinConnectPage() {}, openCodexPlusTaskBoardPage() {},
     codexPlusExtensionConstants: { extensionAttribute: "data-codex-plus-ext" },
     codexPlusDefaultExtensionIconPath: "",
+    codexPlusLogoDataUrl: "data:image/png;base64,fixture",
     Element: FakeNode,
     document: {
       querySelector: (selector: string) => selector === "nav" ? rail : null,
@@ -81,7 +85,7 @@ function railRuntime() {
 test("启动时只有主页和自定义，入口插在主页之后而不是图标栏顶部", () => {
   const app = railRuntime();
   assert.equal(app.context.installCodexPlusRailNavigation(), true);
-  assert.deepEqual(app.order(), ["home-group", "codex-plus-rail-nav", "codex-plus-rail-extensions", "builtin:customize", "more"]);
+  assert.deepEqual(app.order(), ["home-group", "codex-plus-rail-nav", "codex-plus-rail-provider", "codex-plus-rail-remote", "codex-plus-rail-weixin", "codex-plus-rail-tasks", "codex-plus-rail-extensions", "builtin:customize", "more"]);
   assert.equal(app.rail.children[0].id, "top", "不能插到 rail 顶层");
 });
 
@@ -90,7 +94,7 @@ test("自动化晚到后，下一次扫描把入口挪到它后面，重复安�
   app.context.installCodexPlusRailNavigation();
   app.group.insertBefore(new FakeNode("", "builtin:automations"), app.group.children[1]);
   app.context.installCodexPlusRailNavigation();
-  const expected = ["home-group", "builtin:automations", "codex-plus-rail-nav", "codex-plus-rail-extensions", "builtin:customize", "more"];
+  const expected = ["home-group", "builtin:automations", "codex-plus-rail-nav", "codex-plus-rail-provider", "codex-plus-rail-remote", "codex-plus-rail-weixin", "codex-plus-rail-tasks", "codex-plus-rail-extensions", "builtin:customize", "more"];
   assert.deepEqual(app.order(), expected);
   let moves = 0;
   const insert = app.group.insertBefore.bind(app.group);

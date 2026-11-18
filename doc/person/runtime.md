@@ -61,6 +61,7 @@
 - Skills 进入及重新进入页面复用 `skill-catalog.json` 与本地安装状态，不自动联网；手动刷新在前端及后端合并进行中的请求，最多并发两个仓库，单库失败沿用其缓存并报告错误，刷新期间已删除或停用的仓库不回填。ZIP 下载在读取响应头及每块数据时检查 64 MiB 上限，无长度头也不能无限缓冲。
 - Skills 安装、启停和仓库保存共用同步操作锁，开始写入即隔离较早的目录刷新和检查结果；卸载页面后不提交写操作结果或提示。目录刷新的迟到错误同样失效。
 - Skills 下载在锁外执行，提交前复核仓库、安装代次、源目录和 Agent 副本；目标子树只提取一次。共享路径去重，跨卷备份使用目标卷暂存并保留可恢复内容。刷新继续合并同一请求、最多并发两个仓库，`skill-catalog.json` 保留磁盘缓存；发布缓存前核对仓库及请求代次。GitHub 请求沿用上游的代理隔离、空闲/总超时与 64 MiB 流式限额，ZIP API 适配个人安全依赖。
+- Skills 的版本、原位更新、来源关联、重复副本和备份由上游 `skills/{local_versions,in_place_update,source_match,backup_usage}.rs` 管理。`ManagementExtra.tsx` 复用跨页面缓存和在途请求，首次进入只读本地，仓库目录由用户在发现页刷新；本地扫描与仓库刷新独立计数，迟到响应不能覆盖写操作，库存或备份读取失败保留上次成功视图。
 - 跨页面复用的展示原语放 `src/components/ui/manager-primitives.tsx`；默认设置放 `src/lib/default-settings.ts`。
 - 外移模块只能 `import type ... from "../App"`，**不得在运行时从 `App.tsx` 取值**，否则形成循环依赖。需要新类型的可见性时给 `App.tsx` 的类型加 `export`。
 - 后端 Tauri 命令按业务拆到 `apps/codex-plus-manager/src-tauri/src/commands/`（现为 `shared.rs`、`dream_skin.rs`、`provider_import.rs`）：`commands.rs` 用 `mod X; pub use X::*;` 汇总，`lib.rs` 的 `generate_handler!` 仍写 `commands::<命令名>`，不需要改。子模块内用 `use super::{...}` 取父模块项，需被父模块测试引用的私有项放宽为 `pub(super)`。
@@ -74,6 +75,8 @@
 | --- | --- | --- |
 | `launcher.rs::start_helper`、`start_bridge_watchdog` | `launcher/backend_services.rs` | 常驻 helper 复用、macOS/Windows 桌宠与单份 watchdog；常驻 helper 集成测试、恢复服务测试 |
 | `App.tsx` 内类型和默认值 | `provider-types.ts`、`lib/default-settings.ts` | 代理重试、旁支保存、轮次回退、Work 视图和模型跟随共用配置；类型检查、设置测试 |
+| 上游 `App.tsx` 供应商编辑函数 | `relay-profile-editing.ts`，管理器与 `42-provider-editing.generated.js` 共用 | 默认设置与上下文选择通过 `configureRelayProfileEditing` 提供；类型只引用 `provider-types.ts`，不反向依赖 App |
+| 上游管理器内置拓展与服务配置迁移 | Codex 设置页 `40-backend-settings.js`、`46-service-settings.js`；个人管理器保留原增强页签 | 两端复用同一设置存储和清单，管理器保持手动保存及提示词工具配置；服务密钥只接受写入和已配置标记 |
 | `App.tsx` 新增使用模式、Statsig 设置与账号引用 | 同一共用类型与默认值；`routes.rs` 仅公开 Statsig 布尔开关 | 使用模式和原生账号变化经既有设置事件同步修订号，其他草稿保留；翻译扫描和设置回归 |
 | `App.tsx::ClaudeLocalConfig`、本地模式及上报用量默认值 | `provider-types.ts`、`lib/default-settings.ts`；页面仍在 `App.tsx` | `claudePatch` 接入原导航，Claude 独立会话页保留；设置事件只同步对应字段与修订号 |
 | `App.tsx` 的上下文解析函数 | 上游 `context-config-text.ts`，由原 App 调用 | MCP 按 ID 累积，多级子表归属不变；残缺条目不覆盖 live；上下文与配置回归 |
@@ -195,9 +198,11 @@ node scripts/profile-codex-switching.mjs --compare "$env:TEMP\codex-official-sho
 
 `App.tsx` 的后台下载在读取更新偏好后由 `UpdateNotifications::autoDownloadEnabled` 判定；关闭自动下载时不因首屏设置未回填而启动下载。个人更新源、校验和及降级拦截继续共用原入口。
 
-Claude Desktop 本地模式沿用 `claude_local_backend.rs` 与 `tools/claude-local`，通过 Tauri 的 `claude_local_status/configure/action` 注册；`App.tsx::ClaudeLocalizationScreen` 的本地模式与 `claudePatch` 补丁副本页面分开。本地模式配置为 `claudeDesktopLocal`，默认关闭，动作后按需刷新状态；已启动页面沿用上游 3 秒状态刷新，离页后停止。管理器重启可在原端口恢复已挂接代理；应用退出经统一收尾入口停止代理。显示邮箱 `email` 与类型、默认值共用 `provider-types.ts`、`lib/default-settings.ts`，由后端校验并传给同一代理，不进入 Codex 注入设置白名单。
+启动时只清理 `updates/` 中不高于当前版本的已识别安装包及完成标记；安装包名的版本复用 `parse_version_tag`，包含 `-3n.N` 修订号，同一上游版本的更新个人包继续保留。未知名称和正在占用的文件不强制删除。
 
-Windows 安装路径探测在进程内合并，未安装结果缓存 30 秒，存在的文件或 MSIX 路径缓存 5 分钟后重新查询以发现升级；版本号继续按路径和修改时间缓存。`cached_source_app` 回归验证探测次数及过期刷新。Classic 与 MSIX 的 profile 按 `profile_sets` 映射，模式切换记录兼容旧单份备份与新多份备份。Code 会话同步由 `claude_session_sync.rs` 在显式开启后执行，沿用主 profile 集合，复制记录与对应 transcript，原文件保留；其他 MSIX profile 的实际会话同步未验收。平台、证书及代理限制见 [安全边界](security.md#claude-desktop-本地模式)。
+Claude Desktop 完整功能模式复用 `Cargo.toml` 按提交钉住的 ClaudeMom `claude-local` 库。`claude_local_backend.rs` 只实现宿主设置、网关模型、听写和 3p 启动；代理脚本、CA、profile 切换、Desktop 探测及会话同步均由依赖库维护，仓库内不再保留 `tools/claude-local` 或 `claude_session_sync.rs` 的第二份实现。Tauri 的 `claude_local_status/configure/action` 名称保持不变。`App.tsx::ClaudeLocalizationScreen` 的本地模式与 `claudePatch` 补丁副本页面分开，`claudeDesktopLocal` 默认关闭，配置仍存个人设置；显示邮箱、后台模式、模型过滤、Code 共用目录和 CLI 会话导入字段经 `provider-types.ts` 保留，不进入 Codex 注入白名单。管理器退出经统一收尾入口停止代理。
+
+Windows 安装路径探测、Classic/MSIX profile 映射及旧切换记录的兼容由同一 `claude-local` 库负责；补丁副本的 `claude_localization.rs` 也调用其 Desktop 探测。真实 MSIX 会话同步、证书信任和新版完整功能模式未在本轮验收，平台与代理限制见 [安全边界](security.md#claude-desktop-本地模式)。
 
 macOS 自动更新在个人版 sha256 与版本门禁通过后调用 `update/macos.rs::launch_update`，由独立 helper 事务替换 `Codex++.app`，失败时回滚。DMG 中保留隐藏的 `codex-plus-legacy-shim` 兼容壳供旧双应用更新器迁移，首次启动归档旧管理器；helper 脱离 bundle 后重新签名并保留执行权限。已安装的签名 app 与实际二进制是同一文件时，修复入口保留 bundle 内容。Windows 包内只有统一 GUI，升级清理旧管理器文件，保留用户对桌面快捷方式的选择。
 

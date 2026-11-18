@@ -26,7 +26,11 @@ Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限�
 
 **边界差异**：管理器自己的设置编辑器要能显示密钥正文，读的是 Tauri IPC 的 `get_settings`，那份仍返回明文；加密只发生在落盘边界（见[runtime.md](runtime.md)）。因此「管理器能读到明文」是设计内行为，不代表桥接也可以下发。
 
-`/settings/catalog` 只返回公开设置项清单；新增的输入预测、推理折叠、删除确认及 `agentPet` 展示配置明确列入白名单。网关凭据不进入此响应。`gateway.json` 沿用上游的本机文件与权限保护，尚未接入个人版 `settings.json` 的密钥加密；导出、备份与共享该文件时按明文凭据处理。
+`/settings/catalog` 只返回公开设置项清单。Codex 服务配置页只读取听写与下一步建议的非密钥字段及 `apiKeyConfigured`，密钥写入经原设置接口，读取不返回正文；Statsig 逐项覆盖先过滤数字 ID 与 on/off/native 值。网关凭据不进入此响应。`gateway.json` 沿用上游的本机文件与权限保护，尚未接入个人版 `settings.json` 的密钥加密；导出、备份与共享该文件时按明文凭据处理。
+
+`/providers/list`、`/providers/commit` 和供应商探测只供内部页面，不开放给第三方拓展。命名 Key 只给预览，JSON/TOML 内的密钥、Token、密码以及自定义请求头用占位符下发；保存和探测先根据已存来源恢复，来源已消失时拒绝使用占位符。普通编辑保留原凭据和未修改文件字节，手工输入的新凭据仍可写入。管理器 Tauri 编辑器的明文读取边界不变。
+
+原生 Responses WebSocket 复用上游同账号续接与 HTTP 回退，浏览器 Origin 在路由前拒绝，不因升级协议放宽 helper 来源限制。远程控制由 `remote_control` 独立服务处理配对、设备角色和撤销，默认不启用；它不是旧 mobile relay 的替代鉴权层。微信加加、审批与推送通过绑定的本人身份核验，工作区附件继续受个人授权版本保护。
 
 `sessionIndexRepairEnabled`、`codexAppOfflineAutoReview` 和 `usageHistoryEnabled` 仅公开布尔值。用量历史和消费者封存共用默认关闭的开关；封存的固定 client 是命名空间，不是调用者鉴权。请求不能指定数据库或文件路径，数据保存在状态目录按 home 分桶的独立缓存。会话目标与恢复模型查询限制本机 host，目标转发复核所属窗口，错误不回显原生脚本或会话内容。
 
@@ -40,17 +44,21 @@ Computer Use 的 `cu-pip` 窗口共用同一 CSP，只新增窗口拖动权限�
 
 ## ZIP 依赖
 
-运行时 ZIP 与语音构建依赖统一使用 `zip 9.0.4`，覆盖 Unix 权限及链接解压公告
+运行时 ZIP 与语音构建依赖统一使用 `zip 9.0.5`，覆盖 Unix 权限及链接解压公告
 RUSTSEC-2026-0367/0368/0369。`sherpa-onnx-sys 1.13.8` 尚固定依赖 zip 2，
 通过根清单 patch 使用 `vendor/sherpa-onnx-sys`；仅更新 ZIP 构建依赖，FFI 和原生库
 版本保持一致。来源、许可证及移除条件见该目录的 `PATCH.md`。Skills、插件和主题包
 继续沿用各自的路径、链接与体积校验。
+
+ZIP 9.0.5 同时覆盖本地头与中央目录名称不一致的 RUSTSEC-2026-0548。锁文件中的 `quinn-proto` 至少 0.11.19、`quinn-udp` 至少 0.5.16，覆盖流限额、Retry token 和截断数据报接收循环的公告；不通过忽略漏洞放行。
 
 ## CI 与发布
 
 配置体检的 AI 解释默认关闭，仅显式运行时发送脱敏配置摘要。独立 `config-doctor.json` 沿用上游明文 Key 存储，未纳入个人主设置加密；管理器仅返回掩码。与 `gateway.json` 一样，复制或共享该文件须按凭据处理。原生账号选择、账号引用及使用模式不进入注入页公开白名单；Statsig 仅开放布尔开关。新增体检文档站点只允许精确 HTTPS 主机，不放宽任意外链或 WebView 网络来源。
 
 前端构建依赖使用 Vite 6.4.5，覆盖开发服务器跨源执行、文件边界和 Windows 编辑器命令处理公告；锁文件与 `npm audit --audit-level=high` 一起验证。
+
+2026-11-18 审计新增 `picomatch` GHSA-fc5q-39xc-vjpf（重复 extglob 导致正则回溯）。截至本轮核对，npm 最新 4.0.7 仍受影响，公告未提供已发布修复版，Vite 最新版本同样依赖它；此依赖用于构建工具，不进入已打包的桌面运行时。当前审计门禁仍阻断，不默认忽略公告或降低审计等级。
 
 TLS 根证书与校验依赖在锁文件中使用 `rustls-webpki 0.103.16`、`webpki-roots 1.0.11`，覆盖 RUSTSEC-2026-0381/0382。请求解压使用 `zstd 0.14.3`、`zstd-safe 8.2.0` 与 `zstd-sys 2.1.2`，覆盖流复用、内存和分配器公告；有界正文读取与压缩请求测试继续验证原行为。
 
@@ -59,6 +67,8 @@ SQLite 使用 `rusqlite 0.41.1` 与 `libsqlite3-sys 0.39.1` 的 bundled SQLite 3
 PR、Release 和 `scripts/release.ps1` 均运行 relay 的 `cargo clippy -p codex-plus-mobile-relay --all-targets -- -D warnings`、`cargo audit` 与前端 `npm audit --audit-level=high`。Clippy 先只阻断 relay，核心库的既有告警按模块逐步清理；Rust 审计只把漏洞设为阻断，未维护等警告仍报告。安全检查失败不创建 Release。
 
 push CI 包含 Windows lint/产包、Ubuntu/macOS 前端以及 macOS universal、Linux DEB 产包 job：Windows 上的 `rust-lint` 只跑格式化、`cargo check` 与 relay clippy，作为快速失败面；`windows-artifacts` 执行完整前端、Rust 与安全门禁并构建 NSIS 安装包；Ubuntu 与 macOS 各跑一遍共享前端回归；macOS x64/arm64 各自构建原生 DMG。同一 ref 的新 push 会取消未结束的旧 run，`personal` 和 `main` 除外——发布脚本要求当前 SHA 最新一次 push CI 已全部成功，取消会让那个提交永远等不到结果。`-SkipChecks` 只复用该结果。缺少结果、运行中、失败、查询异常或检查产生未提交改动时，脚本在创建标签前停止。行为回归见 `apps/codex-plus-manager/src/release.test.ts`；环境与日志检查见 [maintenance.md](maintenance.md)。
+
+数据层测试因共用进程内缓冲预算单独串行执行，其他 Rust 目标保持原 CI 并发；本机继续低并发。个人 Release 另产 Ubuntu 24.04 amd64 DEB，Windows/macOS/Linux 所需任务成功后才生成校验和及更新元数据；按平台补跑跳过的任务不视为失败。Windows 安装器的数字版本由工作流传入，预发布后缀只从数字资源中去除，产品版本和更新版本保留完整个人版本号。
 
 ## 语音服务边界
 
@@ -76,4 +86,4 @@ Claude 语音通过主进程 `hook.js` 读取用户状态目录的 `dictation-he
 
 该本地模式支持 macOS 与 Windows；Linux 保留状态展示但不允许启动。完整功能模式通过本机 CA 与代理映射 Claude 服务，证书信任和取消信任由用户显式操作；Windows 通过 `certutil -user` 操作当前用户的根证书存储，macOS 使用登录钥匙串。CA 和服务证书由 `rcgen` 在进程内生成，已有完整材料继续沿用；测试只在临时目录生成证书，不安装系统信任。3p 模式使用隔离配置目录。启用前应理解本机证书信任和代理的作用范围，离线夹具不代表官方服务、登录或 Computer Use 已可用。
 
-`/dictation/claude-stream` 先经过 helper 对端和来源检查，再核对听写能力令牌；仅允许本地 SenseVoice，不回退在线转写。流有 30 秒空闲、16 分钟会话、帧及总输入输出预算，同一时间只接受一个识别会话；连接断开后等待不可取消的原生推理结束才释放容量。新增响应头保持个人 CORS，不开放通配来源。回归见 helper WebSocket、dictation 与 `tools/claude-local` 测试。
+`/dictation/claude-stream` 先经过 helper 对端和来源检查，再核对听写能力令牌；仅允许本地 SenseVoice，不回退在线转写。流有 30 秒空闲、16 分钟会话、帧及总输入输出预算，同一时间只接受一个识别会话；连接断开后等待不可取消的原生推理结束才释放容量。新增响应头保持个人 CORS，不开放通配来源。回归见 helper WebSocket、dictation、核心宿主测试及钉住的 `claude-local` 库；其代理和证书源码在 ClaudeMom 仓库维护。

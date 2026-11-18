@@ -21,6 +21,8 @@ export const defaultSettings: BackendSettings = {
   codexAppThirdPartyReasoningCollapse: false,
   codexAppOfflineAutoReview: false,
   codexAppStatsigOverrides: false,
+  codexAppStatsigGateOverrides: {},
+  keepProjectsWithoutAccount: false,
   codexAppReportedUsageCompaction: false,
   claudeDesktopLocal: {
     enabled: false, model: "", localization: true, voiceInput: true,
@@ -58,6 +60,7 @@ export const defaultSettings: BackendSettings = {
   claudeAppLocalization: true,
   codexAppTypingEffect: "off",
   codexAppPasteFix: false,
+  codexAppPromptArgs: true,
   codexAppForceChineseLocale: false,
   codexAppNativeBrowserRequireIdentification: false,
   codexAppThreadIdBadge: false,
@@ -103,6 +106,9 @@ export const defaultSettings: BackendSettings = {
   weixinConnectModel: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
+  weixinConnectLinkedUserId: "",
+  weixinConnectDefaultMode: "jiajia",
+  weixinConnectPushToWeixin: false,
   relayBaseUrl: "",
   relayApiKey: "",
   relayProfiles: [

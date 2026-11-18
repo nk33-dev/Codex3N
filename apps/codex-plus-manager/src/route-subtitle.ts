@@ -22,6 +22,7 @@ export function routeSubtitle(route: ManagerRoute, _soloAgent: string | null = n
     claudeSessions: t("查看、删除和恢复 Claude Code 本地会话"),
     claudeRelay: t("管理 Claude Code 的 API 供应商，切换时写入 ~/.claude/settings.json"),
     computerUse: t("复用 Codex 的 Computer Use，通过 MCP 接给 Claude Code、Claude Desktop 与 Codex。"),
+    remoteControl: t("在浏览器里查看和操控 Codex 桌面的会话：发消息、停止、审批命令、回答提问"),
     requestLog: t("查看代理请求的状态、模型、重试、token 用量与缓存命中"),
     agentSettings: t("当前 Agent 的专属设置"),
     relayEnvironment: t("排查可能干扰中转站配置的本机环境"),

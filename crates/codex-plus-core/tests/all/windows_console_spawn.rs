@@ -31,6 +31,16 @@ const HIDING_HELPERS: &[&str] = &[
 
 /// (文件路径后缀, 该行包含的片段, 理由)。片段尽量取能唯一定位调用点的字面量。
 const ALLOWED: &[(&str, &str, &str)] = &[
+    (
+        "crates/codex-plus-core/src/task_board.rs",
+        "Command::new(\"osascript\")",
+        "pick_folder 的 macOS 编译分支，cfg 超出静态回看范围",
+    ),
+    (
+        "crates/codex-plus-core/src/task_board.rs",
+        "Command::new(program)",
+        "pick_folder 的 Linux 编译分支，仅尝试 zenity 和 kdialog",
+    ),
     // GUI 程序或系统外壳：没有控制台，不会闪黑框。
     (
         "crates/codex-plus-core/src/windows_integration.rs",

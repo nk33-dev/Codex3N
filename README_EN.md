@@ -10,6 +10,7 @@ Download from [Releases](https://github.com/nk33-dev/Codex3N/releases/latest):
 
 - Windows: `Codex3N-<version>-windows-x64-setup.exe`
 - macOS: `Codex3N-<version>-macos-universal.dmg` (Intel and Apple Silicon)
+- Linux: `Codex3N-<version>-linux-amd64.deb` (Ubuntu 24.04 amd64)
 
 Open **Codex++**, confirm the official app path, configure providers and enhancements, then start the official app from Overview. The interface and background services share one application; closing the window keeps it in the tray. Check for updates under Settings → Version & updates.
 

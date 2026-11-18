@@ -26,6 +26,7 @@ impl DefaultLaunchHooks {
         let task = tokio::spawn(async move {
             loop {
                 tokio::select! {
+                    biased;
                     _ = &mut shutdown_rx => break,
                     accepted = listener.accept() => {
                         if let Ok((stream, addr)) = accepted {
@@ -61,6 +62,7 @@ impl DefaultLaunchHooks {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
+                    biased;
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
                         let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
@@ -96,13 +98,18 @@ impl DefaultLaunchHooks {
                 let _ = pet_cursor_task.await;
             }
         });
-        if let Some(runtime) = self
-            .bridge_watchdog
-            .lock()
-            .await
-            .replace(BridgeWatchdogRuntime { shutdown, task })
+        if let Some(mut runtime) =
+            self.bridge_watchdog
+                .lock()
+                .await
+                .replace(BridgeWatchdogRuntime {
+                    shutdown: Some(shutdown),
+                    task,
+                })
         {
-            let _ = runtime.shutdown.send(());
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
             let _ = runtime.task.await;
         }
         Ok(())

@@ -22,6 +22,7 @@
 - 新版 Codex 的侧栏项目存于 `~/.codex/.codex-global-state.json` 的 `local-projects`、`project-order`、`thread-project-assignments` 和宿主项目 ID 映射；数据库 `state_5.sqlite` 的 `projects`、`project_roots`、`threads.project_id` 存另一份关联。项目消失时先检查两处，不要清空用户目录。
 - `codex_app_state.rs` 分别保存旧工作区路径快照与新版项目快照，恢复时不把旧路径当新版项目 ID；新版快照保留此前的项目、ID 映射和会话关联，切换供应商后合并到当前状态，当前项目同 ID 的字段优先。
 - 存在 `electron-account-renderer-state-v1` 时按其 owner 保存活动和 inactive 账号的公开项目字段，只为当前仍存在的同账号补缺键，显式空值和当前顺序保留。账号快照不进入旧版跨项目合并，未知结构拒绝写回；不读取认证文件推算身份。临时副本回归覆盖切换账号、无归属旧快照和降级到无账号结构。
+- `keepProjectsWithoutAccount` 默认关闭，由上游 `codex_app_state::reconcile_account_scope` 在启动前处理：非官方登录时保留本地项目，官方登录恢复账号隔离容器。原容器存于 `backups_state/account-scope/detached-renderer-state.json`，恢复时不覆盖客户端新建的账号容器；未知结构拒绝写入。它与原同账号快照补缺共同保留，不等同跨账号合并全部历史。
 - 若已升级且当前侧栏只剩少量项目，先运行 `python scripts/restore_codex_projects.py` 只读预览。确认项目数据库仍在、完全退出 Codex 桌面版和管理器后，在独立终端运行 `python scripts/restore_codex_projects.py --apply`。脚本先备份原全局状态与一致性 SQLite 副本到 `~/.codex/backups_state/project-recovery/`，再恢复可明确匹配的项目和会话；显式无项目、已归档、路径不匹配或有歧义的会话不自动归类。重新启动 Codex 后核对侧栏和会话数。
 
 ## 隐藏失效会话

@@ -20,15 +20,9 @@ function ruleBody(selector: string) {
   return match[1];
 }
 
-test("feature switch cards keep their own height and expanded blocks take a full row", () => {
+test("feature switch cards keep their own height", () => {
   // 默认 align-items: stretch 会把同一行的卡片拉到行高，details 一展开左侧卡就被撑大。
   assert.match(ruleBody(".feature-switch-grid"), /align-items:\s*start/);
-
-  // 「API 余额（可选）」这类可展开配置块整行独占，展开只往下长。
-  assert.match(
-    ruleBody(".enhance-feature-groups .feature-switch-grid > .settings-block"),
-    /grid-column:\s*1\s*\/\s*-1/,
-  );
 
   // 原「Codex 用量挂件」（含余额配置）已移出增强页，改为独立的「Agent 桌宠」页。
   const pet = catalog.groups.find((group) => group.title === "桌宠与活动");
@@ -36,7 +30,9 @@ test("feature switch cards keep their own height and expanded blocks take a full
   const petKeys = catalog.items.filter((item) => item.group === pet.id).map((item) => item.key);
   assert.ok(petKeys.includes("codexAppActivityOverlayRight"));
   assert.ok(!petKeys.includes("codexAppWhaleWidgetEnabled"), "Codex 用量挂件不再属于增强页");
-  const enhance = app.slice(app.indexOf("function EnhanceScreen("), app.indexOf("function StandaloneModeGroup("));
+  const start = app.indexOf("function EnhanceScreen(");
+  assert.ok(start >= 0);
+  const enhance = app.slice(start, app.indexOf("\n}\n", start));
   assert.doesNotMatch(enhance, /Codex 用量挂件|WhaleBalanceSettingsFields/);
 });
 

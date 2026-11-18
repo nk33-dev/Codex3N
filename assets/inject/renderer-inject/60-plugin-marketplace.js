@@ -249,6 +249,7 @@
         throw error;
       }
     };
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(client, "sendRequest", "plugin.sendRequest");
     client.__codexPluginMarketplaceUnlockPatch = codexPluginMarketplaceUnlockVersion;
     return true;
   }
@@ -471,6 +472,7 @@
         return bridge.__codexPluginMarketplaceOriginalSendMessageFromView(nextMessage);
       };
     }
+    if (typeof codexPlusTraceStackOverflow === "function") codexPlusTraceStackOverflow(bridge, "sendMessageFromView", "bridge.sendMessageFromView");
     bridge.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
     window.__codexPluginMarketplaceBridgePatch = codexPluginMarketplaceUnlockVersion;
     sendCodexPlusDiagnostic("plugin_marketplace_bridge_patch_installed", {});
@@ -1291,6 +1293,12 @@
     return match ? decodeURIComponent(match[1]) : "";
   }
 
+  function threadScrollRestoreEnabled() {
+    return codexPlusBackendSettingsLoaded
+      && codexPlusBackendSettings.codexAppThreadScrollRestore === true
+      && codexPlusSettings().threadScrollRestore;
+  }
+
   function finiteNonNegativeNumber(value) {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
@@ -1377,6 +1385,24 @@
   }
 
   releaseThreadScrollControl();
+
+  function handleThreadScrollVisibilityChange() {
+    if (!threadScrollRestoreEnabled()) return;
+    const runtime = threadScrollRuntime();
+    if (document.visibilityState === "hidden") {
+      saveThreadScrollPositionNow();
+      runtime.resumeSessionId = runtime.activeSessionId;
+      clearThreadScrollRestoreTimers();
+      clearThreadScrollSyncTimers();
+      return;
+    }
+    if (!runtime.resumeSessionId) return;
+    // 隐藏前的手动滚动取消的是旧导航，不应阻止恢复刚保存的当前位置。
+    runtime.userScrollIntentUntil = 0;
+    runtime.userCancelledRestoreSessionId = "";
+    syncThreadScrollState();
+    scheduleThreadScrollSyncAttempts(false);
+  }
 
   async function postJson(path, payload) {
     if (path === "/delete") {

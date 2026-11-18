@@ -10,6 +10,7 @@ CodexPlusPlus 的个人定制版，给 OpenAI Codex / ChatGPT 桌面应用加上
 
 - Windows：`Codex3N-<版本>-windows-x64-setup.exe`
 - macOS：`Codex3N-<版本>-macos-universal.dmg`，Intel 与 Apple Silicon 通用
+- Linux：`Codex3N-<版本>-linux-amd64.deb`，Ubuntu 24.04 amd64
 
 打开 **Codex++**，确认官方应用路径，配置供应商和增强功能，然后在概览页启动官方应用。界面和后台服务在同一个应用里，关闭窗口后收起到托盘；在「设置 → 版本与更新」检查更新。
 

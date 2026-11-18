@@ -132,7 +132,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   assert.equal(settingControls(component("StepwiseSettingsPanel")).length, 0);
   for (const item of enhancementCatalog.items) {
     const standalone = enhancementGroup(item.group).standalone === true;
-    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled"].includes(item.key);
+    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled", "usageHistoryEnabled", "threadModelFollowSwitchEnabled", "keepProjectsWithoutAccount"].includes(item.key);
     assert.equal(item.masterGated !== false, !standalone && !unmanaged, `${item.key} master gating`);
   }
 
@@ -209,7 +209,7 @@ test("every manager-visible catalog item has exactly one place in the manager", 
   // 左侧目录（PageSectionNav）的分组同样按清单生成，锚点 id 由分组 id 生成，深链和滚动定位不受影响。
   assert.deepEqual(
     [...managerBuiltinGroups(), managerStandaloneGroup()].map(enhancementGroupAnchorId),
-    ["enhance-group-plugins", "enhance-group-chat", "enhance-group-pet", "enhance-group-stepwise", "enhance-group-appearance", "enhance-group-standalone"],
+    ["enhance-group-plugins", "enhance-group-input", "enhance-group-chat", "enhance-group-appearance", "enhance-group-pet", "enhance-group-stepwise", "enhance-group-ext-permissions", "enhance-group-standalone"],
   );
   assert.match(appSource, /const generalSections = \[\.\.\.managerBuiltinGroups\(\), managerStandaloneGroup\(\)\]\s*\.map\(\(group\) => \(\{ id: enhancementGroupAnchorId\(group\), label: t\(group\.title\) \}\)\);/);
   for (const name of ["EnhanceScreen", "StandaloneModeGroup"]) {

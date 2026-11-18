@@ -17,6 +17,7 @@ on:
           - all
           - windows
           - macos
+          - linux
       draft:
         description: "构建并上传到草稿，附件齐备后再发布"
         default: false
@@ -157,10 +158,13 @@ jobs:
 
       # --no-fail-fast：让所有测试目标都跑完再汇总，避免第一个失败目标掩盖其余结果。
       - name: Rust tests
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --exclude codex-plus-data --no-fail-fast
+
+      - name: Data tests (shared memory budget)
+        run: cargo test -p codex-plus-data -- --test-threads=1
 
   windows-installer:
-    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform != 'macos')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform == 'all' || inputs.platform == 'windows')
     needs: [verify-release, verify-tests]
     runs-on: windows-latest
     steps:
@@ -269,7 +273,8 @@ jobs:
           }
           Push-Location scripts/installer/windows
           try {
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" CodexPlusPlus.nsi
+            $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location
@@ -285,7 +290,7 @@ jobs:
             dist/windows/*.zip
 
   macos-dmg:
-    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform != 'windows')
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v') && contains(github.event.release.tag_name || inputs.tag, '-3n.') && (github.event_name == 'release' || inputs.platform == 'all' || inputs.platform == 'macos')
     needs: [verify-release, verify-tests]
     name: macOS DMG (universal)
     # macos-14 镜像 2026-11-02 退役，期间还有计划性停机（任务分配 runner 前就被取消）。
@@ -405,8 +410,117 @@ jobs:
             dist/macos/*.dmg
             dist/macos/*.zip
 
+  linux-deb:
+    needs: [verify-release, verify-tests]
+    if: github.event_name == 'release' || inputs.platform == 'all' || inputs.platform == 'linux'
+    name: Linux DEB (Ubuntu 24.04, amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux
+          save-if: false
+
+      # 与 pr-build.yml 相同：默认 Azure 镜像不通时限时失败并换官方源重试。
+      - name: Install Linux build dependencies
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          pkgs="build-essential curl git pkg-config libssl-dev libsqlite3-dev \
+            libdbus-1-dev libglib2.0-dev libgtk-3-dev \
+            libayatana-appindicator3-dev libjavascriptcoregtk-4.1-dev \
+            libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev"
+          apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15"
+          try_install() {
+            timeout 480 bash -c "$apt update -qq && $apt install -y --no-install-recommends $pkgs"
+          }
+          # 新版 runner 的源写成 mirror+file:/etc/apt/apt-mirrors.txt（里面是 azure 镜像），旧版直接写 azure 地址，两种都换。
+          use_official_mirror() {
+            echo "::warning::默认 Ubuntu 镜像不可用，改用 archive.ubuntu.com"
+            for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+              if [ -f "$f" ]; then
+                sudo sed -i -e 's#mirror+file:/etc/apt/apt-mirrors.txt#http://archive.ubuntu.com/ubuntu#g' \
+                  -e 's#http://azure.archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"
+              fi
+            done
+          }
+          # 域名都解析不了时 apt 要白等好几分钟才放弃（2026-11-11 实测），先探一下，不通直接换。
+          if ! getent hosts azure.archive.ubuntu.com >/dev/null; then
+            use_official_mirror
+          fi
+          if ! try_install; then
+            use_official_mirror
+            try_install
+          fi
+
+      - name: Install frontend dependencies
+        working-directory: apps/codex-plus-manager
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: apps/codex-plus-manager
+        run: npm run vite:build
+
+      # sherpa-onnx-sys 的构建脚本见到 target/sherpa-onnx-prebuilt/<包>/lib 目录就直接用，不再下载。
+      # v2.6.8 缓存键变化后恢复出的预编译目录缺静态库，链接时报找不到 sherpa-onnx-c-api。
+      # 构建前检查，缺库就清掉这个包的目录和压缩包，让构建脚本重新下载。
+      - name: Refresh sherpa-onnx native libraries
+        run: |
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean -p sherpa-onnx-sys
+          cargo clean -p sherpa-onnx-sys --release
+
+      - name: Build application
+        run: cargo build --release -p codex-plus-manager
+
+      - name: Build DEB
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp
+          bash "$GITHUB_WORKSPACE/scripts/installer/linux/build-deb.sh" --package-only
+
+      - name: Verify package and install
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb_file="$(find dist/linux -maxdepth 1 -name "*.deb" -print -quit)"
+          test -n "$deb_file"
+          version="${RELEASE_TAG#[vV]}"
+          test "$(dpkg-deb -f "$deb_file" Package)" = "codex-plus-plus"
+          test "$(dpkg-deb -f "$deb_file" Version)" = "$version"
+          dpkg-deb -c "$deb_file" | grep -F "./usr/bin/codex-plus-plus"
+          sudo apt-get install -y "./$deb_file"
+          test -x /usr/bin/codex-plus-plus
+          dpkg -V codex-plus-plus
+          ldd /usr/bin/codex-plus-plus | tee /tmp/codex-plus-plus-ldd.log
+          ! grep -q "not found" /tmp/codex-plus-plus-ldd.log
+          # 统一成 CodexPlusPlus-<版本>-linux-amd64.deb：SHA256SUMS 按 CodexPlusPlus-* 收录，应用内更新按 .deb + amd64 识别。
+          mkdir -p dist/release
+          cp "$deb_file" "dist/release/Codex3N-${version}-linux-amd64.deb"
+
+      - name: Upload Linux DEB
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$RELEASE_TAG" dist/release/*.deb --clobber --repo "$GITHUB_REPOSITORY"
+
   latest-json:
-    if: always() && needs.verify-release.result == 'success' && needs.verify-tests.result == 'success' && (needs.windows-installer.result == 'success' || needs.windows-installer.result == 'skipped') && (needs.macos-dmg.result == 'success' || needs.macos-dmg.result == 'skipped')
+    if: always() && needs.verify-release.result == 'success' && needs.verify-tests.result == 'success' && (needs.windows-installer.result == 'success' || needs.windows-installer.result == 'skipped') && (needs.macos-dmg.result == 'success' || needs.macos-dmg.result == 'skipped') && (needs.linux-deb.result == 'success' || needs.linux-deb.result == 'skipped')
     name: Upload static latest.json
     # 单平台补跑时另一个 job 会跳过；成功或跳过才允许更新元数据。
     runs-on: ubuntu-latest
@@ -415,6 +529,7 @@ jobs:
       - verify-tests
       - windows-installer
       - macos-dmg
+      - linux-deb
     steps:
       # 自更新链在客户端是「失败关闭」：latest.json 里没有 sha256、
       # 又拿不到 SHA256SUMS.txt 时，管理器会拒绝安装。所以校验和必须和
@@ -462,6 +577,7 @@ jobs:
               `Codex3N-${version}-windows-x64-setup.exe`,
               `Codex3N-${version}-windows-x64.zip`,
               `Codex3N-${version}-macos-universal.dmg`,
+              `Codex3N-${version}-linux-amd64.deb`,
             ];
             for (const name of required) {
               if (!(release.assets || []).some((asset) => asset.name === name && asset.size > 0)) {

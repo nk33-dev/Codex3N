@@ -354,7 +354,7 @@ fn github_release_workflow_builds_one_universal_macos_dmg() {
     assert!(workflow.contains("x86_64-apple-darwin,aarch64-apple-darwin"));
     assert!(workflow.contains("build-universal.sh \"$VERSION\""));
 
-    // 分架构的 matrix 形态不应再出现，否则会回到「用户自己挑架构」的老问题。
+    // 发布产物仍是单个通用包，不应恢复分架构安装包。
     assert!(!workflow.contains("matrix.arch"));
     assert!(!workflow.contains("macos-15-intel"));
 }
@@ -423,13 +423,19 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    // 供应商编辑纯函数已从 App.tsx 抽到 relay-profile-editing.ts（管理器与 Codex 供应商页共用）。
+    let editing_ts = manifest_dir
+        .parent()
+        .unwrap()
+        .join("src/relay-profile-editing.ts");
+    let editing_ts = std::fs::read_to_string(&editing_ts).expect("read relay-profile-editing.ts");
     let commands_rs = manifest_dir.join("src/commands.rs");
     let commands_rs = std::fs::read_to_string(&commands_rs).expect("read manager commands.rs");
 
     assert!(app_tsx.contains("snapshotActiveRelayFilesBeforeSwitch"));
     assert!(app_tsx.contains("backfill_relay_profile_from_live"));
     assert!(app_tsx.contains("relayProfileSwitchValidation(selectedBeforeSave, switchSettings)"));
-    assert!(app_tsx.contains("缺少独立 config.toml"));
+    assert!(editing_ts.contains("缺少独立 config.toml"));
     assert!(app_tsx.contains("const command = relayProfileSwitchCommand(selectedAfterSave)"));
     assert!(app_tsx.contains("function relayProfileSwitchCommand"));
     assert!(app_tsx.contains("return \"apply_pure_api_injection\""));
@@ -437,11 +443,11 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(app_tsx.contains("const createNewAggregateProfile = (mode: AggregateMode)"));
     assert!(app_tsx.contains("onClick={() => createNewAggregateProfile("));
     assert!(app_tsx.contains("已打开聚合供应商详情"));
-    assert!(app_tsx.contains(
+    assert!(editing_ts.contains(
         "buildRelayConfigToml(profile, { includeBearerToken: !profile.noAuth, requiresOpenAiAuth: false })"
     ));
     assert!(
-        app_tsx.contains(
+        editing_ts.contains(
             "`requires_openai_auth = ${options.requiresOpenAiAuth ? \"true\" : \"false\"}`"
         )
     );

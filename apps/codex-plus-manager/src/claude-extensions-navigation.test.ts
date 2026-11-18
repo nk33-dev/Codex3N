@@ -426,7 +426,7 @@ function extensionActionResult(enabled: boolean, status = "ok"): ActionResult {
   };
 }
 
-function extensionActionHarness(result: ActionResult | null) {
+function extensionActionHarness(result: ActionResult | null, reloadStatus?: string) {
   const requests: Array<{ command: string; payload: Record<string, unknown> }> = [];
   const events: string[] = [];
   const draft = {
@@ -465,7 +465,7 @@ function extensionActionHarness(result: ActionResult | null) {
       state.form = update(state.form);
     },
     claudeLocalizationMemo: memo,
-    reloadUserScripts: async () => { events.push("reload"); },
+    reloadUserScripts: async () => { events.push("reload"); return reloadStatus; },
     refreshUserScriptInventory: async () => { events.push("refresh"); },
     showResultNotice: () => { events.push("notice"); },
   });
@@ -494,6 +494,15 @@ test("Codex 保存动作默认省略 host 参数并保留热重载", async () =>
     assert.ok(row.events.includes("refresh"));
     assert.equal(row.state.form, row.draft);
     assert.equal(row.memo.status, row.originalMemo);
+  }
+});
+
+test("Codex 单项开关在热重载待确认时不立即覆盖运行状态", async () => {
+  for (const reloadStatus of ["ok", "failed", "warning"]) {
+    const h = extensionActionHarness(extensionActionResult(false), reloadStatus);
+    await h.context.setUserScriptEnabled("user:both", false, "codex");
+    assert.ok(h.events.includes("reload"));
+    assert.equal(h.events.includes("refresh"), reloadStatus !== "warning");
   }
 });
 
@@ -600,7 +609,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeDesktopLocal: { enabled: true, model: "claude-test", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
     // #2937：记下使用模式也由后端单独写入，表单要跟上，否则下一次整份保存会写回旧值。
     managerAgentFocus: "enhance",
-    nativeAuthSelection: { mode: "account", accountRef: "saved-account" },
+    nativeAuthSelection: { mode: "account", accountRef: "fixture-b" },
   };
   const draft = {
     revision: 3,
@@ -614,7 +623,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppBashTimeout: 60000,
     claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: false, computerUse: false, backgroundMode: false },
     managerAgentFocus: "",
-    nativeAuthSelection: { mode: "none" },
+    nativeAuthSelection: { mode: "account", accountRef: "fixture-a" },
     theme: "unsaved-theme",
     providerDraft: { model: "unsaved-model" },
   };

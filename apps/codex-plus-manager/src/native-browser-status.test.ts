@@ -84,7 +84,7 @@ test("consent precedes enabling, default is off, and refresh is read-only", asyn
   assert.match(item.title, /原生 Edge \/ Chrome 请求标识兼容（实验）/);
   assert.match(item.description, /此兼容补丁仅适配 Windows 上的 Edge \/ Chrome/);
   assert.deepEqual(item.platforms, ["windows"]);
-  assert.deepEqual(item.surfaces, ["manager"]);
+  assert.deepEqual(item.surfaces, ["manager", "codex"]);
   assert.match(app, /item\.key === "codexAppNativeBrowserRequireIdentification"[\s\S]*?<NativeBrowserStatusView \/>/);
   assert.match(nativeBrowserStatusLabel("unsupported"), /Edge \/ Chrome/);
   assert.match(component, /"native_browser_status"/);

@@ -28,7 +28,7 @@ shared = []
 bzip2 = "0.4"
 tar = "0.4"
 ureq = { version = "2.12", features = ["proxy-from-env"] }
-zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 
 [package.metadata.docs.rs]
 default-features = false

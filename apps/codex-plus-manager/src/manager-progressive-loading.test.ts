@@ -77,13 +77,13 @@ test("Skills 进入和重新挂载只读缓存，刷新点击合并且卸载后�
   const screen = harness("./ManagementExtra.tsx", "SkillsPage");
   screen.render();
   assert.equal(screen.calls[0].command, "list_installed_skills");
-  const payload = { status: "ok", skills: [], repos: [], repoCounts: {}, repositorySkills: [], repoErrors: [] };
+  const payload = { status: "ok", inventoryOk: true, backupsOk: true, skills: [], repos: [], repoCounts: {}, repositorySkills: [], repoErrors: [] };
   screen.calls[0].resolve(payload); await tick();
   assert.equal(screen.calls.length, 1);
   const button = find(screen.render(), node => nodes(node).some(child => child.props.children?.includes("刷新目录")) && node.props.onClick);
   button.props.onClick(); button.props.onClick();
   assert.equal(screen.calls.length, 2);
-  assert.equal(screen.calls[1].command, "refresh_skill_catalog");
+  assert.equal(screen.calls[1].command, "list_installed_skills");
   screen.unmount();
   const before = screen.changes();
   screen.calls[1].resolve(payload); await tick();
@@ -96,7 +96,7 @@ test("Skills 进入和重新挂载只读缓存，刷新点击合并且卸载后�
 
 test("Skills 写操作隔离旧刷新并合并重复点击", async () => {
   const screen = harness("./ManagementExtra.tsx", "SkillsPage");
-  const payload = (name: string) => ({ status: "ok", message: name, skills: [{ id: name, name, installed: true, bundled: true }], repos: [], repoCounts: {}, repositorySkills: [], repoErrors: [] });
+  const payload = (name: string) => ({ status: "ok", inventoryOk: true, backupsOk: true, message: name, skills: [{ id: name, name, installed: true, bundled: true }], repos: [], repoCounts: {}, repositorySkills: [], repoErrors: [] });
   screen.render();
   screen.calls[0].resolve(payload("initial")); await tick();
   let root = screen.render();
