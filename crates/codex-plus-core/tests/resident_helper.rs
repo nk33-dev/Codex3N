@@ -39,13 +39,21 @@ fn post_status(port: u16) -> String {
 
 #[test]
 fn resident_helper_stays_up_across_codex_session_lifecycle() {
-    // 听写凭据与诊断日志会写进状态目录；测试里整体挪到临时目录，避免影响本机实例。
+    // helper 的后台刷新也可能写 Agent 配置，状态目录和各配置入口都须隔离。
     let state_dir = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var(
             codex_plus_core::paths::STATE_DIR_ENV,
             state_dir.path().to_str().unwrap(),
         );
+        std::env::set_var("CODEX_HOME", state_dir.path().join("codex"));
+        std::env::set_var("CODEX_SQLITE_HOME", state_dir.path().join("sqlite"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", state_dir.path().join("claude"));
+        std::env::set_var("GROK_HOME", state_dir.path().join("grok"));
+        std::env::set_var("OPENCODE_CONFIG_DIR", state_dir.path().join("opencode"));
+        std::env::set_var("HOME", state_dir.path());
+        std::env::set_var("APPDATA", state_dir.path());
+        std::env::set_var("XDG_CONFIG_HOME", state_dir.path());
     }
 
     let port = free_loopback_port();

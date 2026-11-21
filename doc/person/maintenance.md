@@ -71,6 +71,10 @@ cargo test --workspace
 - 核对实际运行的构建、注入产物、宿主版本和个人更新源，避免缓存或旧进程掩盖结果。打包变化还需检查产物来源和升级路径。
 - 记录既有失败、新失败及未验证范围。检查未完成不标记为完整通过；同步分支验证完成后才合回 `personal`。官方发布大版本不等于个人版已兼容。
 
+### 配置写入隔离
+
+启动真实 helper 的测试和管理器探针必须同时隔离状态目录、`CODEX_HOME`、`CODEX_SQLITE_HOME`、`CLAUDE_CONFIG_DIR`、`GROK_HOME`、`OPENCODE_CONFIG_DIR`、`HOME`、`APPDATA` 和 `XDG_CONFIG_HOME`。Windows 的 `directories::BaseDirs` 不随 `HOME` 改变，临时状态目录也不会重定向 Agent 的 live 配置。启动 helper 前核对 `ApplyContext::default_paths` 的写入目标；网关端到端测试还须确认绑定实际写进临时 Claude 配置。管理器探针使用同样的独立目录，不能复用活动配置。
+
 ### 本地构建占用
 
 开发和测试保留完整调试信息与增量编译。桌面管理器只生成供可执行入口调用的 `rlib`；如增加移动端客户端，需另行配置其原生库产物。
@@ -326,3 +330,29 @@ Rust 安全依赖定向升级为 ZIP 9.0.5、quinn-proto 0.11.19、quinn-udp 0.5
 Windows 最终低并发 workspace 全量测试 5,757 通过、48 忽略，退出码 0，统计排除子进程重复输出；格式、`cargo local-check`、relay Clippy 与 `cargo local-build` 通过。核心集成回归按个人版供应商默认关闭、原生模型保留和实际 MCP 分流入口适配；安装器清理保留同一上游版本下尚未安装的更高个人修订号。两套注入、供应商编辑拼装检查、Native Fast 20 项及语音缓存 10 项通过。
 
 实际 debug 管理器复制到临时目录，使用空 `CODEX_HOME`、独立状态和端口完成轻量模式启动探针：后台启动不创建主窗口，释放界面后网关可用，窗口可重建，设置在重启后保持，正常模式可再次启动；测试进程均已结束。该验证不修改活动配置或附加官方宿主，不替代安装升级及在线调用验收。最终提交仍须通过完整 push CI；npm 高危审计失败时不创建标签或 Release。
+
+### 官方 v2.8.0 同步
+
+个人起点 `8c2e6829`，已同步上游基线 `4221403c`，目标正式标签 v2.8.0 对应 `f6fa88b2`，共 17 个提交；不带入标签之后的主分支更新。复用当前独立工作树的 `codex/sync-2.8.0` 验证，保留上游合并父节点，个人版本为 `2.8.0-3n.1`。Windows 宿主为官方 App 26.1111.9664.0。基线复用起点的本机 Rust 5,757 项、前端 2,588 项通过记录；该 SHA 的 push CI `44308574592` 因 npm 审计与 Linux 依赖安装中断失败，macOS job 取消，不作为完整成功基线。
+
+| 上游变化 | 当前入口与处理 |
+| --- | --- |
+| HTTP 默认与 WS 续接 | 沿用 `GatewaySettings::responses_websocket`、`protocol_proxy.rs`、`responses_websocket.rs`，HTTP 默认、标准续接错误和设置命令共用原入口，来源与凭据核验保留 |
+| 逐模型窗口、压缩与模板 | `TopLevelContextLimits` 接入个人受管目录生成；保留分组排序、原生混入、六位小数和旧绝对阈值，跨代模板不借用错误身份 |
+| 官方目录版本与池外模型 | 沿用 `codex_cli_version.rs`、`chatgpt_backend.rs`、`gateway/route.rs`；版本取最新、带前缀模型不静默改发默认型号 |
+| Skills 与请求日志 | 迁入局部比较错误、备份导出边界和未知供应商筛选；Skills 首次只读本地、手动发现及请求代次隔离继续生效 |
+| 安全与 Linux 构建 | GHSA-fc5q-39xc-vjpf 已由官方撤回，npm 审计零漏洞，无忽略项或本地漏洞补丁；apt 短超时只用于源更新，避免中断 dpkg 安装后重试失败 |
+
+检查资料位于仓库外 `D:/Project/rust/Codex3N-verification-20261120`。前端全量 2,599 通过、2 跳过，类型、翻译扫描、Vite 和 npm 审计通过；合并首轮的字典逗号遗漏和自动发现夹具已适配。SDK 位于注册表指向的 `D:/Windows Kits/10`，本地显式配置已安装的 MSVC/SDK，Git 同名链接器及未初始化 SDK 的失败记录分别保留，不修改项目编译配置。
+
+结构体检使用已安装的 jscpd 5.4.3 与 dependency-cruiser 18.7.2，前端扫描 214 个源码文件，排除测试、资源与翻译字典，重复率约 1.6%；运行时依赖分析覆盖 247 个模块，无未解析导入，两处既有循环为 `app-dialog.tsx` ↔ `i18n.ts`、`CommunityExtensionsPanel.tsx` ↔ `ExtensionCuration.tsx`。Rust 源码重复率约 3.4%，含模块内测试及既有备用实现，未执行 Rust 依赖图分析。死代码结果包含手工探针及 JSX 误判（例如实际被调用的 `RelayContextManager`），不据此删除代码或扩大同步重构。
+
+清理 38 个本地旧分支及 3 个远端分支，均已合入或经补丁等价核对；分支与提交清单保存在检查目录。两个旧工作树保持 detached，文件未删除；4 个仍含独有补丁的旧分支保留。原目录的插件市场改动继续留在 `codex/marketplace-wip-before-sync-2.7.2`，15 项专项通过，未混入同步。
+
+Windows 首轮 workspace 全量 5,783 通过、48 忽略，退出码 0；`cargo local-check`、格式与 relay Clippy 通过。Rust 审计无阻断漏洞，保留 11 项允许告警；三套拼装检查及 Native Fast 20 项通过。首次 `cargo local-build` 被中断，续跑完整构建退出码 0。语音缓存回归 10 项通过；未配置共享 target 和误用 Git tar 的失败尝试保留在检查记录中，最终使用共享 `CARGO_TARGET_DIR` 与 Windows 系统 tar。
+
+2026-11-21 排查用户 Claude 配置时确认：首轮 `gateway_e2e` 没有设置 `CLAUDE_CONFIG_DIR`，helper 的后台刷新将测试绑定写入真实 `~/.claude/settings.json`。真实文件中的测试凭据、模型及写入时间与用例一致，不能将本轮测试描述为完全隔离。现已显式隔离三个 helper 集成测试和管理器启动探针的 Agent 配置入口；原配置恢复需以可确认的备份和用户当前供应商选择为准，不能用旧副本整份覆盖。历史测试记录中的临时状态目录也不能单独证明 Agent 配置未被访问。
+
+修复后三个真实 helper 集成测试全部通过，端到端用例确认测试绑定写进临时 Claude 配置；复跑前后真实配置的 SHA-256 与修改时间相同。新构建的管理器在独立状态、Agent 配置和端口下完成轻量后台启动、释放界面后网关在线、窗口重建、重启持久化及正常启动探针，测试进程均已结束。
+
+Skills 与数据库回归使用临时副本。浏览器复核覆盖 960/1280 px 的网关设置和 Skills，新增 WS 开关默认关闭，窄窗口无横向溢出；首次 Skills 夹具等待未展开的行导致的 not-ready 不计入通过，改为等待实际分组后复验。浏览器使用模拟 IPC，不代表真实宿主、在线账号或跨平台安装升级验收。

@@ -14,6 +14,7 @@
 - 网关供应商在上下文窗口弹窗中保存 `compaction`：`percent` 为供应商比例，`modelOverridesEnabled` 控制按模型覆盖，`modelPercents` 按上游模型名保存比例。开启时按模型值 → 供应商值 → Codex 默认回退；关闭保留模型值但暂停应用。`GatewayProvider::auto_compact_for` 优先采用个人 `compaction`，未显式编辑时兼容导入值和上游 `autoCompact`。`route::model_entry_auto_compact` 对多成员取最小有效比例，目录和各 Agent 配置使用同一结果；供应商详情同时显示压缩摘要。
 - 网关 `compaction` 缺失时读取导入供应商的旧 `modelAutoCompact`，绝对 `autoCompactLimit` 收入兼容字段 `tokenLimit` 按成员保留；只改窗口或模型开关不会丢失绝对阈值，编辑供应商比例时清除该兼容值。比例校验复用原有 0% < 比例 ≤ 100%、最多 6 位小数的规则；留空不会补 90%。回归见 `provider-compaction.test.ts` 与 `gateway_apply::gateway_compaction_*`，浏览器入口为 `scripts/provider-compaction-ui-smoke.mjs`。
 - 用户外部 `model_catalog_json` 与每模型覆盖冲突时，保留外部目录并应用顶层上下文、自动压缩兜底值；每模型覆盖在该目录下不可用。
+- 受管目录中存在逐模型窗口或压缩比例时，`relay_config.rs::TopLevelContextLimits` 将冲突的顶层窗口、压缩阈值折入其余模型，再移除对应顶层键，避免通用配置反向覆盖逐模型值；没有逐模型覆盖时仍保留顶层配置。外部目录保持原规则。
 - Kimi 官方 Responses 目录在应用用户元数据后强制关闭 `supports_search_tool`，聚合成员同样处理；其它来源与 Chat Completions 沿用自身能力声明。入口为 `relay_config.rs::upstream_rejects_tool_search`，覆盖普通目录及 `aggregate_catalog.rs`。
 - 每模型 Fast 可显式声明支持、禁用或继承。私有字段 `codex_plus_fast_support` 保存在供应商元数据中，生成原生目录时转换为 `service_tiers` 与 `additional_speed_tiers`，保留其它档位；注入响应通过 `prioritySupportOverride` 统一界面和请求判断，窗口覆盖仍按原优先级应用。
 - 外部目录路径含未展开变量或指向不存在的文件时，`relay_config.rs` 移除失效指针并走托管目录生成；相对路径按 `CODEX_HOME` 解析，存在的外部目录继续保留。
@@ -21,6 +22,7 @@
 - 网关菜单按分组展示：系统默认合并原生可见条目和系统默认供应商补充的模型，其他供应商及自动路由保留各自入口。原生隐藏条目保留隐藏标记；手工配置的模型按配置展示，审批内部模型仍隐藏。
 - 生成每个供应商的托管目录时保留原生模型条目及其目录优先级，切换供应商会重建当前目录，不沿用上一份目录。用户显式指定的上下文窗口写入实际窗口，受管目录的 `max_context_window` 留空，允许运行中调大窗口。
 - 原生菜单保留选择能力，不重新插入个人版已去掉的模型管理面板或未测试提示。
+- 官方目录请求版本由 `codex_cli_version.rs` 与 `gateway/chatgpt_backend.rs::select_codex_version` 从内置基线、模型缓存和本机已安装版本中取最新，不改写原缓存。未知 GPT 跨代型号优先借用同主版本、同系列的模板，不改变个人分组与排序规则。
 - 模型列表优先按 `menuitemradio` 的共同父节点定位，并兼容两代 CSS Modules 类名；菜单关闭时诊断探测限流。归属缓存继续使用个人版 `{provider, groupId, parsed}` 和目录身份失效规则，默认组合并、配置顺序及供应商导航保持不变。
 
 菜单提供图标导航与折叠列表两种视图，视图偏好和列表折叠组按稳定 ID 持久化；图标导航每次打开回到供应商入口。列表的默认模型名来自实际 `config.toml` 及启用 profile 的 `effective_config_model`，缺失时不猜目录首项。品牌、最近使用和 `models.dev` 价格由上游菜单分片展示，分组身份、系统默认合并及配置顺序继续沿用个人契约。价格仅供参考，不代表中转商实际计费。菜单关闭或页面隐藏后仍停止个人自检调度，首屏超过 100 项按同一目录顺序补齐。

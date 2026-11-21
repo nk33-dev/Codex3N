@@ -135,6 +135,9 @@ async fn gateway_extensions_on_the_real_request_path() {
         );
         std::env::set_var("CODEX_HOME", &codex_home);
         std::env::set_var("CODEX_SQLITE_HOME", &sqlite_home);
+        std::env::set_var("CLAUDE_CONFIG_DIR", temp.path().join("claude"));
+        std::env::set_var("GROK_HOME", temp.path().join("grok"));
+        std::env::set_var("OPENCODE_CONFIG_DIR", temp.path().join("opencode"));
         std::env::set_var("HOME", temp.path());
     }
     let root = temp.path().join("Codex++");

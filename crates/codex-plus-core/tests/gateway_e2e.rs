@@ -343,6 +343,8 @@ async fn gateway_end_to_end() {
     let state_dir = tempfile::tempdir().unwrap();
     let codex_home = state_dir.path().join("codex-home");
     let sqlite_home = state_dir.path().join("codex-sqlite");
+    let claude_home = state_dir.path().join("claude");
+    let grok_home = state_dir.path().join("grok");
     std::fs::create_dir_all(&codex_home).unwrap();
     std::fs::create_dir_all(&sqlite_home).unwrap();
     unsafe {
@@ -352,6 +354,11 @@ async fn gateway_end_to_end() {
         );
         std::env::set_var("CODEX_HOME", &codex_home);
         std::env::set_var("CODEX_SQLITE_HOME", &sqlite_home);
+        // Windows 的 BaseDirs 不使用 HOME，必须单独覆盖每个 Agent 的配置入口。
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_home);
+        std::env::set_var("GROK_HOME", &grok_home);
+        std::env::set_var("OPENCODE_CONFIG_DIR", state_dir.path().join("opencode"));
+        std::env::set_var("HOME", state_dir.path());
         std::env::set_var("APPDATA", state_dir.path());
         std::env::set_var("XDG_CONFIG_HOME", state_dir.path());
     }
@@ -364,7 +371,15 @@ async fn gateway_end_to_end() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.local_addr().unwrap().port()
     };
-    codex_plus_core::resident_helper::ensure_resident_helper(port).unwrap();
+    let context = codex_plus_core::gateway::apply::ApplyContext::default_paths(port);
+    assert_eq!(context.claude.claude_home, claude_home);
+    assert_eq!(context.grok_home, grok_home);
+    assert_eq!(context.codex_home, codex_home);
+    assert_eq!(context.agent_env.home, state_dir.path());
+    assert_eq!(
+        context.agent_env.dir_var("OPENCODE_CONFIG_DIR"),
+        Some(state_dir.path().join("opencode")),
+    );
     let token = "cpx-gw-claude-e2e";
 
     // —— 1. Claude → Chat 上游，流式文本；未知模型名改写成主模型 ——
@@ -393,6 +408,22 @@ async fn gateway_end_to_end() {
         !state_dir.path().join("settings.json").exists(),
         "网关模式不写直连模式的 settings.json"
     );
+
+    // 首次扫描必须实际投影到隔离的 Claude 配置，不能只验证请求转发。
+    codex_plus_core::resident_helper::ensure_resident_helper(port).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let config = std::fs::read(claude_home.join("settings.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            if config.is_some_and(|config| config["env"]["ANTHROPIC_AUTH_TOKEN"] == token) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("helper 应将测试绑定写入临时 Claude 配置目录");
 
     let (status, text) = post(port, "/gw/claude/v1/messages", token, &claude_request(true)).await;
     assert_eq!(status, 200, "{text}");

@@ -21,6 +21,7 @@ mod claude_ion_asar;
 pub mod claude_local_backend;
 pub mod claude_localization;
 pub mod codex_app_state;
+pub mod codex_cli_version;
 pub mod codex_home;
 pub mod codex_local_storage;
 pub mod codex_sqlite;

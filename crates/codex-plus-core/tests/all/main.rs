@@ -34,6 +34,7 @@ mod codex_app_state;
 mod codex_sqlite;
 mod composer_readiness;
 mod config_doctor;
+mod context_window_top_level;
 mod custom_prompts;
 mod diagnostic_log;
 mod dream_skin;

@@ -33,6 +33,9 @@ await writeFile(path.join(state, "gateway.json"), JSON.stringify({
   bindings: { codex: { enabled: true, token: "cpx-gw-isolated-probe", restore: { appliedPort: helper } } },
 }));
 const env = { ...process.env, CODEX_PLUS_STATE_DIR: state, CODEX_HOME: home, CODEX_PLUS_MULTI_INSTANCE: "1",
+  CODEX_SQLITE_HOME: path.join(output, "sqlite"), CLAUDE_CONFIG_DIR: path.join(output, "claude"),
+  GROK_HOME: path.join(output, "grok"), OPENCODE_CONFIG_DIR: path.join(output, "opencode"),
+  HOME: output, APPDATA: output, XDG_CONFIG_HOME: output,
   CODEX_PLUS_MANAGER_GUARD_PORT: String(guard), CODEX_PLUS_LAUNCHER_GUARD_PORT: String(await freePort()),
   CODEX_PLUS_PROTOCOL_PROXY_PORT: String(helper),
   CODEX_PLUS_MANAGER_TEST_DEBUG_PORT: String(debug),

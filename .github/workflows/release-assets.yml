@@ -446,7 +446,8 @@ jobs:
             libwebkit2gtk-4.1-dev libsoup-3.0-dev libz3-dev"
           apt="sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=15"
           try_install() {
-            timeout 480 bash -c "$apt update -qq && $apt install -y --no-install-recommends $pkgs"
+            timeout 180 bash -c "$apt update -qq" &&
+              $apt install -y --no-install-recommends $pkgs
           }
           # 新版 runner 的源写成 mirror+file:/etc/apt/apt-mirrors.txt（里面是 azure 镜像），旧版直接写 azure 地址，两种都换。
           use_official_mirror() {

@@ -62,6 +62,7 @@
 - Skills 安装、启停和仓库保存共用同步操作锁，开始写入即隔离较早的目录刷新和检查结果；卸载页面后不提交写操作结果或提示。目录刷新的迟到错误同样失效。
 - Skills 下载在锁外执行，提交前复核仓库、安装代次、源目录和 Agent 副本；目标子树只提取一次。共享路径去重，跨卷备份使用目标卷暂存并保留可恢复内容。刷新继续合并同一请求、最多并发两个仓库，`skill-catalog.json` 保留磁盘缓存；发布缓存前核对仓库及请求代次。GitHub 请求沿用上游的代理隔离、空闲/总超时与 64 MiB 流式限额，ZIP API 适配个人安全依赖。
 - Skills 的版本、原位更新、来源关联、重复副本和备份由上游 `skills/{local_versions,in_place_update,source_match,backup_usage}.rs` 管理。`ManagementExtra.tsx` 复用跨页面缓存和在途请求，首次进入只读本地，仓库目录由用户在发现页刷新；本地扫描与仓库刷新独立计数，迟到响应不能覆盖写操作，库存或备份读取失败保留上次成功视图。
+- 单个安装位置无法比较时保留其他版本，并将该位置的 `revision`、`modifiedAtMs` 置空、返回 `comparisonError`；界面禁用该位置的危险操作，完整同步必须先解决比较错误。备份导出拒绝受管源、备份目录、共享目录及其链接别名，普通目标仍使用原备份与原子写入规则。
 - 跨页面复用的展示原语放 `src/components/ui/manager-primitives.tsx`；默认设置放 `src/lib/default-settings.ts`。
 - 外移模块只能 `import type ... from "../App"`，**不得在运行时从 `App.tsx` 取值**，否则形成循环依赖。需要新类型的可见性时给 `App.tsx` 的类型加 `export`。
 - 后端 Tauri 命令按业务拆到 `apps/codex-plus-manager/src-tauri/src/commands/`（现为 `shared.rs`、`dream_skin.rs`、`provider_import.rs`）：`commands.rs` 用 `mod X; pub use X::*;` 汇总，`lib.rs` 的 `generate_handler!` 仍写 `commands::<命令名>`，不需要改。子模块内用 `use super::{...}` 取父模块项，需被父模块测试引用的私有项放宽为 `pub(super)`。
